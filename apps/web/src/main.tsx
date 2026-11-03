@@ -118,6 +118,9 @@ function eventTitle(event: TaskEvent): string {
     const judgment = record(payload?.judgment)
     return typeof judgment?.summary === 'string' ? `Judge: ${judgment.summary}` : 'Judge selected a candidate'
   }
+  if (event.type === 'result' && typeof payload?.reason === 'string') {
+    return `${String(payload.status ?? 'result')}: ${payload.reason}`
+  }
   if (event.type === 'winner_selected') return 'A candidate was selected as the winner'
   if (event.type === 'agent') {
     const agentEvent = record(payload?.event)
@@ -296,6 +299,18 @@ function App() {
       setDetails((current) => {
         if (!current || current.task.id !== selectedTaskId) return current
         const payload = record(event.payload)
+        const hasSelectableCandidate =
+          event.type === 'result' &&
+          Array.isArray(payload?.candidates) &&
+          payload.candidates.some((value) => {
+            const candidate = record(value)
+            const diff = record(candidate?.diff)
+            return (
+              candidate?.status === 'succeeded' &&
+              Array.isArray(diff?.files) &&
+              typeof diff.patch === 'string'
+            )
+          })
         const resultStatus =
           event.type === 'error'
             ? 'failed'
@@ -306,7 +321,9 @@ function App() {
                   ? current.task.mode === 'compete' || payload.approved === false
                     ? 'review_ready'
                     : 'done'
-                  : payload?.status
+                  : current.task.mode === 'compete' && hasSelectableCandidate
+                    ? 'review_ready'
+                    : payload?.status
                 : undefined
         const status = typeof resultStatus === 'string' ? resultStatus : current.task.status
         return {
@@ -887,7 +904,9 @@ function App() {
                           <span className="winner-badge" data-testid="selected-winner">
                             Selected winner
                           </span>
-                        ) : candidate.status === 'succeeded' && candidate.diff ? (
+                        ) : details?.task.status === 'review_ready' &&
+                          candidate.status === 'succeeded' &&
+                          candidate.diff ? (
                           <button
                             className="primary-button select-winner-button"
                             type="button"

@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs'
+import { request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
@@ -124,6 +125,7 @@ function fixture(
     implementer?: FakeProvider
     reviewer?: FakeProvider
     judge?: FakeProvider
+    omitProvider?: ProviderKind
     redactor?: Redactor
     secretBackend?: MemoryBackend
     secretEnv?: NodeJS.ProcessEnv
@@ -148,6 +150,13 @@ function fixture(
   const api = options.judge ?? new FakeProvider('openai-api')
   const redactor = options.redactor ?? new Redactor()
   const secretBackend = options.secretBackend ?? new MemoryBackend()
+  const configuredProviders: Partial<Record<ProviderKind, AgentProvider>> = {
+    'claude-cli': implementer,
+    'codex-cli': reviewer,
+    'openai-api': api,
+  }
+  if (options.omitProvider)
+    Object.defineProperty(configuredProviders, options.omitProvider, { value: undefined, enumerable: true })
   const serverOptions: JoyServerOptions = {
     home: dir,
     database: db,
@@ -159,11 +168,7 @@ function fixture(
     }),
     redactor,
     executor,
-    providers: {
-      'claude-cli': implementer,
-      'codex-cli': reviewer,
-      'openai-api': api,
-    },
+    providers: configuredProviders,
     ...(options.redactor ? { redactor: options.redactor } : {}),
   }
   const serverPromise = createJoyServer(serverOptions)
@@ -210,6 +215,50 @@ async function postJson(url: string, body: unknown) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   })
+}
+
+function startIncompletePost(url: string, prefix: string) {
+  const req = httpRequest(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'transfer-encoding': 'chunked' },
+  })
+  const response = new Promise<{ status: number; body: unknown }>((resolve, reject) => {
+    req.once('response', (res) => {
+      const chunks: Buffer[] = []
+      res.on('data', (chunk: Buffer) => chunks.push(chunk))
+      res.once('end', () => {
+        resolve({
+          status: res.statusCode ?? 0,
+          body: JSON.parse(Buffer.concat(chunks).toString()) as unknown,
+        })
+      })
+    })
+    req.once('error', reject)
+  })
+  req.flushHeaders()
+  req.write(prefix)
+  return { complete: (suffix: string) => req.end(suffix), response }
+}
+
+async function createCompeteTask(origin: string, title: string): Promise<string> {
+  const repoResponse = await postJson(`${origin}/api/repos`, {
+    path: `/tmp/${title.toLowerCase().replaceAll(' ', '-')}`,
+    defaultBranch: 'main',
+  })
+  const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+  const created = await postJson(`${origin}/api/tasks`, {
+    repoId: repo.id,
+    title,
+    prompt: 'Compare two fake implementations',
+    mode: 'compete',
+    roleOverrides: {
+      implementer: { provider: 'claude-cli', model: 'haiku', effort: 'low' },
+      reviewer: { provider: 'codex-cli', model: 'gpt-6-luna', effort: 'low' },
+      judge: { provider: 'openai-api', model: 'gpt-6-luna', effort: 'low' },
+    },
+  })
+  const { task } = (await created.json()) as { task: { id: string } }
+  return task.id
 }
 
 describe('Joy local server', () => {
@@ -359,6 +408,75 @@ describe('Joy local server', () => {
     )
     expect(db.isOpen).toBe(true)
     expect(executor.prepareCalls).toBe(2)
+  })
+
+  it('keeps successful candidates selectable when the judge fails', async () => {
+    const judge = new FakeProvider('openai-api', [
+      { type: 'done', sessionId: 'failed-judge', isError: true, finalMessage: 'Fake judge failure' },
+    ])
+    const { serverPromise } = fixture({ judge })
+    const { origin } = await start(serverPromise)
+    const taskId = await createCompeteTask(origin, 'Judge failure remains reviewable')
+
+    const details = await waitForStatus(origin, taskId, 'review_ready')
+    const candidate = details.attempts.find((attempt) => attempt['status'] === 'succeeded')
+    expect(candidate).toBeDefined()
+    const selected = await postJson(`${origin}/api/tasks/${taskId}/select`, {
+      attemptId: candidate?.['id'],
+    })
+    expect(selected.status).toBe(200)
+    expect(await selected.json()).toMatchObject({ task: { status: 'done' } })
+  })
+
+  it('persists an event explaining compete preflight failures without candidate attempts', async () => {
+    const { serverPromise } = fixture({ omitProvider: 'openai-api' })
+    const { origin } = await start(serverPromise)
+    const taskId = await createCompeteTask(origin, 'Missing judge provider')
+
+    const details = await waitForStatus(origin, taskId, 'failed')
+    const result = details.events.find((event) => (event as { type?: string }).type === 'result') as
+      { payload?: { reason?: string } } | undefined
+    expect(result).toBeDefined()
+    expect(result?.payload?.reason).toContain('No provider configured for judge openai-api')
+  })
+
+  it('rejects a second winner selection after a concurrent request closes review', async () => {
+    const judge = new FakeProvider('openai-api', (options) => {
+      const marker = 'Candidate data (JSON): '
+      const data = JSON.parse(options.prompt.slice(options.prompt.indexOf(marker) + marker.length)) as {
+        attemptId: string
+      }[]
+      return [
+        {
+          type: 'done',
+          sessionId: 'race-judge',
+          isError: false,
+          structured: {
+            winnerAttemptId: data[0]?.attemptId,
+            summary: 'The first candidate wins.',
+            rationale: 'This fake judgment enables the selection race test.',
+          },
+        },
+      ]
+    })
+    const { serverPromise } = fixture({ judge })
+    const { origin } = await start(serverPromise)
+    const taskId = await createCompeteTask(origin, 'Concurrent winner selection')
+    const details = await waitForStatus(origin, taskId, 'review_ready')
+    const candidates = details.attempts.filter((attempt) => attempt['status'] === 'succeeded')
+    expect(candidates).toHaveLength(2)
+
+    const first = startIncompletePost(
+      `${origin}/api/tasks/${taskId}/select`,
+      `{"attemptId":"${String(candidates[0]?.['id'])}`,
+    )
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    const second = await postJson(`${origin}/api/tasks/${taskId}/select`, {
+      attemptId: candidates[1]?.['id'],
+    })
+    expect(second.status).toBe(200)
+    first.complete('"}')
+    expect((await first.response).status).toBe(409)
   })
 
   it('manages OpenAI keys without exposing them and redacts subsequent fake-provider events', async () => {

@@ -315,6 +315,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (task.status !== 'review_ready')
         throw new HttpError(409, `Task cannot select a winner from ${task.status}`)
       const body = z.strictObject({ attemptId: idSchema }).parse(await readJson(req))
+      if (requireTask(task.id).status !== 'review_ready')
+        throw new HttpError(409, 'Task is no longer ready for winner selection')
       const attempt = getAttempt(db, body.attemptId as AttemptId)
       if (!attempt || attempt.taskId !== task.id)
         throw new HttpError(404, 'Attempt was not found for this task')
@@ -619,9 +621,28 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           updateAttempt(db, event.attemptId, { sessionId: event.event.sessionId })
       } else if (event.type === 'result') {
         finished = true
+        const hasSelectableCandidate = event.candidates.some(
+          (candidate) => candidate.status === 'succeeded' && candidate.diff !== undefined,
+        )
         const status: TaskStatus =
-          event.status === 'cancelled' ? 'cancelled' : event.status === 'failed' ? 'failed' : 'review_ready'
+          event.status === 'cancelled'
+            ? 'cancelled'
+            : event.status === 'failed'
+              ? hasSelectableCandidate
+                ? 'review_ready'
+                : 'failed'
+              : 'review_ready'
         setTaskStatus(db, task.id, status)
+        if (!anchorAttemptId && event.candidates.length === 0) {
+          anchorAttemptId = randomUUID() as AttemptId
+          createAttempt(db, {
+            id: anchorAttemptId,
+            taskId: task.id,
+            provider: implementer.provider,
+            model: implementer.model,
+            status: event.status === 'cancelled' ? 'cancelled' : 'failed',
+          })
+        }
       }
 
       const attemptId =
