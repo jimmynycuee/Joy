@@ -34,5 +34,6 @@ Joy 所有套件共用的型別與介面。沒有 I/O、沒有相依套件。**�
 ## 規則
 
 - `run()` 結束前一定發出恰好一個 `done`；行程無法啟動時才 throw。
+- 有 session 時 `session_started` 一定是第一個事件；在 session 建立前就失敗（例如第一個請求就被拒）時可以沒有它，`done.sessionId` 為空字串。
 - 型別裡的 `ModelRef.model` 是設定值（`opus`、`gpt-5-codex`…），程式邏輯不可寫死。
 - `RunOptions.approvalTool` 只有 `capabilities.delegatedApproval` 為真的 provider 會用；其餘靠 `autonomy` 限制。
