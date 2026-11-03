@@ -564,6 +564,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const implementer = resolveRole('implementer', roles, task.roleOverrides)
     const reviewer = resolveRole('reviewer', roles, task.roleOverrides)
     const judge = resolveRole('judge', roles, task.roleOverrides)
+    const preflightModel =
+      [implementer, reviewer, judge].find((model) => !providers[model.provider]) ?? implementer
     if (implementer.provider === reviewer.provider) {
       const attemptId = randomUUID() as AttemptId
       createAttempt(db, {
@@ -638,8 +640,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           createAttempt(db, {
             id: anchorAttemptId,
             taskId: task.id,
-            provider: implementer.provider,
-            model: implementer.model,
+            provider: preflightModel.provider,
+            model: preflightModel.model,
             status: event.status === 'cancelled' ? 'cancelled' : 'failed',
           })
         }

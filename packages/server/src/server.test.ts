@@ -438,6 +438,9 @@ describe('Joy local server', () => {
       { payload?: { reason?: string } } | undefined
     expect(result).toBeDefined()
     expect(result?.payload?.reason).toContain('No provider configured for judge openai-api')
+    expect(details.attempts).toContainEqual(
+      expect.objectContaining({ provider: 'openai-api', model: 'gpt-6-luna', status: 'failed' }),
+    )
   })
 
   it('rejects a second winner selection after a concurrent request closes review', async () => {
