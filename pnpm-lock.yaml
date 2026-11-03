@@ -38,6 +38,8 @@ importers:
 
   packages/core: {}
 
+  packages/db: {}
+
 packages:
 
   '@cacheable/memory@2.2.0':
