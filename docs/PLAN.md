@@ -26,6 +26,7 @@
 - [x] T0.5 定稿 `packages/core` 介面
 - [x] T0.6 `packages/db`
 - [x] T1.1 `providers/claude-cli`
+- [x] T1.4 `executor/worktree`
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
 

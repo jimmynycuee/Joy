@@ -1,0 +1,17 @@
+{
+  "name": "@joy/executor",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Workspaces for agent attempts: one git worktree and branch per attempt.",
+  "license": "BUSL-1.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@joy/core": "workspace:*"
+  }
+}

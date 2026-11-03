@@ -40,6 +40,12 @@ importers:
 
   packages/db: {}
 
+  packages/executor:
+    dependencies:
+      '@joy/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/providers:
     dependencies:
       '@joy/core':

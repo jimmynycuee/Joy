@@ -5,7 +5,7 @@
 
 - 最後更新：2026-11-03
 - 目前階段：**P1 進行中**
-- 分支：`t0-foundation`（T0.3–T0.6，未合併）→ `t1.1-claude-cli`（疊在 t0 上，未合併）
+- 分支：`t0-foundation`（T0.3–T0.6，未合併）→ `t1.1-claude-cli` → `t1.4-worktree`（依序疊在前一個分支上，都未合併）
 
 ## 現在的樣子
 
@@ -31,26 +31,29 @@
 
 ## 下一步
 
-- 合併 `t0-foundation`、`t1.1-claude-cli`。
+- 合併 `t0-foundation`、`t1.1-claude-cli`、`t1.4-worktree`（照順序；或開 PR 讓 CI 在三個平台驗證）。
+- **Windows 尚未實測**：行程樹終止（taskkill）、長路徑、`.cmd` shim 都只在 Linux 測過，要靠 CI 的 Windows job 驗證。
 - **人工審核**：T1.1 在 `packages/core` 的 `done` 事件加了 `structured` 欄位（Claude 的 `--json-schema` 結果）。
-- 接著做 T1.4（worktree）、T1.10（keychain）、T1.11（設定），都不依賴 Codex。之後 T1.5（交叉審查）可以先用兩個 Claude 角色或假 provider 開發。
+- 接著做 T1.10（keychain）、T1.11（設定），都不依賴 Codex。之後 T1.5（交叉審查）可以先用兩個 Claude 角色或假 provider 開發。
 - T1.2（codex adapter）等上面第 1 點完成。
 
 ## 最近的決策（新的放最上面）
 
-| 日期       | 決策                                                                | 原因 / 出處                                                                               |
-| ---------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| 2026-11-03 | `session_started` 一定是第一個事件：Claude 在 init 前送的事件先暫存 | 真實 fixture 裡 `active_goal`、`autocompact_state` 在 init 之前                           |
-| 2026-11-03 | Claude 不傳 `--include-partial-messages`，`stream_event` 一律丟棄   | 一次任務 170+ 個逐字事件，存進 DB 沒有價值；UI 串流之後再評估                             |
-| 2026-11-03 | 沒有 approvalTool 時一律加 `--permission-prompts none`              | headless 沒人回答，寧可拒絕也不要卡住                                                     |
-| 2026-11-03 | SQLite 用 Node 內建的 `node:sqlite`，Node 需 ≥ 22.13                | 不用編譯原生模組，Windows 安裝最省事；介面集中在 `packages/db`，必要時可換 better-sqlite3 |
-| 2026-11-03 | Codex 在 P1 用 `codex exec --json`；P2 評估改 `app-server`          | 只有 app-server 有互動式審核與額度資訊。`docs/spikes/codex.md`                            |
-| 2026-11-03 | Claude 用 `--permission-prompt-tool` 把審核交給 Joy 的 MCP 工具     | 實測可行，`rm` 被成功攔下。`docs/spikes/claude-code.md`                                   |
-| 2026-11-03 | Claude 用 `--session-id` 由 Joy 指定 id                             | 第一次呼叫就知道 id，當機後也能恢復                                                       |
-| 2026-11-03 | 認不得的 CLI 事件轉成 `raw`，不丟錯                                 | 實測就看到文件沒寫的事件種類                                                              |
-| 2026-11-03 | 授權 BSL 1.1，4 年後轉 Apache-2.0                                   | 保留商業化空間；接受外部 PR 前需 CLA                                                      |
-| 2026-11-03 | TypeScript 鎖 6.0                                                   | typescript-eslint 尚未支援 7                                                              |
-| 2026-11-03 | 狀態放 repo 的 `docs/STATUS.md`，不放 Obsidian                      | agent 只讀得到 repo；Obsidian 可直接開 `docs/` 當 vault                                   |
+| 日期       | 決策                                                                                                             | 原因 / 出處                                                                               |
+| ---------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| 2026-11-03 | worktree 放在 `<worktreesDir>/<repoId>/<taskId>-<attemptId>`，分支 `joy/<taskId>/<attemptId>`；id 只允許安全字元 | id 會進路徑與分支名，擋掉 `..` 與分隔符                                                   |
+| 2026-11-03 | diff 一律對 `baseCommit`，先 `git add --all`                                                                     | agent 可能自己 commit，也可能留下未追蹤檔；兩種都要算進去                                 |
+| 2026-11-03 | `session_started` 一定是第一個事件：Claude 在 init 前送的事件先暫存                                              | 真實 fixture 裡 `active_goal`、`autocompact_state` 在 init 之前                           |
+| 2026-11-03 | Claude 不傳 `--include-partial-messages`，`stream_event` 一律丟棄                                                | 一次任務 170+ 個逐字事件，存進 DB 沒有價值；UI 串流之後再評估                             |
+| 2026-11-03 | 沒有 approvalTool 時一律加 `--permission-prompts none`                                                           | headless 沒人回答，寧可拒絕也不要卡住                                                     |
+| 2026-11-03 | SQLite 用 Node 內建的 `node:sqlite`，Node 需 ≥ 22.13                                                             | 不用編譯原生模組，Windows 安裝最省事；介面集中在 `packages/db`，必要時可換 better-sqlite3 |
+| 2026-11-03 | Codex 在 P1 用 `codex exec --json`；P2 評估改 `app-server`                                                       | 只有 app-server 有互動式審核與額度資訊。`docs/spikes/codex.md`                            |
+| 2026-11-03 | Claude 用 `--permission-prompt-tool` 把審核交給 Joy 的 MCP 工具                                                  | 實測可行，`rm` 被成功攔下。`docs/spikes/claude-code.md`                                   |
+| 2026-11-03 | Claude 用 `--session-id` 由 Joy 指定 id                                                                          | 第一次呼叫就知道 id，當機後也能恢復                                                       |
+| 2026-11-03 | 認不得的 CLI 事件轉成 `raw`，不丟錯                                                                              | 實測就看到文件沒寫的事件種類                                                              |
+| 2026-11-03 | 授權 BSL 1.1，4 年後轉 Apache-2.0                                                                                | 保留商業化空間；接受外部 PR 前需 CLA                                                      |
+| 2026-11-03 | TypeScript 鎖 6.0                                                                                                | typescript-eslint 尚未支援 7                                                              |
+| 2026-11-03 | 狀態放 repo 的 `docs/STATUS.md`，不放 Obsidian                                                                   | agent 只讀得到 repo；Obsidian 可直接開 `docs/` 當 vault                                   |
 
 ## 已知的坑
 
