@@ -502,9 +502,20 @@ describe('Joy local server', () => {
       attemptId: oldCandidate?.['id'],
     })
     expect(staleSelection.status).toBe(409)
-    expect(
-      secondRun.events.filter((event) => (event as { type?: string }).type === 'compete_run_started'),
-    ).toHaveLength(2)
+    const runMarkers = secondRun.events.filter(
+      (event) => (event as { type?: string }).type === 'compete_run_started',
+    ) as Array<{ seq: number }>
+    expect(runMarkers).toHaveLength(2)
+    const attemptEvents = secondRun.events.filter(
+      (event) => (event as { type?: string }).type === 'attempt',
+    ) as Array<{ seq: number }>
+    expect(runMarkers[0]).toBeDefined()
+    expect(runMarkers[1]).toBeDefined()
+    const firstRunMarkerSeq = runMarkers[0]?.seq ?? Number.POSITIVE_INFINITY
+    const resumedRunMarkerSeq = runMarkers[1]?.seq ?? Number.POSITIVE_INFINITY
+    expect(attemptEvents[0]?.seq).toBeGreaterThan(firstRunMarkerSeq)
+    const resumedRunAttempt = attemptEvents.find((event) => event.seq > resumedRunMarkerSeq)
+    expect(resumedRunAttempt?.seq).toBeGreaterThan(resumedRunMarkerSeq)
     const latestResult = secondRun.events
       .filter((event) => (event as { type?: string }).type === 'result')
       .at(-1) as { payload?: { candidates?: Array<{ attemptId: string; status: string }> } } | undefined

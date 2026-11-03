@@ -67,6 +67,15 @@ class E2EFakeProvider implements AgentProvider {
       return
     }
     if (options.outputSchema) {
+      if (options.prompt.includes('fail-fake-judge')) {
+        yield {
+          type: 'done',
+          sessionId,
+          finalMessage: 'Fake judge failure',
+          isError: true,
+        }
+        return
+      }
       if (options.prompt.includes('Candidate data (JSON):')) {
         const candidateIds = [...options.prompt.matchAll(/"attemptId"\s*:\s*"([^"]+)"/g)].map(
           (match) => match[1],

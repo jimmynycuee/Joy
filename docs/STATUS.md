@@ -5,7 +5,7 @@
 - 最後更新：2026-11-03
 - 目前階段：**T2.1 進行中**。T1.6/#6、T1.7/#7 已合併到相依分支；T1.9/#8 的 Ubuntu/Windows 成功、macOS job 因 runner 容量連續第三次取消（無測試步驟或 log，禁止重跑，等 owner 決定稍後是否再試）；T1.8/#9 三平台 CI 全綠但 secrets handling 必須先由 owner human review。T2.1/#10 已開 draft，base=`t1.8-web`，最新 head 的 CI 待跑。依目前 steering 所有 PR 保持 draft、不合併。
 - 工作分支：`t2.1-compete`，基於 `t1.8-web` commit `a852b60`；已提交 T2.1 引擎、server/UI 整合與審查修正，PR #10 為 draft。
-- 本地驗證：完整 `pnpm check` 通過（167 tests passed、2 skipped）；T1.8 與 T2.1 fake-provider Playwright spec 共 3 個通過，web production build 通過。沒有呼叫真模型。
+- 本地驗證：完整 `pnpm check` 通過（167 tests passed、2 skipped）；T1.8 與 T2.1 fake-provider Playwright spec 共 4 個通過，web production build 通過。沒有呼叫真模型。
 
 ## 分支與 PR
 
@@ -25,14 +25,14 @@ main … t1.5-review-loop
 
 ## 現在的樣子
 
-| 部分                            | 狀態                                                                                                                                                                                                             |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| monorepo / CI                   | pnpm、TypeScript strict、ESLint、Prettier、Vitest；三平台 CI 執行 `pnpm check`。                                                                                                                                 |
-| `packages/core` / `packages/db` | 領域介面、SQLite schema、task/repo CRUD、事件/reviews/usage 持久化已完成。                                                                                                                                       |
-| `packages/providers`            | Claude CLI、Codex CLI、OpenAI API adapters 完成；Codex 目前仍使用合成 fixture，尚待登入電腦錄製真實 fixture。                                                                                                    |
-| `packages/executor`             | 每個 attempt 使用獨立 Git worktree/branch，提供 diff、commit、cleanup。                                                                                                                                          |
-| `packages/orchestrator`         | T1.5 `reviewLoop()` 完成；T2.1 `compete()` 有平行候選、各自 worktree、部分成功保留、只讀結構化裁判與錯誤/取消處理。                                                                                              |
-| server / UI / GitHub            | T1.6–T1.9 實作完成。T2.1 server API 已接上 compete、事件與結果持久化、明確勝者選取及 latest-run 選擇限制；UI 並排顯示候選 diff、模型/狀態及裁判理由，resume 以 run boundary 隔離舊候選，fake-provider E2E 通過。 |
+| 部分                            | 狀態                                                                                                                                                                                                                                 |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| monorepo / CI                   | pnpm、TypeScript strict、ESLint、Prettier、Vitest；三平台 CI 執行 `pnpm check`。                                                                                                                                                     |
+| `packages/core` / `packages/db` | 領域介面、SQLite schema、task/repo CRUD、事件/reviews/usage 持久化已完成。                                                                                                                                                           |
+| `packages/providers`            | Claude CLI、Codex CLI、OpenAI API adapters 完成；Codex 目前仍使用合成 fixture，尚待登入電腦錄製真實 fixture。                                                                                                                        |
+| `packages/executor`             | 每個 attempt 使用獨立 Git worktree/branch，提供 diff、commit、cleanup。                                                                                                                                                              |
+| `packages/orchestrator`         | T1.5 `reviewLoop()` 完成；T2.1 `compete()` 有平行候選、各自 worktree、部分成功保留、只讀結構化裁判與錯誤/取消處理。                                                                                                                  |
+| server / UI / GitHub            | T1.6–T1.9 實作完成。T2.1 server API 已接上 compete、事件與結果持久化、明確勝者選取及 latest-run 選擇限制；UI 並排顯示候選 diff、模型/狀態及裁判理由，resume 以 run boundary 隔離舊候選，裁判失敗時明示原因；fake-provider E2E 通過。 |
 
 ## 卡住 / 需要人做的事
 

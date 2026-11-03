@@ -31,6 +31,7 @@ type CompeteJudgment = { winnerAttemptId: string; summary: string; rationale: st
 type CompeteView = {
   candidates: Competitor[]
   judgment: CompeteJudgment | null
+  judgeFailure: string | null
   selectedAttemptId: string
 }
 type TaskDetails = {
@@ -155,6 +156,7 @@ function eventKind(event: TaskEvent): string {
 function competeView(events: TaskEvent[]): CompeteView {
   const candidates = new Map<string, Competitor>()
   let judgment: CompeteJudgment | null = null
+  let judgeFailure: string | null = null
   let selectedAttemptId = ''
   const addCandidate = (value: unknown) => {
     const candidate = record(value)
@@ -183,11 +185,19 @@ function competeView(events: TaskEvent[]): CompeteView {
     if (event.type === 'compete_run_started') {
       candidates.clear()
       judgment = null
+      judgeFailure = null
       selectedAttemptId = ''
     }
     if (event.type === 'attempt') addCandidate(payload)
     if (event.type === 'result') {
       if (Array.isArray(payload?.candidates)) payload.candidates.forEach(addCandidate)
+      const hasSuccessfulCandidate = [...candidates.values()].some(
+        (candidate) => candidate.status === 'succeeded' && candidate.diff !== undefined,
+      )
+      judgeFailure =
+        payload?.status === 'failed' && hasSuccessfulCandidate && typeof payload.reason === 'string'
+          ? payload.reason
+          : null
       const value = record(payload?.judgment)
       if (
         typeof value?.winnerAttemptId === 'string' &&
@@ -199,6 +209,7 @@ function competeView(events: TaskEvent[]): CompeteView {
           summary: value.summary,
           rationale: value.rationale,
         }
+        judgeFailure = null
       }
     }
     if (event.type === 'judgment') {
@@ -213,13 +224,14 @@ function competeView(events: TaskEvent[]): CompeteView {
           summary: value.summary,
           rationale: value.rationale,
         }
+        judgeFailure = null
       }
     }
     if (event.type === 'winner_selected' && typeof payload?.attemptId === 'string') {
       selectedAttemptId = payload.attemptId
     }
   }
-  return { candidates: [...candidates.values()], judgment, selectedAttemptId }
+  return { candidates: [...candidates.values()], judgment, judgeFailure, selectedAttemptId }
 }
 
 function modelIdentity(model?: ModelRef): string {
@@ -853,6 +865,10 @@ function App() {
                       <h3 data-testid="compete-judge-summary">{compete.judgment.summary}</h3>
                       <p data-testid="compete-judge-rationale">{compete.judgment.rationale}</p>
                     </>
+                  ) : compete.judgeFailure ? (
+                    <p className="muted" data-testid="compete-judge-error">
+                      The judge could not compare successful candidate diffs: {compete.judgeFailure}
+                    </p>
                   ) : (
                     <p className="muted">The judge will compare successful candidate diffs.</p>
                   )}

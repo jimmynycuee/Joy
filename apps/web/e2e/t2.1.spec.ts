@@ -120,17 +120,66 @@ test('resume compares only candidates from the latest compete run', async ({ pag
   expect(cancelled.status()).toBe(200)
   await expect.poll(async () => (await readDetails()).task.status).toBe('cancelled')
   await expect(page.getByTestId('candidate-diff')).toHaveCount(1)
+  const previousPatch = await page.getByTestId('candidate-diff').textContent()
+  expect(previousPatch).not.toBeNull()
 
   const resumed = await request.post(`/api/tasks/${task?.id}/resume`)
   expect(resumed.status()).toBe(202)
   await expect.poll(async () => (await readDetails()).task.status).toBe('review_ready')
   await expect(page.locator('.large-status')).toHaveText('review ready')
   await expect(page.getByTestId('candidate-diff')).toHaveCount(2)
+  const currentPatches = await page.getByTestId('candidate-diff').allTextContents()
+  expect(currentPatches).not.toContain(previousPatch)
 
   await page.reload()
   await expect(page.getByRole('heading', { name: 'Resume latest compete candidates' })).toBeVisible()
   await expect(page.getByTestId('candidate-diff')).toHaveCount(2)
   if (process.env.JOY_CAPTURE_T2_1 === '1') {
     await page.screenshot({ path: 'test-results/t2.1-resume.png' })
+  }
+})
+
+test('judge failure remains visible while successful candidates can be reviewed', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
+
+  if (await page.getByRole('button', { name: 'Manage repositories' }).isVisible()) {
+    await page.getByRole('button', { name: 'Manage repositories' }).click()
+  } else {
+    await page.getByRole('button', { name: 'Add repository' }).click()
+  }
+  const repoDialog = page.getByRole('dialog', { name: 'Add repository' })
+  await repoDialog.getByLabel('Repository path').fill('/tmp/joy-t2.1-judge-failure-project')
+  await repoDialog.getByLabel('Default branch').fill('main')
+  await repoDialog.getByRole('button', { name: 'Add repository' }).click()
+
+  await page.getByRole('button', { name: 'New task' }).click()
+  const taskDialog = page.getByRole('dialog', { name: 'Create a task' })
+  await taskDialog
+    .getByLabel('Task repository')
+    .selectOption({ label: '/tmp/joy-t2.1-judge-failure-project' })
+  await taskDialog.getByLabel('Task title').fill('Judge failure remains visible')
+  await taskDialog.getByLabel('Task instructions').fill('fail-fake-judge; compare the fake candidates.')
+  await taskDialog.getByLabel('Workflow').selectOption('compete')
+  await taskDialog.getByLabel('Implementer provider').selectOption('claude-cli')
+  await taskDialog.getByLabel('Implementer model').fill('fake-implementer')
+  await taskDialog.getByLabel('Reviewer provider').selectOption('codex-cli')
+  await taskDialog.getByLabel('Reviewer model').fill('fake-reviewer')
+  await taskDialog.getByRole('button', { name: 'Start task' }).click()
+
+  await expect(page.locator('.large-status')).toHaveText('review ready')
+  await expect(page.getByTestId('candidate-diff')).toHaveCount(2)
+  await expect(page.getByTestId('compete-judge-error')).toContainText(
+    'The judge did not return a valid candidate selection',
+  )
+
+  await page.reload()
+  await expect(page.getByRole('heading', { name: 'Judge failure remains visible' })).toBeVisible()
+  await expect(page.getByTestId('compete-judge-error')).toContainText(
+    'The judge did not return a valid candidate selection',
+  )
+  await expect(page.getByTestId('candidate-diff')).toHaveCount(2)
+  if (process.env.JOY_CAPTURE_T2_1 === '1') {
+    await page.screenshot({ path: 'test-results/t2.1-judge-failure.png' })
   }
 })
