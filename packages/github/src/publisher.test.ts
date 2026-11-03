@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -55,7 +55,7 @@ describe('GitHubPublisher', () => {
       args: string[]
       cwd: string
     }
-    expect(captured.cwd).toBe(fixture.workspace.path)
+    expect(await realpath(captured.cwd)).toBe(await realpath(fixture.workspace.path))
     expect(captured.args).toEqual([
       'pr',
       'create',

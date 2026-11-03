@@ -4,8 +4,8 @@
 > 這裡只寫 PLAN 沒有的東西：現在做到哪、卡在哪、下一步、最近的決策。進度打勾在 PLAN 的「進度」。
 
 - 最後更新：2026-11-03
-- 目前階段：**P1 進行中**（T1.8 已完成實作與本機驗證；T1.6/1.7/1.9 draft PR 等擁有者審核；T1.8 接續開 draft PR、等待三平台 CI）
-- 最新分支：`t1.8-web`，從 `origin/t1.9-github-pr` 的 `b77247c` 切出；PR #8 未修改，T1.8 draft PR base 預定為 `t1.9-github-pr`。
+- 目前階段：**P1 進行中**（T1.8 已完成實作、本機驗證及最新 base 同步；PR #9 保持 draft，等待 Ubuntu/macOS/Windows CI；PR #8 未修改）
+- 最新分支：`t1.8-web`，從 `t1.9-github-pr` 的 `b77247c` 切出，已同步遠端新 tip `38c6642`；PR #9 base=`t1.9-github-pr`。
 
 ## 分支與 PR（一條直線，每個疊在前一個上）
 
@@ -14,7 +14,7 @@ main ← t0-foundation (#2) ← t1.1-claude-cli (#3) ← t1.4-worktree (#4) ← 
      ← t1.10-secrets ← t1.2-codex ← t1.3-openai-api ← t1.5-review-loop ← t1.6-server（#6 draft，三平台 CI 通過）
                                                                       ← t1.7-event-log（#7 draft，三平台 CI 通過）
                                                                                  ← t1.9-github-pr（#8 draft，base=t1.7-event-log）
-                                                                                            ← t1.8-web（draft PR，base=t1.9-github-pr）
+                                                                                            ← t1.8-web（#9 draft，base=t1.9-github-pr）
 ```
 
 - #2–#5 已開 PR，CI 三平台通過，**等擁有者審核**（含 `packages/core` 變更）。
@@ -40,8 +40,8 @@ main ← t0-foundation (#2) ← t1.1-claude-cli (#3) ← t1.4-worktree (#4) ← 
 
 1. **T1.6 draft PR #6**：Ubuntu、macOS、Windows 三平台 CI 已通過，等待擁有者審核/合併；依擁有者指示，agent 不合併。
 2. **T1.7 draft PR #7**（[PR](https://github.com/jimmynycuee/Joy/pull/7)）：三平台 CI 通過，等待擁有者審核。
-3. **T1.9 draft PR #8**（[PR](https://github.com/jimmynycuee/Joy/pull/8)）：以 `t1.7-event-log` 為 base；本機 `pnpm check` 通過，CI 狀態見 PR。保持 draft，不合併。
-4. **T1.8 `t1.8-web`**：實作、Playwright 假 provider 流程與本機全檢已通過；開 draft PR，base 必須是 `t1.9-github-pr`，等待三平台 CI；不修改 PR #8、不合併。
+3. **T1.9 draft PR #8**（[PR](https://github.com/jimmynycuee/Joy/pull/8)）：以 `t1.7-event-log` 為 base；首次 macOS CI 的 `/private/var` 與 `/var` 路徑別名比較已改為比較 realpath；最新一輪 Ubuntu、Windows 通過，macOS 執行中。保持 draft，不合併。
+4. **T1.8 draft PR #9**（[PR](https://github.com/jimmynycuee/Joy/pull/9)）：以 `t1.9-github-pr` 為 base；實作、假 provider Playwright 與本機全檢通過；最新 base 已同步，等待 Ubuntu/macOS/Windows CI；不修改 PR #8、不合併。
 5. **Codex 真實 fixture**：擁有者的 Codex 額度暫時不夠。額度恢復後在已登入的電腦上執行
    `node scripts/record-fixtures.mjs codex`（預設用 gpt-6-luna + low effort），commit 結果，
    重跑 `pnpm vitest run --project providers codex`，修正不符的地方，然後刪掉 `synthetic-edit.*`。
@@ -54,7 +54,7 @@ main ← t0-foundation (#2) ← t1.1-claude-cli (#3) ← t1.4-worktree (#4) ← 
 1. **T1.7 已完成**：事件/reviews/usage repositories；所有 `LoopEvent` / `AgentEvent` 先經 `Redactor` 再寫入 events，測試確認 key 不進 DB；usage 累加、quota 限額事件留存；重啟後 HTTP 與 WebSocket 可回放。
 2. **T1.9 已完成**：`packages/github` 透過 Executor commit、push 非預設分支並以 `gh pr create --draft` 開 PR；PR body 附 caller 提供的 `formatFindings` 摘要；bare remote + 假 gh 測試覆蓋，`packages/core` 介面未變。推送仍須由明確的 UI 動作觸發。
 3. **T1.8 已完成**：`apps/web` React + Vite 三欄任務／即時事件／diff UI、六個角色的 provider/model/effort 設定、任務角色覆寫與安全 OpenAI key 狀態管理；假 provider Playwright e2e 通過。key 只經 SecretStore，不出 API 回應、UI、log、事件或 DB；diff 取自結果事件，避免新增會改 index 的 GET diff。
-4. T1.8 draft PR 以 `t1.9-github-pr` 為 base；等 Ubuntu/macOS/Windows CI 結果，依指示保持 draft、不合併。
+4. T1.8 draft PR #9 以 `t1.9-github-pr` 為 base；等 Ubuntu/macOS/Windows CI 結果，依指示保持 draft、不合併。
 5. P1 完成後：開始用 Joy 開發 Joy。
 
 ## 最近的決策（新的放最上面）
