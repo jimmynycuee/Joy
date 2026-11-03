@@ -3,8 +3,8 @@
 > 開工前先讀本檔、`AGENTS.md`、`docs/PLAN.md`；收工前更新本檔。這裡記錄最新進度、阻塞、下一步與最近決策。
 
 - 最後更新：2026-11-03
-- 目前階段：**T2.2 已實作並通過本地驗證，準備開 stacked draft PR**。T1.6/#6、T1.7/#7 已合併到相依分支；T1.9/#8 的 macOS job 因 runner 容量第三次取消，依指示不重跑；T1.8/#9 的 secrets handling 仍須 owner human review。T2.1「合併優點」產品選擇仍待回答，T2.2 未碰該範圍。
-- 工作分支：`t2.2-tools`，直接基於更新後的 `t2.1-compete` head `08b6cf2e024a86138f1ce66a69536e5017ad9f0d`；T2.2 draft PR 尚待建立，預定 base=`t2.1-compete`。
+- 目前階段：**T2.2 已實作、通過本地驗證並開 draft PR #11**；其 GitHub CI 已觸發，等待結果。T1.6/#6、T1.7/#7 已合併到相依分支；T1.9/#8 的 macOS job 因 runner 容量第三次取消，依指示不重跑；T1.8/#9 的 secrets handling 仍須 owner human review。T2.1「合併優點」產品選擇仍待回答，T2.2 未碰該範圍。
+- 工作分支：`t2.2-tools`，直接基於更新後的 `t2.1-compete` head `08b6cf2e024a86138f1ce66a69536e5017ad9f0d`；[PR #11](https://github.com/jimmynycuee/Joy/pull/11) 為 draft，base=`t2.1-compete`。
 - 本地驗證：`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（174 passed、2 skipped）；DB/orchestrator/tools/server 6 projects 共 50 tests 通過；T1.8/T2.1 fake-provider Playwright specs 4 個通過。沒有呼叫真模型。
 
 ## 分支與 PR
@@ -16,13 +16,13 @@ main … t1.5-review-loop
           └─ #8 t1.9-github-pr（draft；base=t1.7-event-log）
               └─ #9 t1.8-web（draft；base=t1.9-github-pr）
                   └─ #10 t2.1-compete（draft；base=t1.8-web；head=`08b6cf2`）
-                      └─ `t2.2-tools`（本地分支；draft PR 待開，base=`t2.1-compete`）
+                      └─ #11 t2.2-tools（draft；base=t2.1-compete）
 ```
 
 - 已 live 核實 #6/#7 為 merged，三平台 checks 成功；#7 的 base 是 `t1.6-server`，不能據此聲稱已在 `main` 經 CI 或已部署。
 - #9 的 Ubuntu、macOS、Windows checks 全綠，但 secrets 變更須 owner human review；總控 Session 正跟進依賴 PR，不在本分支重複操作。
 - #8 的 Ubuntu/Windows 成功；macOS job 連續第三次在 runner 啟動前因容量問題取消，沒有測試失敗證據。依最新指示不重跑，等 owner 決定稍後是否再試。
-- #10 最新 head=`08b6cf2`；PR #10 仍為 draft，Ubuntu check 已通過、Windows 執行中、macOS 排隊。T2.2 本地驗證通過，stacked draft PR 尚待建立；不改動 PR #8/#9 的審核或 runner 狀態。
+- #10 最新 head=`08b6cf2`；PR #10 仍為 draft。#11 已以 `t2.1-compete` 為 base 建立，保持 draft，CI 在執行中；不改動 PR #8/#9 的審核或 runner 狀態。
 
 ## 現在的樣子
 
@@ -49,8 +49,8 @@ main … t1.5-review-loop
 ## 下一步（依相依順序）
 
 1. 等待 T2.1「合併優點」選擇；只完成該選擇相依的實作，其餘工作繼續用 fake provider。
-2. 推送 #10 的已驗證審查修正，讀取新 head CI 並處理 review；依目前 steering 保持 draft、不合併。
-3. T2.2 與 T2.1「合併優點」選擇無關；目前實作與本地驗證完成，需建立 base=`t2.1-compete` 的 stacked draft PR；之後依 `docs/PLAN.md` 接續 T2.3–T2.6。
+2. 追蹤 #10 更新 head 的 CI 與 review，保持 draft、不合併；本票不重跑 #8 macOS，#9 等 owner review。
+3. 追蹤 [#11](https://github.com/jimmynycuee/Joy/pull/11) 的 CI 與 review；按要求維持 draft、不合併。T2.2 與 T2.1「合併優點」選擇無關，後續接續 T2.3–T2.6。
 4. #8 macOS 不重跑、等待 owner 決定；#9 必須 owner human review。PR #8/#9 依賴/審核由總控負責。
 5. Codex 真實 fixture、模型名稱確認與 Windows 實機驗證留待相應條件可用時處理。
 
