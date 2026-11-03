@@ -1,4 +1,4 @@
-# Tandem 實作計畫（暫定名稱）
+# Joy 實作計畫
 
 > 多模型協作的 coding agent 平台 + 個人助理。
 > Claude 與 GPT 分工、每一層可自由切換模型、Codex 風格介面、跑在自己電腦上用自己的訂閱。
@@ -91,7 +91,7 @@
  └─────┬──────┘ └────┬─────┘      └──────┬────────┘
        │ Channel     │ HTTP+WS            │ Remote MCP
  ┌─────▼─────────────▼─────────────────────▼──────────────────────┐
- │                    Tandem Server（本機 Node）                    │
+ │                    Joy Server（本機 Node）                       │
  │                                                                 │
  │  ┌─────────────┐  ┌──────────────┐  ┌───────────────────────┐   │
  │  │ Assistant   │  │ Orchestrator │  │ Approval / Policy     │   │
@@ -118,7 +118,7 @@
 
 ### 3.1 Monorepo 結構
 ```
-tandem/
+joy/
 ├─ AGENTS.md                 # 給 Codex 的開發守則（唯一來源）
 ├─ CLAUDE.md                 # 內容：@AGENTS.md（引用，保持同步）
 ├─ docs/PLAN.md
@@ -196,7 +196,7 @@ export interface ProposedAction { kind: ActionKind; summary: string; detail: unk
 
 ### 3.3 角色與模型設定（自由切換的落地方式）
 ```yaml
-# ~/.tandem/config.yaml（UI 可編輯）
+# ~/.joy/config.yaml（UI 可編輯）
 roles:
   assistant_brain:  { provider: openai-api, model: gpt-5-mini }   # 高頻、便宜
   background:       { provider: openai-api, model: gpt-5-mini }   # 記憶擷取、摘要、分類
@@ -298,7 +298,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 | T1.10 | 機密：OS keychain 存 OpenAI key（`@napi-rs/keyring` 或同類），log 遮罩 | key 不出現在 DB、log、事件中（測試驗證） |
 | T1.11 | 設定：`config.yaml` 讀寫 + UI 設定頁（各角色模型） | 改設定後新任務立即套用 |
 
-**P1 完成後：開始用 Tandem 開發 Tandem。**
+**P1 完成後：開始用 Joy 開發 Joy。**
 
 ### P2 — 更多分工模式、審核、手機（第 9–12 週）
 | ticket | 內容 | 驗收條件 |
@@ -387,7 +387,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 ---
 
 ## 10. 第一週可以馬上做的事
-1. 在 GitHub 建立 repo（例如 `tandem`），把本檔放到 `docs/PLAN.md`。
+1. 在 GitHub 建立 repo（已建立：jimmynycuee/Joy），把本檔放到 `docs/PLAN.md`。
 2. 用 Claude Code 做 T0.1、T0.2；用 Codex review。
 3. 自己動手跑一次 T0.3、T0.4 的 spike（這兩張最需要人判斷）。
 4. 確認 `claude` 與 `codex` 兩個 CLI 都已登入訂閱：`claude --version`、`codex --version`。

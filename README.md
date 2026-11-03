@@ -1,6 +1,6 @@
-# Tandem
+# Joy
 
-> 暫定名稱。Claude 與 GPT 分工寫程式的本機平台，前面再加一個個人助理。
+> Claude 與 GPT 分工寫程式的本機平台，前面再加一個個人助理。
 
 - **兩家分工**：交叉審查、平行競賽、`ask_peer` 互相諮詢
 - **每個角色自由選模型**：OpenAI API、Claude Code（訂閱）、Codex（訂閱）

@@ -8,4 +8,4 @@ coverage/
 !.env.example
 *.sqlite
 *.sqlite-*
-.tandem/
+.joy/
