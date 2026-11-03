@@ -34,7 +34,7 @@
 - [x] T1.11 設定（`packages/config`；UI 設定頁併入 T1.8）
 - [x] T1.6 server（HTTP + WebSocket、任務 CRUD、重啟恢復）
 - [x] T1.7 事件紀錄（寫入 DB、可回放、經 Redactor 遮罩）
-- [ ] T1.9 GitHub：push 分支、開 draft PR
+- [x] T1.9 GitHub：push 分支、開 draft PR
 - [ ] T1.8 Codex 風格 Web UI（含設定頁）
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
