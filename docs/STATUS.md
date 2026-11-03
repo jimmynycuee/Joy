@@ -5,7 +5,7 @@
 
 - 最後更新：2026-11-03
 - 目前階段：**P1 進行中**
-- 分支：`t0-foundation`（T0.3–T0.6，未合併）→ `t1.1-claude-cli` → `t1.4-worktree`（依序疊在前一個分支上，都未合併）
+- 分支：`t0-foundation`（T0.3–T0.6，未合併）→ `t1.1-claude-cli` → `t1.4-worktree` → `t1.11-config`（依序疊在前一個分支上；PR #2–#4 的 CI 三平台皆通過，**等擁有者審核後合併**）
 
 ## 現在的樣子
 
@@ -33,14 +33,20 @@
 
 - 合併 `t0-foundation`、`t1.1-claude-cli`、`t1.4-worktree`（照順序；或開 PR 讓 CI 在三個平台驗證）。
 - **Windows 尚未實測**：行程樹終止（taskkill）、長路徑、`.cmd` shim 都只在 Linux 測過，要靠 CI 的 Windows job 驗證。
-- **人工審核**：T1.1 在 `packages/core` 的 `done` 事件加了 `structured` 欄位（Claude 的 `--json-schema` 結果）。
-- 接著做 T1.10（keychain）、T1.11（設定），都不依賴 Codex。之後 T1.5（交叉審查）可以先用兩個 Claude 角色或假 provider 開發。
+- **人工審核**：`packages/core` 有兩處變更：`done` 事件加 `structured`（T1.1）；`ModelRef` 加 `effort`（t1.11 分支）。
+- 合併方式：PR 是疊加的，用 merge commit（不要 squash），合併後把下一個 PR 的 base 改成 `main`。
+- 接著做 T1.10（keychain），不依賴 Codex。之後 T1.5（交叉審查），先用 Claude 當審查者開發。
+- T1.11 的 UI 設定頁併入 T1.8。之後 T1.5（交叉審查）可以先用兩個 Claude 角色或假 provider 開發。
 - T1.2（codex adapter）等上面第 1 點完成。
 
 ## 最近的決策（新的放最上面）
 
 | 日期       | 決策                                                                                                             | 原因 / 出處                                                                               |
 | ---------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| 2026-11-03 | 呼叫真實模型的測試一律用最便宜的模型 + low effort（Claude haiku、Codex gpt-6-luna）                              | 擁有者要求節省訂閱額度；這些測試只驗證串接                                                |
+| 2026-11-03 | `ModelRef` 加 `effort`，每個角色可設推理強度                                                                     | 背景工作用 low 省額度，主模型用 high                                                      |
+| 2026-11-03 | 設定檔未知的鍵直接報錯                                                                                           | 通常是打錯字，默默忽略會讓人以為設定生效了                                                |
+| 2026-11-03 | 預設模型名稱取自 Codex 0.166 內建清單（`codex debug models`）                                                    | 只是預設值，擁有者應自行確認                                                              |
 | 2026-11-03 | worktree 放在 `<worktreesDir>/<repoId>/<taskId>-<attemptId>`，分支 `joy/<taskId>/<attemptId>`；id 只允許安全字元 | id 會進路徑與分支名，擋掉 `..` 與分隔符                                                   |
 | 2026-11-03 | diff 一律對 `baseCommit`，先 `git add --all`                                                                     | agent 可能自己 commit，也可能留下未追蹤檔；兩種都要算進去                                 |
 | 2026-11-03 | `session_started` 一定是第一個事件：Claude 在 init 前送的事件先暫存                                              | 真實 fixture 裡 `active_goal`、`autocompact_state` 在 init 之前                           |

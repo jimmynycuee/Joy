@@ -27,6 +27,7 @@
 - [x] T0.6 `packages/db`
 - [x] T1.1 `providers/claude-cli`
 - [x] T1.4 `executor/worktree`
+- [x] T1.11 設定（`packages/config`；UI 設定頁併入 T1.8）
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
 
@@ -203,12 +204,12 @@ export interface ProposedAction { kind: ActionKind; summary: string; detail: unk
 ```yaml
 # ~/.joy/config.yaml（UI 可編輯）
 roles:
-  assistant_brain:  { provider: openai-api, model: gpt-5-mini }   # 高頻、便宜
-  background:       { provider: openai-api, model: gpt-5-mini }   # 記憶擷取、摘要、分類
-  orchestrator:     { provider: claude-cli, model: opus }         # 「主模型」
-  implementer:      { provider: claude-cli, model: opus }
-  reviewer:         { provider: codex-cli,  model: gpt-5-codex }
-  judge:            { provider: codex-cli,  model: gpt-5-codex }
+  assistant_brain:  { provider: openai-api, model: gpt-6-luna, effort: low }   # 高頻、便宜
+  background:       { provider: openai-api, model: gpt-6-luna, effort: low }   # 記憶擷取、摘要、分類
+  orchestrator:     { provider: claude-cli, model: opus, effort: high }        # 「主模型」
+  implementer:      { provider: claude-cli, model: opus, effort: medium }
+  reviewer:         { provider: codex-cli,  model: gpt-6.1-sol, effort: medium }
+  judge:            { provider: codex-cli,  model: gpt-6.1-sol, effort: medium }
 fallback:
   on_rate_limit: swap_provider   # swap_provider | queue | fail
 budget:
