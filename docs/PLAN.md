@@ -1,4 +1,4 @@
-# Tandem 實作計畫（暫定名稱）
+# Joy 實作計畫
 
 > 多模型協作的 coding agent 平台 + 個人助理。
 > Claude 與 GPT 分工、每一層可自由切換模型、Codex 風格介面、跑在自己電腦上用自己的訂閱。
@@ -6,6 +6,7 @@
 - 版本：v0.1（2026-11-03）
 - 開發方式：主要由 Claude Code / Codex 撰寫，人負責決策、審核、驗收
 - 投入：每週 10–20 小時
+- 授權：Business Source License 1.1（原始碼公開，非 OSI 開源），見 `LICENSE`
 - 參考：[reason-machines/reason-network](https://github.com/reason-machines/reason-network)（agent 之間的 MCP 訊息、`ask_user` 審核、session 狀態可視化）
 
 ---
@@ -35,7 +36,7 @@
 | Claude 與 GPT 分工 | 交叉審查、規劃→實作、平行競賽、`ask_peer` 互相諮詢 |
 | 自選主模型 | 每個「角色」（助理大腦 / orchestrator / implementer / reviewer / 裁判 / 背景工作）都能選任一後端與模型，可全域設定、可每個任務覆寫 |
 | 介面參考 Codex | 左側任務清單、中間對話與 agent 執行紀錄、右側 diff；一鍵開 PR；多個嘗試並排比較 |
-| 程式碼放 GitHub | 平台本身開源；任務產出以 branch / PR 交付 |
+| 程式碼放 GitHub | 平台本身原始碼公開（BSL 1.1，4 年後轉 Apache-2.0）；任務產出以 branch / PR 交付 |
 
 ### 1.2 討論後新增的功能
 | 功能 | 為什麼需要 |
@@ -91,7 +92,7 @@
  └─────┬──────┘ └────┬─────┘      └──────┬────────┘
        │ Channel     │ HTTP+WS            │ Remote MCP
  ┌─────▼─────────────▼─────────────────────▼──────────────────────┐
- │                    Tandem Server（本機 Node）                    │
+ │                    Joy Server（本機 Node）                       │
  │                                                                 │
  │  ┌─────────────┐  ┌──────────────┐  ┌───────────────────────┐   │
  │  │ Assistant   │  │ Orchestrator │  │ Approval / Policy     │   │
@@ -118,7 +119,7 @@
 
 ### 3.1 Monorepo 結構
 ```
-tandem/
+joy/
 ├─ AGENTS.md                 # 給 Codex 的開發守則（唯一來源）
 ├─ CLAUDE.md                 # 內容：@AGENTS.md（引用，保持同步）
 ├─ docs/PLAN.md
@@ -196,7 +197,7 @@ export interface ProposedAction { kind: ActionKind; summary: string; detail: unk
 
 ### 3.3 角色與模型設定（自由切換的落地方式）
 ```yaml
-# ~/.tandem/config.yaml（UI 可編輯）
+# ~/.joy/config.yaml（UI 可編輯）
 roles:
   assistant_brain:  { provider: openai-api, model: gpt-5-mini }   # 高頻、便宜
   background:       { provider: openai-api, model: gpt-5-mini }   # 記憶擷取、摘要、分類
@@ -298,7 +299,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 | T1.10 | 機密：OS keychain 存 OpenAI key（`@napi-rs/keyring` 或同類），log 遮罩 | key 不出現在 DB、log、事件中（測試驗證） |
 | T1.11 | 設定：`config.yaml` 讀寫 + UI 設定頁（各角色模型） | 改設定後新任務立即套用 |
 
-**P1 完成後：開始用 Tandem 開發 Tandem。**
+**P1 完成後：開始用 Joy 開發 Joy。**
 
 ### P2 — 更多分工模式、審核、手機（第 9–12 週）
 | ticket | 內容 | 驗收條件 |
@@ -377,8 +378,8 @@ autonomy_mode: normal            # careful | normal | hands-off
 ---
 
 ## 9. 待決事項
-- [ ] 專案正式名稱與 GitHub repo 名稱
-- [ ] 授權（建議 MIT 或 Apache-2.0，與 Reason Network 相同的雙授權亦可）
+- [x] 專案名稱：Joy（repo：jimmynycuee/Joy）
+- [x] 授權：BSL 1.1（Additional Use Grant 禁止以託管服務形式競爭；4 年後轉 Apache-2.0）。商業化前請律師確認；接受外部 PR 前需設置 CLA
 - [ ] P0 spike 後確認 Codex 整合方式（`exec --json` / `app-server` / SDK）
 - [ ] 確認目前兩家可用的模型名稱，更新 §3.3 預設值
 - [ ] LINE 官方帳號的推播額度與費用（以官方最新方案為準）
@@ -387,7 +388,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 ---
 
 ## 10. 第一週可以馬上做的事
-1. 在 GitHub 建立 repo（例如 `tandem`），把本檔放到 `docs/PLAN.md`。
+1. 在 GitHub 建立 repo（已建立：jimmynycuee/Joy），把本檔放到 `docs/PLAN.md`。
 2. 用 Claude Code 做 T0.1、T0.2；用 Codex review。
 3. 自己動手跑一次 T0.3、T0.4 的 spike（這兩張最需要人判斷）。
 4. 確認 `claude` 與 `codex` 兩個 CLI 都已登入訂閱：`claude --version`、`codex --version`。

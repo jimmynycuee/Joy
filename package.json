@@ -1,7 +1,8 @@
 {
-  "name": "tandem",
+  "name": "joy",
   "private": true,
   "description": "Multi-model coding agent platform + personal assistant (Claude × GPT)",
+  "license": "BUSL-1.1",
   "type": "module",
   "packageManager": "pnpm@10.28.0",
   "engines": {

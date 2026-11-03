@@ -3,7 +3,7 @@
 Guide for AI coding agents (Codex, Claude Code, …) working on this repository.
 `CLAUDE.md` only imports this file, so **this is the single source of truth**: edit here, never there.
 
-## What Tandem is
+## What Joy is
 
 A local-first platform where Claude and GPT split coding work, plus a personal assistant in front of it.
 It **orchestrates the official CLIs** (Claude Code, Codex) using the user's own logged-in subscriptions, and calls the
@@ -51,11 +51,11 @@ Create a package only when its ticket asks for it.
 
 Copy the shape of `packages/core`:
 
-- `package.json`: name `@tandem/<name>`, `"type": "module"`, `"private": true`, `exports` pointing at `./src/index.ts`,
+- `package.json`: name `@joy/<name>`, `"type": "module"`, `"private": true`, `exports` pointing at `./src/index.ts`,
   a `typecheck` script.
 - `tsconfig.json` extending `../../tsconfig.base.json`.
 - `vitest.config.ts` with `defineProject({ test: { name: '<name>', include: ['src/**/*.test.ts'] } })`.
-- Depend on other packages with `"@tandem/core": "workspace:*"`.
+- Depend on other packages with `"@joy/core": "workspace:*"`.
 
 Packages are consumed as TypeScript source (no build step yet). Apps that need to run add a bundler/runner in their own
 ticket.

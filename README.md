@@ -1,6 +1,6 @@
-# Tandem
+# Joy
 
-> 暫定名稱。Claude 與 GPT 分工寫程式的本機平台，前面再加一個個人助理。
+> Claude 與 GPT 分工寫程式的本機平台，前面再加一個個人助理。
 
 - **兩家分工**：交叉審查、平行競賽、`ask_peer` 互相諮詢
 - **每個角色自由選模型**：OpenAI API、Claude Code（訂閱）、Codex（訂閱）
@@ -19,3 +19,8 @@ pnpm check
 ```
 
 狀態：P0（地基）進行中，還不能使用。
+
+## 授權
+
+[Business Source License 1.1](LICENSE)：原始碼公開，可自由閱讀、修改、個人與公司內部使用；不得作為託管服務與本專案的付費版本競爭。
+每個版本發佈 4 年後自動轉為 Apache License 2.0。這不是 OSI 定義的開源授權。
