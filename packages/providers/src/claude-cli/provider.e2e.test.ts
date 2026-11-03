@@ -15,7 +15,12 @@ describe.runIf(process.env.JOY_E2E_CLAUDE === '1')('ClaudeCliProvider (real CLI)
       writeFileSync(join(dir, 'math.js'), 'export function add(a, b) {\n  return a - b\n}\n')
       spawnSync('git', ['init', '-q'], { cwd: dir })
       const provider = new ClaudeCliProvider()
-      const model = { provider: 'claude-cli', model: process.env.JOY_E2E_MODEL ?? 'haiku' } as const
+      // Cheapest model and effort: these tests only check plumbing, not quality.
+      const model = {
+        provider: 'claude-cli',
+        model: process.env.JOY_E2E_MODEL ?? 'haiku',
+        effort: 'low',
+      } as const
       const sessionId = crypto.randomUUID()
       const events: AgentEvent[] = []
       for await (const e of provider.run(

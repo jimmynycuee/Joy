@@ -6,6 +6,7 @@ import type { ModelRef, RunOptions } from '@joy/core'
  */
 export function buildClaudeArgs(opts: RunOptions, model: ModelRef, mcpConfigPath?: string): string[] {
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--model', model.model]
+  if (model.effort) args.push('--effort', model.effort)
 
   if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId)
   else if (opts.sessionId) args.push('--session-id', opts.sessionId)

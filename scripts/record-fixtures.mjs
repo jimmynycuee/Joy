@@ -2,9 +2,10 @@
 // Records real CLI event streams into tests/fixtures/cli-events/<cli>/ for adapter contract tests.
 //
 //   node scripts/record-fixtures.mjs claude [--model haiku]
-//   node scripts/record-fixtures.mjs codex  [--model <name>]
+//   node scripts/record-fixtures.mjs codex  [--model gpt-6-luna]
 //
-// Uses whatever account the CLI is logged into, and spends a little of its quota.
+// Uses whatever account the CLI is logged into, and spends a little of its quota. Defaults are the cheapest
+// model at low effort; fixtures check event plumbing, not answer quality. List Codex models: `codex debug models`.
 // Runs on macOS and Linux (and WSL). On native Windows the npm shims are .cmd files, which need a shell; not supported.
 // Output is sanitized: temp dirs, the repo dir and the home dir are replaced with <WORKDIR>, <TMP> and <HOME>.
 import { spawnSync } from 'node:child_process'
@@ -19,7 +20,7 @@ const stub = join(root, 'scripts', 'fixtures', 'mcp-stub.mjs')
 
 const [cli, ...rest] = process.argv.slice(2)
 const modelIdx = rest.indexOf('--model')
-const model = modelIdx >= 0 ? rest[modelIdx + 1] : cli === 'claude' ? 'haiku' : undefined
+const model = modelIdx >= 0 ? rest[modelIdx + 1] : cli === 'claude' ? 'haiku' : 'gpt-6-luna'
 if (cli !== 'claude' && cli !== 'codex') {
   console.error('usage: node scripts/record-fixtures.mjs <claude|codex> [--model <name>]')
   process.exit(2)
@@ -87,7 +88,10 @@ const FIX = 'math.js has a bug in add(). Fix it. Do not create other files.'
 const MCP_PROMPT =
   "First call the ask_peer tool with question 'what is 2+2'. Then run exactly this shell command: git status --short. " +
   'Then run exactly this shell command: rm math.js. Report what happened.'
-const m = model ? ['--model', model] : []
+const m =
+  cli === 'claude'
+    ? ['--model', model, '--effort', 'low']
+    : ['--model', model, '-c', 'model_reasoning_effort="low"']
 
 function withRepo(fn) {
   const dir = makeRepo()

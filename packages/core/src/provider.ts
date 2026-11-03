@@ -4,10 +4,15 @@
 export const PROVIDER_KINDS = ['openai-api', 'claude-cli', 'codex-cli'] as const
 export type ProviderKind = (typeof PROVIDER_KINDS)[number]
 
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+/** Reasoning effort. Lower is cheaper and faster; backends that lack a level use their closest one. */
+export type Effort = (typeof EFFORTS)[number]
+
 /** A backend plus a model name. Model names are configuration (aliases such as "opus" are fine). */
 export interface ModelRef {
   provider: ProviderKind
   model: string
+  effort?: Effort
 }
 
 export function isProviderKind(value: unknown): value is ProviderKind {

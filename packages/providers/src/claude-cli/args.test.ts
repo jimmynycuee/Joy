@@ -17,6 +17,13 @@ describe('buildClaudeArgs', () => {
     expect(args.slice(-2)).toEqual(['--', 'do it'])
   })
 
+  it('passes the effort level when set', () => {
+    expect(buildClaudeArgs(base, { ...model, effort: 'low' })).toEqual(
+      expect.arrayContaining(['--effort', 'low']),
+    )
+    expect(buildClaudeArgs(base, model)).not.toContain('--effort')
+  })
+
   it('keeps a prompt that starts with a dash after --', () => {
     expect(buildClaudeArgs({ ...base, prompt: '--help' }, model).slice(-2)).toEqual(['--', '--help'])
   })

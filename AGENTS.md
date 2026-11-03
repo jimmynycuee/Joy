@@ -35,6 +35,10 @@ judge, background) can use any backend. The full plan, tickets and acceptance cr
 
 Run one package's tests: `pnpm vitest run --project core`.
 
+**Anything that calls a real model uses the cheapest model at low effort** (Claude `haiku`, Codex `gpt-6-luna`,
+`effort: 'low'`). Those runs test plumbing, not answer quality, and they spend the owner's subscription quota.
+Real-CLI e2e tests are opt-in (`JOY_E2E_CLAUDE=1`) and never run in CI.
+
 Re-record CLI fixtures (uses the logged-in account's quota, macOS/Linux/WSL only):
 `node scripts/record-fixtures.mjs claude` or `node scripts/record-fixtures.mjs codex`.
 
