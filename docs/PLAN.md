@@ -6,6 +6,7 @@
 - 版本：v0.1（2026-11-03）
 - 開發方式：主要由 Claude Code / Codex 撰寫，人負責決策、審核、驗收
 - 投入：每週 10–20 小時
+- 授權：Business Source License 1.1（原始碼公開，非 OSI 開源），見 `LICENSE`
 - 參考：[reason-machines/reason-network](https://github.com/reason-machines/reason-network)（agent 之間的 MCP 訊息、`ask_user` 審核、session 狀態可視化）
 
 ---
@@ -35,7 +36,7 @@
 | Claude 與 GPT 分工 | 交叉審查、規劃→實作、平行競賽、`ask_peer` 互相諮詢 |
 | 自選主模型 | 每個「角色」（助理大腦 / orchestrator / implementer / reviewer / 裁判 / 背景工作）都能選任一後端與模型，可全域設定、可每個任務覆寫 |
 | 介面參考 Codex | 左側任務清單、中間對話與 agent 執行紀錄、右側 diff；一鍵開 PR；多個嘗試並排比較 |
-| 程式碼放 GitHub | 平台本身開源；任務產出以 branch / PR 交付 |
+| 程式碼放 GitHub | 平台本身原始碼公開（BSL 1.1，4 年後轉 Apache-2.0）；任務產出以 branch / PR 交付 |
 
 ### 1.2 討論後新增的功能
 | 功能 | 為什麼需要 |
@@ -377,8 +378,8 @@ autonomy_mode: normal            # careful | normal | hands-off
 ---
 
 ## 9. 待決事項
-- [ ] 專案正式名稱與 GitHub repo 名稱
-- [ ] 授權（建議 MIT 或 Apache-2.0，與 Reason Network 相同的雙授權亦可）
+- [x] 專案名稱：Joy（repo：jimmynycuee/Joy）
+- [x] 授權：BSL 1.1（Additional Use Grant 禁止以託管服務形式競爭；4 年後轉 Apache-2.0）。商業化前請律師確認；接受外部 PR 前需設置 CLA
 - [ ] P0 spike 後確認 Codex 整合方式（`exec --json` / `app-server` / SDK）
 - [ ] 確認目前兩家可用的模型名稱，更新 §3.3 預設值
 - [ ] LINE 官方帳號的推播額度與費用（以官方最新方案為準）

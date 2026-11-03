@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Domain types and interfaces shared by every Joy package. No I/O.",
+  "license": "BUSL-1.1",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
