@@ -63,7 +63,14 @@ export type AgentEvent =
     }
   /** `recoverable: true` covers notices such as Codex's "Reconnecting... 2/5". */
   | { type: 'error'; message: string; recoverable: boolean }
-  | { type: 'done'; sessionId: string; finalMessage?: string; isError: boolean }
+  | {
+      type: 'done'
+      sessionId: string
+      finalMessage?: string
+      /** The final answer parsed against `RunOptions.outputSchema`, when one was given and the backend supports it. */
+      structured?: unknown
+      isError: boolean
+    }
   | { type: 'raw'; source: ProviderKind; payload: unknown }
 
 export type AgentEventType = AgentEvent['type']

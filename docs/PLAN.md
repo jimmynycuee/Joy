@@ -25,6 +25,7 @@
 - [ ] T0.4 Spike：Codex（方式已決定，見 `docs/spikes/codex.md`；**缺真實執行的 fixture**，需在已登入的電腦上錄）
 - [x] T0.5 定稿 `packages/core` 介面
 - [x] T0.6 `packages/db`
+- [x] T1.1 `providers/claude-cli`
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
 

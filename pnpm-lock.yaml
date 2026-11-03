@@ -40,6 +40,12 @@ importers:
 
   packages/db: {}
 
+  packages/providers:
+    dependencies:
+      '@joy/core':
+        specifier: workspace:*
+        version: link:../core
+
 packages:
 
   '@cacheable/memory@2.2.0':
