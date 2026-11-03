@@ -1,0 +1,13 @@
+{
+  "name": "@tandem/core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Domain types and interfaces shared by every Tandem package. No I/O.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}
