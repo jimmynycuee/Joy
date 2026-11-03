@@ -52,6 +52,24 @@ class E2EFakeProvider implements AgentProvider {
     const sessionId = `e2e-${fakeRuns}`
     yield { type: 'session_started', sessionId, model: model.model }
     if (options.outputSchema) {
+      if (options.prompt.includes('Candidate data (JSON):')) {
+        const candidateIds = [...options.prompt.matchAll(/"attemptId"\s*:\s*"([^"]+)"/g)].map(
+          (match) => match[1],
+        )
+        const winnerAttemptId = candidateIds[0]
+        yield {
+          type: 'done',
+          sessionId,
+          finalMessage: 'Fake judge selected the first successful candidate',
+          structured: {
+            winnerAttemptId,
+            summary: 'Fake judge prefers the first candidate.',
+            rationale: `Candidate ${winnerAttemptId} has the clearest implementation in this test.`,
+          },
+          isError: false,
+        }
+        return
+      }
       yield {
         type: 'done',
         sessionId,
@@ -82,8 +100,14 @@ class E2EFakeExecutor implements Executor {
     }
   }
 
-  async diff(): Promise<WorkspaceDiff> {
-    return fakeDiff
+  async diff(workspace: Workspace): Promise<WorkspaceDiff> {
+    return {
+      ...fakeDiff,
+      patch: fakeDiff.patch.replace(
+        '+export const greeting = "hello from fake"',
+        `+export const greeting = "hello from fake ${workspace.attemptId.slice(0, 8)}"`,
+      ),
+    }
   }
 
   async commit(): Promise<string | null> {

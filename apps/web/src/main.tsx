@@ -20,6 +20,19 @@ type Task = {
 type TaskEvent = { taskId: string; seq: number; type: string; payload: unknown; ts: string }
 type DiffFile = { path: string; status: string; additions: number; deletions: number }
 type WorkspaceDiff = { files: DiffFile[]; patch: string }
+type Competitor = {
+  attemptId: string
+  model?: ModelRef
+  status: string
+  diff?: WorkspaceDiff
+  reason?: string
+}
+type CompeteJudgment = { winnerAttemptId: string; summary: string; rationale: string }
+type CompeteView = {
+  candidates: Competitor[]
+  judgment: CompeteJudgment | null
+  selectedAttemptId: string
+}
 type TaskDetails = {
   task: Task
   repo: Repo | null
@@ -96,6 +109,16 @@ function diffFrom(events: TaskEvent[]): WorkspaceDiff | null {
 
 function eventTitle(event: TaskEvent): string {
   const payload = record(event.payload)
+  if (event.type === 'attempt') {
+    const model = record(payload?.model)
+    const identity = typeof model?.model === 'string' ? model.model : 'candidate'
+    return `${identity}: ${String(payload?.status ?? 'updated')}`
+  }
+  if (event.type === 'judgment') {
+    const judgment = record(payload?.judgment)
+    return typeof judgment?.summary === 'string' ? `Judge: ${judgment.summary}` : 'Judge selected a candidate'
+  }
+  if (event.type === 'winner_selected') return 'A candidate was selected as the winner'
   if (event.type === 'agent') {
     const agentEvent = record(payload?.event)
     if (agentEvent?.type === 'message' && typeof agentEvent.text === 'string') return agentEvent.text
@@ -125,6 +148,76 @@ function eventKind(event: TaskEvent): string {
   return typeof role === 'string' ? role : 'agent'
 }
 
+function competeView(events: TaskEvent[]): CompeteView {
+  const candidates = new Map<string, Competitor>()
+  let judgment: CompeteJudgment | null = null
+  let selectedAttemptId = ''
+  const addCandidate = (value: unknown) => {
+    const candidate = record(value)
+    if (typeof candidate?.attemptId !== 'string') return
+    const existing = candidates.get(candidate.attemptId)
+    const model = record(candidate.model)
+    const diff = record(candidate.diff)
+    candidates.set(candidate.attemptId, {
+      attemptId: candidate.attemptId,
+      ...(model && typeof model.provider === 'string' && typeof model.model === 'string'
+        ? { model: model as unknown as ModelRef }
+        : existing?.model
+          ? { model: existing.model }
+          : {}),
+      status: typeof candidate.status === 'string' ? candidate.status : (existing?.status ?? 'unknown'),
+      ...(diff && Array.isArray(diff.files) && typeof diff.patch === 'string'
+        ? { diff: diff as unknown as WorkspaceDiff }
+        : existing?.diff
+          ? { diff: existing.diff }
+          : {}),
+      ...(typeof candidate.reason === 'string' ? { reason: candidate.reason } : {}),
+    })
+  }
+  for (const event of events) {
+    const payload = record(event.payload)
+    if (event.type === 'attempt') addCandidate(payload)
+    if (event.type === 'result') {
+      if (Array.isArray(payload?.candidates)) payload.candidates.forEach(addCandidate)
+      const value = record(payload?.judgment)
+      if (
+        typeof value?.winnerAttemptId === 'string' &&
+        typeof value.summary === 'string' &&
+        typeof value.rationale === 'string'
+      ) {
+        judgment = {
+          winnerAttemptId: value.winnerAttemptId,
+          summary: value.summary,
+          rationale: value.rationale,
+        }
+      }
+    }
+    if (event.type === 'judgment') {
+      const value = record(payload?.judgment)
+      if (
+        typeof value?.winnerAttemptId === 'string' &&
+        typeof value.summary === 'string' &&
+        typeof value.rationale === 'string'
+      ) {
+        judgment = {
+          winnerAttemptId: value.winnerAttemptId,
+          summary: value.summary,
+          rationale: value.rationale,
+        }
+      }
+    }
+    if (event.type === 'winner_selected' && typeof payload?.attemptId === 'string') {
+      selectedAttemptId = payload.attemptId
+    }
+  }
+  return { candidates: [...candidates.values()], judgment, selectedAttemptId }
+}
+
+function modelIdentity(model?: ModelRef): string {
+  if (!model) return 'Candidate model unavailable'
+  return `${PROVIDER_LABELS[model.provider]} · ${model.model}`
+}
+
 function splitDiff(patch: string): Map<string, string> {
   const chunks = patch.split(/(?=^diff --git )/m).filter((chunk) => chunk.trim())
   return new Map(
@@ -148,6 +241,7 @@ function App() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [activeDiffFile, setActiveDiffFile] = useState('')
+  const [selectingWinner, setSelectingWinner] = useState('')
 
   async function refreshLists() {
     const [repoResponse, taskResponse] = await Promise.all([
@@ -205,13 +299,15 @@ function App() {
         const resultStatus =
           event.type === 'error'
             ? 'failed'
-            : event.type === 'result'
-              ? payload?.status === 'succeeded'
-                ? payload.approved === false
-                  ? 'review_ready'
-                  : 'done'
-                : payload?.status
-              : undefined
+            : event.type === 'winner_selected'
+              ? 'done'
+              : event.type === 'result'
+                ? payload?.status === 'succeeded'
+                  ? current.task.mode === 'compete' || payload.approved === false
+                    ? 'review_ready'
+                    : 'done'
+                  : payload?.status
+                : undefined
         const status = typeof resultStatus === 'string' ? resultStatus : current.task.status
         return {
           ...current,
@@ -219,7 +315,7 @@ function App() {
           events: mergeEvents(current.events, [event]),
         }
       })
-      if (event.type === 'result' || event.type === 'error') {
+      if (event.type === 'result' || event.type === 'error' || event.type === 'winner_selected') {
         void request<{ tasks: Task[] }>('/api/tasks')
           .then(({ tasks: updated }) => setTasks(updated))
           .catch(() => {})
@@ -246,6 +342,31 @@ function App() {
   const diff = useMemo(() => diffFrom(details?.events ?? []), [details?.events])
   const diffChunks = useMemo(() => splitDiff(diff?.patch ?? ''), [diff?.patch])
   const selectedPatch = diffChunks.get(activeDiffFile) ?? diffChunks.values().next().value ?? ''
+  const compete = useMemo(() => competeView(details?.events ?? []), [details?.events])
+
+  async function selectWinner(attemptId: string) {
+    if (!details || !attemptId) return
+    setSelectingWinner(attemptId)
+    setError('')
+    try {
+      await request(`/api/tasks/${encodeURIComponent(details.task.id)}/select`, {
+        method: 'POST',
+        body: JSON.stringify({ attemptId }),
+      })
+      const next = await request<TaskDetails>(`/api/tasks/${encodeURIComponent(details.task.id)}`)
+      setDetails((current) =>
+        current?.task.id === details.task.id
+          ? { ...next, events: mergeEvents(next.events, current.events) }
+          : next,
+      )
+      await refreshLists()
+      setNotice('Winner selected and saved for this task.')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not select winner')
+    } finally {
+      setSelectingWinner('')
+    }
+  }
 
   async function createRepo(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -687,15 +808,107 @@ function App() {
             )}
           </section>
 
-          <aside className="diff-panel" aria-label="Diff viewer">
+          <aside
+            className="diff-panel"
+            aria-label={details?.task.mode === 'compete' ? 'Candidate comparison' : 'Diff viewer'}
+          >
             <div className="diff-header">
               <div>
-                <p className="eyebrow">WORKTREE</p>
-                <h2>Changes</h2>
+                <p className="eyebrow">{details?.task.mode === 'compete' ? 'COMPETE REVIEW' : 'WORKTREE'}</p>
+                <h2>{details?.task.mode === 'compete' ? 'Candidate comparison' : 'Changes'}</h2>
               </div>
-              <span className="diff-count">{diff?.files.length ?? 0}</span>
+              <span className="diff-count">
+                {details?.task.mode === 'compete' ? compete.candidates.length : (diff?.files.length ?? 0)}
+              </span>
             </div>
-            {diff ? (
+            {details?.task.mode === 'compete' ? (
+              <div className="compete-review" data-testid="compete-review">
+                <section className="judge-card" aria-label="Judge decision">
+                  <p className="eyebrow">JUDGE</p>
+                  {compete.judgment ? (
+                    <>
+                      <h3 data-testid="compete-judge-summary">{compete.judgment.summary}</h3>
+                      <p data-testid="compete-judge-rationale">{compete.judgment.rationale}</p>
+                    </>
+                  ) : (
+                    <p className="muted">The judge will compare successful candidate diffs.</p>
+                  )}
+                </section>
+                <div className="candidate-grid" aria-label="Candidate diffs">
+                  {compete.candidates.length ? (
+                    compete.candidates.map((candidate, index) => (
+                      <article className="candidate-card" key={candidate.attemptId}>
+                        <header className="candidate-heading">
+                          <div>
+                            <p className="eyebrow">CANDIDATE {index + 1}</p>
+                            <h3>{modelIdentity(candidate.model)}</h3>
+                          </div>
+                          <span className={`candidate-status status-${candidate.status}`}>
+                            {candidate.status.replaceAll('_', ' ')}
+                          </span>
+                        </header>
+                        {candidate.diff ? (
+                          <>
+                            <div className="candidate-files">
+                              {candidate.diff.files.map((file) => (
+                                <span className="candidate-file" key={file.path}>
+                                  {file.path}{' '}
+                                  <span>
+                                    +{file.additions} −{file.deletions}
+                                  </span>
+                                </span>
+                              ))}
+                            </div>
+                            <pre className="candidate-diff" data-testid="candidate-diff">
+                              {candidate.diff.patch.split('\n').map((line, lineIndex) => (
+                                <span
+                                  className={
+                                    line.startsWith('+') && !line.startsWith('+++')
+                                      ? 'diff-line added'
+                                      : line.startsWith('-') && !line.startsWith('---')
+                                        ? 'diff-line removed'
+                                        : line.startsWith('@@')
+                                          ? 'diff-line hunk'
+                                          : 'diff-line'
+                                  }
+                                  key={`${lineIndex}-${line}`}
+                                >
+                                  {line || ' '}
+                                </span>
+                              ))}
+                            </pre>
+                          </>
+                        ) : (
+                          <p className="candidate-empty">
+                            {candidate.reason ?? 'Waiting for this candidate to produce a diff.'}
+                          </p>
+                        )}
+                        {compete.selectedAttemptId === candidate.attemptId ? (
+                          <span className="winner-badge" data-testid="selected-winner">
+                            Selected winner
+                          </span>
+                        ) : candidate.status === 'succeeded' && candidate.diff ? (
+                          <button
+                            className="primary-button select-winner-button"
+                            type="button"
+                            disabled={Boolean(selectingWinner) || Boolean(compete.selectedAttemptId)}
+                            onClick={() => void selectWinner(candidate.attemptId)}
+                          >
+                            {selectingWinner === candidate.attemptId ? 'Saving winner…' : 'Select winner'}
+                          </button>
+                        ) : null}
+                      </article>
+                    ))
+                  ) : (
+                    <div className="diff-empty">
+                      <div className="diff-empty-icon">⌁</div>
+                      <h3>No candidates yet</h3>
+                      <p>Candidate status and diffs will appear here as they finish.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : diff ? (
               <>
                 <div className="diff-summary">
                   <span>
@@ -753,7 +966,11 @@ function App() {
                 <p>The latest task diff will appear here when the agent finishes.</p>
               </div>
             )}
-            <div className="diff-footer">Diff from the task result event</div>
+            <div className="diff-footer">
+              {details?.task.mode === 'compete'
+                ? 'Only successful candidates can be selected'
+                : 'Diff from the task result event'}
+            </div>
           </aside>
         </main>
       )}
@@ -872,9 +1089,7 @@ function App() {
                 <select name="mode" aria-label="Workflow">
                   <option value="review_loop">Implement + review</option>
                   <option value="single">Single agent</option>
-                  <option value="compete" disabled>
-                    Compete — not available yet
-                  </option>
+                  <option value="compete">Compete — compare independent candidates</option>
                 </select>
               </label>
               <div className="task-model-grid">

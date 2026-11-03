@@ -71,7 +71,7 @@ class FakeProvider implements AgentProvider {
 
   constructor(
     readonly kind: ProviderKind,
-    private readonly output: AgentEvent[] = [],
+    private readonly output: AgentEvent[] | ((options: RunOptions) => AgentEvent[]) = [],
   ) {}
 
   async *run(options: RunOptions): AsyncGenerator<AgentEvent> {
@@ -87,9 +87,8 @@ class FakeProvider implements AgentProvider {
       yield { type: 'done', sessionId, isError: false }
       return
     }
-    for (const event of this.output.length
-      ? this.output
-      : [{ type: 'done', sessionId, isError: false } as AgentEvent])
+    const output = typeof this.output === 'function' ? this.output(options) : this.output
+    for (const event of output.length ? output : [{ type: 'done', sessionId, isError: false } as AgentEvent])
       yield event
   }
 
@@ -102,7 +101,14 @@ class FakeExecutor implements Executor {
   prepareCalls = 0
   async prepare(repo: Workspace['repo'], taskId: TaskId, attemptId: AttemptId): Promise<Workspace> {
     this.prepareCalls++
-    return { repo, taskId, attemptId, path: '/fake/worktree', branch: 'joy/t1/a1', baseCommit: 'base-sha' }
+    return {
+      repo,
+      taskId,
+      attemptId,
+      path: `/fake/worktree/${attemptId}`,
+      branch: `joy/${taskId}/${attemptId}`,
+      baseCommit: 'base-sha',
+    }
   }
   async diff() {
     return diff
@@ -117,6 +123,7 @@ function fixture(
   options: {
     implementer?: FakeProvider
     reviewer?: FakeProvider
+    judge?: FakeProvider
     redactor?: Redactor
     secretBackend?: MemoryBackend
     secretEnv?: NodeJS.ProcessEnv
@@ -138,7 +145,7 @@ function fixture(
         structured: { approve: true, summary: 'ok', findings: [] },
       },
     ])
-  const api = new FakeProvider('openai-api')
+  const api = options.judge ?? new FakeProvider('openai-api')
   const redactor = options.redactor ?? new Redactor()
   const secretBackend = options.secretBackend ?? new MemoryBackend()
   const serverOptions: JoyServerOptions = {
@@ -241,7 +248,10 @@ describe('Joy local server', () => {
     socket.close()
     const result = await waitForStatus(origin, task.id, 'done')
     expect(result.task.status).toBe('done')
-    expect(result.attempts[0]).toMatchObject({ status: 'succeeded', worktreePath: '/fake/worktree' })
+    expect(result.attempts[0]).toMatchObject({
+      status: 'succeeded',
+      worktreePath: expect.stringMatching(/^\/fake\/worktree\//),
+    })
     expect(result.events.length).toBeGreaterThan(0)
     expect(executor.prepareCalls).toBe(1)
     expect(db.isOpen).toBe(true)
@@ -251,8 +261,104 @@ describe('Joy local server', () => {
       title: 'Compare implementations',
       prompt: 'Do it',
       mode: 'compete',
+      roleOverrides: {
+        implementer: { provider: 'claude-cli', model: 'opus' },
+        reviewer: { provider: 'claude-cli', model: 'haiku' },
+      },
     })
-    expect(compete.status).toBe(422)
+    expect(compete.status).toBe(400)
+  })
+
+  it('runs competing providers in isolated worktrees, persists judge rationale, and selects a winner', async () => {
+    const judge = new FakeProvider('openai-api', (options) => {
+      const marker = 'Candidate data (JSON): '
+      const data = JSON.parse(options.prompt.slice(options.prompt.indexOf(marker) + marker.length)) as {
+        attemptId: string
+      }[]
+      return [
+        {
+          type: 'done',
+          sessionId: 'judge-session',
+          isError: false,
+          structured: {
+            winnerAttemptId: data[1]?.attemptId,
+            summary: 'Candidate two is stronger.',
+            rationale: 'It covers the edge case with a focused regression test.',
+          },
+        },
+      ]
+    })
+    const { db, executor, serverPromise } = fixture({ judge })
+    const { origin } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/compete-repo', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    const created = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Compare implementations',
+      prompt: 'Fix the edge case',
+      mode: 'compete',
+      roleOverrides: {
+        implementer: { provider: 'claude-cli', model: 'haiku', effort: 'low' },
+        reviewer: { provider: 'codex-cli', model: 'gpt-6-luna', effort: 'low' },
+        judge: { provider: 'openai-api', model: 'gpt-6-luna', effort: 'low' },
+      },
+    })
+    expect(created.status).toBe(201)
+    const { task } = (await created.json()) as { task: { id: string } }
+    expect((await waitForStatus(origin, task.id, 'review_ready')).task.status).toBe('review_ready')
+
+    const details = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
+    expect(details.attempts).toHaveLength(2)
+    expect(details.attempts.map((attempt) => attempt.status)).toEqual(['succeeded', 'succeeded'])
+    expect(new Set(details.attempts.map((attempt) => attempt.worktreePath)).size).toBe(2)
+    const events = details.events as Array<{ attemptId: string; type: string; payload: unknown }>
+    const result = events.find((event) => event.type === 'result')?.payload as
+      | {
+          candidates: Array<{ attemptId: string; status: string; diff: WorkspaceDiff }>
+          judgment: { winnerAttemptId: string; summary: string; rationale: string }
+        }
+      | undefined
+    expect(result?.candidates).toHaveLength(2)
+    expect(result?.candidates.map((candidate) => candidate.status)).toEqual(['succeeded', 'succeeded'])
+    expect(result?.candidates[0]?.diff.patch).toContain('fixed')
+    expect(result?.judgment).toMatchObject({
+      summary: 'Candidate two is stronger.',
+      rationale: 'It covers the edge case with a focused regression test.',
+    })
+
+    const badSelection = await postJson(`${origin}/api/tasks/${task.id}/select`, {
+      attemptId: 'foreign-attempt',
+    })
+    expect(badSelection.status).toBe(404)
+    const failedAttempt = createAttempt(db, {
+      id: aid('failed-candidate'),
+      taskId: task.id as TaskId,
+      provider: 'codex-cli',
+      model: 'gpt-6-luna',
+      status: 'failed',
+    })
+    const failedSelection = await postJson(`${origin}/api/tasks/${task.id}/select`, {
+      attemptId: failedAttempt.id,
+    })
+    expect(failedSelection.status).toBe(409)
+    const selectedAttemptId = result?.judgment.winnerAttemptId
+    const selection = await postJson(`${origin}/api/tasks/${task.id}/select`, {
+      attemptId: selectedAttemptId,
+    })
+    expect(selection.status).toBe(200)
+    expect(await selection.json()).toMatchObject({ task: { status: 'done' }, selectedAttemptId })
+    const persisted = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
+    expect(persisted.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'winner_selected',
+          payload: { attemptId: selectedAttemptId },
+        }),
+      ]),
+    )
+    expect(db.isOpen).toBe(true)
+    expect(executor.prepareCalls).toBe(2)
   })
 
   it('manages OpenAI keys without exposing them and redacts subsequent fake-provider events', async () => {

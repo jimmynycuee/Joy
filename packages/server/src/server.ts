@@ -47,7 +47,7 @@ import {
 import type { AttemptRecord, Database, RepoRecord, StoredTask } from '@joy/db'
 import { WorktreeExecutor } from '@joy/executor'
 import type { Executor, WorkspaceDiff } from '@joy/core'
-import { reviewLoop } from '@joy/orchestrator'
+import { compete, reviewLoop } from '@joy/orchestrator'
 import { ClaudeCliProvider, CodexCliProvider, OpenAiApiProvider } from '@joy/providers'
 import { Redactor, SecretStore } from '@joy/secrets'
 
@@ -257,7 +257,17 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     if (url.pathname === '/api/tasks' && method === 'POST') {
       const input = taskInputSchema.parse(await readJson(req))
-      if (input.mode === 'compete') throw new HttpError(422, 'Compete mode is not available in P1 yet')
+      if (input.mode === 'compete') {
+        const config = await configStore.get()
+        const overrides = (input.roleOverrides ?? {}) as Partial<RoleConfig>
+        const implementer = resolveRole('implementer', config.roles as RoleConfig, overrides)
+        const reviewer = resolveRole('reviewer', config.roles as RoleConfig, overrides)
+        if (implementer.provider === reviewer.provider)
+          throw new HttpError(
+            400,
+            'Compete mode requires implementer and reviewer to use different providers',
+          )
+      }
       const repo = getRepo(db, input.repoId as RepoId)
       if (!repo) throw new HttpError(404, `Repository ${input.repoId} was not found`)
       const task = createTask(db, {
@@ -297,6 +307,24 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       json(res, 200, { events: listTaskEvents(db, task.id, after) })
       return
     }
+    const selectMatch = /^\/api\/tasks\/([^/]+)\/select$/.exec(url.pathname)
+    if (selectMatch && method === 'POST') {
+      const task = requireTask(decodeURIComponent(selectMatch[1] ?? ''))
+      if (task.mode !== 'compete')
+        throw new HttpError(409, 'Only compete tasks have a winning attempt to select')
+      if (task.status !== 'review_ready')
+        throw new HttpError(409, `Task cannot select a winner from ${task.status}`)
+      const body = z.strictObject({ attemptId: idSchema }).parse(await readJson(req))
+      const attempt = getAttempt(db, body.attemptId as AttemptId)
+      if (!attempt || attempt.taskId !== task.id)
+        throw new HttpError(404, 'Attempt was not found for this task')
+      if (attempt.status !== 'succeeded')
+        throw new HttpError(409, 'Only a successful candidate can be selected')
+      setTaskStatus(db, task.id, 'done')
+      const event = publish(task.id, attempt.id, 'winner_selected', { attemptId: attempt.id })
+      json(res, 200, { task: getTask(db, task.id), selectedAttemptId: attempt.id, event })
+      return
+    }
     const cancelMatch = /^\/api\/tasks\/([^/]+)\/cancel$/.exec(url.pathname)
     if (cancelMatch && method === 'POST') {
       const task = requireTask(decodeURIComponent(cancelMatch[1] ?? ''))
@@ -313,7 +341,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       const task = requireTask(decodeURIComponent(resumeMatch[1] ?? ''))
       if (task.status !== 'failed' && task.status !== 'cancelled')
         throw new HttpError(409, `Task cannot be resumed from ${task.status}`)
-      const state = resumeState(task)
+      const state = task.mode === 'compete' ? undefined : resumeState(task)
       if (running.has(task.id)) throw new HttpError(409, 'Task is already running')
       setTaskStatus(db, task.id, 'queued')
       scheduleTask({ ...task, status: 'queued' }, state)
@@ -412,6 +440,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (!repo) throw new Error(`Repository ${task.repoId} was not found`)
       const config = await configStore.get()
       const roles = config.roles as RoleConfig
+      if (task.mode === 'compete') {
+        await runCompeteTask(task, repo, roles, controller)
+        return
+      }
       const configuredImplementer = resolveRole('implementer', roles, task.roleOverrides)
       const implementer = resume
         ? { ...configuredImplementer, provider: resume.attempt.provider, model: resume.attempt.model }
@@ -519,6 +551,92 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       publish(task.id, attempt.id, event.type, event)
     }
     if (!finished) throw new Error('Review loop stopped without a result')
+  }
+
+  async function runCompeteTask(
+    task: StoredTask,
+    repo: RepoRecord,
+    roles: RoleConfig,
+    controller: AbortController,
+  ): Promise<void> {
+    const implementer = resolveRole('implementer', roles, task.roleOverrides)
+    const reviewer = resolveRole('reviewer', roles, task.roleOverrides)
+    const judge = resolveRole('judge', roles, task.roleOverrides)
+    if (implementer.provider === reviewer.provider) {
+      const attemptId = randomUUID() as AttemptId
+      createAttempt(db, {
+        id: attemptId,
+        taskId: task.id,
+        provider: implementer.provider,
+        model: implementer.model,
+        status: 'failed',
+      })
+      setTaskStatus(db, task.id, 'failed')
+      publish(task.id, attemptId, 'error', {
+        message: 'Compete mode requires implementer and reviewer to use different providers',
+      })
+      return
+    }
+
+    let anchorAttemptId: AttemptId | undefined
+    let finished = false
+    for await (const event of compete(
+      {
+        taskId: task.id,
+        repo,
+        prompt: task.prompt,
+        competitors: [implementer, reviewer],
+        judge,
+        signal: controller.signal,
+      },
+      { providers, executor },
+    )) {
+      if (event.type === 'attempt') {
+        anchorAttemptId ??= event.attemptId
+        if (!getAttempt(db, event.attemptId)) {
+          createAttempt(db, {
+            id: event.attemptId,
+            taskId: task.id,
+            provider: event.model.provider,
+            model: event.model.model,
+            status: event.status,
+          })
+        }
+        updateAttempt(db, event.attemptId, {
+          status: event.status,
+          ...(event.workspace
+            ? {
+                worktreePath: event.workspace.path,
+                branch: event.workspace.branch,
+                baseCommit: event.workspace.baseCommit,
+              }
+            : {}),
+          ...(event.diff ? { diffStats: summarizeDiff(event.diff) } : {}),
+        })
+      } else if (event.type === 'agent') {
+        persistUsageEvent(db, event.model.provider, event.event)
+        if (event.role === 'implementer' && event.attemptId && event.event.type === 'session_started')
+          updateAttempt(db, event.attemptId, { sessionId: event.event.sessionId })
+      } else if (event.type === 'result') {
+        finished = true
+        const status: TaskStatus =
+          event.status === 'cancelled' ? 'cancelled' : event.status === 'failed' ? 'failed' : 'review_ready'
+        setTaskStatus(db, task.id, status)
+      }
+
+      const attemptId =
+        event.type === 'attempt'
+          ? event.attemptId
+          : event.type === 'agent'
+            ? (event.attemptId ?? anchorAttemptId)
+            : event.type === 'judgment'
+              ? event.judgment.winnerAttemptId
+              : event.type === 'result'
+                ? (event.judgment?.winnerAttemptId ?? event.candidates[0]?.attemptId ?? anchorAttemptId)
+                : anchorAttemptId
+      if (attemptId) publish(task.id, attemptId, event.type, event)
+    }
+    if (!finished) throw new Error('Competition stopped without a result')
   }
 
   async function runSingle(
