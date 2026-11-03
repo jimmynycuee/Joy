@@ -29,8 +29,13 @@
 - [x] T1.2 `providers/codex-cli`（依 SDK 型別與合成 fixture 測試；**錄到真實 fixture 後要重跑 contract test**）
 - [x] T1.3 `providers/openai-api`
 - [x] T1.4 `executor/worktree`
+- [x] T1.5 `orchestrator/review-loop`
 - [x] T1.10 機密存 OS 鑰匙圈（`packages/secrets`）
 - [x] T1.11 設定（`packages/config`；UI 設定頁併入 T1.8）
+- [ ] T1.6 server（HTTP + WebSocket、任務 CRUD、重啟恢復）
+- [ ] T1.7 事件紀錄（寫入 DB、可回放、經 Redactor 遮罩）
+- [ ] T1.9 GitHub：push 分支、開 draft PR
+- [ ] T1.8 Codex 風格 Web UI（含設定頁）
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
 
@@ -388,7 +393,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 ## 9. 待決事項
 - [x] 專案名稱：Joy（repo：jimmynycuee/Joy）
 - [x] 授權：BSL 1.1（Additional Use Grant 禁止以託管服務形式競爭；4 年後轉 Apache-2.0）。商業化前請律師確認；接受外部 PR 前需設置 CLA
-- [ ] P0 spike 後確認 Codex 整合方式（`exec --json` / `app-server` / SDK）
+- [x] P0 spike 後確認 Codex 整合方式：P1 用 `exec --json`，P2 評估 `app-server`
 - [ ] 確認目前兩家可用的模型名稱，更新 §3.3 預設值
 - [ ] LINE 官方帳號的推播額度與費用（以官方最新方案為準）
 - [ ] 如需參考 Reason 雲端產品細節，需在 session 網路設定允許 `reasonmachines.com`

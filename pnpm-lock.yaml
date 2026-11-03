@@ -58,6 +58,12 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/orchestrator:
+    dependencies:
+      '@joy/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/providers:
     dependencies:
       '@joy/core':

@@ -50,6 +50,11 @@ docs/PLAN.md         plan, tickets, acceptance criteria
 docs/spikes/         what the Claude Code and Codex CLIs actually do; read before touching providers
 packages/core        domain types and interfaces. No I/O, no dependencies on other packages
 packages/db          SQLite (node:sqlite) connection, schema, migrations
+packages/providers   Claude CLI, Codex CLI, OpenAI API → AgentEvent (the only place that spawns CLIs)
+packages/executor    git worktree per attempt
+packages/orchestrator review loop (and later compete mode)
+packages/config      ~/.joy/config.yaml
+packages/secrets     OS keychain + Redactor
 scripts/             dev scripts (fixture recording)
 packages/*           one package per module (created by its ticket, see PLAN §3.1)
 apps/web             React + Vite UI (T1.8)
@@ -57,8 +62,7 @@ apps/desktop         Tauri shell (T4.3)
 tests/fixtures       recorded CLI event streams for contract tests
 ```
 
-Planned packages and their tickets: `providers` (T1.1–T1.3), `executor` (T1.4), `orchestrator` (T1.5, T2.1),
-`server` (T1.6), `tools` (T2.2), `policy` (T2.3), `channels` (T2.4), `memory` (T3.3–T3.6).
+Planned packages and their tickets: `server` (T1.6, T1.7), `tools` (T2.2), `policy` (T2.3), `channels` (T2.4), `memory` (T3.3–T3.6).
 Create a package only when its ticket asks for it.
 
 ## Adding a package
