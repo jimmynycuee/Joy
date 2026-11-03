@@ -39,7 +39,7 @@ main ← t0-foundation (#2) ← t1.1-claude-cli (#3) ← t1.4-worktree (#4) ← 
 
 1. **T1.6 draft PR #6**：Ubuntu、macOS、Windows 三平台 CI 已通過，等待擁有者審核/合併；依擁有者指示，agent 不合併。
 2. **T1.7 draft PR #7**（[PR](https://github.com/jimmynycuee/Joy/pull/7)）：三平台 CI 通過，等待擁有者審核。
-3. **T1.9 draft PR #8**（[PR](https://github.com/jimmynycuee/Joy/pull/8)）：以 `t1.7-event-log` 為 base；本機 `pnpm check` 通過，CI 狀態見 PR。依本次指示保持 draft，不合併。
+3. **T1.9 draft PR #8**（[PR](https://github.com/jimmynycuee/Joy/pull/8)）：以 `t1.7-event-log` 為 base；本機 `pnpm check` 通過（154 passed、2 skipped）。首次 macOS CI 因 `/private/var` 與 `/var` 路徑別名的測試字串比較失敗，已改為比較 realpath；修正推送後待新一輪 CI。依本次指示保持 draft，不合併。
 4. **Codex 真實 fixture**：擁有者的 Codex 額度暫時不夠。額度恢復後在已登入的電腦上執行
    `node scripts/record-fixtures.mjs codex`（預設用 gpt-6-luna + low effort），commit 結果，
    重跑 `pnpm vitest run --project providers codex`，修正不符的地方，然後刪掉 `synthetic-edit.*`。
