@@ -57,6 +57,9 @@ export interface ReviewLoopInput {
   /** Joy's Tool Hub and approval tool, passed to every agent run. */
   mcpServers?: McpServerConfig[]
   approvalTool?: string
+  /** Reuse a persisted worktree and resume the implementer's last CLI session after server restart. */
+  resumeWorkspace?: Workspace
+  resumeSessionId?: string
 }
 
 export interface ReviewLoopDeps {
@@ -91,7 +94,8 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
   let rounds = 0
   try {
     yield { type: 'phase', phase: 'preparing', round: 0 }
-    const ws = await deps.executor.prepare(input.repo, input.taskId, input.attemptId)
+    const ws =
+      input.resumeWorkspace ?? (await deps.executor.prepare(input.repo, input.taskId, input.attemptId))
     yield { type: 'workspace', workspace: ws }
 
     const base = (over: Partial<RunOptions>): RunOptions => ({
@@ -107,8 +111,8 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
     // Optional plan, reviewed before any code is written.
     let plan: string | undefined
     let planVerdict: ReviewVerdict | undefined
-    let session: string | undefined
-    if (input.planFirst) {
+    let session: string | undefined = input.resumeSessionId
+    if (input.planFirst && !input.resumeSessionId) {
       yield { type: 'phase', phase: 'planning', round: 0, role: 'implementer', model: input.implementer }
       const planned = yield* runAgent(
         implementer,

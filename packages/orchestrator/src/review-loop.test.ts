@@ -155,6 +155,36 @@ describe('reviewLoop', () => {
     expect(events.find((e) => e.type === 'review')).toMatchObject({ target: 'plan' })
   })
 
+  it('reuses a persisted worktree and resumes the implementer session after restart', async () => {
+    const impl = new FakeProvider('claude-cli', [() => ok('s1')])
+    const rev = new FakeProvider('codex-cli', [verdict(true)])
+    const executor = new FakeExecutor([changed()])
+    const workspace: Workspace = {
+      repo: { id: 'r1' as RepoId, path: '/repo', defaultBranch: 'main' },
+      taskId: 't1' as TaskId,
+      attemptId: 'a1' as AttemptId,
+      path: '/persisted/worktree',
+      branch: 'joy/t1/a1',
+      baseCommit: 'base',
+    }
+    const { events, result } = await run(
+      input({ resumeWorkspace: workspace, resumeSessionId: 'session-before-restart', planFirst: true }),
+      impl,
+      rev,
+      executor,
+    )
+
+    expect(result).toMatchObject({ type: 'result', status: 'succeeded', approved: true })
+    expect(executor.prepared).toBe(0)
+    expect(impl.calls[0]).toMatchObject({
+      cwd: '/persisted/worktree',
+      resumeSessionId: 'session-before-restart',
+    })
+    expect(
+      events.filter((event) => event.type === 'phase').map((event) => event.type === 'phase' && event.phase),
+    ).toEqual(['preparing', 'implementing', 'reviewing'])
+  })
+
   it('fails when the implementer changes nothing', async () => {
     const impl = new FakeProvider('claude-cli', [() => ok('s1')])
     const rev = new FakeProvider('codex-cli', [])
