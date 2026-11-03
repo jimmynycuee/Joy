@@ -5,14 +5,14 @@
 
 - 最後更新：2026-11-03
 - 目前階段：**P1 進行中**（T1.1–T1.7、T1.10、T1.11 已完成實作；T1.6 draft PR #6 三平台 CI 通過、等擁有者審核/合併；剩 T1.9、T1.8）
-- 最新分支：`t1.7-event-log`，從 `t1.6-server` 切出；T1.7 已完成，draft PR #7 已開，三平台 CI 排隊中。
+- 最新分支：`t1.7-event-log`，從 `t1.6-server` 切出；T1.7 已完成，draft PR #7 已開，三平台 CI pending。
 
 ## 分支與 PR（一條直線，每個疊在前一個上）
 
 ```
 main ← t0-foundation (#2) ← t1.1-claude-cli (#3) ← t1.4-worktree (#4) ← t1.11-config (#5)
      ← t1.10-secrets ← t1.2-codex ← t1.3-openai-api ← t1.5-review-loop ← t1.6-server（#6 draft，三平台 CI 通過）
-                                                                      ← t1.7-event-log（#7 draft，Ubuntu/macOS/Windows CI queued）
+                                                                      ← t1.7-event-log（#7 draft，Ubuntu/macOS/Windows CI pending）
 ```
 
 - #2–#5 已開 PR，CI 三平台通過，**等擁有者審核**（含 `packages/core` 變更）。
@@ -37,7 +37,7 @@ main ← t0-foundation (#2) ← t1.1-claude-cli (#3) ← t1.4-worktree (#4) ← 
 ## 卡住 / 需要人做的事
 
 1. **T1.6 draft PR #6**：Ubuntu、macOS、Windows 三平台 CI 已通過，等待擁有者審核/合併；依擁有者指示，agent 不合併。
-2. **T1.7 draft PR #7**（[PR](https://github.com/jimmynycuee/Joy/pull/7)）：本機 `pnpm check` 通過；Ubuntu、macOS、Windows CI 目前皆為 `queued`。
+2. **T1.7 draft PR #7**（[PR](https://github.com/jimmynycuee/Joy/pull/7)）：本機 `pnpm check` 通過；PR 最新提交的 Ubuntu、macOS、Windows CI 目前皆為 pending（GitHub 尚未回報 check runs）。
 3. **Codex 真實 fixture**：擁有者的 Codex 額度暫時不夠。額度恢復後在已登入的電腦上執行
    `node scripts/record-fixtures.mjs codex`（預設用 gpt-6-luna + low effort），commit 結果，
    重跑 `pnpm vitest run --project providers codex`，修正不符的地方，然後刪掉 `synthetic-edit.*`。
