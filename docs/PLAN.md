@@ -26,6 +26,7 @@
 - [x] T0.5 定稿 `packages/core` 介面
 - [x] T0.6 `packages/db`
 - [x] T1.1 `providers/claude-cli`
+- [x] T1.2 `providers/codex-cli`（依 SDK 型別與合成 fixture 測試；**錄到真實 fixture 後要重跑 contract test**）
 - [x] T1.4 `executor/worktree`
 - [x] T1.10 機密存 OS 鑰匙圈（`packages/secrets`）
 - [x] T1.11 設定（`packages/config`；UI 設定頁併入 T1.8）
