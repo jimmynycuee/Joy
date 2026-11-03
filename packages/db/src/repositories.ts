@@ -4,6 +4,7 @@ import type {
   ProviderKind,
   RepoId,
   RepoRef,
+  ReviewFinding,
   RoleConfig,
   Task,
   TaskId,
@@ -18,6 +19,48 @@ export interface RepoRecord extends RepoRef {
 
 export interface StoredTask extends Task {
   updatedAt: string
+}
+
+export interface TaskEventRecord {
+  taskId: TaskId
+  attemptId: AttemptId
+  seq: number
+  type: string
+  payload: unknown
+  ts: string
+}
+
+export interface NewReview {
+  id: string
+  attemptId: AttemptId
+  reviewerProvider: ProviderKind
+  reviewerModel: string
+  round: number
+  approve: boolean
+  summary: string
+  findings: ReviewFinding[]
+}
+
+export interface ReviewRecord extends NewReview {
+  createdAt: string
+}
+
+export interface UsageRecord {
+  provider: ProviderKind
+  day: string
+  inputTokens: number
+  outputTokens: number
+  costUsd: number
+  rateLimitHits: number
+}
+
+export interface UsageIncrement {
+  provider: ProviderKind
+  day?: string
+  inputTokens?: number
+  outputTokens?: number
+  costUsd?: number
+  rateLimitHits?: number
 }
 
 export interface AttemptRecord {
@@ -55,6 +98,27 @@ interface TaskRow {
   status: TaskStatus
   created_at: string
   updated_at: string
+}
+
+interface ReviewRow {
+  id: string
+  attempt_id: string
+  reviewer_provider: ProviderKind
+  reviewer_model: string
+  round: number
+  approve: number
+  summary: string
+  findings: string
+  created_at: string
+}
+
+interface UsageRow {
+  provider: ProviderKind
+  day: string
+  input_tokens: number
+  output_tokens: number
+  cost_usd: number
+  rate_limit_hits: number
 }
 
 interface AttemptRow {
@@ -150,6 +214,126 @@ export interface NewAttempt {
   status: AttemptStatus
 }
 
+export function appendTaskEvent(
+  db: Database,
+  attemptId: AttemptId,
+  type: string,
+  payload: unknown,
+): TaskEventRecord {
+  const attempt = db.prepare('SELECT task_id FROM attempts WHERE id = ?').get(attemptId) as
+    { task_id: string } | undefined
+  if (!attempt) throw new Error(`Attempt ${attemptId} was not found`)
+  const row = db
+    .prepare(
+      'SELECT COALESCE(MAX(e.seq), 0) AS seq FROM events e JOIN attempts a ON a.id = e.attempt_id WHERE a.task_id = ?',
+    )
+    .get(attempt.task_id) as { seq: number }
+  const seq = row.seq + 1
+  const result = db
+    .prepare('INSERT INTO events (attempt_id, seq, type, payload) VALUES (?, ?, ?, ?)')
+    .run(attemptId, seq, type, JSON.stringify(payload))
+  const event = db
+    .prepare(`SELECT e.seq, e.type, e.payload, e.ts FROM events e WHERE e.id = ?`)
+    .get(result.lastInsertRowid) as { seq: number; type: string; payload: string; ts: string }
+  return {
+    taskId: attempt.task_id as TaskId,
+    attemptId,
+    seq: event.seq,
+    type: event.type,
+    payload: JSON.parse(event.payload) as unknown,
+    ts: event.ts,
+  }
+}
+
+export function listTaskEvents(db: Database, taskId: TaskId, after = 0): TaskEventRecord[] {
+  const rows = db
+    .prepare(
+      `SELECT e.attempt_id, e.seq, e.type, e.payload, e.ts
+       FROM events e JOIN attempts a ON a.id = e.attempt_id
+       WHERE a.task_id = ? AND e.seq > ? ORDER BY e.seq, e.id`,
+    )
+    .all(taskId, after) as unknown as {
+    attempt_id: string
+    seq: number
+    type: string
+    payload: string
+    ts: string
+  }[]
+  return rows.map((row) => ({
+    taskId,
+    attemptId: row.attempt_id as AttemptId,
+    seq: row.seq,
+    type: row.type,
+    payload: JSON.parse(row.payload) as unknown,
+    ts: row.ts,
+  }))
+}
+
+export function createReview(db: Database, input: NewReview): ReviewRecord {
+  db.prepare(
+    `INSERT INTO reviews (id, attempt_id, reviewer_provider, reviewer_model, round, approve, summary, findings)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (attempt_id, round) DO UPDATE SET
+       reviewer_provider = excluded.reviewer_provider,
+       reviewer_model = excluded.reviewer_model,
+       approve = excluded.approve,
+       summary = excluded.summary,
+       findings = excluded.findings`,
+  ).run(
+    input.id,
+    input.attemptId,
+    input.reviewerProvider,
+    input.reviewerModel,
+    input.round,
+    input.approve ? 1 : 0,
+    input.summary,
+    JSON.stringify(input.findings),
+  )
+  const row = db
+    .prepare('SELECT * FROM reviews WHERE attempt_id = ? AND round = ?')
+    .get(input.attemptId, input.round) as ReviewRow | undefined
+  if (!row) throw new Error(`Review ${input.id} was not found after insert`)
+  return mapReview(row)
+}
+
+export function listReviews(db: Database, attemptId: AttemptId): ReviewRecord[] {
+  return (
+    db
+      .prepare('SELECT * FROM reviews WHERE attempt_id = ? ORDER BY round, created_at, id')
+      .all(attemptId) as unknown as ReviewRow[]
+  ).map(mapReview)
+}
+
+export function addUsage(db: Database, input: UsageIncrement): UsageRecord {
+  const day = input.day ?? new Date().toISOString().slice(0, 10)
+  db.prepare(
+    `INSERT INTO usage (provider, day, input_tokens, output_tokens, cost_usd, rate_limit_hits)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT (provider, day) DO UPDATE SET
+       input_tokens = usage.input_tokens + excluded.input_tokens,
+       output_tokens = usage.output_tokens + excluded.output_tokens,
+       cost_usd = usage.cost_usd + excluded.cost_usd,
+       rate_limit_hits = usage.rate_limit_hits + excluded.rate_limit_hits`,
+  ).run(
+    input.provider,
+    day,
+    input.inputTokens ?? 0,
+    input.outputTokens ?? 0,
+    input.costUsd ?? 0,
+    input.rateLimitHits ?? 0,
+  )
+  const row = db.prepare('SELECT * FROM usage WHERE provider = ? AND day = ?').get(input.provider, day) as
+    UsageRow | undefined
+  if (!row) throw new Error(`Usage for ${input.provider} on ${day} was not found after update`)
+  return mapUsage(row)
+}
+
+export function listUsage(db: Database): UsageRecord[] {
+  return (db.prepare('SELECT * FROM usage ORDER BY day DESC, provider').all() as unknown as UsageRow[]).map(
+    mapUsage,
+  )
+}
+
 export function createAttempt(db: Database, input: NewAttempt): AttemptRecord {
   db.prepare('INSERT INTO attempts (id, task_id, provider, model, status) VALUES (?, ?, ?, ?, ?)').run(
     input.id,
@@ -241,6 +425,31 @@ export function interruptRunningWork(db: Database): TaskId[] {
     throw error
   }
   return tasks.map(({ id }) => id as TaskId)
+}
+
+function mapReview(row: ReviewRow): ReviewRecord {
+  return {
+    id: row.id,
+    attemptId: row.attempt_id as AttemptId,
+    reviewerProvider: row.reviewer_provider,
+    reviewerModel: row.reviewer_model,
+    round: row.round,
+    approve: row.approve === 1,
+    summary: row.summary,
+    findings: JSON.parse(row.findings) as ReviewFinding[],
+    createdAt: row.created_at,
+  }
+}
+
+function mapUsage(row: UsageRow): UsageRecord {
+  return {
+    provider: row.provider,
+    day: row.day,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    costUsd: row.cost_usd,
+    rateLimitHits: row.rate_limit_hits,
+  }
 }
 
 function mapRepo(row: RepoRow): RepoRecord {
