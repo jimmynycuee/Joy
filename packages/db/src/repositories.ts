@@ -2,6 +2,7 @@ import type {
   AttemptId,
   AttemptStatus,
   ProviderKind,
+  ProposedAction,
   RepoId,
   RepoRef,
   ReviewFinding,
@@ -10,6 +11,7 @@ import type {
   TaskId,
   TaskMode,
   TaskStatus,
+  Tier,
 } from '@joy/core'
 import type { Database } from './database.js'
 
@@ -43,6 +45,27 @@ export interface NewReview {
 
 export interface ReviewRecord extends NewReview {
   createdAt: string
+}
+
+export type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired'
+
+export interface ApprovalRecord {
+  id: string
+  attemptId?: AttemptId
+  action: ProposedAction
+  tier: Tier
+  status: ApprovalStatus
+  decidedVia?: string
+  note?: string
+  createdAt: string
+  decidedAt?: string
+}
+
+export interface NewApproval {
+  id: string
+  attemptId?: AttemptId
+  action: ProposedAction
+  tier: Tier
 }
 
 export interface UsageRecord {
@@ -110,6 +133,18 @@ interface ReviewRow {
   summary: string
   findings: string
   created_at: string
+}
+
+interface ApprovalRow {
+  id: string
+  attempt_id: string | null
+  action: string
+  tier: Tier
+  status: ApprovalStatus
+  decided_via: string | null
+  note: string | null
+  created_at: string
+  decided_at: string | null
 }
 
 interface UsageRow {
@@ -304,6 +339,58 @@ export function listReviews(db: Database, attemptId: AttemptId): ReviewRecord[] 
   ).map(mapReview)
 }
 
+export function createApproval(db: Database, input: NewApproval): ApprovalRecord {
+  db.prepare(
+    "INSERT INTO approvals (id, attempt_id, action, tier, status) VALUES (?, ?, ?, ?, 'pending')",
+  ).run(input.id, input.attemptId ?? null, JSON.stringify(input.action), input.tier)
+  const approval = getApproval(db, input.id)
+  if (!approval) throw new Error(`Approval ${input.id} was not found after insert`)
+  return approval
+}
+
+export function getApproval(db: Database, id: string): ApprovalRecord | undefined {
+  const row = db.prepare('SELECT * FROM approvals WHERE id = ?').get(id) as ApprovalRow | undefined
+  return row ? mapApproval(row) : undefined
+}
+
+export function listTaskApprovals(db: Database, taskId: TaskId, status?: ApprovalStatus): ApprovalRecord[] {
+  const rows = db
+    .prepare(
+      `SELECT p.* FROM approvals p
+       JOIN attempts a ON a.id = p.attempt_id
+       WHERE a.task_id = ? AND (? IS NULL OR p.status = ?)
+       ORDER BY p.created_at, p.id`,
+    )
+    .all(taskId, status ?? null, status ?? null) as unknown as ApprovalRow[]
+  return rows.map(mapApproval)
+}
+
+export function decideApproval(
+  db: Database,
+  id: string,
+  decision: Extract<ApprovalStatus, 'approved' | 'denied'>,
+  decidedVia: string,
+  note?: string,
+): ApprovalRecord | undefined {
+  db.prepare(
+    `UPDATE approvals SET status = ?, decided_via = ?, note = ?,
+       decided_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE id = ? AND status = 'pending'`,
+  ).run(decision, decidedVia, note ?? null, id)
+  return getApproval(db, id)
+}
+
+export function expirePendingApprovals(db: Database, taskId: TaskId): number {
+  const result = db
+    .prepare(
+      `UPDATE approvals SET status = 'expired', decided_via = 'task_cancelled',
+         decided_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE status = 'pending' AND attempt_id IN (SELECT id FROM attempts WHERE task_id = ?)`,
+    )
+    .run(taskId)
+  return Number(result.changes)
+}
+
 export function addUsage(db: Database, input: UsageIncrement): UsageRecord {
   const day = input.day ?? new Date().toISOString().slice(0, 10)
   db.prepare(
@@ -438,6 +525,20 @@ function mapReview(row: ReviewRow): ReviewRecord {
     summary: row.summary,
     findings: JSON.parse(row.findings) as ReviewFinding[],
     createdAt: row.created_at,
+  }
+}
+
+function mapApproval(row: ApprovalRow): ApprovalRecord {
+  return {
+    id: row.id,
+    ...(row.attempt_id ? { attemptId: row.attempt_id as AttemptId } : {}),
+    action: JSON.parse(row.action) as ProposedAction,
+    tier: row.tier,
+    status: row.status,
+    ...(row.decided_via ? { decidedVia: row.decided_via } : {}),
+    ...(row.note ? { note: row.note } : {}),
+    createdAt: row.created_at,
+    ...(row.decided_at ? { decidedAt: row.decided_at } : {}),
   }
 }
 

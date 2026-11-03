@@ -8,6 +8,7 @@ import { z, ZodError } from 'zod'
 import type {
   AgentEvent,
   AgentProvider,
+  McpServerConfig,
   AttemptId,
   AttemptStatus,
   ModelRef,
@@ -25,6 +26,7 @@ import { ConfigStore, configSchema, joyHome, resolvePaths, type JoyConfig } from
 import {
   addUsage,
   appendTaskEvent,
+  expirePendingApprovals,
   createAttempt,
   createRepo,
   createReview,
@@ -37,6 +39,7 @@ import {
   listAttempts,
   listRepos,
   listReviews,
+  listTaskApprovals,
   listTaskEvents,
   listTasks,
   listUsage,
@@ -50,6 +53,8 @@ import type { Executor, WorkspaceDiff } from '@joy/core'
 import { compete, reviewLoop } from '@joy/orchestrator'
 import { ClaudeCliProvider, CodexCliProvider, OpenAiApiProvider } from '@joy/providers'
 import { Redactor, SecretStore } from '@joy/secrets'
+import { handleToolHubHttpRequest } from '@joy/tools'
+import type { ToolHubContext } from '@joy/tools'
 
 const modelSchema = z.strictObject({
   provider: z.enum(PROVIDER_KINDS),
@@ -154,6 +159,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   } satisfies Partial<Record<ProviderKind, AgentProvider>>
   const executor = options.executor ?? new WorktreeExecutor({ worktreesDir: paths.worktrees })
   const running = new Map<TaskId, ActiveTask>()
+  const toolContexts = new Map<string, { taskId: TaskId; context: ToolHubContext }>()
   const subscribers = new Map<TaskId, Set<WebSocket>>()
   const wsServer = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY_BYTES })
   let closed = false
@@ -232,6 +238,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = requestUrl(req)
     const method = req.method ?? 'GET'
+    const mcpMatch = /^\/mcp\/([0-9a-f-]{36})$/i.exec(url.pathname)
+    if (mcpMatch) {
+      await handleMcpRequest(req, res, mcpMatch[1] ?? '')
+      return
+    }
     if (url.pathname === '/api/health' && method === 'GET') {
       json(res, 200, { ok: true })
       return
@@ -294,6 +305,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         repo,
         attempts: listAttempts(db, task.id),
         reviews: listAttempts(db, task.id).flatMap((attempt) => listReviews(db, attempt.id)),
+        approvals: listTaskApprovals(db, task.id),
         events: listTaskEvents(db, task.id),
       })
       return
@@ -342,9 +354,13 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (cancelMatch && method === 'POST') {
       const task = requireTask(decodeURIComponent(cancelMatch[1] ?? ''))
       const active = running.get(task.id)
-      if (active) active.controller.abort()
-      else if (task.status === 'queued') setTaskStatus(db, task.id, 'cancelled')
-      else if (task.status !== 'cancelled')
+      if (active) {
+        expirePendingApprovals(db, task.id)
+        active.controller.abort()
+      } else if (task.status === 'queued' || task.status === 'awaiting_approval') {
+        expirePendingApprovals(db, task.id)
+        setTaskStatus(db, task.id, 'cancelled')
+      } else if (task.status !== 'cancelled')
         throw new HttpError(409, `Task cannot be cancelled from ${task.status}`)
       json(res, 200, { task: getTask(db, task.id) })
       return
@@ -417,6 +433,67 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     return task
   }
 
+  function toolHubServers(
+    task: StoredTask,
+    model: ModelRef,
+    peerModel: ModelRef,
+    attemptId?: AttemptId,
+    cwd?: string,
+  ): McpServerConfig[] {
+    const address = httpServer.address()
+    if (!address || typeof address === 'string')
+      throw new Error('Joy Tool Hub requires a listening HTTP server')
+    const active = running.get(task.id)
+    if (!active) throw new Error(`Task ${task.id} is not active`)
+    const currentTask = requireTask(task.id)
+    let attempt = attemptId ? getAttempt(db, attemptId) : undefined
+    if (attemptId && attempt && attempt.taskId !== task.id)
+      throw new Error(`Attempt ${attemptId} was not found for task ${task.id}`)
+    const repo = getRepo(db, currentTask.repoId)
+    if (!repo) throw new Error(`Repository ${currentTask.repoId} was not found`)
+    if (attemptId && !attempt) {
+      attempt = createAttempt(db, {
+        id: attemptId,
+        taskId: task.id,
+        provider: model.provider,
+        model: model.model,
+        status: 'running',
+      })
+    }
+    if (attempt && cwd && attempt.worktreePath !== cwd) {
+      updateAttempt(db, attempt.id, { worktreePath: cwd })
+      attempt = getAttempt(db, attempt.id)
+    }
+    const token = randomUUID()
+    const context: ToolHubContext = {
+      db,
+      task: currentTask,
+      ...(attempt ? { attempt: { id: attempt.id } } : {}),
+      cwd: cwd ?? attempt?.worktreePath ?? repo.path,
+      currentProvider: model.provider,
+      peerModel,
+      providers,
+      signal: active.controller.signal,
+      redactText: (value) => redactor.redact(value),
+      redactValue: (value) => redactor.redactValue(value),
+      onApprovalCreated: (approval) => {
+        if (attempt) publish(task.id, attempt.id, 'approval_requested', { approval })
+      },
+    }
+    toolContexts.set(token, { taskId: task.id, context })
+    const url = new URL(`/mcp/${token}`, `http://127.0.0.1:${address.port}`)
+    return [{ name: 'joy', transport: 'http', url: url.href }]
+  }
+
+  async function handleMcpRequest(req: IncomingMessage, res: ServerResponse, token: string): Promise<void> {
+    if (!isLocalHost(req.headers.host) || !isLocalOrigin(req.headers.origin))
+      throw new HttpError(403, 'MCP requests must use a loopback origin and host')
+    const entry = toolContexts.get(token)
+    if (!entry) throw new HttpError(404, 'MCP task context has expired')
+    if (entry.context.signal.aborted) throw new HttpError(409, 'The task was cancelled')
+    await handleToolHubHttpRequest(req, res, entry.context)
+  }
+
   function resumeState(task: StoredTask): ResumeState {
     const attempt = latestAttempt(db, task.id)
     if (!attempt?.sessionId || !attempt.worktreePath || !attempt.branch || !attempt.baseCommit)
@@ -443,6 +520,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     running.set(task.id, active)
     active.promise = runTask(task, controller, resume).finally(() => {
       if (running.get(task.id) === active) running.delete(task.id)
+      for (const [token, entry] of toolContexts) if (entry.taskId === task.id) toolContexts.delete(token)
     })
   }
 
@@ -476,7 +554,15 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       setTaskStatus(db, task.id, 'running')
       publish(task.id, attempt.id, 'started', { taskId: task.id, attemptId: attempt.id })
       if (task.mode === 'single') {
-        await runSingle(task, repo, attempt, implementer, controller, resume)
+        await runSingle(
+          task,
+          repo,
+          attempt,
+          implementer,
+          peerModelFor(implementer, [reviewer, resolveRole('judge', roles, task.roleOverrides)]),
+          controller,
+          resume,
+        )
       } else if (task.mode === 'review_loop') {
         await runReviewLoop(task, repo, attempt, implementer, reviewer, controller, resume)
       } else {
@@ -512,6 +598,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         planFirst: task.planFirst,
         maxRounds: task.maxRounds,
         signal: controller.signal,
+        mcpServersForRun: (model, attemptId) =>
+          toolHubServers(task, model, peerModelFor(model, [implementer, reviewer]), attemptId),
         ...(resume ? { resumeWorkspace: resume.workspace, resumeSessionId: resume.sessionId } : {}),
       },
       { providers, executor },
@@ -559,7 +647,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           status: attemptStatus,
           ...(event.diff ? { diffStats: summarizeDiff(event.diff) } : {}),
         })
-        setTaskStatus(db, task.id, taskStatus)
+        setTaskStatus(db, task.id, statusWithPendingApprovals(db, task.id, taskStatus))
       }
       publish(task.id, attempt.id, event.type, event)
     }
@@ -610,6 +698,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         competitors: [implementer, reviewer],
         judge,
         signal: controller.signal,
+        mcpServersForRun: (model, attemptId, cwd) =>
+          toolHubServers(task, model, peerModelFor(model, [implementer, reviewer, judge]), attemptId, cwd),
       },
       { providers, executor },
     )) {
@@ -653,7 +743,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
                 ? 'review_ready'
                 : 'failed'
               : 'review_ready'
-        setTaskStatus(db, task.id, status)
+        setTaskStatus(db, task.id, statusWithPendingApprovals(db, task.id, status))
         if (!anchorAttemptId && event.candidates.length === 0) {
           anchorAttemptId = randomUUID() as AttemptId
           createAttempt(db, {
@@ -687,6 +777,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     repo: RepoRecord,
     attempt: AttemptRecord,
     model: ModelRef,
+    peerModel: ModelRef,
     controller: AbortController,
     resume?: ResumeState,
   ): Promise<void> {
@@ -705,6 +796,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       prompt: task.prompt,
       autonomy: 'workspace-write',
       signal: controller.signal,
+      mcpServers: toolHubServers(task, model, peerModel, attempt.id),
       ...(resume ? { resumeSessionId: resume.sessionId } : {}),
     }
     let done: Extract<AgentEvent, { type: 'done' }> | undefined
@@ -720,7 +812,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const succeeded = !controller.signal.aborted && !!done && !done.isError && !failure
     const status = controller.signal.aborted ? 'cancelled' : succeeded ? 'succeeded' : 'failed'
     updateAttempt(db, attempt.id, { status, diffStats: summarizeDiff(diff) })
-    setTaskStatus(db, task.id, status === 'succeeded' ? 'done' : status)
+    setTaskStatus(
+      db,
+      task.id,
+      statusWithPendingApprovals(db, task.id, status === 'succeeded' ? 'done' : status),
+    )
     publish(task.id, attempt.id, 'result', {
       type: 'result',
       status,
@@ -754,9 +850,13 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     async close() {
       if (closed) return
       closed = true
-      const activeTasks = [...running.values()]
-      for (const active of activeTasks) active.controller.abort()
-      await Promise.all(activeTasks.map((active) => active.promise))
+      const activeTasks = [...running.entries()]
+      for (const [taskId, active] of activeTasks) {
+        expirePendingApprovals(db, taskId)
+        active.controller.abort()
+      }
+      await Promise.all(activeTasks.map(([, active]) => active.promise))
+      toolContexts.clear()
       for (const socket of wsServer.clients) socket.terminate()
       await new Promise<void>((resolve) => wsServer.close(() => resolve()))
       if (httpServer.listening)
@@ -766,6 +866,16 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (ownsDatabase && db.isOpen) db.close()
     },
   }
+}
+
+function peerModelFor(current: ModelRef, candidates: ModelRef[]): ModelRef {
+  return candidates.find((candidate) => candidate.provider !== current.provider) ?? candidates[0] ?? current
+}
+
+function statusWithPendingApprovals(db: Database, taskId: TaskId, status: TaskStatus): TaskStatus {
+  if (status !== 'failed' && status !== 'cancelled' && listTaskApprovals(db, taskId, 'pending').length > 0)
+    return 'awaiting_approval'
+  return status
 }
 
 function persistUsageEvent(db: Database, provider: ProviderKind, event: AgentEvent): void {
@@ -803,6 +913,16 @@ function requestUrl(req: IncomingMessage): URL {
     return new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`)
   } catch {
     throw new HttpError(400, 'Invalid request URL')
+  }
+}
+
+function isLocalHost(host: string | undefined): boolean {
+  if (!host) return false
+  try {
+    const hostname = new URL(`http://${host}`).hostname
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1'
+  } catch {
+    return false
   }
 }
 

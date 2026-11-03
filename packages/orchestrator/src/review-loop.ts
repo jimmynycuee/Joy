@@ -54,8 +54,9 @@ export interface ReviewLoopInput {
   planFirst: boolean
   maxRounds: number
   signal: AbortSignal
-  /** Joy's Tool Hub and approval tool, passed to every agent run. */
+  /** Joy's Tool Hub, selected for the model and attempt making each provider call. */
   mcpServers?: McpServerConfig[]
+  mcpServersForRun?: (model: ModelRef, attemptId: AttemptId) => McpServerConfig[]
   approvalTool?: string
   /** Reuse a persisted worktree and resume the implementer's last CLI session after server restart. */
   resumeWorkspace?: Workspace
@@ -98,12 +99,16 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
       input.resumeWorkspace ?? (await deps.executor.prepare(input.repo, input.taskId, input.attemptId))
     yield { type: 'workspace', workspace: ws }
 
-    const base = (over: Partial<RunOptions>): RunOptions => ({
+    const base = (model: ModelRef, over: Partial<RunOptions>): RunOptions => ({
       cwd: ws.path,
       prompt: '',
       autonomy: 'workspace-write',
       signal: input.signal,
-      ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+      ...(input.mcpServersForRun
+        ? { mcpServers: input.mcpServersForRun(model, input.attemptId) }
+        : input.mcpServers
+          ? { mcpServers: input.mcpServers }
+          : {}),
       ...(input.approvalTool ? { approvalTool: input.approvalTool } : {}),
       ...over,
     })
@@ -119,7 +124,7 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
         input.implementer,
         'implementer',
         0,
-        base({
+        base(input.implementer, {
           prompt: planPrompt(input.prompt),
           autonomy: 'read-only',
           ...presetSession(implementer),
@@ -132,7 +137,7 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
         reviewer,
         input.reviewer,
         0,
-        base({
+        base(input.reviewer, {
           prompt: planReviewPrompt(input.prompt, plan),
           autonomy: 'read-only',
         }),
@@ -146,7 +151,7 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
       input.implementer,
       'implementer',
       1,
-      base({
+      base(input.implementer, {
         prompt: implementPrompt(input.prompt, plan, planVerdict),
         ...(session ? { resumeSessionId: session } : presetSession(implementer)),
       }),
@@ -162,7 +167,7 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
         reviewer,
         input.reviewer,
         rounds,
-        base({
+        base(input.reviewer, {
           prompt: reviewPrompt(input.prompt, diff.patch),
           autonomy: 'read-only',
         }),
@@ -197,7 +202,7 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
         input.implementer,
         'implementer',
         rounds + 1,
-        base({
+        base(input.implementer, {
           prompt: fixPrompt(verdict),
           ...(session && implementer.capabilities.resume ? { resumeSessionId: session } : {}),
         }),

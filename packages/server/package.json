@@ -19,10 +19,12 @@
     "@joy/orchestrator": "workspace:*",
     "@joy/providers": "workspace:*",
     "@joy/secrets": "workspace:*",
+    "@joy/tools": "workspace:*",
     "ws": "^8.18.3",
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@types/ws": "^8.18.1"
   }
 }

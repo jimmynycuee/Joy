@@ -156,7 +156,15 @@ describe('compete', () => {
     })
 
     const { output, result } = await run(
-      input(),
+      input({
+        mcpServersForRun: (model, attemptId) => [
+          {
+            name: 'joy',
+            transport: 'http',
+            url: `http://127.0.0.1/${model.provider}/${attemptId ?? 'judge'}`,
+          },
+        ],
+      }),
       { 'claude-cli': implementerA, 'codex-cli': implementerB, 'openai-api': judge },
       executor,
     )
@@ -166,6 +174,18 @@ describe('compete', () => {
     expect(implementerA.calls[0]?.opts.cwd).toBe(executor.workspaces[0]?.path)
     expect(implementerB.calls[0]?.opts.cwd).toBe(executor.workspaces[1]?.path)
     expect(implementerA.calls[0]?.opts.autonomy).toBe('workspace-write')
+    expect(implementerA.calls[0]?.opts.mcpServers?.[0]).toMatchObject({
+      transport: 'http',
+      url: expect.stringContaining('claude-cli/'),
+    })
+    expect(implementerB.calls[0]?.opts.mcpServers?.[0]).toMatchObject({
+      transport: 'http',
+      url: expect.stringContaining('codex-cli/'),
+    })
+    expect(judge.calls[0]?.opts.mcpServers?.[0]).toMatchObject({
+      transport: 'http',
+      url: expect.stringContaining('openai-api/judge'),
+    })
     expect(judge.calls[0]?.opts).toMatchObject({
       cwd: '/repo',
       autonomy: 'read-only',

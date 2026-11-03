@@ -19,6 +19,8 @@ import { ConfigStore } from '@joy/config'
 import { createAttempt, createRepo, createTask, openDatabase, setTaskStatus, updateAttempt } from '@joy/db'
 import type { Database } from '@joy/db'
 import { MemoryBackend, Redactor, SecretStore } from '@joy/secrets'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { createJoyServer } from './server.js'
 import type { JoyServer, JoyServerOptions } from './server.js'
 import WebSocket, { type RawData } from 'ws'
@@ -119,6 +121,52 @@ function successfulJudge(): FakeProvider {
   })
 }
 
+class FakeMcpClientProvider extends FakeProvider {
+  availableTools: string[] = []
+
+  constructor(
+    kind: ProviderKind,
+    readonly toolName: string,
+    readonly toolArguments: Record<string, unknown>,
+  ) {
+    super(kind)
+  }
+
+  override async *run(options: RunOptions): AsyncGenerator<AgentEvent> {
+    this.calls.push(options)
+    const config = options.mcpServers?.find((server) => server.name === 'joy')
+    if (!config || config.transport !== 'http')
+      throw new Error('Fake agent did not receive the Joy MCP server')
+    const client = new Client({ name: 'fake-claude', version: '1.0.0' })
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(config.url)))
+      this.availableTools = (await client.listTools()).tools.map((tool) => tool.name).sort()
+      const result = await client.callTool({ name: this.toolName, arguments: this.toolArguments })
+      yield { type: 'session_started', sessionId: `fake-mcp-${this.calls.length}` }
+      yield {
+        type: 'tool_call',
+        id: 'mcp-call-1',
+        name: `mcp__joy__${this.toolName}`,
+        input: this.toolArguments,
+      }
+      yield { type: 'tool_result', id: 'mcp-call-1', output: result, isError: result.isError === true }
+      const response = (result.content as Array<{ type: string; text?: string }>).find(
+        (item) => item.type === 'text',
+      )
+      const finalMessage =
+        response?.type === 'text' ? (response.text ?? 'No tool response') : 'No tool response'
+      yield {
+        type: 'done',
+        sessionId: `fake-mcp-${this.calls.length}`,
+        finalMessage,
+        isError: false,
+      }
+    } finally {
+      await client.close()
+    }
+  }
+}
+
 class FakeExecutor implements Executor {
   prepareCalls = 0
   async prepare(repo: Workspace['repo'], taskId: TaskId, attemptId: AttemptId): Promise<Workspace> {
@@ -217,6 +265,7 @@ interface TaskDetails {
   task: { status: string }
   attempts: Array<Record<string, unknown>>
   reviews: unknown[]
+  approvals?: Array<Record<string, unknown>>
   events: unknown[]
 }
 
@@ -337,6 +386,107 @@ describe('Joy local server', () => {
       },
     })
     expect(compete.status).toBe(400)
+  })
+
+  it('lets a fake Claude task ask the fake Codex peer through the exposed MCP Tool Hub', async () => {
+    const implementer = new FakeMcpClientProvider('claude-cli', 'ask_peer', {
+      question: 'What edge case should the implementation test?',
+    })
+    const peer = new FakeProvider('codex-cli', [
+      {
+        type: 'done',
+        sessionId: 'fake-codex-peer',
+        finalMessage: 'Fake Codex recommends testing an empty input.',
+        isError: false,
+      },
+    ])
+    const { serverPromise } = fixture({ implementer, reviewer: peer })
+    const { origin } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/mcp-peer-repo', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    const created = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Ask the Codex peer',
+      prompt: 'Implement a parser and consider edge cases.',
+      mode: 'single',
+      roleOverrides: {
+        implementer: { provider: 'claude-cli', model: 'haiku', effort: 'low' },
+        reviewer: { provider: 'codex-cli', model: 'gpt-6-luna', effort: 'low' },
+      },
+    })
+    const { task } = (await created.json()) as { task: { id: string } }
+    const details = await waitForStatus(origin, task.id, 'done')
+
+    expect(implementer.availableTools).toEqual(['ask_peer', 'request_approval', 'task_status'])
+    expect(peer.calls).toHaveLength(1)
+    expect(peer.calls[0]?.prompt).toContain('Question: What edge case should the implementation test?')
+    const toolResult = (details.events as Array<{ payload: { event?: AgentEvent } }>)
+      .map((event) => event.payload.event)
+      .find((event) => event?.type === 'tool_result')
+    expect(toolResult).toMatchObject({
+      type: 'tool_result',
+      isError: false,
+      output: {
+        content: [{ type: 'text', text: 'Fake Codex recommends testing an empty input.' }],
+      },
+    })
+  })
+
+  it('persists MCP approval requests across server restart and expires them on task cancellation', async () => {
+    const implementer = new FakeMcpClientProvider('claude-cli', 'request_approval', {
+      kind: 'send_mail',
+      summary: 'Send the prepared update',
+      detail: { recipient: 'owner@example.test' },
+    })
+    const { db, restart, serverPromise } = fixture({ implementer })
+    const { origin, server } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/mcp-approval-repo', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    const created = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Request approval',
+      prompt: 'Prepare the update but do not send without approval.',
+      mode: 'single',
+      roleOverrides: {
+        implementer: { provider: 'claude-cli', model: 'haiku', effort: 'low' },
+        reviewer: { provider: 'codex-cli', model: 'gpt-6-luna', effort: 'low' },
+      },
+    })
+    const { task } = (await created.json()) as { task: { id: string } }
+    const details = await waitForStatus(origin, task.id, 'awaiting_approval')
+    expect(details.approvals).toMatchObject([
+      {
+        tier: 'approve',
+        status: 'pending',
+        action: {
+          kind: 'send_mail',
+          summary: 'Send the prepared update',
+          provenance: 'agent',
+        },
+      },
+    ])
+    const approval = details.approvals?.[0]
+    expect(details.events).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: 'approval_requested' })]),
+    )
+    expect(db.isOpen).toBe(true)
+
+    await server.close()
+    const restarted = await restart()
+    servers.push(restarted)
+    const address = await restarted.listen()
+    const restartedOrigin = `http://127.0.0.1:${address.port}`
+    const restored = (await (await fetch(`${restartedOrigin}/api/tasks/${task.id}`)).json()) as TaskDetails
+    expect(restored.task.status).toBe('awaiting_approval')
+    expect(restored.approvals?.[0]).toMatchObject({ id: approval?.['id'], status: 'pending' })
+
+    const cancelled = await postJson(`${restartedOrigin}/api/tasks/${task.id}/cancel`, {})
+    expect(cancelled.status).toBe(200)
+    expect(await cancelled.json()).toMatchObject({ task: { status: 'cancelled' } })
+    const expired = (await (await fetch(`${restartedOrigin}/api/tasks/${task.id}`)).json()) as TaskDetails
+    expect(expired.approvals?.[0]).toMatchObject({ status: 'expired', decidedVia: 'task_cancelled' })
   })
 
   it('runs competing providers in isolated worktrees, persists judge rationale, and selects a winner', async () => {

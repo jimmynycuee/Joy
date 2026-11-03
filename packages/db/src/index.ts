@@ -5,10 +5,14 @@ export type { Migration } from './migrations.js'
 export {
   addUsage,
   appendTaskEvent,
+  createApproval,
   createAttempt,
   createRepo,
   createReview,
   createTask,
+  decideApproval,
+  expirePendingApprovals,
+  getApproval,
   getAttempt,
   getRepo,
   getTask,
@@ -16,6 +20,7 @@ export {
   latestAttempt,
   listAttempts,
   listReviews,
+  listTaskApprovals,
   listRepos,
   listTaskEvents,
   listTasks,
@@ -24,6 +29,9 @@ export {
   updateAttempt,
 } from './repositories.js'
 export type {
+  ApprovalRecord,
+  ApprovalStatus,
+  NewApproval,
   AttemptRecord,
   AttemptUpdate,
   NewAttempt,

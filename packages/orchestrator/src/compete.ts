@@ -24,6 +24,7 @@ export interface CompeteInput {
   judge: ModelRef
   signal: AbortSignal
   mcpServers?: McpServerConfig[]
+  mcpServersForRun?: (model: ModelRef, attemptId?: AttemptId, cwd?: string) => McpServerConfig[]
 }
 
 export interface CompeteDeps {
@@ -213,7 +214,11 @@ async function runCandidate(
       prompt: input.prompt,
       autonomy: 'workspace-write',
       signal: input.signal,
-      ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+      ...(input.mcpServersForRun
+        ? { mcpServers: input.mcpServersForRun(model, attemptId, workspace.path) }
+        : input.mcpServers
+          ? { mcpServers: input.mcpServers }
+          : {}),
     }
     let done: Extract<AgentEvent, { type: 'done' }> | undefined
     for await (const event of provider.run(options, model)) {
@@ -273,7 +278,11 @@ async function* runJudge(
     autonomy: 'read-only',
     signal: input.signal,
     outputSchema: JUDGE_SCHEMA,
-    ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+    ...(input.mcpServersForRun
+      ? { mcpServers: input.mcpServersForRun(input.judge, undefined, input.repo.path) }
+      : input.mcpServers
+        ? { mcpServers: input.mcpServers }
+        : {}),
   }
   let done: Extract<AgentEvent, { type: 'done' }> | undefined
   for await (const event of provider.run(options, input.judge)) {

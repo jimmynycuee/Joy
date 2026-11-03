@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AttemptId, RepoId, TaskId } from '@joy/core'
 import { openDatabase } from './database.js'
@@ -5,10 +8,14 @@ import type { Database } from './database.js'
 import {
   addUsage,
   appendTaskEvent,
+  createApproval,
   createAttempt,
   createRepo,
   createReview,
   createTask,
+  decideApproval,
+  expirePendingApprovals,
+  getApproval,
   getAttempt,
   getRepo,
   getTask,
@@ -17,6 +24,7 @@ import {
   listAttempts,
   listRepos,
   listReviews,
+  listTaskApprovals,
   listTaskEvents,
   listTasks,
   listUsage,
@@ -25,6 +33,7 @@ import {
 } from './repositories.js'
 
 const databases: Database[] = []
+const directories: string[] = []
 function fresh() {
   const db = openDatabase(':memory:')
   databases.push(db)
@@ -32,6 +41,7 @@ function fresh() {
 }
 afterEach(() => {
   for (const db of databases.splice(0)) if (db.isOpen) db.close()
+  for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
 const rid = (id: string) => id as RepoId
@@ -176,6 +186,47 @@ describe('repositories', () => {
         rateLimitHits: 1,
       },
     ])
+  })
+
+  it('persists pending approval requests across database reopen and expires them on task cancellation', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'joy-approval-test-'))
+    directories.push(directory)
+    const path = join(directory, 'joy.sqlite')
+    const db = openDatabase(path)
+    databases.push(db)
+    const { task } = seed(db)
+    const attempt = createAttempt(db, {
+      id: aid('approval-attempt'),
+      taskId: task.id,
+      provider: 'claude-cli',
+      model: 'haiku',
+      status: 'running',
+    })
+    const request = createApproval(db, {
+      id: 'approval-1',
+      attemptId: attempt.id,
+      tier: 'approve',
+      action: {
+        kind: 'send_mail',
+        summary: 'Send a message',
+        detail: { recipient: 'owner@example.test' },
+        provenance: 'agent',
+      },
+    })
+    setTaskStatus(db, task.id, 'awaiting_approval')
+    expect(listTaskApprovals(db, task.id)).toEqual([request])
+    db.close()
+
+    const reopened = openDatabase(path)
+    databases.push(reopened)
+    expect(getTask(reopened, task.id)?.status).toBe('awaiting_approval')
+    expect(getApproval(reopened, request.id)).toEqual(request)
+    expect(expirePendingApprovals(reopened, task.id)).toBe(1)
+    expect(getApproval(reopened, request.id)).toMatchObject({
+      status: 'expired',
+      decidedVia: 'task_cancelled',
+    })
+    expect(decideApproval(reopened, request.id, 'approved', 'test')).toMatchObject({ status: 'expired' })
   })
 
   it('marks interrupted work failed without deleting resume checkpoints', () => {

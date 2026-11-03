@@ -105,10 +105,31 @@ describe('reviewLoop', () => {
   it('succeeds when the reviewer approves the first change', async () => {
     const impl = new FakeProvider('claude-cli', [() => ok('s1')])
     const rev = new FakeProvider('codex-cli', [verdict(true)])
-    const { events, result } = await run(input(), impl, rev, new FakeExecutor([changed('+a + b')]))
+    const { events, result } = await run(
+      input({
+        mcpServersForRun: (model, attemptId) => [
+          {
+            name: 'joy',
+            transport: 'http',
+            url: `http://127.0.0.1/${model.provider}/${attemptId}`,
+          },
+        ],
+      }),
+      impl,
+      rev,
+      new FakeExecutor([changed('+a + b')]),
+    )
     expect(result).toMatchObject({ type: 'result', status: 'succeeded', approved: true, rounds: 1 })
     expect(impl.calls[0]).toMatchObject({ cwd: '/wt/t1-a1', autonomy: 'workspace-write' })
     expect(impl.calls[0]?.sessionId).toMatch(/^[0-9a-f-]{36}$/)
+    expect(impl.calls[0]?.mcpServers?.[0]).toMatchObject({
+      transport: 'http',
+      url: expect.stringContaining('claude-cli/a1'),
+    })
+    expect(rev.calls[0]?.mcpServers?.[0]).toMatchObject({
+      transport: 'http',
+      url: expect.stringContaining('codex-cli/a1'),
+    })
     expect(rev.calls[0]).toMatchObject({ autonomy: 'read-only', outputSchema: expect.any(Object) })
     expect(rev.calls[0]?.prompt).toContain('+a + b')
     expect(events.filter((e) => e.type === 'phase').map((e) => (e as { phase: string }).phase)).toEqual([

@@ -1,0 +1,20 @@
+{
+  "name": "@joy/tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Task-scoped MCP Tool Hub for Joy.",
+  "license": "BUSL-1.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@joy/core": "workspace:*",
+    "@joy/db": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
+  }
+}
