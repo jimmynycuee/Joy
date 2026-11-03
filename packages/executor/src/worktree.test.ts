@@ -32,6 +32,8 @@ async function setup() {
   await git(repoPath, ['init', '-q', '-b', 'main'])
   await git(repoPath, ['config', 'user.name', 'Test'])
   await git(repoPath, ['config', 'user.email', 'test@example.com'])
+  // Windows runners default to autocrlf=true, which would rewrite the files these tests compare.
+  await git(repoPath, ['config', 'core.autocrlf', 'false'])
   writeFileSync(join(repoPath, 'a.txt'), 'one\ntwo\n')
   writeFileSync(join(repoPath, 'gone.txt'), 'bye\n')
   writeFileSync(join(repoPath, 'old-name.txt'), 'same content for rename detection\n'.repeat(5))
