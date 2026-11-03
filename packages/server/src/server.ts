@@ -23,16 +23,23 @@ import type {
 import { EFFORTS, PROVIDER_KINDS, ROLES, resolveRole } from '@joy/core'
 import { ConfigStore, configSchema, joyHome, resolvePaths, type JoyConfig } from '@joy/config'
 import {
+  addUsage,
+  appendTaskEvent,
   createAttempt,
   createRepo,
+  createReview,
   createTask,
+  getAttempt,
   getRepo,
   getTask,
   interruptRunningWork,
   latestAttempt,
   listAttempts,
   listRepos,
+  listReviews,
+  listTaskEvents,
   listTasks,
+  listUsage,
   openDatabase,
   setTaskStatus,
   updateAttempt,
@@ -146,24 +153,23 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   } satisfies Partial<Record<ProviderKind, AgentProvider>>
   const executor = options.executor ?? new WorktreeExecutor({ worktreesDir: paths.worktrees })
   const running = new Map<TaskId, ActiveTask>()
-  const eventHistory = new Map<TaskId, TaskEvent[]>()
   const subscribers = new Map<TaskId, Set<WebSocket>>()
   const wsServer = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY_BYTES })
   let closed = false
 
   const publish = (taskId: TaskId, attemptId: AttemptId, type: string, payload: unknown): TaskEvent => {
     const safe = redactor.redactValue(payload)
-    const events = eventHistory.get(taskId) ?? []
-    const event: TaskEvent = {
-      taskId,
-      attemptId,
-      seq: (events.at(-1)?.seq ?? 0) + 1,
-      type,
-      payload: safe,
-      ts: new Date().toISOString(),
-    }
-    events.push(event)
-    eventHistory.set(taskId, events)
+    const storedAttempt = getAttempt(db, attemptId)
+    const event = storedAttempt
+      ? appendTaskEvent(db, attemptId, type, safe)
+      : {
+          taskId,
+          attemptId,
+          seq: listTaskEvents(db, taskId).at(-1)?.seq ?? 0,
+          type,
+          payload: safe,
+          ts: new Date().toISOString(),
+        }
     const message = JSON.stringify({ type: 'event', event })
     for (const socket of subscribers.get(taskId) ?? []) {
       if (socket.readyState === WebSocket.OPEN) socket.send(message)
@@ -210,7 +216,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         current.add(ws)
         subscribers.set(taskId, current)
         ws.send(JSON.stringify({ type: 'ready', taskId }))
-        for (const event of eventHistory.get(taskId) ?? []) ws.send(JSON.stringify({ type: 'event', event }))
+        for (const event of listTaskEvents(db, taskId)) ws.send(JSON.stringify({ type: 'event', event }))
         ws.once('close', () => {
           current.delete(ws)
           if (current.size === 0) subscribers.delete(taskId)
@@ -276,7 +282,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         task,
         repo,
         attempts: listAttempts(db, task.id),
-        events: eventHistory.get(task.id) ?? [],
+        reviews: listAttempts(db, task.id).flatMap((attempt) => listReviews(db, attempt.id)),
+        events: listTaskEvents(db, task.id),
       })
       return
     }
@@ -286,7 +293,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       const after = Number(url.searchParams.get('after') ?? '0')
       if (!Number.isSafeInteger(after) || after < 0)
         throw new HttpError(400, 'after must be a non-negative integer')
-      json(res, 200, { events: (eventHistory.get(task.id) ?? []).filter((event) => event.seq > after) })
+      json(res, 200, { events: listTaskEvents(db, task.id, after) })
       return
     }
     const cancelMatch = /^\/api\/tasks\/([^/]+)\/cancel$/.exec(url.pathname)
@@ -310,6 +317,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       setTaskStatus(db, task.id, 'queued')
       scheduleTask({ ...task, status: 'queued' }, state)
       json(res, 202, { task: getTask(db, task.id), resumed: true })
+      return
+    }
+    if (url.pathname === '/api/usage' && method === 'GET') {
+      json(res, 200, { usage: listUsage(db) })
       return
     }
     if (url.pathname === '/api/config' && method === 'GET') {
@@ -447,12 +458,24 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       } else if (event.type === 'phase') {
         const status: AttemptStatus = phaseStatus(event.phase)
         updateAttempt(db, attempt.id, { status })
-      } else if (
-        event.type === 'agent' &&
-        event.role === 'implementer' &&
-        event.event.type === 'session_started'
-      ) {
-        updateAttempt(db, attempt.id, { sessionId: event.event.sessionId })
+      } else if (event.type === 'agent') {
+        const model = event.role === 'reviewer' ? reviewer : implementer
+        persistUsageEvent(db, model.provider, event.event)
+        if (event.role === 'implementer' && event.event.type === 'session_started') {
+          updateAttempt(db, attempt.id, { sessionId: event.event.sessionId })
+        }
+      } else if (event.type === 'review') {
+        const verdict = redactor.redactValue(event.verdict)
+        createReview(db, {
+          id: randomUUID(),
+          attemptId: attempt.id,
+          reviewerProvider: reviewer.provider,
+          reviewerModel: reviewer.model,
+          round: event.round,
+          approve: verdict.approve,
+          summary: verdict.summary,
+          findings: verdict.findings,
+        })
       } else if (event.type === 'result') {
         finished = true
         const taskStatus: TaskStatus =
@@ -504,6 +527,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     let done: Extract<AgentEvent, { type: 'done' }> | undefined
     let failure: string | undefined
     for await (const event of provider.run(options, model)) {
+      persistUsageEvent(db, model.provider, event)
       if (event.type === 'session_started') updateAttempt(db, attempt.id, { sessionId: event.sessionId })
       if (event.type === 'error' && !event.recoverable) failure = event.message
       if (event.type === 'done') done = event
@@ -558,6 +582,21 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         )
       if (ownsDatabase && db.isOpen) db.close()
     },
+  }
+}
+
+function persistUsageEvent(db: Database, provider: ProviderKind, event: AgentEvent): void {
+  if (event.type === 'usage') {
+    if (event.inputTokens === undefined && event.outputTokens === undefined && event.costUsd === undefined)
+      return
+    addUsage(db, {
+      provider,
+      ...(event.inputTokens !== undefined ? { inputTokens: event.inputTokens } : {}),
+      ...(event.outputTokens !== undefined ? { outputTokens: event.outputTokens } : {}),
+      ...(event.costUsd !== undefined ? { costUsd: event.costUsd } : {}),
+    })
+  } else if (event.type === 'quota' && event.status === 'limited') {
+    addUsage(db, { provider, rateLimitHits: 1 })
   }
 }
 

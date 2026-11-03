@@ -17,9 +17,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { ConfigStore } from '@joy/config'
 import { createAttempt, createRepo, createTask, openDatabase, setTaskStatus, updateAttempt } from '@joy/db'
 import type { Database } from '@joy/db'
-import { MemoryBackend, SecretStore } from '@joy/secrets'
+import { MemoryBackend, Redactor, SecretStore } from '@joy/secrets'
 import { createJoyServer } from './server.js'
-import type { JoyServer } from './server.js'
+import type { JoyServer, JoyServerOptions } from './server.js'
 import WebSocket, { type RawData } from 'ws'
 
 const dirs: string[] = []
@@ -113,23 +113,31 @@ class FakeExecutor implements Executor {
   async cleanup() {}
 }
 
-function fixture() {
+function fixture(
+  options: {
+    implementer?: FakeProvider
+    reviewer?: FakeProvider
+    redactor?: Redactor
+  } = {},
+) {
   const dir = mkdtempSync(join(tmpdir(), 'joy-server-test-'))
   dirs.push(dir)
   const db = openDatabase(':memory:')
   databases.push(db)
   const executor = new FakeExecutor()
-  const implementer = new FakeProvider('claude-cli')
-  const reviewer = new FakeProvider('codex-cli', [
-    {
-      type: 'done',
-      sessionId: 'review-session',
-      isError: false,
-      structured: { approve: true, summary: 'ok', findings: [] },
-    },
-  ])
+  const implementer = options.implementer ?? new FakeProvider('claude-cli')
+  const reviewer =
+    options.reviewer ??
+    new FakeProvider('codex-cli', [
+      {
+        type: 'done',
+        sessionId: 'review-session',
+        isError: false,
+        structured: { approve: true, summary: 'ok', findings: [] },
+      },
+    ])
   const api = new FakeProvider('openai-api')
-  const serverPromise = createJoyServer({
+  const serverOptions: JoyServerOptions = {
     home: dir,
     database: db,
     configStore: new ConfigStore(join(dir, 'config.yaml')),
@@ -140,8 +148,19 @@ function fixture() {
       'codex-cli': reviewer,
       'openai-api': api,
     },
-  })
-  return { dir, db, executor, implementer, reviewer, api, serverPromise }
+    ...(options.redactor ? { redactor: options.redactor } : {}),
+  }
+  const serverPromise = createJoyServer(serverOptions)
+  return {
+    dir,
+    db,
+    executor,
+    implementer,
+    reviewer,
+    api,
+    serverPromise,
+    restart: () => createJoyServer(serverOptions),
+  }
 }
 
 async function start(serverPromise: Promise<JoyServer>) {
@@ -154,6 +173,7 @@ async function start(serverPromise: Promise<JoyServer>) {
 interface TaskDetails {
   task: { status: string }
   attempts: Array<Record<string, unknown>>
+  reviews: unknown[]
   events: unknown[]
 }
 
@@ -223,6 +243,79 @@ describe('Joy local server', () => {
       mode: 'compete',
     })
     expect(compete.status).toBe(422)
+  })
+
+  it('stores redacted events, reviews, and usage and replays persisted events after restart', async () => {
+    const secret = 'joy-private-test-secret-123'
+    const redactor = new Redactor()
+    redactor.add(secret)
+    const implementer = new FakeProvider('claude-cli', [
+      { type: 'message', text: `Output contains ${secret}` },
+      { type: 'usage', inputTokens: 12, outputTokens: 4, costUsd: 0.02 },
+      { type: 'quota', status: 'limited', windows: [] },
+      { type: 'done', sessionId: 'implementer-session', isError: false },
+    ])
+    const reviewer = new FakeProvider('codex-cli', [
+      {
+        type: 'done',
+        sessionId: 'reviewer-session',
+        isError: false,
+        structured: {
+          approve: true,
+          summary: `Reviewed ${secret}`,
+          findings: [{ severity: 'minor', message: secret }],
+        },
+      },
+    ])
+    const { db, restart, serverPromise } = fixture({ implementer, reviewer, redactor })
+    const { origin, server } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/logged-repo', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    const { task } = (await (
+      await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: 'Persist events',
+        prompt: 'Record everything safely',
+        mode: 'review_loop',
+      })
+    ).json()) as { task: { id: string } }
+    const result = await waitForStatus(origin, task.id, 'done')
+    const serializedEvents = JSON.stringify(result.events)
+    expect(serializedEvents).not.toContain(secret)
+    expect(serializedEvents).toContain('[REDACTED]')
+    expect(result.reviews).toMatchObject([
+      { summary: `Reviewed [REDACTED]`, findings: [{ message: '[REDACTED]' }] },
+    ])
+    expect(JSON.stringify(db.prepare('SELECT payload FROM events').all())).not.toContain(secret)
+    expect(JSON.stringify(db.prepare('SELECT summary, findings FROM reviews').all())).not.toContain(secret)
+    const usage = (await (await fetch(`${origin}/api/usage`)).json()) as {
+      usage: Array<Record<string, unknown>>
+    }
+    expect(usage.usage).toEqual([
+      expect.objectContaining({
+        provider: 'claude-cli',
+        inputTokens: 12,
+        outputTokens: 4,
+        costUsd: 0.02,
+        rateLimitHits: 1,
+      }),
+    ])
+
+    await server.close()
+    const restarted = await restart()
+    servers.push(restarted)
+    const address = await restarted.listen()
+    const restartedOrigin = `http://127.0.0.1:${address.port}`
+    const replayed = (await (await fetch(`${restartedOrigin}/api/tasks/${task.id}`)).json()) as TaskDetails
+    expect(replayed.events).toEqual(result.events)
+    const socket = new WebSocket(`ws://127.0.0.1:${address.port}/ws?taskId=${task.id}`, {
+      origin: restartedOrigin,
+    })
+    const messages = await receiveMessages(socket, replayed.events.length + 1)
+    expect(messages[0]).toMatchObject({ type: 'ready', taskId: task.id })
+    expect(messages.slice(1)).toEqual(replayed.events.map((event) => ({ type: 'event', event })))
+    socket.close()
   })
 
   it('cancels a running task through the API', async () => {

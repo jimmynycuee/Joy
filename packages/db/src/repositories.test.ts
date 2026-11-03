@@ -3,8 +3,11 @@ import type { AttemptId, RepoId, TaskId } from '@joy/core'
 import { openDatabase } from './database.js'
 import type { Database } from './database.js'
 import {
+  addUsage,
+  appendTaskEvent,
   createAttempt,
   createRepo,
+  createReview,
   createTask,
   getAttempt,
   getRepo,
@@ -13,7 +16,10 @@ import {
   latestAttempt,
   listAttempts,
   listRepos,
+  listReviews,
+  listTaskEvents,
   listTasks,
+  listUsage,
   setTaskStatus,
   updateAttempt,
 } from './repositories.js'
@@ -99,6 +105,77 @@ describe('repositories', () => {
     expect(latestAttempt(db, task.id)?.id).toBe(attempt.id)
     setTaskStatus(db, task.id, 'running')
     expect(getTask(db, task.id)?.status).toBe('running')
+  })
+
+  it('persists task-ordered events, reviews, and additive daily usage', () => {
+    const db = fresh()
+    const { task } = seed(db)
+    const first = createAttempt(db, {
+      id: aid('a1'),
+      taskId: task.id,
+      provider: 'claude-cli',
+      model: 'haiku',
+      status: 'running',
+    })
+    const second = createAttempt(db, {
+      id: aid('a2'),
+      taskId: task.id,
+      provider: 'codex-cli',
+      model: 'gpt-6-luna',
+      status: 'running',
+    })
+    expect(appendTaskEvent(db, first.id, 'message', { text: 'started' }).seq).toBe(1)
+    expect(appendTaskEvent(db, second.id, 'review', { approve: false }).seq).toBe(2)
+    expect(appendTaskEvent(db, first.id, 'done', { ok: true }).seq).toBe(3)
+    expect(listTaskEvents(db, task.id, 1).map(({ seq }) => seq)).toEqual([2, 3])
+
+    createReview(db, {
+      id: 'review-1',
+      attemptId: first.id,
+      reviewerProvider: 'codex-cli',
+      reviewerModel: 'gpt-6-luna',
+      round: 1,
+      approve: false,
+      summary: 'One issue',
+      findings: [{ severity: 'major', message: 'Handle the empty input' }],
+    })
+    expect(listReviews(db, first.id)).toMatchObject([
+      { approve: false, summary: 'One issue', findings: [{ severity: 'major' }] },
+    ])
+    createReview(db, {
+      id: 'review-1-replayed',
+      attemptId: first.id,
+      reviewerProvider: 'codex-cli',
+      reviewerModel: 'gpt-6-luna',
+      round: 1,
+      approve: true,
+      summary: 'Replayed review',
+      findings: [],
+    })
+    expect(listReviews(db, first.id)).toMatchObject([{ approve: true, summary: 'Replayed review' }])
+    expect(listReviews(db, first.id)).toHaveLength(1)
+
+    addUsage(db, { provider: 'openai-api', day: '2026-11-03', inputTokens: 10, costUsd: 0.2 })
+    addUsage(db, { provider: 'openai-api', day: '2026-11-03', outputTokens: 4, rateLimitHits: 1 })
+    addUsage(db, { provider: 'claude-cli', day: '2026-11-03', inputTokens: 7 })
+    expect(listUsage(db)).toEqual([
+      {
+        provider: 'claude-cli',
+        day: '2026-11-03',
+        inputTokens: 7,
+        outputTokens: 0,
+        costUsd: 0,
+        rateLimitHits: 0,
+      },
+      {
+        provider: 'openai-api',
+        day: '2026-11-03',
+        inputTokens: 10,
+        outputTokens: 4,
+        costUsd: 0.2,
+        rateLimitHits: 1,
+      },
+    ])
   })
 
   it('marks interrupted work failed without deleting resume checkpoints', () => {

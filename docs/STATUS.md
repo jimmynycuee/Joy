@@ -4,14 +4,15 @@
 > 這裡只寫 PLAN 沒有的東西：現在做到哪、卡在哪、下一步、最近的決策。進度打勾在 PLAN 的「進度」。
 
 - 最後更新：2026-11-03
-- 目前階段：**P1 進行中**（T1.1–T1.6、T1.10、T1.11 已完成實作；T1.6 draft PR 的三平台 CI 待驗證；剩 T1.7、T1.8、T1.9）
-- 最新分支：`t1.6-server`，從 `t1.5-review-loop` 切出；完成後下一張從此分支接續。
+- 目前階段：**P1 進行中**（T1.1–T1.7、T1.10、T1.11 已完成實作；T1.6 draft PR #6 三平台 CI 通過、等擁有者審核/合併；剩 T1.9、T1.8）
+- 最新分支：`t1.7-event-log`，從 `t1.6-server` 切出；T1.7 已實作並通過完整檢查，PR 尚待建立。
 
 ## 分支與 PR（一條直線，每個疊在前一個上）
 
 ```
 main ← t0-foundation (#2) ← t1.1-claude-cli (#3) ← t1.4-worktree (#4) ← t1.11-config (#5)
-     ← t1.10-secrets ← t1.2-codex ← t1.3-openai-api ← t1.5-review-loop ← t1.6-server（draft PR）
+     ← t1.10-secrets ← t1.2-codex ← t1.3-openai-api ← t1.5-review-loop ← t1.6-server（#6 draft，三平台 CI 通過）
+                                                                      ← t1.7-event-log（T1.7 完成，PR 待建立）
 ```
 
 - #2–#5 已開 PR，CI 三平台通過，**等擁有者審核**（含 `packages/core` 變更）。
@@ -25,27 +26,28 @@ main ← t0-foundation (#2) ← t1.1-claude-cli (#3) ← t1.4-worktree (#4) ← 
 | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | monorepo / CI           | 完成。pnpm、TypeScript 6 strict、ESLint、Prettier、Vitest；CI 在 Ubuntu、macOS、Windows 跑 `pnpm check`（只在 PR 與推到 main 時觸發）                |
 | `packages/core`         | 介面（T0.5），說明在 `packages/core/README.md`                                                                                                       |
-| `packages/db`           | T0.6 schema + T1.6 repository：repos、tasks、attempts CRUD；events、reviews、usage 的持久化由 T1.7 補上                                              |
+| `packages/db`           | T0.6 schema + T1.6 CRUD；T1.7 增加 task 序號事件、reviews 與每日 usage 持久化                                                                        |
 | `packages/providers`    | Claude（T1.1，真實 CLI 端到端測過）、Codex（T1.2，只有 SDK 型別與合成 fixture）、OpenAI API（T1.3，假伺服器測過）。共用 `runCli` / `runJsonlProcess` |
 | `packages/executor`     | T1.4：每個 attempt 一個 worktree + branch，diff、commit、cleanup                                                                                     |
 | `packages/config`       | T1.11 後端：`~/.joy/config.yaml`（`JOY_HOME` 可改），zod 驗證，檔案改了下次讀取就生效                                                                |
 | `packages/secrets`      | T1.10：OS 鑰匙圈（`@napi-rs/keyring`）、環境變數覆寫、`Redactor` 遮罩                                                                                |
 | `packages/orchestrator` | T1.5：`reviewLoop()`：可選規劃 + 規劃審查 → 實作 → 結構化審查 → 同 session 修正，最多 N 輪                                                           |
-| server / UI / GitHub    | T1.6 server 已實作：loopback HTTP + WebSocket、任務執行/取消/恢復；事件持久化 T1.7、UI T1.8、GitHub T1.9 尚未完成                                    |
+| server / UI / GitHub    | T1.6–T1.7 server 完成：loopback HTTP + WebSocket、任務執行/取消/恢復、Redactor 遮罩事件寫入與重啟回放；UI T1.8、GitHub T1.9 尚未完成                 |
 
 ## 卡住 / 需要人做的事
 
-1. **T1.6 draft PR 的 CI**：等待 Ubuntu、macOS、Windows 三平台檢查通過後，再開始 T1.7。
-2. **Codex 真實 fixture**：擁有者的 Codex 額度暫時不夠。額度恢復後在已登入的電腦上執行
+1. **T1.6 draft PR #6**：Ubuntu、macOS、Windows 三平台 CI 已通過，等待擁有者審核/合併；依擁有者指示，agent 不合併。
+2. **T1.7 draft PR**：實作與本機檢查完成，尚待推送並開 PR；CI 三平台待跑。
+3. **Codex 真實 fixture**：擁有者的 Codex 額度暫時不夠。額度恢復後在已登入的電腦上執行
    `node scripts/record-fixtures.mjs codex`（預設用 gpt-6-luna + low effort），commit 結果，
    重跑 `pnpm vitest run --project providers codex`，修正不符的地方，然後刪掉 `synthetic-edit.*`。
-3. **審核並合併 PR #2–#5**，再依序處理 `t1.10-secrets` 之後的分支 PR。
-4. **確認模型名稱**：預設值（`packages/config/src/schema.ts`）取自 Codex 0.166 的內建清單，擁有者要確認自己帳號可用。
-5. Windows 實機尚未手動測過，只靠 CI.
+4. **審核並合併 PR #2–#5**，再依序處理 `t1.10-secrets` 之後的分支 PR。
+5. **確認模型名稱**：預設值（`packages/config/src/schema.ts`）取自 Codex 0.166 的內建清單，擁有者要確認自己帳號可用。
+6. Windows 實機尚未手動測過，只靠 CI.
 
 ## 下一步（照順序）
 
-1. **T1.7 事件紀錄**：在 `packages/db` 加 events、reviews、usage repositories；每個 `LoopEvent` / `AgentEvent` 先經 `Redactor` 再寫入 events 表，測試確保 key 不進 DB；usage 累加、quota 留存，重啟後 API 可完整回放。
+1. **T1.7 已完成**：事件/reviews/usage repositories；所有 `LoopEvent` / `AgentEvent` 先經 `Redactor` 再寫入 events，測試確認 key 不進 DB；usage 累加、quota 限額事件留存；重啟後 HTTP 與 WebSocket 可回放。
 2. **T1.9 GitHub**：commit、push 分支、`gh pr create --draft`，PR 描述附審查摘要（`formatFindings`）。用本機 bare repo 當 remote、假的 `gh` 腳本測。push 屬於 🟡 等級，MVP 由 UI 按鈕觸發。
 3. **T1.8 Web UI**（`apps/web`，React + Vite）：三欄式（任務清單／即時事件／diff），角色與模型選單，設定頁（含 T1.11 的 UI 與 OpenAI key 輸入），Playwright e2e 用假 provider。
 4. P1 完成後：開始用 Joy 開發 Joy。
@@ -54,6 +56,7 @@ main ← t0-foundation (#2) ← t1.1-claude-cli (#3) ← t1.4-worktree (#4) ← 
 
 | 日期       | 決策                                                                                                                                                                    | 原因 / 出處                                                                                                   |
 | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| 2026-11-03 | T1.7 事件採 task-wide 單調序號並在 Redactor 遮罩後才寫入 DB；同 attempt/round 的重播 review 更新既有列；usage 按 UTC 日與 provider 累加                                 | 讓多次 attempt 可連續回放、secret 不落盤，且 server resume 不因 review 唯一鍵衝突失敗                         |
 | 2026-11-03 | T1.6 server 固定只綁 `127.0.0.1`；P1 尚不支援的 compete 模式回 422；重啟中斷以 `failed` 狀態加 `interrupted` 事件表示，恢復沿用原 worktree 與 implementer session/model | loopback 維持本機邊界；避免靜默降級；現有 `TaskStatus` 沒有 interrupted 值，仍保留接續原 CLI session 的檢查點 |
 | 2026-11-03 | 審查結果用 JSON Schema 強制結構化；所有欄位必填、可為 null（OpenAI strict 模式要求）；列出 blocker 卻 approve 視為不通過                                                | `packages/orchestrator/src/prompts.ts`                                                                        |
 | 2026-11-03 | 輪數用完仍未通過時結果是 `succeeded` + `approved: false`，交給人決定                                                                                                    | 改動可能已經夠好，不該直接丟掉                                                                                |
