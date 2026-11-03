@@ -27,6 +27,7 @@
 - [x] T0.6 `packages/db`
 - [x] T1.1 `providers/claude-cli`
 - [x] T1.4 `executor/worktree`
+- [x] T1.10 機密存 OS 鑰匙圈（`packages/secrets`）
 - [x] T1.11 設定（`packages/config`；UI 設定頁併入 T1.8）
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
