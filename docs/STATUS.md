@@ -22,7 +22,7 @@ main … t1.5-review-loop
 - 已 live 核實 #6/#7 為 merged，三平台 checks 成功；#7 的 base 是 `t1.6-server`，不能據此聲稱已在 `main` 經 CI 或已部署。
 - #9 的 Ubuntu、macOS、Windows checks 全綠，但 secrets 變更須 owner human review；總控 Session 正跟進依賴 PR，不在本分支重複操作。
 - #8 的 Ubuntu/Windows 成功；macOS job 連續第三次在 runner 啟動前因容量問題取消，沒有測試失敗證據。依最新指示不重跑，等 owner 決定稍後是否再試。
-- #10 最新 head=`08b6cf2`；PR #10 仍為 draft。#11 已以 `t2.1-compete` 為 base 建立，保持 draft，CI 在執行中；不改動 PR #8/#9 的審核或 runner 狀態。
+- #10 最新 head=`08b6cf2`；PR #10 仍為 draft。#11 已以 `t2.1-compete` 為 base 建立，保持 draft，CI 待完成；不改動 PR #8/#9 的審核或 runner 狀態。
 
 ## 現在的樣子
 
