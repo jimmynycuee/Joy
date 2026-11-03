@@ -77,6 +77,7 @@ const taskInputSchema = z.strictObject({
   maxRounds: z.number().int().min(1).max(20).optional(),
 })
 const idSchema = z.string().min(1).max(128)
+const openAiSecretInputSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
 const MAX_BODY_BYTES = 1_000_000
 
 export interface TaskEvent {
@@ -189,10 +190,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           issues: error.issues.map(({ path, message }) => ({ path, message })),
         })
       } else if (error instanceof HttpError) {
-        json(res, error.status, { error: error.message })
+        json(res, error.status, { error: redactor.redact(error.message) })
       } else {
         const message = error instanceof Error ? error.message : 'Unexpected server error'
-        json(res, 500, { error: message })
+        json(res, 500, { error: redactor.redact(message) })
       }
     })
   })
@@ -330,6 +331,27 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (url.pathname === '/api/config' && method === 'PUT') {
       const config = configSchema.parse(await readJson(req)) as JoyConfig
       json(res, 200, { config: await configStore.save(config) })
+      return
+    }
+    if (url.pathname === '/api/secrets/openai-api-key' && method === 'GET') {
+      json(res, 200, await secretStore.status('openai_api_key'))
+      return
+    }
+    if (url.pathname === '/api/secrets/openai-api-key' && method === 'PUT') {
+      const { value } = openAiSecretInputSchema.parse(await readJson(req))
+      const status = await secretStore.status('openai_api_key')
+      if (status.source === 'env')
+        throw new HttpError(409, 'OPENAI_API_KEY is supplied by the environment; manage it there instead.')
+      await secretStore.set('openai_api_key', value)
+      json(res, 200, await secretStore.status('openai_api_key'))
+      return
+    }
+    if (url.pathname === '/api/secrets/openai-api-key' && method === 'DELETE') {
+      const status = await secretStore.status('openai_api_key')
+      if (status.source === 'env')
+        throw new HttpError(409, 'OPENAI_API_KEY is supplied by the environment; manage it there instead.')
+      await secretStore.delete('openai_api_key')
+      json(res, 200, await secretStore.status('openai_api_key'))
       return
     }
     if (url.pathname === '/api/providers' && method === 'GET') {

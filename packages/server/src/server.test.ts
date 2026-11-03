@@ -118,6 +118,8 @@ function fixture(
     implementer?: FakeProvider
     reviewer?: FakeProvider
     redactor?: Redactor
+    secretBackend?: MemoryBackend
+    secretEnv?: NodeJS.ProcessEnv
   } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), 'joy-server-test-'))
@@ -137,11 +139,18 @@ function fixture(
       },
     ])
   const api = new FakeProvider('openai-api')
+  const redactor = options.redactor ?? new Redactor()
+  const secretBackend = options.secretBackend ?? new MemoryBackend()
   const serverOptions: JoyServerOptions = {
     home: dir,
     database: db,
     configStore: new ConfigStore(join(dir, 'config.yaml')),
-    secretStore: new SecretStore({ backend: new MemoryBackend() }),
+    secretStore: new SecretStore({
+      backend: secretBackend,
+      ...(options.secretEnv ? { env: options.secretEnv } : {}),
+      onSecret: (secret) => redactor.add(secret),
+    }),
+    redactor,
     executor,
     providers: {
       'claude-cli': implementer,
@@ -158,6 +167,7 @@ function fixture(
     implementer,
     reviewer,
     api,
+    secretBackend,
     serverPromise,
     restart: () => createJoyServer(serverOptions),
   }
@@ -243,6 +253,75 @@ describe('Joy local server', () => {
       mode: 'compete',
     })
     expect(compete.status).toBe(422)
+  })
+
+  it('manages OpenAI keys without exposing them and redacts subsequent fake-provider events', async () => {
+    const key = 'test-openai-key-kept-out-of-responses-123'
+    const implementer = new FakeProvider('claude-cli', [
+      { type: 'message', text: `Agent repeated ${key}` },
+      { type: 'done', sessionId: 'fake-session', isError: false },
+    ])
+    const { db, secretBackend, serverPromise } = fixture({ implementer })
+    const { origin } = await start(serverPromise)
+
+    const emptyStatus = await fetch(`${origin}/api/secrets/openai-api-key`)
+    expect(await emptyStatus.json()).toEqual({ set: false })
+    const saved = await fetch(`${origin}/api/secrets/openai-api-key`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ value: key }),
+    })
+    expect(saved.status).toBe(200)
+    const savedBody = await saved.text()
+    expect(savedBody).not.toContain(key)
+    expect(JSON.parse(savedBody)).toEqual({ set: true, source: 'keychain' })
+    expect(secretBackend.values.get('openai_api_key')).toBe(key)
+
+    const config = await (await fetch(`${origin}/api/config`)).text()
+    expect(config).not.toContain(key)
+    const repo = (await (
+      await postJson(`${origin}/api/repos`, { path: '/secret-test-repo', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    const created = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.repo.id,
+      title: 'Check safe event redaction',
+      prompt: 'Return the fake response',
+      mode: 'single',
+    })
+    const { task } = (await created.json()) as { task: { id: string } }
+    const result = await waitForStatus(origin, task.id, 'done')
+    const responseBody = JSON.stringify(result)
+    expect(responseBody).not.toContain(key)
+    expect(responseBody).toContain('[REDACTED]')
+    expect(JSON.stringify(db.prepare('SELECT payload FROM events').all())).not.toContain(key)
+
+    const deleted = await fetch(`${origin}/api/secrets/openai-api-key`, { method: 'DELETE' })
+    expect(await deleted.json()).toEqual({ set: false })
+    expect(secretBackend.values.has('openai_api_key')).toBe(false)
+  })
+
+  it('reports environment-managed OpenAI keys without revealing or shadowing them', async () => {
+    const envKey = 'environment-openai-secret-never-return-52'
+    const backend = new MemoryBackend()
+    const { serverPromise } = fixture({ secretBackend: backend, secretEnv: { OPENAI_API_KEY: envKey } })
+    const { origin } = await start(serverPromise)
+
+    const status = await fetch(`${origin}/api/secrets/openai-api-key`)
+    const statusText = await status.text()
+    expect(JSON.parse(statusText)).toEqual({ set: true, source: 'env' })
+    expect(statusText).not.toContain(envKey)
+
+    const put = await fetch(`${origin}/api/secrets/openai-api-key`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ value: 'replacement-openai-secret-53' }),
+    })
+    expect(put.status).toBe(409)
+    expect(await put.text()).not.toContain(envKey)
+    const deleted = await fetch(`${origin}/api/secrets/openai-api-key`, { method: 'DELETE' })
+    expect(deleted.status).toBe(409)
+    expect(await deleted.text()).not.toContain(envKey)
+    expect(backend.values.has('openai_api_key')).toBe(false)
   })
 
   it('stores redacted events, reviews, and usage and replays persisted events after restart', async () => {

@@ -19,9 +19,15 @@ describe('SecretStore', () => {
   it('prefers the environment variable over the keychain', async () => {
     const backend = new MemoryBackend()
     await backend.set('openai_api_key', 'from-keychain-123')
-    const store = new SecretStore({ backend, env: { OPENAI_API_KEY: 'from-env-12345' } })
+    const seen: string[] = []
+    const store = new SecretStore({
+      backend,
+      env: { OPENAI_API_KEY: 'from-env-12345' },
+      onSecret: (value) => seen.push(value),
+    })
     expect(await store.get('openai_api_key')).toBe('from-env-12345')
     expect(await store.status('openai_api_key')).toEqual({ set: true, source: 'env' })
+    expect(seen).toEqual(['from-env-12345', 'from-env-12345'])
   })
 
   it('registers every value it touches for redaction', async () => {
@@ -29,7 +35,8 @@ describe('SecretStore', () => {
     const store = new SecretStore({ backend: new MemoryBackend(), env: {}, onSecret: (v) => seen.push(v) })
     await store.set('telegram_bot_token', 'token-value-1')
     await store.get('telegram_bot_token')
-    expect(seen).toEqual(['token-value-1', 'token-value-1'])
+    await store.status('telegram_bot_token')
+    expect(seen).toEqual(['token-value-1', 'token-value-1', 'token-value-1'])
   })
 
   it('rejects empty values and unknown names', async () => {

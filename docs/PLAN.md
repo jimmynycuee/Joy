@@ -35,7 +35,7 @@
 - [x] T1.6 server（HTTP + WebSocket、任務 CRUD、重啟恢復）
 - [x] T1.7 事件紀錄（寫入 DB、可回放、經 Redactor 遮罩）
 - [x] T1.9 GitHub：push 分支、開 draft PR
-- [ ] T1.8 Codex 風格 Web UI（含設定頁）
+- [x] T1.8 Codex 風格 Web UI（含設定頁）
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
 
@@ -307,7 +307,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 | T1.5 | `orchestrator/review-loop`：implement → review（結構化 findings JSON）→ fix，最多 N 輪；可選「先出計畫再審」 | 用 fake provider 測完整流程與中止條件 |
 | T1.6 | `server`：REST + WebSocket，任務 CRUD、事件串流、啟動時恢復未完成任務（resume） | 重啟 server 後進行中任務可繼續 |
 | T1.7 | 事件紀錄：全部 `AgentEvent` 寫入 `events`；可回放 | UI 重新整理後能完整重現任務過程 |
-| T1.8 | `apps/web`：三欄式 UI、任務清單、即時事件流、diff viewer、角色 / 模型選單 | 能完成一次完整任務；Playwright e2e 用 fake provider |
+| T1.8 | `apps/web`：React + Vite 三欄 UI、任務清單、WebSocket 即時事件、diff viewer、角色 / 模型選單、設定頁與 OpenAI key 狀態 | 假 provider Playwright e2e 完成建 repo、設定角色模型、建立任務、即時事件與 diff；key 僅存 SecretStore，從不回傳或落入 config / DB / events |
 | T1.9 | GitHub：commit、push branch、用 `gh` 開 draft PR，PR 描述附 review 摘要 | 在測試 repo 成功開出 PR |
 | T1.10 | 機密：OS keychain 存 OpenAI key（`@napi-rs/keyring` 或同類），log 遮罩 | key 不出現在 DB、log、事件中（測試驗證） |
 | T1.11 | 設定：`config.yaml` 讀寫 + UI 設定頁（各角色模型） | 改設定後新任務立即套用 |
