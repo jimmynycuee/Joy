@@ -37,7 +37,7 @@ main ← t0-foundation (#2) ← t1.1-claude-cli (#3) ← t1.4-worktree (#4) ← 
 ## 卡住 / 需要人做的事
 
 1. **T1.6 draft PR #6**：Ubuntu、macOS、Windows 三平台 CI 已通過，等待擁有者審核/合併；依擁有者指示，agent 不合併。
-2. **T1.7 draft PR #7**（[PR](https://github.com/jimmynycuee/Joy/pull/7)）：本機 `pnpm check` 通過；PR 最新提交的 Ubuntu、macOS、Windows CI 目前皆為 pending（GitHub 尚未回報 check runs）。
+2. **T1.7 draft PR #7**（[PR](https://github.com/jimmynycuee/Joy/pull/7)）：本機 `pnpm check` 通過；最新提交的 CI workflow run 為 `pending`，Ubuntu、macOS、Windows jobs 尚無結果。
 3. **Codex 真實 fixture**：擁有者的 Codex 額度暫時不夠。額度恢復後在已登入的電腦上執行
    `node scripts/record-fixtures.mjs codex`（預設用 gpt-6-luna + low effort），commit 結果，
    重跑 `pnpm vitest run --project providers codex`，修正不符的地方，然後刪掉 `synthetic-edit.*`。
