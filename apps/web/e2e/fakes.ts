@@ -34,6 +34,7 @@ export const fakeDiff: WorkspaceDiff = {
 }
 
 let fakeRuns = 0
+let blockedCodexForResume = false
 class E2EFakeProvider implements AgentProvider {
   readonly capabilities = {
     codeEdit: true,
@@ -51,6 +52,20 @@ class E2EFakeProvider implements AgentProvider {
     fakeRuns++
     const sessionId = `e2e-${fakeRuns}`
     yield { type: 'session_started', sessionId, model: model.model }
+    if (
+      !options.outputSchema &&
+      model.provider === 'codex-cli' &&
+      options.prompt.includes('pause-one-candidate-until-cancel') &&
+      !blockedCodexForResume
+    ) {
+      blockedCodexForResume = true
+      await new Promise<void>((resolve) => {
+        if (options.signal.aborted) resolve()
+        else options.signal.addEventListener('abort', () => resolve(), { once: true })
+      })
+      yield { type: 'done', sessionId, finalMessage: 'Cancelled fake candidate', isError: false }
+      return
+    }
     if (options.outputSchema) {
       if (options.prompt.includes('Candidate data (JSON):')) {
         const candidateIds = [...options.prompt.matchAll(/"attemptId"\s*:\s*"([^"]+)"/g)].map(
@@ -126,6 +141,7 @@ export interface FakeJoyRuntime {
 
 export async function startFakeJoyRuntime(port = 4317): Promise<FakeJoyRuntime> {
   fakeRuns = 0
+  blockedCodexForResume = false
   const home = mkdtempSync(join(tmpdir(), 'joy-t1.8-e2e-'))
   const database = openDatabase(':memory:')
   const redactor = new Redactor()

@@ -98,6 +98,27 @@ class FakeProvider implements AgentProvider {
   }
 }
 
+function successfulJudge(): FakeProvider {
+  return new FakeProvider('openai-api', (options) => {
+    const marker = 'Candidate data (JSON): '
+    const data = JSON.parse(options.prompt.slice(options.prompt.indexOf(marker) + marker.length)) as {
+      attemptId: string
+    }[]
+    return [
+      {
+        type: 'done',
+        sessionId: 'fake-judge',
+        isError: false,
+        structured: {
+          winnerAttemptId: data[0]?.attemptId,
+          summary: 'The first candidate wins.',
+          rationale: 'This fake judgment selects the first candidate.',
+        },
+      },
+    ]
+  })
+}
+
 class FakeExecutor implements Executor {
   prepareCalls = 0
   async prepare(repo: Workspace['repo'], taskId: TaskId, attemptId: AttemptId): Promise<Workspace> {
@@ -444,25 +465,7 @@ describe('Joy local server', () => {
   })
 
   it('rejects a second winner selection after a concurrent request closes review', async () => {
-    const judge = new FakeProvider('openai-api', (options) => {
-      const marker = 'Candidate data (JSON): '
-      const data = JSON.parse(options.prompt.slice(options.prompt.indexOf(marker) + marker.length)) as {
-        attemptId: string
-      }[]
-      return [
-        {
-          type: 'done',
-          sessionId: 'race-judge',
-          isError: false,
-          structured: {
-            winnerAttemptId: data[0]?.attemptId,
-            summary: 'The first candidate wins.',
-            rationale: 'This fake judgment enables the selection race test.',
-          },
-        },
-      ]
-    })
-    const { serverPromise } = fixture({ judge })
+    const { serverPromise } = fixture({ judge: successfulJudge() })
     const { origin } = await start(serverPromise)
     const taskId = await createCompeteTask(origin, 'Concurrent winner selection')
     const details = await waitForStatus(origin, taskId, 'review_ready')
@@ -480,6 +483,38 @@ describe('Joy local server', () => {
     expect(second.status).toBe(200)
     first.complete('"}')
     expect((await first.response).status).toBe(409)
+  })
+
+  it('keeps candidates from a resumed compete run separate and rejects stale selections', async () => {
+    const { db, serverPromise } = fixture({ judge: successfulJudge() })
+    const { origin } = await start(serverPromise)
+    const taskId = await createCompeteTask(origin, 'Resume keeps candidates scoped')
+    const firstRun = await waitForStatus(origin, taskId, 'review_ready')
+    const oldCandidate = firstRun.attempts.find((attempt) => attempt['status'] === 'succeeded')
+    expect(oldCandidate).toBeDefined()
+
+    setTaskStatus(db, tid(taskId), 'cancelled')
+    const resumed = await postJson(`${origin}/api/tasks/${taskId}/resume`, {})
+    expect(resumed.status).toBe(202)
+    const secondRun = await waitForStatus(origin, taskId, 'review_ready')
+
+    const staleSelection = await postJson(`${origin}/api/tasks/${taskId}/select`, {
+      attemptId: oldCandidate?.['id'],
+    })
+    expect(staleSelection.status).toBe(409)
+    expect(
+      secondRun.events.filter((event) => (event as { type?: string }).type === 'compete_run_started'),
+    ).toHaveLength(2)
+    const latestResult = secondRun.events
+      .filter((event) => (event as { type?: string }).type === 'result')
+      .at(-1) as { payload?: { candidates?: Array<{ attemptId: string; status: string }> } } | undefined
+    const currentCandidate = latestResult?.payload?.candidates?.find(
+      (candidate) => candidate.status === 'succeeded',
+    )
+    const currentSelection = await postJson(`${origin}/api/tasks/${taskId}/select`, {
+      attemptId: currentCandidate?.attemptId,
+    })
+    expect(currentSelection.status).toBe(200)
   })
 
   it('manages OpenAI keys without exposing them and redacts subsequent fake-provider events', async () => {

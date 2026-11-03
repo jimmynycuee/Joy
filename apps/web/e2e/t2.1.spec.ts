@@ -72,3 +72,65 @@ test('compete compares fake candidates and persists the selected winner', async 
   const selection = after.events.find((event) => event.type === 'winner_selected')
   expect(selection?.payload).toMatchObject({ attemptId: winner?.attemptId })
 })
+
+test('resume compares only candidates from the latest compete run', async ({ page, request }) => {
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
+
+  if (await page.getByRole('button', { name: 'Manage repositories' }).isVisible()) {
+    await page.getByRole('button', { name: 'Manage repositories' }).click()
+  } else {
+    await page.getByRole('button', { name: 'Add repository' }).click()
+  }
+  const repoDialog = page.getByRole('dialog', { name: 'Add repository' })
+  await repoDialog.getByLabel('Repository path').fill('/tmp/joy-t2.1-resume-project')
+  await repoDialog.getByLabel('Default branch').fill('main')
+  await repoDialog.getByRole('button', { name: 'Add repository' }).click()
+
+  await page.getByRole('button', { name: 'New task' }).click()
+  const taskDialog = page.getByRole('dialog', { name: 'Create a task' })
+  await taskDialog.getByLabel('Task repository').selectOption({ label: '/tmp/joy-t2.1-resume-project' })
+  await taskDialog.getByLabel('Task title').fill('Resume latest compete candidates')
+  await taskDialog
+    .getByLabel('Task instructions')
+    .fill('pause-one-candidate-until-cancel; compare the fake candidates.')
+  await taskDialog.getByLabel('Workflow').selectOption('compete')
+  await taskDialog.getByLabel('Implementer provider').selectOption('claude-cli')
+  await taskDialog.getByLabel('Implementer model').fill('fake-implementer')
+  await taskDialog.getByLabel('Reviewer provider').selectOption('codex-cli')
+  await taskDialog.getByLabel('Reviewer model').fill('fake-reviewer')
+  await taskDialog.getByRole('button', { name: 'Start task' }).click()
+
+  const tasksResponse = await request.get('/api/tasks')
+  const tasks = (await tasksResponse.json()) as { tasks: Array<{ id: string; title: string }> }
+  const task = tasks.tasks.find((item) => item.title === 'Resume latest compete candidates')
+  expect(task).toBeDefined()
+  const readDetails = async () => {
+    const response = await request.get(`/api/tasks/${task?.id}`)
+    return (await response.json()) as {
+      task: { status: string }
+      attempts: Array<{ status: string }>
+    }
+  }
+
+  await expect
+    .poll(async () => (await readDetails()).attempts.filter((attempt) => attempt.status === 'succeeded'))
+    .toHaveLength(1)
+  const cancelled = await request.post(`/api/tasks/${task?.id}/cancel`)
+  expect(cancelled.status()).toBe(200)
+  await expect.poll(async () => (await readDetails()).task.status).toBe('cancelled')
+  await expect(page.getByTestId('candidate-diff')).toHaveCount(1)
+
+  const resumed = await request.post(`/api/tasks/${task?.id}/resume`)
+  expect(resumed.status()).toBe(202)
+  await expect.poll(async () => (await readDetails()).task.status).toBe('review_ready')
+  await expect(page.locator('.large-status')).toHaveText('review ready')
+  await expect(page.getByTestId('candidate-diff')).toHaveCount(2)
+
+  await page.reload()
+  await expect(page.getByRole('heading', { name: 'Resume latest compete candidates' })).toBeVisible()
+  await expect(page.getByTestId('candidate-diff')).toHaveCount(2)
+  if (process.env.JOY_CAPTURE_T2_1 === '1') {
+    await page.screenshot({ path: 'test-results/t2.1-resume.png' })
+  }
+})

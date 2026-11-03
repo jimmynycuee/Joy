@@ -322,6 +322,17 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         throw new HttpError(404, 'Attempt was not found for this task')
       if (attempt.status !== 'succeeded')
         throw new HttpError(409, 'Only a successful candidate can be selected')
+      const taskEvents = listTaskEvents(db, task.id)
+      const latestRunStart = taskEvents.filter((event) => event.type === 'compete_run_started').at(-1)
+      if (latestRunStart) {
+        const latestRunAttemptIds = new Set(
+          taskEvents
+            .filter((event) => event.seq > latestRunStart.seq && event.type === 'attempt')
+            .map((event) => event.attemptId),
+        )
+        if (!latestRunAttemptIds.has(attempt.id))
+          throw new HttpError(409, 'Only candidates from the latest compete run can be selected')
+      }
       setTaskStatus(db, task.id, 'done')
       const event = publish(task.id, attempt.id, 'winner_selected', { attemptId: attempt.id })
       json(res, 200, { task: getTask(db, task.id), selectedAttemptId: attempt.id, event })
@@ -584,6 +595,13 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
     let anchorAttemptId: AttemptId | undefined
     let finished = false
+    let runStarted = false
+    const runId = randomUUID()
+    const markRunStarted = (attemptId: AttemptId) => {
+      if (runStarted) return
+      runStarted = true
+      publish(task.id, attemptId, 'compete_run_started', { runId })
+    }
     for await (const event of compete(
       {
         taskId: task.id,
@@ -617,6 +635,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
             : {}),
           ...(event.diff ? { diffStats: summarizeDiff(event.diff) } : {}),
         })
+        markRunStarted(event.attemptId)
       } else if (event.type === 'agent') {
         persistUsageEvent(db, event.model.provider, event.event)
         if (event.role === 'implementer' && event.attemptId && event.event.type === 'session_started')
@@ -645,6 +664,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
             status: event.status === 'cancelled' ? 'cancelled' : 'failed',
           })
         }
+        if (anchorAttemptId) markRunStarted(anchorAttemptId)
       }
 
       const attemptId =

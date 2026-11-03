@@ -121,6 +121,7 @@ function eventTitle(event: TaskEvent): string {
   if (event.type === 'result' && typeof payload?.reason === 'string') {
     return `${String(payload.status ?? 'result')}: ${payload.reason}`
   }
+  if (event.type === 'compete_run_started') return 'A new competition run started'
   if (event.type === 'winner_selected') return 'A candidate was selected as the winner'
   if (event.type === 'agent') {
     const agentEvent = record(payload?.event)
@@ -179,6 +180,11 @@ function competeView(events: TaskEvent[]): CompeteView {
   }
   for (const event of events) {
     const payload = record(event.payload)
+    if (event.type === 'compete_run_started') {
+      candidates.clear()
+      judgment = null
+      selectedAttemptId = ''
+    }
     if (event.type === 'attempt') addCandidate(payload)
     if (event.type === 'result') {
       if (Array.isArray(payload?.candidates)) payload.candidates.forEach(addCandidate)
