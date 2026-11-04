@@ -26,6 +26,7 @@ type Competitor = {
   status: string
   diff?: WorkspaceDiff
   reason?: string
+  synthesized?: boolean
 }
 type CompeteJudgment = { winnerAttemptId: string; summary: string; rationale: string }
 type CompeteView = {
@@ -33,6 +34,9 @@ type CompeteView = {
   judgment: CompeteJudgment | null
   judgeFailure: string | null
   selectedAttemptId: string
+  synthesisRunning: boolean
+  synthesisSucceeded: boolean
+  synthesisError: string | null
 }
 type TaskDetails = {
   task: Task
@@ -158,6 +162,9 @@ function competeView(events: TaskEvent[]): CompeteView {
   let judgment: CompeteJudgment | null = null
   let judgeFailure: string | null = null
   let selectedAttemptId = ''
+  let synthesisRunning = false
+  let synthesisSucceeded = false
+  let synthesisError: string | null = null
   const addCandidate = (value: unknown) => {
     const candidate = record(value)
     if (typeof candidate?.attemptId !== 'string') return
@@ -178,6 +185,7 @@ function competeView(events: TaskEvent[]): CompeteView {
           ? { diff: existing.diff }
           : {}),
       ...(typeof candidate.reason === 'string' ? { reason: candidate.reason } : {}),
+      ...(candidate.synthesized === true || existing?.synthesized ? { synthesized: true } : {}),
     })
   }
   for (const event of events) {
@@ -187,6 +195,14 @@ function competeView(events: TaskEvent[]): CompeteView {
       judgment = null
       judgeFailure = null
       selectedAttemptId = ''
+      synthesisRunning = false
+      synthesisSucceeded = false
+      synthesisError = null
+    }
+    if (event.type === 'synthesis_started') {
+      synthesisRunning = true
+      synthesisSucceeded = false
+      synthesisError = null
     }
     if (event.type === 'attempt') addCandidate(payload)
     if (event.type === 'result') {
@@ -227,11 +243,33 @@ function competeView(events: TaskEvent[]): CompeteView {
         judgeFailure = null
       }
     }
+    if (event.type === 'synthesis_result') {
+      synthesisRunning = false
+      synthesisSucceeded = payload?.status === 'succeeded'
+      synthesisError =
+        payload?.status === 'succeeded'
+          ? null
+          : typeof payload?.reason === 'string'
+            ? payload.reason
+            : 'Synthesis did not produce a candidate.'
+    }
+    if (event.type === 'synthesis_error') {
+      synthesisRunning = false
+      synthesisError = typeof payload?.message === 'string' ? payload.message : 'Synthesis failed.'
+    }
     if (event.type === 'winner_selected' && typeof payload?.attemptId === 'string') {
       selectedAttemptId = payload.attemptId
     }
   }
-  return { candidates: [...candidates.values()], judgment, judgeFailure, selectedAttemptId }
+  return {
+    candidates: [...candidates.values()],
+    judgment,
+    judgeFailure,
+    selectedAttemptId,
+    synthesisRunning,
+    synthesisSucceeded,
+    synthesisError,
+  }
 }
 
 function modelIdentity(model?: ModelRef): string {
@@ -378,6 +416,9 @@ function App() {
   const diffChunks = useMemo(() => splitDiff(diff?.patch ?? ''), [diff?.patch])
   const selectedPatch = diffChunks.get(activeDiffFile) ?? diffChunks.values().next().value ?? ''
   const compete = useMemo(() => competeView(details?.events ?? []), [details?.events])
+  const displayedCandidates = [...compete.candidates].sort(
+    (first, second) => Number(Boolean(second.synthesized)) - Number(Boolean(first.synthesized)),
+  )
 
   async function selectWinner(attemptId: string) {
     if (!details || !attemptId) return
@@ -400,6 +441,27 @@ function App() {
       setError(cause instanceof Error ? cause.message : 'Could not select winner')
     } finally {
       setSelectingWinner('')
+    }
+  }
+
+  async function synthesizeCandidate() {
+    if (!details) return
+    setError('')
+    try {
+      await request(`/api/tasks/${encodeURIComponent(details.task.id)}/synthesize`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      })
+      const next = await request<TaskDetails>(`/api/tasks/${encodeURIComponent(details.task.id)}`)
+      setDetails((current) =>
+        current?.task.id === details.task.id
+          ? { ...next, events: mergeEvents(next.events, current.events) }
+          : current,
+      )
+      await refreshLists()
+      setNotice('Synthesis started in a new isolated worktree.')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not synthesize candidate strengths')
     }
   }
 
@@ -873,13 +935,51 @@ function App() {
                     <p className="muted">The judge will compare successful candidate diffs.</p>
                   )}
                 </section>
+                {details?.task.status === 'review_ready' &&
+                compete.candidates.filter(
+                  (candidate) => !candidate.synthesized && candidate.status === 'succeeded' && candidate.diff,
+                ).length >= 2 &&
+                !compete.synthesisSucceeded ? (
+                  <section className="synthesis-controls" aria-label="Synthesize candidate strengths">
+                    <button
+                      className="primary-button"
+                      type="button"
+                      data-testid="synthesize-strengths"
+                      disabled={compete.synthesisRunning || Boolean(selectingWinner)}
+                      onClick={() => void synthesizeCandidate()}
+                    >
+                      {compete.synthesisRunning
+                        ? 'Synthesizing strengths…'
+                        : compete.synthesisError
+                          ? 'Retry synthesis'
+                          : 'Synthesize strengths'}
+                    </button>
+                    {compete.synthesisRunning ? (
+                      <p role="status">The judge model is combining candidate changes in a fresh worktree.</p>
+                    ) : null}
+                    {compete.synthesisError ? (
+                      <p className="synthesis-error" role="alert" data-testid="synthesis-error">
+                        Synthesis failed: {compete.synthesisError}
+                      </p>
+                    ) : null}
+                  </section>
+                ) : null}
+                {compete.synthesisSucceeded ? (
+                  <p className="synthesis-success" data-testid="synthesis-success">
+                    The synthesized candidate is ready to review and select.
+                  </p>
+                ) : null}
                 <div className="candidate-grid" aria-label="Candidate diffs">
                   {compete.candidates.length ? (
-                    compete.candidates.map((candidate, index) => (
+                    displayedCandidates.map((candidate) => (
                       <article className="candidate-card" key={candidate.attemptId}>
                         <header className="candidate-heading">
                           <div>
-                            <p className="eyebrow">CANDIDATE {index + 1}</p>
+                            <p className="eyebrow">
+                              {candidate.synthesized
+                                ? 'SYNTHESIZED CANDIDATE'
+                                : `CANDIDATE ${compete.candidates.filter((item) => !item.synthesized).indexOf(candidate) + 1}`}
+                            </p>
                             <h3>{modelIdentity(candidate.model)}</h3>
                           </div>
                           <span className={`candidate-status status-${candidate.status}`}>
@@ -932,7 +1032,11 @@ function App() {
                           <button
                             className="primary-button select-winner-button"
                             type="button"
-                            disabled={Boolean(selectingWinner) || Boolean(compete.selectedAttemptId)}
+                            disabled={
+                              Boolean(selectingWinner) ||
+                              Boolean(compete.selectedAttemptId) ||
+                              compete.synthesisRunning
+                            }
                             onClick={() => void selectWinner(candidate.attemptId)}
                           >
                             {selectingWinner === candidate.attemptId ? 'Saving winner…' : 'Select winner'}

@@ -50,7 +50,8 @@ import {
 import type { AttemptRecord, Database, RepoRecord, StoredTask } from '@joy/db'
 import { WorktreeExecutor } from '@joy/executor'
 import type { Executor, WorkspaceDiff } from '@joy/core'
-import { compete, reviewLoop } from '@joy/orchestrator'
+import { compete, reviewLoop, synthesizeStrengths } from '@joy/orchestrator'
+import type { SynthesisSourceCandidate } from '@joy/orchestrator'
 import { ClaudeCliProvider, CodexCliProvider, OpenAiApiProvider } from '@joy/providers'
 import { Redactor, SecretStore } from '@joy/secrets'
 import { handleToolHubHttpRequest } from '@joy/tools'
@@ -82,6 +83,24 @@ const taskInputSchema = z.strictObject({
   maxRounds: z.number().int().min(1).max(20).optional(),
 })
 const idSchema = z.string().min(1).max(128)
+const workspaceDiffSchema = z.object({
+  files: z.array(
+    z.object({
+      path: z.string(),
+      oldPath: z.string().optional(),
+      status: z.enum(['added', 'modified', 'deleted', 'renamed']),
+      additions: z.number().int().nonnegative(),
+      deletions: z.number().int().nonnegative(),
+    }),
+  ),
+  patch: z.string(),
+})
+const synthesisSourceCandidateSchema = z.object({
+  attemptId: idSchema,
+  model: modelSchema,
+  status: z.literal('succeeded'),
+  diff: workspaceDiffSchema,
+})
 const openAiSecretInputSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
 const MAX_BODY_BYTES = 1_000_000
 
@@ -326,6 +345,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         throw new HttpError(409, 'Only compete tasks have a winning attempt to select')
       if (task.status !== 'review_ready')
         throw new HttpError(409, `Task cannot select a winner from ${task.status}`)
+      if (running.has(task.id)) throw new HttpError(409, 'A task operation is already running')
       const body = z.strictObject({ attemptId: idSchema }).parse(await readJson(req))
       if (requireTask(task.id).status !== 'review_ready')
         throw new HttpError(409, 'Task is no longer ready for winner selection')
@@ -348,6 +368,44 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       setTaskStatus(db, task.id, 'done')
       const event = publish(task.id, attempt.id, 'winner_selected', { attemptId: attempt.id })
       json(res, 200, { task: getTask(db, task.id), selectedAttemptId: attempt.id, event })
+      return
+    }
+    const synthesizeMatch = /^\/api\/tasks\/([^/]+)\/synthesize$/.exec(url.pathname)
+    if (synthesizeMatch && method === 'POST') {
+      z.strictObject({}).parse(await readJson(req))
+      const task = requireTask(decodeURIComponent(synthesizeMatch[1] ?? ''))
+      if (task.mode !== 'compete')
+        throw new HttpError(409, 'Only compete tasks can synthesize candidate strengths')
+      if (task.status !== 'review_ready')
+        throw new HttpError(409, `Task cannot synthesize strengths from ${task.status}`)
+      if (running.has(task.id)) throw new HttpError(409, 'A task operation is already running')
+
+      const latestRun = latestSynthesisSources(db, task.id)
+      if (!latestRun.runStart)
+        throw new HttpError(409, 'No completed competition run is available to synthesize')
+      if (latestRun.candidates.length < 2)
+        throw new HttpError(409, 'Synthesis requires at least two successful candidates from the latest run')
+      if (
+        latestRun.runEvents.some((event) => {
+          if (
+            event.type !== 'synthesis_result' ||
+            typeof event.payload !== 'object' ||
+            event.payload === null
+          )
+            return false
+          return (event.payload as { status?: unknown }).status === 'succeeded'
+        })
+      )
+        throw new HttpError(409, 'This competition run already has a synthesized candidate')
+
+      const repo = getRepo(db, task.repoId)
+      if (!repo) throw new HttpError(404, `Repository ${task.repoId} was not found`)
+      const config = await configStore.get()
+      const synthesizer = resolveRole('judge', config.roles as RoleConfig, task.roleOverrides)
+      if (!providers[synthesizer.provider])
+        throw new HttpError(409, `No provider configured for synthesizer ${synthesizer.provider}`)
+      const started = scheduleSynthesis(task, repo, latestRun.candidates, synthesizer)
+      json(res, 202, { task: getTask(db, task.id), event: started })
       return
     }
     const cancelMatch = /^\/api\/tasks\/([^/]+)\/cancel$/.exec(url.pathname)
@@ -522,6 +580,32 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (running.get(task.id) === active) running.delete(task.id)
       for (const [token, entry] of toolContexts) if (entry.taskId === task.id) toolContexts.delete(token)
     })
+  }
+
+  function scheduleSynthesis(
+    task: StoredTask,
+    repo: RepoRecord,
+    candidates: SynthesisSourceCandidate[],
+    synthesizer: ModelRef,
+  ): TaskEvent {
+    const controller = new AbortController()
+    const active: ActiveTask = { controller, promise: Promise.resolve() }
+    const anchorAttemptId = candidates[0]?.attemptId
+    if (!anchorAttemptId) throw new Error('Synthesis has no source candidate')
+    running.set(task.id, active)
+    const started = publish(task.id, anchorAttemptId, 'synthesis_started', {
+      sourceAttemptIds: candidates.map((candidate) => candidate.attemptId),
+      model: synthesizer,
+    })
+    active.promise = runSynthesisTask(task, repo, candidates, synthesizer, controller)
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : 'Synthesis failed unexpectedly'
+        publish(task.id, anchorAttemptId, 'synthesis_error', { message })
+      })
+      .finally(() => {
+        if (running.get(task.id) === active) running.delete(task.id)
+      })
+    return started
   }
 
   async function runTask(task: StoredTask, controller: AbortController, resume?: ResumeState): Promise<void> {
@@ -772,6 +856,70 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (!finished) throw new Error('Competition stopped without a result')
   }
 
+  async function runSynthesisTask(
+    task: StoredTask,
+    repo: RepoRecord,
+    candidates: SynthesisSourceCandidate[],
+    synthesizer: ModelRef,
+    controller: AbortController,
+  ): Promise<void> {
+    let finished = false
+    for await (const event of synthesizeStrengths(
+      {
+        taskId: task.id,
+        repo,
+        prompt: task.prompt,
+        synthesizer,
+        candidates,
+        signal: controller.signal,
+      },
+      { providers, executor },
+    )) {
+      if (event.type === 'attempt') {
+        const candidate = event.candidate
+        if (!getAttempt(db, candidate.attemptId)) {
+          createAttempt(db, {
+            id: candidate.attemptId,
+            taskId: task.id,
+            provider: candidate.model.provider,
+            model: candidate.model.model,
+            status: candidate.status,
+          })
+        }
+        updateAttempt(db, candidate.attemptId, {
+          status: candidate.status,
+          ...(candidate.workspace
+            ? {
+                worktreePath: candidate.workspace.path,
+                branch: candidate.workspace.branch,
+                baseCommit: candidate.workspace.baseCommit,
+              }
+            : {}),
+          ...(candidate.diff ? { diffStats: summarizeDiff(candidate.diff) } : {}),
+        })
+        publish(task.id, candidate.attemptId, 'attempt', candidate)
+      } else if (event.type === 'agent') {
+        persistUsageEvent(db, event.model.provider, event.event)
+        if (event.event.type === 'session_started')
+          updateAttempt(db, event.attemptId, { sessionId: event.event.sessionId })
+        publish(task.id, event.attemptId, 'agent', { role: 'synthesizer', round: 1, event: event.event })
+      } else {
+        finished = true
+        updateAttempt(db, event.candidate.attemptId, {
+          status: event.candidate.status,
+          ...(event.candidate.diff ? { diffStats: summarizeDiff(event.candidate.diff) } : {}),
+        })
+        publish(task.id, event.candidate.attemptId, 'synthesis_result', {
+          attemptId: event.candidate.attemptId,
+          status: event.candidate.status,
+          sourceAttemptIds: event.candidate.sourceAttemptIds,
+          ...(event.candidate.reason ? { reason: event.candidate.reason } : {}),
+        })
+      }
+    }
+    if (!finished) throw new Error('Synthesis stopped without a result')
+  }
+
   async function runSingle(
     task: StoredTask,
     repo: RepoRecord,
@@ -876,6 +1024,40 @@ function statusWithPendingApprovals(db: Database, taskId: TaskId, status: TaskSt
   if (status !== 'failed' && status !== 'cancelled' && listTaskApprovals(db, taskId, 'pending').length > 0)
     return 'awaiting_approval'
   return status
+}
+
+function latestSynthesisSources(
+  db: Database,
+  taskId: TaskId,
+): {
+  runStart?: TaskEvent
+  runEvents: TaskEvent[]
+  candidates: SynthesisSourceCandidate[]
+} {
+  const events = listTaskEvents(db, taskId)
+  const runStart = events.filter((event) => event.type === 'compete_run_started').at(-1)
+  if (!runStart) return { runEvents: [], candidates: [] }
+  const runEvents = events.filter((event) => event.seq > runStart.seq)
+  const result = runEvents.filter((event) => event.type === 'result').at(-1)
+  const payload =
+    typeof result?.payload === 'object' && result.payload !== null
+      ? (result.payload as Record<string, unknown>)
+      : undefined
+  const candidates = Array.isArray(payload?.candidates)
+    ? payload.candidates.flatMap((candidate) => {
+        const parsed = synthesisSourceCandidateSchema.safeParse(candidate)
+        return parsed.success
+          ? [
+              {
+                attemptId: parsed.data.attemptId as AttemptId,
+                model: parsed.data.model as ModelRef,
+                diff: parsed.data.diff as WorkspaceDiff,
+              },
+            ]
+          : []
+      })
+    : []
+  return { runStart, runEvents, candidates }
 }
 
 function persistUsageEvent(db: Database, provider: ProviderKind, event: AgentEvent): void {

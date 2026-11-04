@@ -1,6 +1,9 @@
 import { expect, test } from '@playwright/test'
 
-test('compete compares fake candidates and persists the selected winner', async ({ page, request }) => {
+test('compete synthesizes candidate strengths and persists the selected winner', async ({
+  page,
+  request,
+}) => {
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
 
@@ -42,6 +45,14 @@ test('compete compares fake candidates and persists the selected winner', async 
   expect(patches[1]).toContain('hello from fake')
   expect(patches[0]).not.toBe(patches[1])
 
+  await page.getByTestId('synthesize-strengths').click()
+  await expect(page.getByTestId('synthesis-success')).toBeVisible()
+  await expect(page.getByText('SYNTHESIZED CANDIDATE', { exact: true })).toBeVisible()
+  await expect(page.getByTestId('candidate-diff')).toHaveCount(3)
+  if (process.env.JOY_CAPTURE_T2_1 === '1') {
+    await page.screenshot({ path: 'test-results/t2.1-synthesis.png' })
+  }
+
   const tasksResponse = await request.get('/api/tasks')
   const tasks = (await tasksResponse.json()) as { tasks: Array<{ id: string; title: string }> }
   const task = tasks.tasks.find((item) => item.title === 'Compare fake implementations')
@@ -53,10 +64,18 @@ test('compete compares fake candidates and persists the selected winner', async 
   const result = before.events
     .map((event) => event.payload as { candidates?: Array<{ attemptId: string; status: string }> })
     .find((payload) => Array.isArray(payload.candidates))
-  const winner = result?.candidates?.find((candidate) => candidate.status === 'succeeded')
+  const winner = before.events
+    .filter((event) => event.type === 'attempt')
+    .map((event) => event.payload as { attemptId?: string; synthesized?: boolean })
+    .find((candidate) => candidate.synthesized)
   expect(winner).toBeDefined()
+  expect(result?.candidates?.filter((candidate) => candidate.status === 'succeeded')).toHaveLength(2)
 
-  await page.getByRole('button', { name: 'Select winner' }).first().click()
+  await page
+    .locator('.candidate-card')
+    .filter({ hasText: 'SYNTHESIZED CANDIDATE' })
+    .getByRole('button', { name: 'Select winner' })
+    .click()
   await expect(page.getByTestId('selected-winner')).toHaveText('Selected winner')
   await expect(page.locator('.large-status')).toHaveText('done')
 
