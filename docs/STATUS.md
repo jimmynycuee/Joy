@@ -2,19 +2,19 @@
 
 > 接手前請先讀本檔、`AGENTS.md` 與 `docs/PLAN.md`。本檔記錄目前進度、阻塞與決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。
 
-- 最後更新：2026-11-04 18:25 UTC
+- 最後更新：2026-11-04 18:30 UTC
 - 目前階段：**P1 整合 PR #58**；`main` 為 `2c3fdb4`，P1 尚未合併。#58 維持 draft；P2 不得開始，T2.1 明確排除。
 - 計畫與決策：依 `docs/PLAN.md` v0.2。Codex 在 P2 使用 `app-server`（T2.7）、每 repo provider allowlist（T1.12）、`joy doctor`（T1.13）及額度／成本政策已定案，但 tickets 仍須完成。#53 的 T1.12 實際 allowlist 修補列為 #58 後續；它必須納入、review、重驗並合併，才算 P1 完成或解除 P2 hold。T1.13 仍未完成。
 - 驗證基線：`main` 的 [CI run 41848131509](https://github.com/jimmynycuee/Joy/actions/runs/41848131509) 對 SHA `2c3fdb4ca7924cd52dea62321d037a83e01766ab` 成功，Ubuntu、macOS、Windows 皆通過。
 
-## 目前整合 PR（2026-11-04 18:25 UTC）
+## 目前整合 PR（2026-11-04 18:30 UTC）
 
-- [PR #58 — Integrate the P1 stack into main](https://github.com/jimmynycuee/Joy/pull/58)：draft、base `main` (`2c3fdb4`)、head branch `integrate-p1`；截至 18:25 UTC，已發布 head `4114d9bd827ad7e6eca14627d15f6f761b59b760`。其四項 CI 均成功；尚無正式 GitHub review。
+- [PR #58 — Integrate the P1 stack into main](https://github.com/jimmynycuee/Joy/pull/58)：draft、base `main` (`2c3fdb4`)、head branch `integrate-p1`；head `398d8f14472df8644e3d3ae56938f93d2a420efc`。最新讀取時 Ubuntu、macOS、web E2E 成功，Windows 仍執行中；獨立 review 尚待完成。
 - 整合範圍包括 T1.6/T1.7、T1.8、T1.9、Origin/Host 驗證、provider capability/model-effort guard、keychain 不可用時 UI 可啟動、snapshot/cursor replay 與事件去重、implementer/fixer 不提供 `openai-api`，以及 web build/Playwright CI。Vite proxy 保留瀏覽器 Origin/Host 並關閉廣泛 CORS，`review_loop` 亦拒絕不具 code-edit 能力的 implementer。T2.1/compete 實作不在 #58；T0.4 Codex fixture、Windows 真機、登入、MCP 選擇與產品／成本選擇仍是外部或使用者項目，保留於下方追蹤。
-- 本機驗證：`pnpm install --frozen-lockfile` 通過；在最新 PR 程式碼加上 config-save guard 後，`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 通過（196 tests passed、2 skipped）；`pnpm --filter @joy/web build` 通過；`pnpm test:e2e` 的 4 項 Playwright 測試通過（含 HTTP/WebSocket proxy Origin 回歸）。E2E 使用 fake provider，沒有真實模型/API 呼叫或支出。
+- 本機驗證在本機 commit `2382074a11b21a2524a0a81e83e6ef293da39061`、tree `f2cb48c6fd0953608fbd39499d229536d267e6bf` 通過；已確認發布 head `398d8f14472df8644e3d3ae56938f93d2a420efc` 有完全相同的 tree。`pnpm install --frozen-lockfile` 成功；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 成功（196 tests passed、2 skipped）；`pnpm --filter @joy/web build` 成功；`pnpm test:e2e` 成功（4 個 Playwright 測試，含 HTTP/WebSocket proxy Origin regression）。E2E 使用 fake provider，沒有真實模型/API 呼叫或支出。
 - **Owner review（合併後 follow-up）**：`packages/core` provider/model interface 與 `packages/secrets` keychain/secret handling 均列入 owner review。依使用者明確授權，owner review 可在 #58 合併後持續追蹤，不是額外的合併 gate；仍須遵守 GitHub 實際 required approvals/checks。
-- **阻塞**：head `4114d9b` 的 CI 四項均成功，但 `PUT /api/config` 仍接受不支援 code-edit 的 implementer。新增 regression test 在該 head 重現 200；本機 guard 已修正並通過完整 `pnpm check`、web build 與 Playwright，尚未提交或推送，故需新 head CI 與獨立 review。#58 維持 draft；#53/T1.12 與 T1.13 是 #58 後的 P1 工作，完成後才開始 P2。#57 保持 owner action（`close:false`）；來源 PR 未關閉。此 Session 的 draft-only PR policy 不允許標 ready 或 merge。
-- **下一步**：提交並推送 config-save guard 至既有 #58，維持 draft；核對新 head 後等待四項 CI 全綠及獨立無 blocker review。之後按使用者順序完成 T1.12、T1.13，再解除 P2 hold；保持 #57 為 owner action（`close:false`），且不要把 owner review follow-up 變成合併 gate。
+- **阻塞**：config-save guard 已推送至 #58，新增 regression 已在未修正的 `4114d9b` 重現回應 200，修正後確認回應 422、沒有 provider call 且舊設定不變。新 head `398d8f1` 的 CI 最新讀取為 Ubuntu/macOS/web E2E 成功、Windows 執行中；仍需 Windows 通過及對此 head 的獨立無 blocker review。#58 維持 draft；T1.12 與 T1.13 是 #58 後的 P1 工作，不是 #58 合併 gate，完成後才開始 P2。#57 保持 owner action（`close:false`）；來源 PR 未關閉。此 Session 的 draft-only PR policy 不允許標 ready 或 merge。
+- **下一步**：等待 #58 的 Windows CI 及對 head `398d8f1` 的獨立 review；若兩者通過，交由有權限者按 merge-commit 要求處理 ready/merge。之後按使用者順序完成 T1.12、T1.13，再解除 P2 hold；保持 #57 為 owner action（`close:false`），且不要把 owner review follow-up 變成合併 gate。
 
 ## PR 鏈快照（2026-11-04 14:20 UTC；歷史狀態）
 
