@@ -197,6 +197,47 @@ describe('reviewLoop', () => {
     ).toEqual(['preparing', 'planning', 'plan_review', 'implementing', 'reviewing'])
   })
 
+  it('fails closed when resumed plan-first planning returns an error', async () => {
+    const sessionId = 'session-before-restart'
+    const impl = new FakeProvider('claude-cli', [
+      () => [
+        { type: 'session_started', sessionId },
+        { type: 'error', message: 'read-only resume failed', recoverable: false },
+        { type: 'done', sessionId, isError: true },
+      ],
+    ])
+    const rev = new FakeProvider('codex-cli', [])
+    const workspace: Workspace = {
+      repo: { id: 'r1' as RepoId, path: '/repo', defaultBranch: 'main' },
+      taskId: 't1' as TaskId,
+      attemptId: 'a1' as AttemptId,
+      path: '/persisted/worktree',
+      branch: 'joy/t1/a1',
+      baseCommit: 'base',
+    }
+    const { events, result } = await run(
+      input({ resumeWorkspace: workspace, resumeSessionId: sessionId, planFirst: true }),
+      impl,
+      rev,
+      new FakeExecutor([]),
+    )
+
+    expect(result).toMatchObject({
+      type: 'result',
+      status: 'failed',
+      reason: expect.stringMatching(/read-only resume failed/),
+    })
+    expect(impl.calls).toEqual([
+      expect.objectContaining({
+        cwd: '/persisted/worktree',
+        resumeSessionId: sessionId,
+        autonomy: 'read-only',
+      }),
+    ])
+    expect(events.some((event) => event.type === 'phase' && event.phase === 'implementing')).toBe(false)
+    expect(rev.calls).toHaveLength(0)
+  })
+
   it('fails when the implementer changes nothing', async () => {
     const impl = new FakeProvider('claude-cli', [() => ok('s1')])
     const rev = new FakeProvider('codex-cli', [])
