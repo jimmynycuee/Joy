@@ -76,9 +76,10 @@ main … t1.5-review-loop
 ## 下一步（依相依順序）
 
 1. 推送 PR #11 的 base sync 修正並確認更新後 head 的三平台 CI；依要求不改成 ready、不合併。
-2. 追蹤 #10 獨立 review 與 #9 owner human review；不重跑 #8 macOS，也不更改 #8/#9 審核狀態。
-3. #12 T3.9 draft PR 的三平台 CI 已綠；同時只推進不依賴未決 tier/trigger/quota/scheduler 政策的工作。
-4. Codex 真實 fixture、模型名稱確認與 Windows 實機驗證留待相應條件可用時處理。
+2. T3.2 draft PR #22 的安全非 Telegram 工具已提交；保持 draft 與 PLAN 未勾選，待 T2.3/T2.4 決策後再補完成通知與剩餘驗收。
+3. 追蹤 #10 獨立 review 與 #9 owner human review；不重跑 #8 macOS，也不更改 #8/#9 審核狀態。
+4. #12 T3.9 draft PR 的三平台 CI 已綠；同時只推進不依賴未決 tier/trigger/quota/scheduler 政策的工作。
+5. Codex 真實 fixture、模型名稱確認與 Windows 實機驗證留待相應條件可用時處理。
 
 ## 最近的決策（新的放最上面）
 
