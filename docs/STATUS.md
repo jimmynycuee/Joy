@@ -3,6 +3,7 @@
 > 開工前先讀本檔、`AGENTS.md`、`docs/PLAN.md`；收工前更新本檔。這裡記錄最新進度、阻塞、下一步與最近決策。
 
 - 最後更新：2026-11-04
+- T3.6：`t3.6-event-memory` 以 PR #14 的 `t3.3-memory` head `9d9f350cf1c8d97c6960aad25adbba28e3576155` 為基礎；摘要只接受明確使用者核准，檢索沿用 `memories_fts`。`messages` 僅有 role/content/conversation/time，不能證明來源，因此不自動彙整舊對話；embedding 延後。
 - 目前階段：**P2 尚有待決項；P3 T3.3 實作完成、draft PR 待 owner review**。T3.3 新增 `@joy/memory`，沿用既有 `memories` schema，user scope 僅從直接 user utterance 擷取；Email 等外部來源在擷取前拒絕，敏感內容不落庫，confidence / expiry 有測試。PR #11 已確認 published `t2.2-tools` head 與本地 base 一致；三平台 CI 皆已通過，PR #11 保持 draft、不合併。T2.1 PR #10、T3.9 PR #12 及 #8/#9 狀態沿用下方記錄。
 - 本 ticket 分支：`t3.3-memory`，從 PR #11 published `t2.2-tools` head `d67fb2a5dcca95f249c2da03806cf745f2e6c4e3` 建立；原 `t2.2-tools` 同步自 `t2.1-compete` head `65a026c569e4c543f9da8d33efdac18b4e616036`；PR #11 base=`t2.1-compete`。
 - 本次 base sync 後驗證：隔離繼承 Git 身分的 `pnpm check` 通過（188 passed、2 skipped）；T2.2/T2.1 fake-provider Playwright E2E 通過（4 specs）。所有 provider 測試只使用 fakes，沒有呼叫真模型。
@@ -34,7 +35,7 @@ main … t1.5-review-loop
 | monorepo / CI                   | pnpm、TypeScript strict、ESLint、Prettier、Vitest；三平台 CI 執行 `pnpm check`。                                                                                                                     |
 | `packages/core` / `packages/db` | 領域介面、SQLite schema、task/repo CRUD、事件/reviews/usage 持久化已完成。                                                                                                                           |
 | `packages/tools`                | T2.2 Tool Hub 提供 task-scoped MCP：唯讀 `ask_peer`、`task_status`、持久化 `request_approval`（僅記錄提案，不執行動作）。                                                                            |
-| `packages/memory`               | T3.3 三層 memory storage 沿用既有 schema；user-memory 僅接受直接 user utterance，敏感內容拒寫，讀取排除已過期記憶。                                                                                  |
+| `packages/memory`               | T3.3 三層 memory storage 沿用既有 schema；T3.6 明確核准後才寫入 episode summary，透過既有 FTS5 搜尋；敏感與過期記憶不回傳。因 `messages` 無來源欄位，不自動摘要訊息。                                |
 | `packages/providers`            | Claude CLI、Codex CLI、OpenAI API adapters 完成；Codex 目前仍使用合成 fixture，尚待登入電腦錄製真實 fixture。                                                                                        |
 | `packages/executor`             | 每個 attempt 使用獨立 Git worktree/branch，提供 diff、commit、cleanup。                                                                                                                              |
 | `packages/orchestrator`         | T1.5 `reviewLoop()` 完成；T2.1 支援並行競賽、自動 strengths 合成、24,000-byte provider prompt 上限與 code-edit capability 驗證；provider 呼叫可注入 task-scoped MCP Tool Hub。                       |
@@ -60,22 +61,24 @@ main … t1.5-review-loop
 3. #12 T3.9 draft PR 的三平台 CI 已綠；同時只推進不依賴未決 tier/trigger/quota/scheduler 政策的工作。
 4. T3.3 draft PR 等待 owner human review；memory-write rules 維持 draft，未合併。
 5. Codex 真實 fixture、模型名稱確認與 Windows 實機驗證留待相應條件可用時處理。
+6. T3.6 只交付安全的 user-approved 摘要寫入與 FTS5 檢索；待 messages schema/寫入端能提供可信來源 provenance 後，才可開啟自動對話摘要。embedding 語意搜尋仍延後。
 
 ## 最近的決策（新的放最上面）
 
-| 日期       | 決策                                                                                                                                                                                         | 原因 / 出處                                                                                            |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| 2026-11-04 | T3.3 user-scope 記憶只從明確標記的直接 user utterance 擷取；Email 等外部來源不解析，credential-like / government-ID 內容不寫入，confidence 與 expiry 沿用既有欄位。                          | T3.3 ticket 與既有外部內容不可信規則；保留 owner 對 memory-write rules 的審核。                        |
-| 2026-11-04 | 「合併優點」採自動 synthesis；使用配置的 Judge 模型在獨立 worktree 執行額外呼叫，輸出可檢視、可明確選取的新候選，原候選保留。                                                                | owner 回答自動合成；維持明確勝者選取與 worktree 隔離。                                                 |
-| 2026-11-03 | T2.2 Tool Hub 使用 loopback、token-scoped stateless MCP；`ask_peer` 僅呼叫不同 provider 且以 read-only 運行，approval request 與 awaiting 狀態持久化，取消時 pending approval 轉為 expired。 | provider 與 server 整合、schema/error/cancellation、重啟持久化及 fake-provider acceptance 均有測試。   |
-| 2026-11-03 | T2.1 以 Implementer/Reviewer 不同 provider 作平行候選，各在獨立 worktree 執行；read-only Judge 結構化比較，使用者明確選勝並將 `winner_selected` 持久化。                                     | 後續 owner 選擇自動 synthesis，同時保留原候選與明確勝者選取。                                          |
-| 2026-11-03 | T2.1 裁判失敗但有成功候選時仍可 review/select；preflight 失敗要持久化並以首個缺失角色 provider 標記 anchor；勝者選取在讀取 body 後重驗狀態；resume 用 run boundary 限定最新候選。            | 唯讀獨立審查發現兩項中度與一項低度問題，均以 regression tests 重現與修正。                             |
-| 2026-11-03 | T1.8 UI 從 task details/WebSocket replay 使用結果 diff，不新增 diff GET route；OpenAI key API 僅回 `{ set, source }`，key 走 SecretStore/Redactor。                                          | `Executor.diff()` 會 `git add --all` 改 worktree index；fake-provider Playwright e2e 驗證 key 不回顯。 |
-| 2026-11-03 | T1.9 GitHub 發布由 `packages/github` 負責；限定非預設 worktree branch，無 shell push，開 draft PR。                                                                                          | bare remote + 假 gh 測試；push 由明確 UI 動作觸發。                                                    |
-| 2026-11-03 | T1.7 event log 採 task-wide 單調序號，Redactor 遮罩後才寫 DB；usage 按 UTC 日/provider 累加。                                                                                                | 多次 attempt 可連續回放，避免秘密落盤。                                                                |
-| 2026-11-03 | T1.6 server 固定只綁 `127.0.0.1`；重啟中斷以 `failed` + `interrupted` event 記錄，恢復沿用 worktree 與 implementer session/model。                                                           | 維持本機邊界並保存恢復檢查點。                                                                         |
-| 2026-11-03 | Judge/reviewer 使用結構化 JSON Schema；列出 blocker 卻 approve 視為不通過；reviewLoop 輪數用完仍未通過保留工作結果，且不自動清理 worktree。                                                  | 交由人檢視結果後再決定是否交付或清理。                                                                 |
-| 2026-11-03 | 真實模型測試使用最便宜模型與 low effort；Codex fixture 暫以合成 fixture，錄到真實 fixture 後重跑 contract test。                                                                             | 控制訂閱額度使用並保持 adapter 合約驗證。                                                              |
+| 日期       | 決策                                                                                                                                                                                                          | 原因 / 出處                                                                                            |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| 2026-11-04 | T3.6 僅允許明確 user-approved 摘要寫入既有 episode memory，沿用 `memories_fts`；不新增 schema、不啟用 embeddings。舊 `messages` role/content 無法證明 user 內容未混入外部來源，因此 fail closed，不自動摘要。 | T3.6 資料來源安全要求；避免把外部文字或模型輸出當成可信對話記憶。                                      |
+| 2026-11-04 | T3.3 user-scope 記憶只從明確標記的直接 user utterance 擷取；Email 等外部來源不解析，credential-like / government-ID 內容不寫入，confidence 與 expiry 沿用既有欄位。                                           | T3.3 ticket 與既有外部內容不可信規則；保留 owner 對 memory-write rules 的審核。                        |
+| 2026-11-04 | 「合併優點」採自動 synthesis；使用配置的 Judge 模型在獨立 worktree 執行額外呼叫，輸出可檢視、可明確選取的新候選，原候選保留。                                                                                 | owner 回答自動合成；維持明確勝者選取與 worktree 隔離。                                                 |
+| 2026-11-03 | T2.2 Tool Hub 使用 loopback、token-scoped stateless MCP；`ask_peer` 僅呼叫不同 provider 且以 read-only 運行，approval request 與 awaiting 狀態持久化，取消時 pending approval 轉為 expired。                  | provider 與 server 整合、schema/error/cancellation、重啟持久化及 fake-provider acceptance 均有測試。   |
+| 2026-11-03 | T2.1 以 Implementer/Reviewer 不同 provider 作平行候選，各在獨立 worktree 執行；read-only Judge 結構化比較，使用者明確選勝並將 `winner_selected` 持久化。                                                      | 後續 owner 選擇自動 synthesis，同時保留原候選與明確勝者選取。                                          |
+| 2026-11-03 | T2.1 裁判失敗但有成功候選時仍可 review/select；preflight 失敗要持久化並以首個缺失角色 provider 標記 anchor；勝者選取在讀取 body 後重驗狀態；resume 用 run boundary 限定最新候選。                             | 唯讀獨立審查發現兩項中度與一項低度問題，均以 regression tests 重現與修正。                             |
+| 2026-11-03 | T1.8 UI 從 task details/WebSocket replay 使用結果 diff，不新增 diff GET route；OpenAI key API 僅回 `{ set, source }`，key 走 SecretStore/Redactor。                                                           | `Executor.diff()` 會 `git add --all` 改 worktree index；fake-provider Playwright e2e 驗證 key 不回顯。 |
+| 2026-11-03 | T1.9 GitHub 發布由 `packages/github` 負責；限定非預設 worktree branch，無 shell push，開 draft PR。                                                                                                           | bare remote + 假 gh 測試；push 由明確 UI 動作觸發。                                                    |
+| 2026-11-03 | T1.7 event log 採 task-wide 單調序號，Redactor 遮罩後才寫 DB；usage 按 UTC 日/provider 累加。                                                                                                                 | 多次 attempt 可連續回放，避免秘密落盤。                                                                |
+| 2026-11-03 | T1.6 server 固定只綁 `127.0.0.1`；重啟中斷以 `failed` + `interrupted` event 記錄，恢復沿用 worktree 與 implementer session/model。                                                                            | 維持本機邊界並保存恢復檢查點。                                                                         |
+| 2026-11-03 | Judge/reviewer 使用結構化 JSON Schema；列出 blocker 卻 approve 視為不通過；reviewLoop 輪數用完仍未通過保留工作結果，且不自動清理 worktree。                                                                   | 交由人檢視結果後再決定是否交付或清理。                                                                 |
+| 2026-11-03 | 真實模型測試使用最便宜模型與 low effort；Codex fixture 暫以合成 fixture，錄到真實 fixture 後重跑 contract test。                                                                                              | 控制訂閱額度使用並保持 adapter 合約驗證。                                                              |
 
 ## 已知的坑
 

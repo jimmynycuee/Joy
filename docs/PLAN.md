@@ -39,6 +39,7 @@
 - [x] T2.1 多 provider 平行競賽（含獨立 worktree 的自動 strengths 合成候選；fake-provider 測試通過）
 - [x] T2.2 Tool Hub MCP 第一批工具（`ask_peer`、`task_status`、`request_approval`）
 - [x] T3.3 `memory`：三層記憶、安全的直接使用者 utterance 擷取、敏感資訊過濾、信心度與過期（draft PR；owner review required）
+- [x] T3.6 `memory`：只儲存明確經使用者核准的對話摘要，沿用既有 FTS5 索引檢索；舊訊息缺乏來源欄位，故不自動摘要；embedding 延後
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
 

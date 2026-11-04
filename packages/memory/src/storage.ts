@@ -29,6 +29,8 @@ export interface WriteMemoryInput {
   content: string
   source: MemorySource
   origin: MemoryOrigin
+  /** Required when memory content was not supplied as a direct user utterance. */
+  userApproved?: boolean
   confidence?: number
   expiresAt?: string
 }
@@ -37,6 +39,10 @@ export interface ListMemoryOptions {
   scope?: MemoryScope
   repoId?: string
   now?: Date
+}
+
+export interface SearchMemoryOptions extends ListMemoryOptions {
+  limit?: number
 }
 
 interface MemoryRow {
@@ -64,9 +70,11 @@ export function isSensitiveContent(content: string): boolean {
   return SENSITIVE_PATTERNS.some((pattern) => pattern.test(content))
 }
 
-/** Stores project or episode memories; external origins and user-scope writes are rejected. */
+/** Stores project or episode memories only with direct-user provenance or explicit user approval. */
 export function writeMemory(db: Database, input: WriteMemoryInput): MemoryRecord | undefined {
   if (isUntrustedMemoryOrigin(input.origin)) return undefined
+  const verifiedUserOrigin = input.origin === 'user_utterance' && input.source === 'user_utterance'
+  if (!verifiedUserOrigin && input.userApproved !== true) return undefined
   const content = input.content.trim()
   if (!content || isSensitiveContent(content)) return undefined
   const confidence = input.confidence ?? 1
@@ -93,6 +101,44 @@ export function listMemories(db: Database, options: ListMemoryOptions = {}): Mem
   }
   const rows = db
     .prepare(`SELECT * FROM memories WHERE ${conditions.join(' AND ')} ORDER BY created_at, id`)
+    .all(...values) as unknown as MemoryRow[]
+  return rows.map(mapMemory)
+}
+
+/** Searches active, non-sensitive memories using FTS5; terms are treated as plain text, not FTS syntax. */
+export function searchMemories(
+  db: Database,
+  query: string,
+  options: SearchMemoryOptions = {},
+): MemoryRecord[] {
+  if (query.length > 512) throw new Error('Memory search query must be 512 characters or fewer')
+  const terms = [...new Set(query.match(/[\p{L}\p{N}]+/gu) ?? [])]
+  if (terms.length === 0) return []
+
+  const limit = options.limit ?? 10
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+    throw new Error('Memory search limit must be an integer between 1 and 50')
+  }
+  const now = (options.now ?? new Date()).toISOString()
+  const conditions = ['memories_fts MATCH ?', 'm.sensitive = 0', '(m.expires_at IS NULL OR m.expires_at > ?)']
+  const values: (string | number)[] = [terms.map((term) => `"${term}"`).join(' AND '), now]
+  if (options.scope) {
+    conditions.push('m.scope = ?')
+    values.push(options.scope)
+  }
+  if (options.repoId) {
+    conditions.push('m.repo_id = ?')
+    values.push(options.repoId)
+  }
+  values.push(limit)
+
+  const rows = db
+    .prepare(
+      `SELECT m.* FROM memories_fts JOIN memories m ON m.rowid = memories_fts.rowid
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY bm25(memories_fts), m.created_at DESC, m.id
+       LIMIT ?`,
+    )
     .all(...values) as unknown as MemoryRow[]
   return rows.map(mapMemory)
 }

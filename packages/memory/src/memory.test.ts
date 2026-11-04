@@ -47,6 +47,7 @@ describe('memory package', () => {
       content: text,
       source: 'summary',
       origin: 'email',
+      userApproved: true,
     })
 
     expect(result).toEqual({ status: 'ignored', reason: 'untrusted_origin' })
@@ -65,6 +66,7 @@ describe('memory package', () => {
       content: 'The password is hunter2',
       source: 'manual',
       origin: 'manual',
+      userApproved: true,
       repoId: 'repo-1',
     })
 
@@ -89,6 +91,7 @@ describe('memory package', () => {
       content: 'This project uses pnpm.',
       source: 'manual',
       origin: 'manual',
+      userApproved: true,
       confidence: 0.75,
     })
     const episode = writeMemory(db, {
@@ -97,6 +100,7 @@ describe('memory package', () => {
       content: 'The migration completed.',
       source: 'summary',
       origin: 'summary',
+      userApproved: true,
       expiresAt: '2026-02-01T00:00:00Z',
     })
 
@@ -125,6 +129,7 @@ describe('memory package', () => {
         content: 'A short event note.',
         source: 'summary',
         origin: 'summary',
+        userApproved: true,
         confidence: 1.1,
       }),
     ).toThrow(/confidence must be a number between 0 and 1/)
