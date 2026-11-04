@@ -556,7 +556,14 @@ describe('Joy local server', () => {
     protocolSocket.close()
 
     await waitForStatus(origin, task.id, 'done', authorization)
-    expect(JSON.stringify(db.prepare('SELECT payload FROM events').all())).not.toContain(token)
+    const tableNames = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+      .all() as Array<{ name: string }>
+    const persistedRows = tableNames.flatMap(({ name }) => {
+      const quotedName = `"${name.replaceAll('"', '""')}"`
+      return db.prepare(`SELECT * FROM ${quotedName}`).all()
+    })
+    expect(JSON.stringify(persistedRows)).not.toContain(token)
   })
 
   it('rejects an empty or weak remote access token during startup', async () => {
