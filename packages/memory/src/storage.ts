@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Database } from '@joy/db'
+import { isUntrustedMemoryOrigin } from './origins.js'
+import type { MemoryOrigin } from './origins.js'
 
 export const MEMORY_SCOPES = ['user', 'project', 'episode'] as const
 export type MemoryScope = (typeof MEMORY_SCOPES)[number]
@@ -26,6 +28,7 @@ export interface WriteMemoryInput {
   repoId?: string
   content: string
   source: MemorySource
+  origin: MemoryOrigin
   confidence?: number
   expiresAt?: string
 }
@@ -61,8 +64,9 @@ export function isSensitiveContent(content: string): boolean {
   return SENSITIVE_PATTERNS.some((pattern) => pattern.test(content))
 }
 
-/** Stores project or episode memories; user-scope writes go through user-utterance extraction. */
+/** Stores project or episode memories; external origins and user-scope writes are rejected. */
 export function writeMemory(db: Database, input: WriteMemoryInput): MemoryRecord | undefined {
+  if (isUntrustedMemoryOrigin(input.origin)) return undefined
   const content = input.content.trim()
   if (!content || isSensitiveContent(content)) return undefined
   const confidence = input.confidence ?? 1

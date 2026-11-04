@@ -1,11 +1,12 @@
 import type { Database } from '@joy/db'
 import { isSensitiveContent, storeExtractedUserMemory } from './storage.js'
 import type { MemoryRecord } from './storage.js'
+import type { UntrustedMemoryOrigin } from './origins.js'
 
-export type MemoryOrigin = 'user_utterance' | 'email' | 'web_page' | 'issue' | 'tool_output'
+export type UserMemoryOrigin = 'user_utterance' | UntrustedMemoryOrigin
 
 export interface UserMemoryInput {
-  origin: MemoryOrigin
+  origin: UserMemoryOrigin
   text: string
   id?: string
   expiresAt?: string
