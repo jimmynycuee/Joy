@@ -68,7 +68,7 @@ describe('CodexCliProvider', () => {
   })
 
   it('throws a helpful error when Codex is not installed', async () => {
-    const provider = new CodexCliProvider({ command: 'joy-definitely-not-installed' })
+    const provider = new CodexCliProvider({ platform: 'linux', command: 'joy-definitely-not-installed' })
     await expect(collect(provider.run(opts(tmpdir()), model))).rejects.toThrow(/Codex CLI not found/)
   })
 
