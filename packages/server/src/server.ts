@@ -365,6 +365,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (url.pathname === '/api/config' && method === 'PUT') {
       assertJsonContentType(req)
       const config = configSchema.parse(await readJson(req)) as JoyConfig
+      if (!providers[config.roles.implementer.provider]?.capabilities.codeEdit)
+        throw new HttpError(
+          422,
+          `${config.roles.implementer.provider} does not support code editing required by the implementer role`,
+        )
       json(res, 200, { config: await configStore.save(config) })
       return
     }

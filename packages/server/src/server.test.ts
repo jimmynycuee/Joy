@@ -880,6 +880,27 @@ describe('Joy local server', () => {
     )
   })
 
+  it('rejects saving a config with a non-editing implementer provider', async () => {
+    const { api, serverPromise } = fixture()
+    api.capabilities.codeEdit = false
+    const { origin } = await start(serverPromise)
+
+    const response = await rawRequest(
+      origin,
+      '/api/config',
+      'PUT',
+      { host: new URL(origin).host, origin, 'content-type': 'application/json' },
+      JSON.stringify({ roles: { implementer: { provider: 'openai-api', model: 'gpt-test' } } }),
+    )
+
+    expect(response.status).toBe(422)
+    expect(api.calls).toHaveLength(0)
+    const { config } = (await (await fetch(`${origin}/api/config`)).json()) as {
+      config: { roles: { implementer: { provider: string } } }
+    }
+    expect(config.roles.implementer.provider).toBe('claude-cli')
+  })
+
   it('persists pre-attempt failures as replayable events with a unique sequence', async () => {
     const configDir = mkdtempSync(join(tmpdir(), 'joy-config-test-'))
     dirs.push(configDir)
