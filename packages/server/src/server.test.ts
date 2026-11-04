@@ -59,6 +59,7 @@ const diff: WorkspaceDiff = {
 
 class FakeProvider implements AgentProvider {
   readonly calls: RunOptions[] = []
+  waitForAbort = false
   readonly capabilities = {
     codeEdit: true,
     tools: true,
@@ -79,7 +80,7 @@ class FakeProvider implements AgentProvider {
     const sessionId = options.resumeSessionId ?? `session-${this.calls.length}`
     if (!options.resumeSessionId) yield { type: 'session_started', sessionId }
     yield { type: 'message', text: 'working' }
-    if (options.prompt === 'wait') {
+    if (this.waitForAbort || options.prompt === 'wait') {
       await new Promise<void>((resolve) => {
         if (options.signal.aborted) resolve()
         else options.signal.addEventListener('abort', () => resolve(), { once: true })
@@ -137,10 +138,11 @@ function fixture(
       },
     ])
   const api = new FakeProvider('openai-api')
+  const configStore = new ConfigStore(join(dir, 'config.yaml'))
   const serverOptions: JoyServerOptions = {
     home: dir,
     database: db,
-    configStore: new ConfigStore(join(dir, 'config.yaml')),
+    configStore,
     secretStore: new SecretStore({ backend: new MemoryBackend() }),
     executor,
     providers: {
@@ -158,6 +160,7 @@ function fixture(
     implementer,
     reviewer,
     api,
+    configStore,
     serverPromise,
     restart: () => createJoyServer(serverOptions),
   }
@@ -185,6 +188,24 @@ async function waitForStatus(origin: string, id: string, status: string): Promis
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
   throw new Error(`Task did not reach ${status}`)
+}
+
+async function waitForProviderCalls(provider: FakeProvider, count: number): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (provider.calls.length >= count) return
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  throw new Error(`Provider did not receive ${count} calls`)
+}
+
+async function waitForSettledTask(origin: string, id: string): Promise<TaskDetails> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const response = await fetch(`${origin}/api/tasks/${id}`)
+    const body = (await response.json()) as TaskDetails
+    if (body.task.status !== 'queued' && body.task.status !== 'running') return body
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  throw new Error('Task did not settle')
 }
 
 async function postJson(url: string, body: unknown) {
@@ -319,8 +340,88 @@ describe('Joy local server', () => {
       const body = (await response.json()) as { error: string }
       expect(body.error).toContain(`Role "${denied.role}"`)
       expect(body.error).toContain('codex-cli')
-      expect(body.error).toContain('Select an allowed provider')
+      expect(body.error).toContain('Select an allowed provider for this repository')
+      expect(body.error).toContain('register a new repository with a different allowlist')
     }
+  })
+
+  it.each([
+    { role: 'implementer', allowedProviders: ['codex-cli'], reviewerProvider: 'codex-cli' },
+    { role: 'reviewer', allowedProviders: ['claude-cli'], reviewerProvider: 'openai-api' },
+  ] as const)(
+    'rejects a resumed task when its $role provider is no longer allowed',
+    async ({ role, allowedProviders, reviewerProvider }) => {
+      const { db, serverPromise, implementer, reviewer, api, configStore } = fixture()
+      implementer.waitForAbort = true
+      const { origin } = await start(serverPromise)
+      const createdRepo = await postJson(`${origin}/api/repos`, {
+        path: `/resume-${role}-repo`,
+        defaultBranch: 'main',
+      })
+      expect(createdRepo.status).toBe(201)
+      const { repo } = (await createdRepo.json()) as { repo: { id: string } }
+      const createdTask = await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: `Resume with disallowed ${role}`,
+        prompt: 'wait',
+        mode: 'review_loop',
+      })
+      expect(createdTask.status).toBe(201)
+      const { task } = (await createdTask.json()) as { task: { id: string } }
+      await waitForProviderCalls(implementer, 1)
+
+      const cancelled = await postJson(`${origin}/api/tasks/${task.id}/cancel`, {})
+      expect(cancelled.status).toBe(200)
+      await waitForStatus(origin, task.id, 'cancelled')
+      implementer.calls.length = 0
+      implementer.waitForAbort = false
+      reviewer.calls.length = 0
+      api.calls.length = 0
+
+      db.prepare('UPDATE repos SET allowed_providers = ? WHERE id = ?').run(
+        JSON.stringify(allowedProviders),
+        repo.id,
+      )
+      if (role === 'reviewer') {
+        await configStore.update((config) => ({
+          ...config,
+          roles: { ...config.roles, reviewer: { ...config.roles.reviewer, provider: reviewerProvider } },
+        }))
+      }
+
+      const resumed = await postJson(`${origin}/api/tasks/${task.id}/resume`, {})
+      expect(resumed.status).toBe(202)
+      const failed = await waitForSettledTask(origin, task.id)
+      const rejection = failed.events.find((event) => (event as { type: string }).type === 'error') as
+        { payload: { message: string } } | undefined
+      expect(rejection?.payload.message).toContain(`Role "${role}"`)
+      expect(rejection?.payload.message).toContain(
+        `provider "${role === 'implementer' ? 'claude-cli' : reviewerProvider}"`,
+      )
+      expect(implementer.calls).toHaveLength(0)
+      expect(reviewer.calls).toHaveLength(0)
+      expect(api.calls).toHaveLength(0)
+    },
+  )
+
+  it.each([
+    { allowedProviders: [], issue: 'at least one provider' },
+    { allowedProviders: ['claude-cli', 'claude-cli'], issue: 'unique' },
+  ] as const)('rejects a repository allowlist that is $issue', async ({ allowedProviders, issue }) => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const response = await postJson(`${origin}/api/repos`, {
+      path: `/invalid-allowlist-${issue}`,
+      defaultBranch: 'main',
+      allowedProviders,
+    })
+    expect(response.status).toBe(400)
+    const body = (await response.json()) as { issues: Array<{ path: string[]; message: string }> }
+    expect(body.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: ['allowedProviders'], message: expect.stringContaining(issue) }),
+      ]),
+    )
   })
 
   it('stores redacted events, reviews, and usage and replays persisted events after restart', async () => {

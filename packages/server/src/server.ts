@@ -67,7 +67,11 @@ const repoInputSchema = z.strictObject({
   path: z.string().trim().min(1).refine(isAbsolute, 'must be an absolute path'),
   defaultBranch: z.string().trim().min(1),
   githubRemote: z.string().trim().min(1).optional(),
-  allowedProviders: z.array(z.enum(PROVIDER_KINDS)).optional(),
+  allowedProviders: z
+    .array(z.enum(PROVIDER_KINDS))
+    .min(1, 'must allow at least one provider')
+    .refine((providers) => new Set(providers).size === providers.length, 'providers must be unique')
+    .optional(),
 })
 const taskInputSchema = z.strictObject({
   repoId: z.string().trim().min(1),
@@ -406,6 +410,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         ? { ...configuredImplementer, provider: resume.attempt.provider, model: resume.attempt.model }
         : configuredImplementer
       const reviewer = resolveRole('reviewer', roles, task.roleOverrides)
+      const selectedRoles: Partial<RoleConfig> = { implementer }
+      if (task.mode === 'review_loop' || task.roleOverrides.reviewer) selectedRoles.reviewer = reviewer
+      const disallowed = findDisallowedRoleProviders(selectedRoles, repo.allowedProviders)[0]
+      if (disallowed) throw new Error(describeDisallowedRoleProvider(disallowed))
       if (!attempt) {
         attempt = createAttempt(db, {
           id: randomUUID() as AttemptId,

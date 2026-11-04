@@ -20,5 +20,5 @@ export function findDisallowedRoleProviders(
 }
 
 export function describeDisallowedRoleProvider({ role, provider }: DisallowedRoleProvider): string {
-  return `Role "${role}" selects provider "${provider}", which is not allowed for this repository. Select an allowed provider or update the repository's allowed providers.`
+  return `Role "${role}" selects provider "${provider}", which is not allowed for this repository. Select an allowed provider for this repository, or register a new repository with a different allowlist.`
 }
