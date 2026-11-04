@@ -1,0 +1,7 @@
+# `@joy/scheduler`
+
+`createScheduler` stores one-off reminders and five-field cron schedules in the existing SQLite `schedules` table. `list()` reads persisted schedules, including after the host reopens its database. The package does not start timers or agents: the host explicitly calls `runDue()`, and due work is sent only to the injected `enqueue` callback.
+
+The callback receives a stable `occurrenceId` for idempotency and must put work into a queued/draft lifecycle only. It must not execute coding work, spawn a shell, push Git changes, send notifications, or perform other external actions. A callback failure leaves the same occurrence due; the host controls whether and when another `runDue()` call happens. The scheduler serializes concurrent ticks within one instance, but it is not a distributed/multi-process scheduler. A process crash after a callback succeeds but before its SQLite checkpoint can result in a repeat callback, so the callback must deduplicate by `occurrenceId`.
+
+Cron expressions use five numeric fields (`minute hour day-of-month month day-of-week`) in UTC, with `*`, comma lists, ranges, and `/step` syntax. Day-of-week accepts `0` or `7` for Sunday; when both day-of-month and day-of-week are restricted, either may match. Named fields, seconds, time zones, and DST are not supported in this queue-only slice. Time-zone/DST policy, missed-run behavior, cross-process overlap, retry/backoff, and T2.3 approval policy remain open; this package does not claim full T3.7 completion or integrate an automatic scheduler loop.

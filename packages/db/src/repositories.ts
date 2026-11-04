@@ -77,6 +77,24 @@ export interface UsageRecord {
   rateLimitHits: number
 }
 
+export interface ScheduleRecord {
+  id: string
+  cron?: string
+  runAt?: string
+  payload: unknown
+  enabled: boolean
+  lastRunAt?: string
+  createdAt: string
+}
+
+export interface NewSchedule {
+  id: string
+  cron?: string
+  runAt?: string
+  payload: unknown
+  createdAt?: string
+}
+
 export interface UsageIncrement {
   provider: ProviderKind
   day?: string
@@ -154,6 +172,16 @@ interface UsageRow {
   output_tokens: number
   cost_usd: number
   rate_limit_hits: number
+}
+
+interface ScheduleRow {
+  id: string
+  cron: string | null
+  run_at: string | null
+  payload: string
+  enabled: number
+  last_run_at: string | null
+  created_at: string
 }
 
 interface AttemptRow {
@@ -391,6 +419,44 @@ export function expirePendingApprovals(db: Database, taskId: TaskId): number {
   return Number(result.changes)
 }
 
+export function createSchedule(db: Database, input: NewSchedule): ScheduleRecord {
+  const hasCron = input.cron !== undefined
+  const hasRunAt = input.runAt !== undefined
+  if (hasCron === hasRunAt) throw new Error('A schedule must have exactly one of cron or runAt')
+  const payload = JSON.stringify(input.payload)
+  if (payload === undefined) throw new Error('Schedule payload must be JSON serializable')
+  const createdAt = input.createdAt ?? new Date().toISOString()
+  db.prepare(
+    `INSERT INTO schedules (id, cron, run_at, payload, enabled, last_run_at, created_at)
+     VALUES (?, ?, ?, ?, 1, ?, ?)`,
+  ).run(input.id, input.cron ?? null, input.runAt ?? null, payload, hasCron ? createdAt : null, createdAt)
+  const stored = getSchedule(db, input.id)
+  if (!stored) throw new Error(`Schedule ${input.id} was not found after insert`)
+  return stored
+}
+
+export function getSchedule(db: Database, id: string): ScheduleRecord | undefined {
+  const row = db.prepare('SELECT * FROM schedules WHERE id = ?').get(id) as ScheduleRow | undefined
+  return row ? mapSchedule(row) : undefined
+}
+
+export function listSchedules(db: Database): ScheduleRecord[] {
+  return (
+    db.prepare('SELECT * FROM schedules ORDER BY created_at, id').all() as unknown as ScheduleRow[]
+  ).map(mapSchedule)
+}
+
+/** Records a successful queue handoff. Repeating schedules retain their cursor; one-shots are disabled. */
+export function markScheduleEnqueued(db: Database, id: string, scheduledFor: string): boolean {
+  const result = db
+    .prepare(
+      `UPDATE schedules SET last_run_at = ?, enabled = CASE WHEN cron IS NULL THEN 0 ELSE enabled END
+       WHERE id = ? AND enabled = 1`,
+    )
+    .run(scheduledFor, id)
+  return Number(result.changes) === 1
+}
+
 export function addUsage(db: Database, input: UsageIncrement): UsageRecord {
   const day = input.day ?? new Date().toISOString().slice(0, 10)
   db.prepare(
@@ -550,6 +616,18 @@ function mapUsage(row: UsageRow): UsageRecord {
     outputTokens: row.output_tokens,
     costUsd: row.cost_usd,
     rateLimitHits: row.rate_limit_hits,
+  }
+}
+
+function mapSchedule(row: ScheduleRow): ScheduleRecord {
+  return {
+    id: row.id,
+    ...(row.cron ? { cron: row.cron } : {}),
+    ...(row.run_at ? { runAt: row.run_at } : {}),
+    payload: JSON.parse(row.payload) as unknown,
+    enabled: row.enabled === 1,
+    ...(row.last_run_at ? { lastRunAt: row.last_run_at } : {}),
+    createdAt: row.created_at,
   }
 }
 
