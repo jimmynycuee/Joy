@@ -3,8 +3,8 @@
 > 開工前先讀本檔、`AGENTS.md`、`docs/PLAN.md`；收工前更新本檔。這裡記錄最新進度、阻塞、下一步與最近決策。
 
 - 最後更新：2026-11-04
-- 目前階段：**P2 進行中**。T2.1 自動 strengths 合成已在 draft PR #10；最新 head `9fa9ca94b3937c538c486e695f6adbbea41d32d5` 三平台 CI 全綠，獨立唯讀審查進行中。T2.2 工具已在 draft PR #11；本地分支已合入 #10 最新 base 並通過程式碼驗證，正同步最新狀態文件；更新後 head 尚待推送與 CI。#8/#9 三平台 CI 全綠且仍 draft；#9 secrets handling 必須先由 owner human review。依目前指示相關 PR 保持 draft、不合併。
-- 工作分支：`t2.2-tools`，基於最新 `t2.1-compete` head `9fa9ca94b3937c538c486e695f6adbbea41d32d5`；PR #11 base=`t2.1-compete`，同步後的新 head 與 CI 待更新。
+- 目前階段：**P2 進行中**。T2.1 自動 strengths 合成已在 draft PR #10；最新 head `9fa9ca94b3937c538c486e695f6adbbea41d32d5` 三平台 CI 全綠，獨立唯讀審查進行中。T2.2 工具已同步最新 #10 base 並推送到 draft PR #11；本地驗證通過，GitHub 已清除衝突並啟動新 head CI。#8/#9 三平台 CI 全綠且仍 draft；#9 secrets handling 必須先由 owner human review。依目前指示相關 PR 保持 draft、不合併。
+- 工作分支：`t2.2-tools`，基於最新 `t2.1-compete` head `9fa9ca94b3937c538c486e695f6adbbea41d32d5`；PR #11 base=`t2.1-compete`，更新後的新 head CI 執行中。
 - 本地驗證：`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（178 passed、2 skipped）；`pnpm --filter @joy/web exec playwright test e2e/t1.8.spec.ts e2e/t2.1.spec.ts` 通過（4 specs）。含 fake-provider Claude→Codex MCP call 與 approval persistence/cancellation；沒有呼叫真模型。最新合入的 #10 commit 只更動狀態文件。
 
 ## 分支與 PR
@@ -23,7 +23,7 @@ main … t1.5-review-loop
 - #2–#5 仍 open、非 draft；三平台 checks 全綠。
 - #8 三平台 checks 全綠；本分支不重跑其 macOS job。
 - #9 三平台 checks 全綠，secrets handling 仍須 owner human review；不在本分支更動其審核狀態。
-- #10 最新 head=`9fa9ca9` 三平台 checks 全綠，仍為 draft；獨立唯讀審查進行中。#11 舊 head 三平台 checks 全綠；同步 base 後尚未取得新 head 的 CI 結果。
+- #10 最新 head=`9fa9ca9` 三平台 checks 全綠，仍為 draft；獨立唯讀審查進行中。#11 已同步該 base，GitHub 顯示無衝突且新 head 三平台 checks 已排隊；舊 head 的綠色結果不代表新 head 已通過。
 
 ## 現在的樣子
 
@@ -41,7 +41,7 @@ main … t1.5-review-loop
 
 1. **T1.8 draft PR #9**（[PR #9](https://github.com/jimmynycuee/Joy/pull/9)）：三平台 CI 全綠；secrets handling 仍需 owner human review。
 2. **T2.1 draft PR #10**（[PR #10](https://github.com/jimmynycuee/Joy/pull/10)）：自動合成完成，最新 head 三平台 CI 全綠；獨立唯讀審查進行中，維持 draft、不合併。
-3. **T2.2 draft PR #11**（[PR #11](https://github.com/jimmynycuee/Joy/pull/11)）：最新 base 已同步並通過本地程式碼驗證；同步後 head 尚待推送並檢查 CI，保持 draft、不合併。
+3. **T2.2 draft PR #11**（[PR #11](https://github.com/jimmynycuee/Joy/pull/11)）：最新 base 已同步並通過本地程式碼驗證；更新後 head CI 執行中，保持 draft、不合併。
 4. **T2.3 policy**：動作對應權限等級屬安全政策，需 owner 決定後才能完成，不可臆測。
 5. **T2.4 Telegram**：依賴 T2.3 審核路徑，且需 owner bot token 與 chat-id 綁定；目前尚未核實可用憑證或帳號。
 6. **T2.5 quota**：調查未找到 Codex `exec --json` 可可靠辨識限額的結構化訊號；備援、排隊、預算與價格策略仍待決策，不可用模糊錯誤文字猜測。
@@ -52,7 +52,7 @@ main … t1.5-review-loop
 
 ## 下一步（依相依順序）
 
-1. 完成本次 T2.2 最新 base sync，更新既有 #11 並檢查新 head 三平台 CI；維持 draft、不合併。
+1. 檢查 PR #11 更新後 head 的三平台 CI；維持 draft、不合併。
 2. 追蹤 #10 的獨立 review 與 #9 owner human review；不重跑 #8 macOS，也不更改 #8/#9 的審核狀態。
 3. 等待 T3.9 模型統計/UI 子 Session；同時只推進不依賴未決 tier/trigger/quota/scheduler 政策的工作。
 4. Codex 真實 fixture、模型名稱確認與 Windows 實機驗證留待相應條件可用時處理。
