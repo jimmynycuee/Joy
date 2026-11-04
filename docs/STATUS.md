@@ -3,7 +3,7 @@
 > 給接手的人或 agent：**開工前先讀這份、`AGENTS.md`、`docs/PLAN.md`。收工前更新這份。**
 > 這裡只寫 PLAN 沒有的東西：現在做到哪、卡在哪、下一步、最近的決策。進度打勾在 PLAN 的「進度」。
 
-- 最後更新：2026-11-03
+- 最後更新：2026-11-04
 - 目前階段：**P1 進行中**
 - 分支：`t0-foundation`（T0.3–T0.6，未合併）→ `t1.1-claude-cli`（疊在 t0 上，未合併）
 
@@ -15,15 +15,13 @@
 | `packages/core`      | 介面定稿（T0.5），說明在 `packages/core/README.md`                                                       |
 | `packages/db`        | 完成（T0.6）。`node:sqlite`、migration、FTS5                                                             |
 | Claude Code 整合     | 已實測，報告 `docs/spikes/claude-code.md`，fixture 齊全                                                  |
-| Codex 整合           | **部分完成**。方式已決定（P1 用 `codex exec --json`），但沒有真實成功執行的 fixture                      |
+| Codex 整合           | **部分完成**。edit / MCP / resume 真實 fixtures 已錄；Windows 原生與模型名稱仍待確認                     |
 | `packages/providers` | Claude adapter 完成（T1.1）：fixture contract test、假 CLI 測取消 / 逾時 / 錯誤，真實 CLI 端到端測試通過 |
 | 其他套件             | 尚未開始                                                                                                 |
 
 ## 卡住 / 需要人做的事
 
-1. **Codex 真實 fixture（T0.4 剩下的部分）**：要在已登入 ChatGPT 訂閱的電腦上執行
-   `node scripts/record-fixtures.mjs codex`，把 `tests/fixtures/cli-events/codex/` 的結果 commit。
-   之前的測試環境連不到 OpenAI。T1.2 開工前必須完成。
+1. **T0.4 尚未全數驗收**：真實 edit / MCP / resume fixture 已於 2026-11-04 在已登入 ChatGPT 的 Mac 錄製並檢查；`-c` 的 MCP 注入已在 `exec` 模式實測成功。Windows 原生行為與可用模型名稱仍未確認，rate-limit 行為也沒有測試證據；T0.4 保持未勾選。此分支已有 Claude adapter；Codex provider contract tests 尚未開始。
 2. **用使用者的訂閱重錄 Claude fixture**：`node scripts/record-fixtures.mjs claude`。
    現有的是在雲端環境錄的，格式應相同，但 `init` 事件的 plugins / skills 會不同。非必要。
 3. **Windows 實機**：兩個 CLI 在 Windows 原生能否用 `spawn`（`.cmd` shim 或原生執行檔）尚未確認。T1.1 / T1.2 處理。
@@ -34,7 +32,7 @@
 - 合併 `t0-foundation`、`t1.1-claude-cli`。
 - **人工審核**：T1.1 在 `packages/core` 的 `done` 事件加了 `structured` 欄位（Claude 的 `--json-schema` 結果）。
 - 接著做 T1.4（worktree）、T1.10（keychain）、T1.11（設定），都不依賴 Codex。之後 T1.5（交叉審查）可以先用兩個 Claude 角色或假 provider 開發。
-- T1.2（codex adapter）等上面第 1 點完成。
+- T1.2（codex adapter）可使用已錄製的 fixtures 開始；adapter contract tests 由 T1.2 實作與驗證。Windows 原生與模型名稱仍是 T0.4 的未完成驗收項目。
 
 ## 最近的決策（新的放最上面）
 

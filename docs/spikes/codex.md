@@ -1,10 +1,10 @@
 # Spike T0.4：Codex
 
-- 測試日期：2026-11-03
+- 測試日期：2026-11-04（fixture metadata 使用 UTC）
 - 版本：codex-cli 0.166.0、@openai/codex-sdk 0.166.0
 - Fixture：`tests/fixtures/cli-events/codex/`
-- 限制：測試環境連不到 OpenAI、也沒有登入，所以**沒有錄到成功執行的事件**。
-  事件格式取自官方 SDK 的型別定義（SDK 本身就是解析 `codex exec --json` 的輸出），加上一份「連不上網路」的真實錄製。
+- 結果：在已登入 ChatGPT 的 macOS 帳戶上執行核准的 recorder，沿用預設 gpt-6-luna / low effort；edit、MCP、resume-1、resume-2 四次執行皆以 exit code 0 完成。Edit 實際修正暫存 repo 的加法；MCP 執行確認 `-c` 注入、`ask_peer` 回應，並成功執行 `git status --short` 與 `rm math.js`；resume-2 從 resume-1 的 thread 取回 `PELICAN`。新增 fixture 與 metadata 已檢查並移除工作區路徑、使用者名稱、Node 安裝路徑、CLI thread ID 及本機設定鍵。
+- 限制：這驗證的是原始 CLI 事件，尚無 Codex adapter / provider contract test 套件可執行；原生 Windows、有效模型名稱與 rate-limit 行為均未由此錄製驗證。
 
 ## 三種整合方式比較
 
@@ -65,9 +65,10 @@ codex exec resume --json [-m <model>] <thread_id> <prompt>
 - 沒有網路時，Codex 會持續重試（WebSocket → HTTPS fallback → 等待網路），**不會自己結束**。adapter 一定要有逾時與取消。
 - `error` 事件與 `item.completed` 裡的 `error` item 都出現了，兩者都不是致命錯誤。
 
-## 待確認（要在使用者的 Mac 上做）
+## 待確認
 
-- [ ] 執行 `node scripts/record-fixtures.mjs codex`，錄下 edit / mcp / resume 的真實事件
-- [ ] 確認 MCP 用 `-c` 注入在 `exec` 模式下可用
+- [x] 執行 `node scripts/record-fixtures.mjs codex`，錄下 edit / mcp / resume 的真實事件
+- [x] 確認 MCP 用 `-c` 注入在 `exec` 模式下可用
 - [ ] Windows 原生是否可用；不行就走 WSL（T4.4）
 - [ ] 確認可用的模型名稱，更新 PLAN §3.3
+- [ ] rate-limit 行為：目前沒有測試證據，不作任何行為結論；現有 network-error fixture 只記錄重連通知。
