@@ -21,11 +21,12 @@ pub fn autostart_checked_state(was_enabled: bool, action_succeeded: bool) -> boo
 }
 
 pub fn completion_notification_title(previous: Option<&str>, current: &str) -> Option<&'static str> {
-    let previous = previous?;
-    if previous == current
-        || !matches!(previous, "queued" | "running" | "awaiting_approval" | "review_ready")
-    {
-        return None;
+    if let Some(previous) = previous {
+        if previous == current
+            || !matches!(previous, "queued" | "running" | "awaiting_approval" | "review_ready")
+        {
+            return None;
+        }
     }
 
     match current {
@@ -35,11 +36,23 @@ pub fn completion_notification_title(previous: Option<&str>, current: &str) -> O
     }
 }
 
+pub fn first_observation_notification_title(
+    task_created_at: &str,
+    watcher_started_at: &str,
+    current: &str,
+) -> Option<&'static str> {
+    if task_created_at < watcher_started_at {
+        return None;
+    }
+    completion_notification_title(None, current)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        autostart_checked_state, completion_notification_title, should_show_main_window,
-        starts_minimized, updater_is_configured,
+        autostart_checked_state, completion_notification_title,
+        first_observation_notification_title, should_show_main_window, starts_minimized,
+        updater_is_configured,
     };
     use std::ffi::OsString;
 
@@ -78,6 +91,45 @@ mod tests {
     }
 
     #[test]
+    fn a_new_task_first_seen_after_completion_gets_one_notification() {
+        let watcher_started_at = "2026-11-04T11:00:00.000Z";
+        let created_at = "2026-11-04T11:00:01.000Z";
+        assert_eq!(
+            first_observation_notification_title(created_at, watcher_started_at, "done"),
+            Some("Joy task finished")
+        );
+        assert_eq!(
+            first_observation_notification_title(created_at, watcher_started_at, "failed"),
+            Some("Joy task needs attention")
+        );
+        assert_eq!(
+            first_observation_notification_title(created_at, watcher_started_at, "review_ready"),
+            Some("Joy task needs attention")
+        );
+        assert_eq!(
+            first_observation_notification_title(created_at, watcher_started_at, "cancelled"),
+            Some("Joy task needs attention")
+        );
+        assert_eq!(
+            completion_notification_title(Some("done"), "done"),
+            None,
+            "subsequent polls must not repeat the same terminal alert"
+        );
+    }
+
+    #[test]
+    fn first_observation_does_not_alert_for_old_terminal_tasks() {
+        assert_eq!(
+            first_observation_notification_title(
+                "2026-11-04T10:59:59.999Z",
+                "2026-11-04T11:00:00.000Z",
+                "failed"
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn notification_requires_a_task_to_enter_an_alertable_state() {
         assert_eq!(
             completion_notification_title(Some("running"), "done"),
@@ -100,7 +152,10 @@ mod tests {
             Some("Joy task finished")
         );
         assert_eq!(completion_notification_title(Some("review_ready"), "review_ready"), None);
-        assert_eq!(completion_notification_title(None, "done"), None);
+        assert_eq!(
+            completion_notification_title(None, "done"),
+            Some("Joy task finished")
+        );
         assert_eq!(completion_notification_title(Some("running"), "running"), None);
         assert_eq!(completion_notification_title(Some("done"), "done"), None);
         assert_eq!(completion_notification_title(Some("done"), "failed"), None);

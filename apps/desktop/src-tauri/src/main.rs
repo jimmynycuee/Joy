@@ -19,8 +19,8 @@ use tauri_plugin_updater::UpdaterExt;
 
 mod startup;
 use startup::{
-    autostart_checked_state, completion_notification_title, should_show_main_window,
-    updater_is_configured,
+    autostart_checked_state, completion_notification_title,
+    first_observation_notification_title, should_show_main_window, updater_is_configured,
 };
 
 const TASKS_URL: &str = "http://127.0.0.1:4317/api/tasks";
@@ -39,9 +39,11 @@ struct TaskList {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct TaskSnapshot {
     id: String,
     status: String,
+    created_at: String,
 }
 
 fn main() {
@@ -277,6 +279,7 @@ fn show_main_window(app: &tauri::AppHandle) {
 }
 
 fn start_task_notifications(app: tauri::AppHandle) {
+    let watcher_started_at = iso_utc_timestamp(time::OffsetDateTime::now_utc());
     tauri::async_runtime::spawn(async move {
         let client = match Client::builder()
             .no_proxy()
@@ -291,7 +294,6 @@ fn start_task_notifications(app: tauri::AppHandle) {
             }
         };
         let mut statuses = HashMap::new();
-        let mut initialized = false;
 
         loop {
             tokio::time::sleep(POLL_INTERVAL).await;
@@ -308,23 +310,19 @@ fn start_task_notifications(app: tauri::AppHandle) {
                 Err(_) => continue,
             };
 
-            if !initialized {
-                statuses.extend(
-                    task_list
-                        .tasks
-                        .into_iter()
-                        .map(|task| (task.id, task.status)),
-                );
-                initialized = true;
-                continue;
-            }
-
             let mut observed = HashSet::new();
             for task in task_list.tasks {
                 observed.insert(task.id.clone());
                 let previous = statuses.insert(task.id, task.status.clone());
-                let Some(title) = completion_notification_title(previous.as_deref(), &task.status)
-                else {
+                let title = match previous.as_deref() {
+                    Some(previous) => completion_notification_title(Some(previous), &task.status),
+                    None => first_observation_notification_title(
+                        &task.created_at,
+                        &watcher_started_at,
+                        &task.status,
+                    ),
+                };
+                let Some(title) = title else {
                     continue;
                 };
                 if app
@@ -350,6 +348,21 @@ fn window_is_hidden(app: &tauri::AppHandle) -> bool {
         .and_then(|window| window.is_visible().ok())
         .map(|visible| !visible)
         .unwrap_or(true)
+}
+
+fn iso_utc_timestamp(timestamp: time::OffsetDateTime) -> String {
+    let date = timestamp.date();
+    let clock = timestamp.time();
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        date.year(),
+        u8::from(date.month()),
+        date.day(),
+        clock.hour(),
+        clock.minute(),
+        clock.second(),
+        clock.millisecond()
+    )
 }
 
 fn send_notification(app: &tauri::AppHandle, title: &str, body: &str) {
