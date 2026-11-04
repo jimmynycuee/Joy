@@ -4,8 +4,15 @@
 
 - 最後更新：2026-11-04
 - 目前階段：**P2 進行中**。T2.1 自動 strengths 合成及獨立審查提出的重啟恢復、競爭、prompt 容量、錯誤收尾與 provider capability 缺陷已修正並在本地驗證；PR #10 仍 draft。T2.2 draft PR #11（head `29229e8`）與 T3.9 draft PR #12（head `fc0439c`）三平台 CI 全綠。GitHub 上 #2–#5 仍 open、非 draft 且三平台 CI 全綠；#6/#7 merged 到相依分支而非 `main`；#8/#9 三平台 CI 全綠且仍 draft，#9 secrets handling 必須先由 owner human review。依目前指示所有 PR 保持 draft、不合併。
-- 工作分支：`t2.1-compete`，基於 `t1.8-web` commit `a852b60`；目前包含 T2.1 引擎、server/UI、審查修正與自動合成候選實作，PR #10 為 draft。
-- 本地驗證：`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（181 tests passed、2 skipped）；T2.1 Playwright E2E 通過（3 specs），orchestrator/server 定向測試 44/44 通過。所有互動測試使用 fake providers，沒有呼叫真模型。一般環境的 `pnpm check` 有一項既有 fallback-identity 測試受繼承 Git 身分影響，已另開 issue #13。
+- 前次工作分支：`t2.1-compete`，基於 `t1.8-web` commit `a852b60`；包含 T2.1 引擎、server/UI、審查修正與自動合成候選實作，PR #10 為 draft。
+- 本次 T4.2 工作分支：`t4.2-local-pwa`，基於提供的 `t1.8-web` 分支；只包含下方記錄的本機 PWA foundation。
+- 前次本地驗證：`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（181 tests passed、2 skipped）；T2.1 Playwright E2E 通過（3 specs），orchestrator/server 定向測試 44/44 通過。所有互動測試使用 fake providers，沒有呼叫真模型。一般環境的 `pnpm check` 有一項既有 fallback-identity 測試受繼承 Git 身分影響，已另開 issue #13。
+
+## T4.2 部分進度（2026-11-04）
+
+- Owner 選擇「Local PWA first」。新工作分支 `t4.2-local-pwa` 以提供的 `t1.8-web` 為基底，只實作 `apps/web` 的 installable local PWA foundation：manifest、Production app-shell service worker/offline fallback、dev 模式不註冊 worker，以及圖示與測試。
+- T4.2 完整票仍未完成，`docs/PLAN.md` checkbox 保持未勾；Web Push 與遠端存取/驗證/ingress/外部通知均未實作。Web Push 延後到 T4.1 遠端存取基礎完成後再做。
+- 驗證：`pnpm check`（移除繼承的 Git identity 環境變數後）通過，183 tests passed、2 skipped；Web build 成功，Playwright UI E2E 5/5 通過。未隔離 Git identity 的 `pnpm check` 僅因既有 fallback-identity test 失敗。
 
 ## 分支與 PR
 
@@ -52,15 +59,17 @@ main … t1.5-review-loop
 
 ## 下一步（依相依順序）
 
-1. 保持 #10 draft/no-merge hold；新 head 的 checks 與 owner review 都未確認前，不改變 readiness 狀態。
-2. #11 T2.2 與 #12 T3.9 已交付且 CI 綠；只推進不依賴未決 tier/trigger/quota/scheduler 政策的工作。
-3. #9 等待 owner human review；#8 已全綠，不需重跑。持續核對 #2–#5 與相依 PR 狀態，不把 stack merge 說成進 `main`。
-4. Codex 真實 fixture、模型名稱確認與 Windows 實機驗證留待相應條件可用時處理。
+1. T4.1 遠端存取是 Web Push 的前置工作；本分支僅交付 local-only PWA foundation，完整 T4.2 checkbox 維持未勾，待 T4.1 後再實作 Web Push。
+2. 保持 #10 draft/no-merge hold；新 head 的 checks 與 owner review 都未確認前，不改變 readiness 狀態。
+3. #11 T2.2 與 #12 T3.9 已交付且 CI 綠；只推進不依賴未決 tier/trigger/quota/scheduler 政策的工作。
+4. #9 等待 owner human review；#8 已全綠，不需重跑。持續核對 #2–#5 與相依 PR 狀態，不把 stack merge 說成進 `main`。
+5. Codex 真實 fixture、模型名稱確認與 Windows 實機驗證留待相應條件可用時處理。
 
 ## 最近的決策（新的放最上面）
 
 | 日期       | 決策                                                                                                                                                                              | 原因 / 出處                                                                                            |
 | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| 2026-11-04 | T4.2 依 owner「Local PWA first」分段；先交付本機可安裝 PWA 基礎，Web Push/遠端能力留待 T4.1 後；完整票完成前不勾選。                                                              | T4.1 是遠端存取相依；避免在本階段引入推播與遠端邊界。                                                  |
 | 2026-11-04 | 「合併優點」採自動 synthesis；使用配置的 Judge 模型在獨立 worktree 執行額外呼叫，輸出可檢視、可明確選取的新候選，原候選保留。                                                     | owner 回答自動合成；維持明確勝者選取與 worktree 隔離。                                                 |
 | 2026-11-03 | T2.1 以 Implementer/Reviewer 不同 provider 作平行候選，各在獨立 worktree 執行；read-only Judge 結構化比較，使用者明確選勝並將 `winner_selected` 持久化。                          | 既有 API 沒有 synthesis/merge flow；是否增加模型呼叫、人工融合或延後已透過問題卡詢問。                 |
 | 2026-11-03 | T2.1 裁判失敗但有成功候選時仍可 review/select；preflight 失敗要持久化並以首個缺失角色 provider 標記 anchor；勝者選取在讀取 body 後重驗狀態；resume 用 run boundary 限定最新候選。 | 唯讀獨立審查發現兩項中度與一項低度問題，均以 regression tests 重現與修正。                             |

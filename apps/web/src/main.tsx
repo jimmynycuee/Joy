@@ -6,6 +6,18 @@ import type { ModelRef, ProviderKind, Role, RoleConfig } from '@joy/core'
 import type { JoyConfig } from '@joy/config'
 import './styles.css'
 
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener(
+    'load',
+    () => {
+      void navigator.serviceWorker.register('/service-worker.js').catch(() => {
+        // The app remains usable if this browser cannot install service workers.
+      })
+    },
+    { once: true },
+  )
+}
+
 type Repo = { id: string; path: string; defaultBranch: string; githubRemote?: string }
 type Task = {
   id: string
