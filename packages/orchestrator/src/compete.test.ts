@@ -311,6 +311,47 @@ describe('compete', () => {
     })
     expect(executor.workspaces).toHaveLength(0)
   })
+
+  it('rejects an oversized task prompt before preparing candidate worktrees', async () => {
+    const executor = new FakeExecutor()
+    const a = new FakeProvider('claude-cli', { haiku: () => events('a') })
+    const b = new FakeProvider('codex-cli', { 'gpt-6-luna': () => events('b') })
+    const judge = new FakeProvider('openai-api', { 'gpt-6-luna': () => events('judge') })
+    const { result } = await run(
+      input({ prompt: 'x'.repeat(24_001) }),
+      { 'claude-cli': a, 'codex-cli': b, 'openai-api': judge },
+      executor,
+    )
+    expect(result).toMatchObject({
+      type: 'result',
+      status: 'failed',
+      reason: expect.stringContaining('24,000 byte provider prompt limit'),
+    })
+    expect(executor.workspaces).toHaveLength(0)
+    expect(a.calls).toHaveLength(0)
+    expect(b.calls).toHaveLength(0)
+    expect(judge.calls).toHaveLength(0)
+  })
+
+  it('rejects an oversized aggregate judge prompt before invoking the provider', async () => {
+    class LargeDiffExecutor extends FakeExecutor {
+      override async diff(workspace: Workspace): Promise<WorkspaceDiff> {
+        const candidate = await super.diff(workspace)
+        return { ...candidate, patch: 'x'.repeat(13_000) }
+      }
+    }
+    const executor = new LargeDiffExecutor()
+    const a = new FakeProvider('claude-cli', { haiku: () => events('a') })
+    const b = new FakeProvider('codex-cli', { 'gpt-6-luna': () => events('b') })
+    const judge = new FakeProvider('openai-api', { 'gpt-6-luna': () => events('judge') })
+    const { result } = await run(input(), { 'claude-cli': a, 'codex-cli': b, 'openai-api': judge }, executor)
+    expect(result).toMatchObject({
+      type: 'result',
+      status: 'failed',
+      reason: expect.stringContaining('24,000 byte provider prompt limit'),
+    })
+    expect(judge.calls).toHaveLength(0)
+  })
 })
 
 describe('synthesizeStrengths', () => {
@@ -377,6 +418,43 @@ describe('synthesizeStrengths', () => {
         finalMessage: 'Combined implementation',
       },
     })
+  })
+
+  it('rejects an oversized combined synthesis prompt before preparing a worktree', async () => {
+    const executor = new FakeExecutor()
+    const synthesizer = new FakeProvider('openai-api', { 'gpt-6-luna': () => events('synthesis-session') })
+    const output: SynthesisEvent[] = []
+    for await (const event of synthesizeStrengths(inputFor({ prompt: 'x'.repeat(24_001) }), {
+      providers: { 'openai-api': synthesizer },
+      executor,
+    }))
+      output.push(event)
+
+    expect(output.at(-1)).toMatchObject({
+      type: 'result',
+      candidate: { status: 'failed', reason: expect.stringContaining('24,000 byte provider prompt limit') },
+    })
+    expect(executor.workspaces).toHaveLength(0)
+    expect(synthesizer.calls).toHaveLength(0)
+  })
+
+  it('rejects a synthesizer that cannot edit code before preparing a worktree', async () => {
+    const executor = new FakeExecutor()
+    const synthesizer = new FakeProvider('openai-api', { 'gpt-6-luna': () => events('synthesis-session') })
+    synthesizer.capabilities.codeEdit = false
+    const output: SynthesisEvent[] = []
+    for await (const event of synthesizeStrengths(inputFor(), {
+      providers: { 'openai-api': synthesizer },
+      executor,
+    }))
+      output.push(event)
+
+    expect(output.at(-1)).toMatchObject({
+      type: 'result',
+      candidate: { status: 'failed', reason: expect.stringContaining('code-edit capable') },
+    })
+    expect(executor.workspaces).toHaveLength(0)
+    expect(synthesizer.calls).toHaveLength(0)
   })
 
   it('keeps synthesis failures as a failed candidate without altering its sources', async () => {
