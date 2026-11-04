@@ -26,7 +26,7 @@
 - [x] T0.5 定稿 `packages/core` 介面
 - [x] T0.6 `packages/db`
 - [x] T1.1 `providers/claude-cli`
-- [x] T1.2 `providers/codex-cli`（依 SDK 型別與合成 fixture 測試；**錄到真實 fixture 後要重跑 contract test**）
+- [x] T1.2 `providers/codex-cli`（依 SDK 型別與合成 fixture 測試；錄到真實 fixture 後需重跑 provider contract test；此後續驗證尚未開始）
 - [x] T1.3 `providers/openai-api`
 - [x] T1.4 `executor/worktree`
 - [x] T1.5 `orchestrator/review-loop`（PR #31 增加 planFirst resume 失敗回歸測試；真實 Codex CLI read-only resume 仍未驗證）

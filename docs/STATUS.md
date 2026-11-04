@@ -13,11 +13,12 @@
 - T1.3 `packages/providers/src/openai-api` 與 T1.10 `packages/secrets` 已存在於文件基線，`PLAN.md` 的勾選是既有基線記錄；本次最新執行狀態不代表新交付：T1.3 Session 正在 `t1.3-openai-api` 驗證保留的 provider/test 修改，尚無 PR；T1.10 Session 已結束，`packages/secrets/` 僅為未追蹤、未發布工作，亦無 PR。只憑檔案存在或基線 checkbox 不宣稱這兩個 Sessions 已交付。
 - T0.4：PR #3 的最新 live patch 記錄 2026-11-04 在已登入 macOS 環境使用 Codex CLI 錄到 edit、MCP、resume-1、resume-2 真實 fixtures，四次皆 exit code 0；edit 實際修正暫存 repo，MCP `-c` 注入及 `ask_peer` 有回應，resume 取回 `PELICAN`。這些是 CLI 原始事件，不代表 provider contract tests 或完整 ticket acceptance 已通過。原生 Windows、可用模型清單與 rate-limit 行為仍未驗證；`PLAN.md` 保持未勾選。此證據來自 PR #3 最新 patch；PR #25 基線中的 `docs/spikes/codex.md` 尚是較舊敘述，本次依範圍只更新 PLAN/STATUS。
 - Codex adapter 的既有合成 fixtures 與真實錄製是不同證據；CI 或合成 fixtures 不等同 Windows 實機或 rate-limit 行為驗證。
+- T1.2 Codex adapter 的真實 fixtures 尚未重跑 provider contract tests；該續作尚未開始，現無 T1.2 Session 或 PR。
 - T1.5：PR #31 head `010d78a` 已 ready、未 merged，三平台 checks success。獨立 Claude Opus 5.5 read-only review 無 blocker；僅建議可選補 planner-reviewer invalid-verdict 測試，真實 Codex CLI read-only resume 仍未驗證。沒有 formal GitHub review。
 
 ## GitHub PR 快照
 
-目前有 26 個 open PR：#2–#5、#8–#9、#11–#12、#14–#25、#27–#32（#13 與 #26 是 issues）。本次最新 live read 時，全部 26 個 PR 的 Ubuntu、macOS、Windows checks 均 success；PR #29 head `0c8bbb4` 三平台 checks success。所有 open PR 均無 formal GitHub review；獨立 Session 審查另行註明，不等同 formal review。#3 與 #4 仍各自與 base branch conflict，雖有 success checks，也不能視為衝突已解或可合併。
+目前有 26 個 open PR：#2–#5、#8–#9、#11–#12、#14–#25、#27–#32（#13 與 #26 是 issues）。本次最新 live read 中，全部 26 個 PR 的 Ubuntu、macOS、Windows checks 均 success，PR #29 head `a99d5eb` 三平台 checks success。此快照在下一筆 corrective docs commit 前讀取；新 head 的 checks 需另行核實，不能沿用舊 head 的綠燈。所有 open PR 均無 formal GitHub review；獨立 Session 審查另行註明，不等同 formal review。#3 與 #4 仍各自與 base branch conflict，雖有 success checks，也不能視為衝突已解或可合併。
 
 非 draft open PR：
 
@@ -41,14 +42,14 @@ Draft open PR（除各項特別註明外，三平台 checks success；均無 for
 - [#17](https://github.com/jimmynycuee/Joy/pull/17)：base `t1.8-web`，head `t4.2-local-pwa` @ `f984271`；只有 installable PWA foundation，沒有 Web Push，T4.2 保持 partial / unchecked。
 - [#18](https://github.com/jimmynycuee/Joy/pull/18)：base `t3.3-memory`，head `t3.6-event-memory` @ `d4df409`；只允許明確核准的摘要寫入，舊訊息缺來源 provenance，不自動摘要；embedding 延後。
 - [#19](https://github.com/jimmynycuee/Joy/pull/19)：base `main`，head `t1.1-claude-cli` @ `33b1b69`；與 #3 同 head 的 open duplicate。保持原狀，不在本 issue 嘗試關閉。
-- [#20](https://github.com/jimmynycuee/Joy/pull/20)：base `t1.8-web`，head `reason/t4-3-add-tauri-desktop-s-29500001` @ `1c511bd`。
+- [#20](https://github.com/jimmynycuee/Joy/pull/20)：base `t1.8-web`，draft head `reason/t4-3-add-tauri-desktop-s-29500001` @ `1c511bd`，三平台 checks success。獨立 Claude Opus 5.5 read-only review 要求修改：`review_ready` 每 3 秒重複提醒為 blocker，另有 single-instance、root build/signing dependency、dev workflow、lifecycle/updater 等 finding；這不是 formal GitHub review。T4.3 continuation Session 正在執行，但 live PR head 尚未包含後續修正。
 - [#21](https://github.com/jimmynycuee/Joy/pull/21)：base `t1.8-web`，head `t4.1-remote-auth` @ `0945eae`。
 - [#22](https://github.com/jimmynycuee/Joy/pull/22)：base `reason/t3-1-add-selectable-assi-7a20bfa9`，head `t3.2-dispatch-tools` @ `117557e`。
 - [#23](https://github.com/jimmynycuee/Joy/pull/23)：base `t3.6-event-memory`，head `reason/t3-4-add-memory-manageme-5e3fdbbf` @ `e0686af`；管理 API 已交付，answer citations / per-answer references 尚無 production chat route 與 contract，T3.4 未完成。
 - [#24](https://github.com/jimmynycuee/Joy/pull/24)：base `reason/t3-1-add-selectable-assi-7a20bfa9`，head `t3.8-google-workspace` @ `b88f0d1`。
 - [#25](https://github.com/jimmynycuee/Joy/pull/25)：base `reason/t3-4-add-memory-manageme-5e3fdbbf`，head `t3.5-project-memory` @ `4e0c143`；project-memory proposal diff/review/apply API 已交付，production assistant/chat integration 仍缺，T3.5 未完成且 memory-write behavior 需 owner review。
 - [#27](https://github.com/jimmynycuee/Joy/pull/27)：base `t3.2-dispatch-tools`，head `t3.7-scheduler` @ `9975659`；draft，三平台 checks success。持久化 schedule 可在 DB reopen 後讀取，due 時只呼叫注入的 queue-only callback，不啟動 agent 或外部副作用；T2.3 owner policy 仍阻塞完整 T3.7 acceptance。
-- [#29](https://github.com/jimmynycuee/Joy/pull/29)：base `t3.5-project-memory`，GitHub live head `joy-status-refresh` @ `0c8bbb4`；open draft，兩個文件檔案、三平台 checks success，沒有 formal review。Publisher 曾回報 branch head `72a1991`，但最新 `pr_get` 仍顯示 `0c8bbb4`；以 GitHub PR 快照作為本次狀態，且不重複發布該 commit。
+- [#29](https://github.com/jimmynycuee/Joy/pull/29)：base `t3.5-project-memory`，open draft，僅改兩個文件檔案，沒有 formal review。最新 live read 顯示 head `a99d5eb` 三平台 checks success；本快照在下一筆 corrective docs commit 發布前讀取，新 head 的 checks 須另行驗證。
 - [#32](https://github.com/jimmynycuee/Joy/pull/32)：base `t3.3-memory`，head `fix/github-pat-memory-filter` @ `a8f5d52`；draft、未 merged，三平台 checks success，memory focused tests 10 passed。新的 PAT pattern 移除前置 word boundary 並補上直接 regex、ingest、generic write tests；第二次獨立 Claude Opus 5.5 review 確認先前兩項 findings 已修正，無 blocker。PR body 記錄本地完整 `pnpm check` 有 1 個 inherited Git identity failure（197 passed、2 skipped、1 failed）；仍須 owner review / integration，沒有 formal GitHub review。
 
 合併狀態須和部署分開描述：
@@ -70,7 +71,8 @@ Draft open PR（除各項特別註明外，三平台 checks success；均無 for
 - **T4.2 PWA/Web Push**：PR #17 目前只有可安裝 PWA foundation，Web Push 未實作，整張 ticket 未完成。
 - **T4.4 Windows**：PR #16 有 native Codex 探測與 WSL fallback 測試；ticket 仍包含 installer/distribution，該交付物尚不存在，保持未完成。
 - **T4.5 Docker executor**：尚未交付；需 owner 決定 container identity / host 資源邊界、credential 是否及如何掛載、network policy，未經決策不實作或宣稱完成。
-- **T1.6 / T4.1 remote security**：PR #28 已是 ready、mergeable 的 local-only hardening，未實作 token-authorized remote access。獨立 read-only review 沒有發現阻塞；仍需精確限制 loopback Origin 的 scheme/port，且 T4.1 必須先定義 token、Host、Origin 驗證次序與 HTTP/WebSocket 測試。真實 Tauri preflight / Windows-origin 相容性尚未驗證。
+- **T1.6 / T4.1 remote security**：PR #28 已是 ready、mergeable 的 local-only hardening，未實作 token-authorized remote access。獨立 read-only review 沒有發現阻塞；仍需精確限制 loopback Origin 的 scheme/port，且 T4.1 的 Host/Origin 驗證順序 owner question 仍待答覆，再據此完成 token 順序與 HTTP/WebSocket 測試。真實 Tauri preflight / Windows-origin 相容性尚未驗證。
+- **T4.3 desktop**：PR #20 live head `1c511bd` 仍為 draft，三平台 checks success；獨立 review 指出 persistent `review_ready` 狀態會每 3 秒重複提醒，另有 single-instance、root build/signing dependency 與 lifecycle/updater/dev-workflow findings。T4.3 continuation Session 正在處理；不把舊 head 的綠燈或 review 結果寫成修正已交付。
 - **PR #9 test-harness follow-up**：read-only patch review 確認 `apps/web/e2e/fake-preview.ts` 的 Vite `server.host` 設為 `0.0.0.0`，但 `apps/web/vite.config.ts` 綁 `127.0.0.1`。LAN exposure 僅在 fake-provider preview 執行時，屬測試 harness 安全 follow-up，不是 production bind；本次不修改 PR #9。
 - 其他需 owner review 的安全敏感範圍包括 secrets、policy、channel identity 與 memory-write rules；open PR 無 formal review 的即時快照不等於審核通過。
 
@@ -78,7 +80,8 @@ Draft open PR（除各項特別註明外，三平台 checks success；均無 for
 
 - `Joy 全計畫總控續跑` 仍 running。
 - `Joy T3.7 durable scheduler queue` 已 exit；交付 draft PR #27，queue-only slice 與 T2.3 policy blocker 如上。
-- `Joy T1.6 server security remediation` 已 exit；PR #28 head `af6bb19` 的 focused server tests 9/9 與完整 `pnpm check`（155 passed、2 skipped）由該 Session 回報通過；最新 live GitHub 三平台 checks 也 success。兩個獨立 read-only security review Sessions 已 exit，無 blocker verdict，但保留上列低風險/後續相容性發現；這不是 formal GitHub review。
+- `Joy T1.6 server security remediation` 已 exit；PR #28 head `af6bb19` 的 focused server tests 9/9 與完整 `pnpm check`（155 passed、2 skipped）由該 Session 回報通過；最新 live GitHub 三平台 checks 也 success。兩個獨立 read-only security review Sessions 已 exit，無 blocker verdict，但保留上列低風險/後續相容性發現；這不是 formal GitHub review.
+- `Joy T4.3 Tauri desktop app` continuation 仍 running；PR #20 live head `1c511bd` 的三平台 checks success，但獨立 Claude Opus 5.5 review Session 已 exit，要求修正 repeated `review_ready` alerts 及其他 findings。沒有 formal GitHub review，且未見修正進入 live PR head。
 - `Joy issue #13 Git identity test isolation` 已 exit，交付 ready PR #30；三平台 checks success，沒有 formal GitHub review。
 - `Joy T1.5 planFirst resume gate` 已 exit，交付 ready PR #31；三平台 checks success。其獨立 Claude Opus 5.5 read-only reviewer Session 已 exit，無 blocker，留有可選 planner/reviewer invalid-verdict 測試建議；真實 Codex read-only resume 仍未驗證，沒有 formal GitHub review。
 - `Joy T3.3 GitHub token memory filter` 已 exit，交付 draft PR #32；三平台 checks success，本地完整 `pnpm check` 有一個 inherited Git identity failure（197 passed、2 skipped、1 failed）。第二次獨立 Claude Opus 5.5 reviewer Session 已 exit，確認先前兩個 findings 已修正、無 blocker；無 formal GitHub review。修補仍未合併/整合進 PR #14；memory-write owner review 尚待完成，PR #14 未修改。
