@@ -1,7 +1,7 @@
 import { createServer as createHttpServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { isAbsolute, join } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import { z, ZodError } from 'zod'
@@ -98,6 +98,9 @@ const synthesisSourceCandidateSchema = z.object({
 })
 const openAiSecretInputSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
 const MAX_BODY_BYTES = 1_000_000
+const REMOTE_ACCESS_TOKEN_PATTERN = /^[A-Za-z0-9_-]{64,512}(?![\s\S])/
+const WS_BEARER_PROTOCOL_PREFIX = 'joy-bearer.'
+const WS_APPLICATION_PROTOCOL = 'joy.v1'
 
 export interface TaskEvent {
   taskId: TaskId
@@ -147,6 +150,10 @@ interface ResumeState {
 
 /** Builds the local HTTP + WebSocket service. It never binds beyond loopback. */
 export async function createJoyServer(options: JoyServerOptions = {}): Promise<JoyServer> {
+  const remoteAccessToken = process.env.JOY_REMOTE_ACCESS_TOKEN
+  if (remoteAccessToken !== undefined && !REMOTE_ACCESS_TOKEN_PATTERN.test(remoteAccessToken))
+    throw new Error('JOY_REMOTE_ACCESS_TOKEN must be 64-512 URL-safe characters')
+
   const home = options.home ?? joyHome()
   const configStore = options.configStore ?? new ConfigStore(join(home, 'config.yaml'))
   const initialConfig = await configStore.get()
@@ -154,6 +161,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const ownsDatabase = !options.database
   const db = options.database ?? openDatabase(paths.database)
   const redactor = options.redactor ?? new Redactor()
+  if (remoteAccessToken) redactor.add(remoteAccessToken)
   const secretStore = options.secretStore ?? new SecretStore({ onSecret: (secret) => redactor.add(secret) })
   const providers: Partial<Record<ProviderKind, AgentProvider>> = {
     'claude-cli': new ClaudeCliProvider({
@@ -174,7 +182,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const executor = options.executor ?? new WorktreeExecutor({ worktreesDir: paths.worktrees })
   const running = new Map<TaskId, ActiveTask>()
   const subscribers = new Map<TaskId, Set<WebSocket>>()
-  const wsServer = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY_BYTES })
+  const wsServer = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_BODY_BYTES,
+    handleProtocols: (protocols) =>
+      protocols.has(WS_APPLICATION_PROTOCOL) ? WS_APPLICATION_PROTOCOL : false,
+  })
   let closed = false
 
   const publish = (taskId: TaskId, attemptId: AttemptId, type: string, payload: unknown): TaskEvent => {
@@ -219,8 +232,15 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   httpServer.on('upgrade', (req, socket, head) => {
     try {
+      if (remoteAccessToken && !hasValidBearerToken(req, remoteAccessToken, true)) {
+        socket.write(
+          'HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer realm="Joy"\r\nConnection: close\r\nContent-Length: 0\r\n\r\n',
+        )
+        socket.destroy()
+        return
+      }
       const url = requestUrl(req)
-      if (url.pathname !== '/ws' || !isLocalOrigin(req.headers.origin)) {
+      if (url.pathname !== '/ws' || (!remoteAccessToken && !isLocalOrigin(req.headers.origin))) {
         socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
         socket.destroy()
         return
@@ -249,6 +269,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   })
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (remoteAccessToken && !hasValidBearerToken(req, remoteAccessToken, false)) {
+      res.setHeader('www-authenticate', 'Bearer realm="Joy"')
+      res.setHeader('cache-control', 'no-store')
+      json(res, 401, { error: 'Unauthorized' })
+      return
+    }
     const url = requestUrl(req)
     const method = req.method ?? 'GET'
     if (url.pathname === '/api/health' && method === 'GET') {
@@ -1071,6 +1097,37 @@ function summarizeDiff(diff: WorkspaceDiff): Record<string, unknown> {
     additions: diff.files.reduce((total, file) => total + file.additions, 0),
     deletions: diff.files.reduce((total, file) => total + file.deletions, 0),
   }
+}
+
+function hasValidBearerToken(
+  req: IncomingMessage,
+  expectedToken: string,
+  allowWebSocketSubprotocol: boolean,
+): boolean {
+  const authorization = req.headers.authorization
+  if (authorization !== undefined) {
+    if (!/^Bearer /i.test(authorization)) return false
+    const candidate = authorization.slice('Bearer '.length)
+    return REMOTE_ACCESS_TOKEN_PATTERN.test(candidate) && tokensMatch(candidate, expectedToken)
+  }
+  if (!allowWebSocketSubprotocol) return false
+
+  const offered = req.headers['sec-websocket-protocol']
+  const protocols = (Array.isArray(offered) ? offered : [offered ?? ''])
+    .flatMap((header) => header.split(','))
+    .map((protocol) => protocol.trim())
+  const credentials = protocols.flatMap((protocol) => {
+    if (!protocol.startsWith(WS_BEARER_PROTOCOL_PREFIX)) return []
+    const candidate = protocol.slice(WS_BEARER_PROTOCOL_PREFIX.length)
+    return REMOTE_ACCESS_TOKEN_PATTERN.test(candidate) ? [candidate] : []
+  })
+  return credentials.length === 1 && tokensMatch(credentials[0] ?? '', expectedToken)
+}
+
+function tokensMatch(candidate: string, expected: string): boolean {
+  const candidateDigest = createHash('sha256').update(candidate).digest()
+  const expectedDigest = createHash('sha256').update(expected).digest()
+  return timingSafeEqual(candidateDigest, expectedDigest)
 }
 
 function requestUrl(req: IncomingMessage): URL {

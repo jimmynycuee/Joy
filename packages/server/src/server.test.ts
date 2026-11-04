@@ -14,7 +14,7 @@ import type {
   Workspace,
   WorkspaceDiff,
 } from '@joy/core'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigStore } from '@joy/config'
 import {
   appendTaskEvent,
@@ -38,6 +38,7 @@ afterEach(async () => {
   for (const server of servers.splice(0)) await server.close()
   for (const db of databases.splice(0)) if (db.isOpen) db.close()
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  vi.unstubAllEnvs()
 })
 
 const rid = (id: string) => id as RepoId
@@ -67,6 +68,17 @@ function receiveMessages(socket: WebSocket, count: number): Promise<unknown[]> {
     }
     socket.on('message', onMessage)
     socket.once('error', onError)
+  })
+}
+
+function websocketError(url: string, options: { origin: string; headers?: Record<string, string> }) {
+  return new Promise<string>((resolve, reject) => {
+    const socket = new WebSocket(url, options)
+    socket.once('error', (error) => resolve(error.message))
+    socket.once('open', () => {
+      socket.close()
+      reject(new Error('WebSocket unexpectedly opened'))
+    })
   })
 }
 const diff: WorkspaceDiff = {
@@ -254,8 +266,10 @@ function fixture(
     secretBackend?: MemoryBackend
     secretEnv?: NodeJS.ProcessEnv
     configStore?: ConfigStore
+    remoteAccessToken?: string
   } = {},
 ) {
+  vi.stubEnv('JOY_REMOTE_ACCESS_TOKEN', options.remoteAccessToken)
   const dir = mkdtempSync(join(tmpdir(), 'joy-server-test-'))
   dirs.push(dir)
   const db = openDatabase(':memory:')
@@ -324,9 +338,14 @@ interface TaskDetails {
   events: unknown[]
 }
 
-async function waitForStatus(origin: string, id: string, status: string): Promise<TaskDetails> {
+async function waitForStatus(
+  origin: string,
+  id: string,
+  status: string,
+  headers?: Record<string, string>,
+): Promise<TaskDetails> {
   for (let attempt = 0; attempt < 100; attempt++) {
-    const response = await fetch(`${origin}/api/tasks/${id}`)
+    const response = await fetch(`${origin}/api/tasks/${id}`, headers ? { headers } : {})
     const body = (await response.json()) as TaskDetails
     if (body.task.status === status) return body
     await new Promise((resolve) => setTimeout(resolve, 5))
@@ -464,6 +483,87 @@ describe('Joy local server', () => {
       },
     })
     expect(compete.status).toBe(400)
+  })
+
+  it('requires bearer authentication for HTTP and WebSocket requests when configured', async () => {
+    const token = 'b'.repeat(64)
+    const { db, serverPromise } = fixture({ remoteAccessToken: token })
+    const { origin, websocket, server } = await start(serverPromise)
+    expect(server.httpServer.address()).toMatchObject({ address: '127.0.0.1' })
+
+    const unauthenticated = await fetch(`${origin}/api/health`)
+    expect(unauthenticated.status).toBe(401)
+    expect(unauthenticated.headers.get('www-authenticate')).toContain('Bearer')
+    expect(await unauthenticated.text()).not.toContain(token)
+
+    const invalid = await fetch(`${origin}/api/repos`, {
+      headers: { authorization: 'Bearer invalid-token' },
+    })
+    expect(invalid.status).toBe(401)
+    const queryCredential = await fetch(`${origin}/api/health?token=invalid-token`)
+    expect(queryCredential.status).toBe(401)
+    expect(db.prepare('SELECT id FROM repos').all()).toHaveLength(0)
+
+    const authorization = { authorization: `Bearer ${token}` }
+    const health = await fetch(`${origin}/api/health`, { headers: authorization })
+    expect(health.status).toBe(200)
+    const configResponse = await fetch(`${origin}/api/config`, { headers: authorization })
+    expect(await configResponse.text()).not.toContain(token)
+    const repoResponse = await fetch(`${origin}/api/repos`, {
+      method: 'POST',
+      headers: { ...authorization, 'content-type': 'application/json' },
+      body: JSON.stringify({ path: '/tmp/authorized-repo', defaultBranch: 'main' }),
+    })
+    expect(repoResponse.status).toBe(201)
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const taskResponse = await fetch(`${origin}/api/tasks`, {
+      method: 'POST',
+      headers: { ...authorization, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        repoId: repo.id,
+        title: 'Authorized task',
+        prompt: 'Test remote authentication',
+        mode: 'single',
+      }),
+    })
+    expect(taskResponse.status).toBe(201)
+    const { task } = (await taskResponse.json()) as { task: { id: string } }
+    const taskUrl = `${websocket}/ws?taskId=${task.id}`
+
+    await expect(websocketError(taskUrl, { origin: 'https://joy.tailnet.example' })).resolves.toContain('401')
+    await expect(
+      websocketError(taskUrl, {
+        origin: 'https://joy.tailnet.example',
+        headers: { authorization: 'Bearer invalid-token' },
+      }),
+    ).resolves.toContain('401')
+
+    const socket = new WebSocket(taskUrl, {
+      origin: 'https://joy.tailnet.example',
+      headers: authorization,
+    })
+    const socketMessages = await receiveMessages(socket, 1)
+    expect(socketMessages[0]).toMatchObject({ type: 'ready', taskId: task.id })
+    socket.close()
+
+    const protocolSocket = new WebSocket(taskUrl, ['joy.v1', `joy-bearer.${token}`], {
+      origin: 'https://joy.tailnet.example',
+    })
+    const protocolMessages = await receiveMessages(protocolSocket, 1)
+    expect(protocolMessages[0]).toMatchObject({ type: 'ready', taskId: task.id })
+    expect(protocolSocket.protocol).toBe('joy.v1')
+    expect(protocolSocket.protocol).not.toContain(token)
+    protocolSocket.close()
+
+    await waitForStatus(origin, task.id, 'done', authorization)
+    expect(JSON.stringify(db.prepare('SELECT payload FROM events').all())).not.toContain(token)
+  })
+
+  it('rejects an empty or weak remote access token during startup', async () => {
+    for (const remoteAccessToken of ['', 'short', 'a'.repeat(32), 'b'.repeat(64) + '\n']) {
+      const { serverPromise } = fixture({ remoteAccessToken })
+      await expect(serverPromise).rejects.toThrow(/JOY_REMOTE_ACCESS_TOKEN/)
+    }
   })
 
   it('runs competing providers in isolated worktrees, persists judge rationale, and selects a winner', async () => {

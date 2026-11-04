@@ -3,8 +3,9 @@
 > 開工前先讀本檔、`AGENTS.md`、`docs/PLAN.md`；收工前更新本檔。這裡記錄最新進度、阻塞、下一步與最近決策。
 
 - 最後更新：2026-11-04
-- 目前階段：**P2 進行中**。T2.1 自動 strengths 合成及獨立審查提出的重啟恢復、競爭、prompt 容量、錯誤收尾與 provider capability 缺陷已修正並在本地驗證；PR #10 仍 draft。T2.2 draft PR #11（head `29229e8`）與 T3.9 draft PR #12（head `fc0439c`）三平台 CI 全綠。GitHub 上 #2–#5 仍 open、非 draft 且三平台 CI 全綠；#6/#7 merged 到相依分支而非 `main`；#8/#9 三平台 CI 全綠且仍 draft，#9 secrets handling 必須先由 owner human review。依目前指示所有 PR 保持 draft、不合併。
-- 工作分支：`t2.1-compete`，基於 `t1.8-web` commit `a852b60`；目前包含 T2.1 引擎、server/UI、審查修正與自動合成候選實作，PR #10 為 draft。
+- 目前階段：**P2 進行中**。T2.1 自動 strengths 合成及獨立審查提出的重啟恢復、競爭、prompt 容量、錯誤收尾與 provider capability 缺陷已修正並在本地驗證；PR #10 已 squash-merge 至相依分支 `t1.8-web`，未合併至 `main`。T2.2 draft PR #11（head `29229e8`）與 T3.9 draft PR #12（head `fc0439c`）三平台 CI 全綠。GitHub 上 #2–#5 仍 open、非 draft 且三平台 CI 全綠；#6/#7 merged 到相依分支而非 `main`；#8/#9 三平台 CI 全綠且仍 draft，#9 secrets handling 必須先由 owner human review。本 T4.1 PR 也必須保持 draft、不合併。
+- **T4.1 遠端存取：** 已在 `t4.1-remote-auth`（基於 `t1.8-web` `3660503`）加入 loopback-only bearer 驗證、WebSocket 驗證與 [Tailscale Serve 指引](remote-access.md)。server 定向測試 21/21 通過；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（183 tests passed、2 skipped）。一般 `pnpm check` 僅因 runner 注入 Git identity 令既有 fallback-identity test 失敗；隔離後通過。Draft PR 交付待完成；未合併、未部署，真實 tailnet 行為未驗證。`apps/web` 未修改，因此目前 Web UI 尚不會附加 token。
+- T2.1 分支：`t2.1-compete`，基於當時的 `t1.8-web` commit `a852b60`；PR #10 已 squash-merge 至 `t1.8-web`，其目前 live tip 為 `3660503`。
 - 本地驗證：`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（181 tests passed、2 skipped）；T2.1 Playwright E2E 通過（3 specs），orchestrator/server 定向測試 44/44 通過。所有互動測試使用 fake providers，沒有呼叫真模型。一般環境的 `pnpm check` 有一項既有 fallback-identity 測試受繼承 Git 身分影響，已另開 issue #13。
 
 ## 分支與 PR
@@ -15,7 +16,7 @@ main … t1.5-review-loop
       └─ #7 t1.7-event-log（已合併到依賴分支）
           └─ #8 t1.9-github-pr（draft；base=t1.7-event-log）
               └─ #9 t1.8-web（draft；base=t1.9-github-pr）
-                  └─ #10 t2.1-compete（draft；base=t1.8-web）
+                  └─ #10 t2.1-compete（已 squash-merge 至 t1.8-web；base=t1.8-web）
                       └─ #11 t2.2-tools（draft；base=t2.1-compete）
                           └─ #12 T3.9 model stats/UI（draft；base=t2.2-tools）
 ```
@@ -24,7 +25,7 @@ main … t1.5-review-loop
 - #2–#5 目前仍 open、非 draft；各自 Ubuntu、macOS、Windows checks 成功，尚未合併。
 - #9 的 Ubuntu、macOS、Windows checks 全綠，但 secrets 變更須 owner human review；未見 GitHub review 留言。
 - #8 的 Ubuntu、macOS、Windows checks 現已全綠；先前 macOS runner 取消已由後續成功結果解決，PR 仍 draft。
-- #10 前一個已發布 head `9fa9ca9` 的 Ubuntu、macOS、Windows checks 全綠；之後的獨立審查修正已在本地驗證，PR 仍 draft，GitHub 尚無 review。#11 head `29229e8`、#12 head `fc0439c` 的三平台 checks 全綠，兩者皆為 draft。
+- PR #10 已 squash-merge 至 `t1.8-web`；此結果不代表合併至 `main` 或已部署。#11 head `29229e8`、#12 head `fc0439c` 的三平台 checks 全綠，兩者皆為 draft。
 
 ## 現在的樣子
 
@@ -40,19 +41,18 @@ main … t1.5-review-loop
 ## 卡住 / 需要人做的事
 
 1. **T1.8 draft PR #9**（[PR #9](https://github.com/jimmynycuee/Joy/pull/9)）：三平台 CI 全綠；secrets handling 仍需 owner human review。
-2. **T2.1 draft PR #10**（[PR #10](https://github.com/jimmynycuee/Joy/pull/10)）：獨立審查的五項發現已修正；定向測試、完整 `pnpm check`（隔離繼承 Git 身分）與 Playwright E2E 通過。維持 draft、不合併，GitHub 尚無 review。
-3. **T2.3 policy**：動作對應權限等級是安全政策，已送 owner 問題卡；答覆前不設定 tier、不啟用分類。
-4. **T2.4 Telegram**：依賴 T2.3 審核路徑，且需 owner 的 bot token 與 chat-id 綁定；目前尚未核實可用的 Telegram 憑證或帳號。
-5. **T2.5 quota**：調查未找到 Codex `exec --json` 可可靠辨識限額的結構化訊號；不可用模糊錯誤文字猜測。備援、排隊、預算與價格策略仍待決策。
-6. **T2.6 GitHub Issue trigger**：要先決定 label/觸發語義、允許 repo/actor 與預設 task mode；production webhook 還需可達 HTTPS ingress 與簽章密鑰。伺服器目前只綁 loopback，未驗證任何 ingress。
-7. **T3.7 scheduler**：需決定 timezone/DST、錯過執行、重疊/重試策略，以及定時 code-writing 是否須 approval，未先猜定。
-8. **Codex 真實 fixture**：既有 fixture 是合成資料；Cloud Codex CLI 目前沒有登入；需有已登入 CLI session 後錄製並重跑 provider contract test。
-9. 確認模型名稱仍待帳號實測；Windows 實機尚未手動測過，只有 CI 證據。
-10. GitHub #2–#5 雖三平台 CI 綠仍 open；#6/#7 僅合併在相依分支，尚不能聲稱全鏈已進 `main` 或已部署。
+2. **T2.3 policy**：動作對應權限等級是安全政策，已送 owner 問題卡；答覆前不設定 tier、不啟用分類。
+3. **T2.4 Telegram**：依賴 T2.3 審核路徑，且需 owner 的 bot token 與 chat-id 綁定；目前尚未核實可用的 Telegram 憑證或帳號。
+4. **T2.5 quota**：調查未找到 Codex `exec --json` 可可靠辨識限額的結構化訊號；不可用模糊錯誤文字猜測。備援、排隊、預算與價格策略仍待決策。
+5. **T2.6 GitHub Issue trigger**：要先決定 label/觸發語義、允許 repo/actor 與預設 task mode；production webhook 還需可達 HTTPS ingress 與簽章密鑰。伺服器目前只綁 loopback，未驗證任何 ingress。
+6. **T3.7 scheduler**：需決定 timezone/DST、錯過執行、重疊/重試策略，以及定時 code-writing 是否須 approval，未先猜定。
+7. **Codex 真實 fixture**：既有 fixture 是合成資料；Cloud Codex CLI 目前沒有登入；需有已登入 CLI session 後錄製並重跑 provider contract test。
+8. 確認模型名稱仍待帳號實測；Windows 實機尚未手動測過，只有 CI 證據。
+9. GitHub #2–#5 雖三平台 CI 綠仍 open；#6/#7/#10 僅合併在相依分支，尚不能聲稱全鏈已進 `main` 或已部署。
 
 ## 下一步（依相依順序）
 
-1. 保持 #10 draft/no-merge hold；新 head 的 checks 與 owner review 都未確認前，不改變 readiness 狀態。
+1. 將 T4.1 PR 保持 draft、不得合併；等待 owner human review。
 2. #11 T2.2 與 #12 T3.9 已交付且 CI 綠；只推進不依賴未決 tier/trigger/quota/scheduler 政策的工作。
 3. #9 等待 owner human review；#8 已全綠，不需重跑。持續核對 #2–#5 與相依 PR 狀態，不把 stack merge 說成進 `main`。
 4. Codex 真實 fixture、模型名稱確認與 Windows 實機驗證留待相應條件可用時處理。

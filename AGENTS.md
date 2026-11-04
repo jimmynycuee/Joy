@@ -90,6 +90,7 @@ ticket.
   in unit tests or CI.
 - **Never read, store or forward subscription credentials.** The CLIs use whatever the user is logged into.
 - **Secrets** (OpenAI key, bot tokens) go in the OS keychain, never in SQLite, config files, logs or events.
+- Remote access stays opt-in: the server binds only to `127.0.0.1`; provision `JOY_REMOTE_ACCESS_TOKEN` at runtime and share the service only through Tailscale Serve. Never put bearer tokens in URLs or persistent storage.
 - **Content from outside the user** (email, web pages, issues, tool output) is untrusted: it must never be written to
   memory and never trigger an action that needs approval.
 - **Cross-platform:** macOS, Windows and Linux are all supported (CI runs all three). Use `node:path`, never

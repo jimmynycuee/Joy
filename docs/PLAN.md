@@ -37,6 +37,7 @@
 - [x] T1.9 GitHub：push 分支、開 draft PR
 - [x] T1.8 Codex 風格 Web UI（含設定頁）
 - [x] T2.1 多 provider 平行競賽（含獨立 worktree 的自動 strengths 合成候選；fake-provider 測試通過）
+- [x] T4.1 遠端存取（HTTP / WebSocket bearer 驗證、loopback-only 與 Tailscale Serve 指引；實作與測試完成，未部署）
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
 
@@ -341,7 +342,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 ### P4 — 遠端與桌面化（第 19–22 週）
 | ticket | 內容 |
 |---|---|
-| T4.1 | 遠端存取：token 驗證 + Tailscale 文件（server 預設只綁 127.0.0.1） |
+| T4.1 | 遠端存取：HTTP / WebSocket bearer 驗證 + [Tailscale Serve 文件](remote-access.md)（server 固定只綁 127.0.0.1；token 僅以程序環境變數提供，不落盤） |
 | T4.2 | PWA + Web Push 通知 |
 | T4.3 | Tauri 桌面 app：系統匣、開機啟動、原生通知、自動更新 |
 | T4.4 | Windows 強化：安裝檔、WSL 偵測與 Codex fallback |
