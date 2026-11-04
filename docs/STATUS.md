@@ -34,6 +34,7 @@ main … t1.5-review-loop
 - #15 T3.1 head=`68f1354b0e164c4ae0f959715011466f05d79398`，base=`t2.2-tools` head `d67fb2a5dcca95f249c2da03806cf745f2e6c4e3`；open/draft、無衝突、三平台 checks 全綠。T3.2 新分支以此 head 為基礎。
 - #17 T4.2 head=`f9842713976f149ab33d8efb4c20f62dc708c19b`，base=`t1.8-web` head `36605031a5f57e0754a669ef265af8612156f554`；open/draft、無衝突、三平台 checks 全綠。範圍為本機 installable/offline PWA；API/WS bypass，Web Push 延後，安裝提示未驗證。
 - #21 T4.1 head=`0945eae6c76714ad51cc56161b71bf51abf9671f`，base=`t1.8-web` head `36605031a5f57e0754a669ef265af8612156f554`；open/draft、無衝突、三平台 checks 全綠但仍待 owner review。Server auth/Tailscale 指引不等於 UI bearer 整合或 push；tailnet/deployment 未驗證。
+- #22 T3.2 open/draft，branch=`t3.2-dispatch-tools`，base=`reason/t3-1-add-selectable-assi-7a20bfa9` at PR #15 head `68f1354b0e164c4ae0f959715011466f05d79398`。
 
 ## 現在的樣子
 
