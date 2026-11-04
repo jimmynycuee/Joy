@@ -4,3 +4,6 @@ export { ClaudeCliProvider } from './claude-cli/provider.js'
 export type { ClaudeCliOptions } from './claude-cli/provider.js'
 export { runJsonlProcess } from './process.js'
 export type { JsonlLine, JsonlProcess, ProcessExit, ProcessSpec } from './process.js'
+
+export { OpenAiApiProvider } from './openai-api/provider.js'
+export type { ApiTool, ModelPrice, OpenAiApiOptions } from './openai-api/provider.js'
