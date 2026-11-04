@@ -3,9 +3,9 @@
 > 開工前先讀本檔、`AGENTS.md`、`docs/PLAN.md`；收工前更新本檔。這裡記錄最新進度、阻塞、下一步與最近決策。
 
 - 最後更新：2026-11-04
-- 目前階段：**P2 進行中**。T2.1 自動 strengths 合成已在 draft PR #10；最新 head `9fa9ca94b3937c538c486e695f6adbbea41d32d5` 三平台 CI 全綠，獨立唯讀審查進行中。T2.2 工具已同步最新 #10 base 並推送到 draft PR #11；本地驗證通過，GitHub 已清除衝突；最新 head 的 CI 結果尚未回報。#8/#9 三平台 CI 全綠且仍 draft；#9 secrets handling 必須先由 owner human review。依目前指示相關 PR 保持 draft、不合併。
-- 工作分支：`t2.2-tools`，基於最新 `t2.1-compete` head `9fa9ca94b3937c538c486e695f6adbbea41d32d5`；PR #11 base=`t2.1-compete`，更新後的新 head CI 結果待回報。
-- 本地驗證：`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（178 passed、2 skipped）；`pnpm --filter @joy/web exec playwright test e2e/t1.8.spec.ts e2e/t2.1.spec.ts` 通過（4 specs）。含 fake-provider Claude→Codex MCP call 與 approval persistence/cancellation；沒有呼叫真模型。最新合入的 #10 commit 只更動狀態文件。
+- 目前階段：**P2 進行中**。T2.1 獨立審查修正已合入 `t2.1-compete`，PR #10 head `65a026c569e4c543f9da8d33efdac18b4e616036` 三平台 CI 全綠且仍為 draft。T2.2 的最新 base 已本地合入並解衝突；完整 `pnpm check` 與 fake-provider E2E 通過，PR #11 更新後的 CI 待確認。依要求 PR #11 保持 draft、不合併。T3.9 draft PR #12 head `fc0439c5ef808724590812132ad2a028eb1f0851` 三平台 CI 全綠。#8/#9 三平台 CI 全綠且仍 draft；#9 secrets handling 必須先由 owner human review。
+- 工作分支：`t2.2-tools`，已合入 `t2.1-compete` head `65a026c569e4c543f9da8d33efdac18b4e616036`；PR #11 base=`t2.1-compete`。
+- 本次 base sync 後驗證：隔離繼承 Git 身分的 `pnpm check` 通過（188 passed、2 skipped）；T2.2/T2.1 fake-provider Playwright E2E 通過（4 specs）。所有 provider 測試只使用 fakes，沒有呼叫真模型。
 
 ## 分支與 PR
 
@@ -15,33 +15,34 @@ main … t1.5-review-loop
       └─ #7 t1.7-event-log（已合併到相依分支）
           └─ #8 t1.9-github-pr（draft；base=t1.7-event-log）
               └─ #9 t1.8-web（draft；base=t1.9-github-pr）
-                  └─ #10 t2.1-compete（draft；base=t1.8-web；head=`9fa9ca9`）
+                  └─ #10 t2.1-compete（draft；base=t1.8-web；head=`65a026c`）
                       └─ #11 t2.2-tools（draft；base=t2.1-compete）
+                          └─ #12 T3.9 model stats/UI（draft；base=t2.2-tools）
 ```
 
 - #6/#7 已合併到相依分支，不代表已合入 `main` 或已部署。
 - #2–#5 仍 open、非 draft；三平台 checks 全綠。
 - #8 三平台 checks 全綠；本分支不重跑其 macOS job。
 - #9 三平台 checks 全綠，secrets handling 仍須 owner human review；不在本分支更動其審核狀態。
-- #10 最新 head=`9fa9ca9` 三平台 checks 全綠，仍為 draft；獨立唯讀審查進行中。#11 已同步該 base，GitHub 顯示無衝突；最新 head 尚無可讀取的 checks；舊 head 的綠色結果不代表新 head 已通過。
+- #10 head=`65a026c` 三平台 checks 全綠，仍為 draft。#11 已在本地解決與新 base 的衝突並通過檢查；push 後確認新 head CI。舊 head `29229e8` 的綠色結果不驗證更新後程式碼。#12 head=`fc0439c` 三平台 checks 全綠，仍為 draft。
 
 ## 現在的樣子
 
-| 部分                            | 狀態                                                                                                                                                                                              |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| monorepo / CI                   | pnpm、TypeScript strict、ESLint、Prettier、Vitest；三平台 CI 執行 `pnpm check`。                                                                                                                  |
-| `packages/core` / `packages/db` | 領域介面、SQLite schema、task/repo CRUD、事件/reviews/usage 持久化已完成。                                                                                                                        |
-| `packages/tools`                | T2.2 Tool Hub 提供 task-scoped MCP：唯讀 `ask_peer`、`task_status`、持久化 `request_approval`（僅記錄提案，不執行動作）。                                                                         |
-| `packages/providers`            | Claude CLI、Codex CLI、OpenAI API adapters 完成；Codex 目前仍使用合成 fixture，尚待登入電腦錄製真實 fixture。                                                                                     |
-| `packages/executor`             | 每個 attempt 使用獨立 Git worktree/branch，提供 diff、commit、cleanup。                                                                                                                           |
-| `packages/orchestrator`         | T1.5 `reviewLoop()` 完成；T2.1 `compete()` 支援平行候選、各自 worktree、部分成功保留、只讀結構化裁判，以及獨立 worktree 的自動 strengths 合成候選；provider 呼叫可注入 task-scoped MCP Tool Hub。 |
-| server / UI / GitHub            | T1.6–T1.9 實作完成。T2.1 server/UI 支援合成候選持久化與明確選取；T2.2 server 暴露 loopback、token-scoped stateless MCP endpoint，並持久化 approval 狀態供 task status 查詢。                      |
+| 部分                            | 狀態                                                                                                                                                                                                 |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| monorepo / CI                   | pnpm、TypeScript strict、ESLint、Prettier、Vitest；三平台 CI 執行 `pnpm check`。                                                                                                                     |
+| `packages/core` / `packages/db` | 領域介面、SQLite schema、task/repo CRUD、事件/reviews/usage 持久化已完成。                                                                                                                           |
+| `packages/tools`                | T2.2 Tool Hub 提供 task-scoped MCP：唯讀 `ask_peer`、`task_status`、持久化 `request_approval`（僅記錄提案，不執行動作）。                                                                            |
+| `packages/providers`            | Claude CLI、Codex CLI、OpenAI API adapters 完成；Codex 目前仍使用合成 fixture，尚待登入電腦錄製真實 fixture。                                                                                        |
+| `packages/executor`             | 每個 attempt 使用獨立 Git worktree/branch，提供 diff、commit、cleanup。                                                                                                                              |
+| `packages/orchestrator`         | T1.5 `reviewLoop()` 完成；T2.1 支援並行競賽、自動 strengths 合成、24,000-byte provider prompt 上限與 code-edit capability 驗證；provider 呼叫可注入 task-scoped MCP Tool Hub。                       |
+| server / UI / GitHub            | T2.1 server 支援合成候選持久化與選取、競爭互斥、重啟恢復和異常收尾；UI 可檢視並選取候選。T2.2 server 暴露 loopback、token-scoped stateless MCP endpoint，並持久化 approval 狀態供 task status 查詢。 |
 
 ## 卡住 / 需要人做的事
 
 1. **T1.8 draft PR #9**（[PR #9](https://github.com/jimmynycuee/Joy/pull/9)）：三平台 CI 全綠；secrets handling 仍需 owner human review。
-2. **T2.1 draft PR #10**（[PR #10](https://github.com/jimmynycuee/Joy/pull/10)）：自動合成完成，最新 head 三平台 CI 全綠；獨立唯讀審查進行中，維持 draft、不合併。
-3. **T2.2 draft PR #11**（[PR #11](https://github.com/jimmynycuee/Joy/pull/11)）：最新 base 已同步並通過本地程式碼驗證；更新後 head 的 CI 結果待回報，保持 draft、不合併。
+2. **T2.1 draft PR #10**（[PR #10](https://github.com/jimmynycuee/Joy/pull/10)）：獨立審查修正已合入，head `65a026c` 三平台 CI 全綠；維持 draft、不合併。
+3. **T2.2 draft PR #11**（[PR #11](https://github.com/jimmynycuee/Joy/pull/11)）：最新 `t2.1-compete` base 已合入，衝突已解決；完整本地檢查及 E2E 通過，更新後 head CI 待確認。維持 draft、不合併。
 4. **T2.3 policy**：動作對應權限等級屬安全政策，需 owner 決定後才能完成，不可臆測。
 5. **T2.4 Telegram**：依賴 T2.3 審核路徑，且需 owner bot token 與 chat-id 綁定；目前尚未核實可用憑證或帳號。
 6. **T2.5 quota**：調查未找到 Codex `exec --json` 可可靠辨識限額的結構化訊號；備援、排隊、預算與價格策略仍待決策，不可用模糊錯誤文字猜測。
@@ -54,7 +55,7 @@ main … t1.5-review-loop
 
 1. 檢查 PR #11 更新後 head 的三平台 CI；維持 draft、不合併。
 2. 追蹤 #10 的獨立 review 與 #9 owner human review；不重跑 #8 macOS，也不更改 #8/#9 的審核狀態。
-3. T3.9 模型統計/UI 已完成並提交 [draft PR #12](https://github.com/jimmynycuee/Joy/pull/12)；維持既有的 no-merge hold。
+3. T3.9 draft PR #12 的 T2.2 base 已更新至最新 head；重跑本地相關驗證並確認更新後 head 的 CI，維持 draft、不合併。
 4. Codex 真實 fixture、模型名稱確認與 Windows 實機驗證留待相應條件可用時處理。
 
 ## 最近的決策（新的放最上面）
@@ -84,6 +85,6 @@ main … t1.5-review-loop
 
 ## T3.9 模型表現統計
 
-- 獨立分支：`t3.9-model-stats`，以 live PR #11 的 head `29229e8da3e6de96a45cf445b9b0adbe8417c7e4` 為基底；[draft PR #12](https://github.com/jimmynycuee/Joy/pull/12)；未修改或提交到 `t2.2-tools`。
+- 獨立分支：`t3.9-model-stats`，原以 live PR #11 head `29229e8da3e6de96a45cf445b9b0adbe8417c7e4` 為基底，後合併最新 `t2.2-tools` head `d67fb2a5dcca95f249c2da03806cf745f2e6c4e3` 以解決 PR #12 衝突；[draft PR #12](https://github.com/jimmynycuee/Joy/pull/12)；未修改或提交到 `t2.2-tools`。
 - 新增 DB migration/backfill 與終端 attempt 統計：按 provider/model/task mode 記錄成功或失敗、review findings 數、elapsed ms；取消的 attempt 排除；UI 提供分組摘要。
 - 驗證：`pnpm exec vitest run --project db --project server` 通過 32 tests；`pnpm test:e2e` 通過 5 fake-provider specs；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（181 tests passed、2 skipped）。未呼叫真實模型。

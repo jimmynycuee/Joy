@@ -348,8 +348,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         throw new HttpError(409, `Task cannot select a winner from ${task.status}`)
       if (running.has(task.id)) throw new HttpError(409, 'A task operation is already running')
       const body = z.strictObject({ attemptId: idSchema }).parse(await readJson(req))
-      if (requireTask(task.id).status !== 'review_ready')
+      const currentTask = requireTask(task.id)
+      if (currentTask.status !== 'review_ready')
         throw new HttpError(409, 'Task is no longer ready for winner selection')
+      if (running.has(task.id)) throw new HttpError(409, 'A task operation is already running')
       const attempt = getAttempt(db, body.attemptId as AttemptId)
       if (!attempt || attempt.taskId !== task.id)
         throw new HttpError(404, 'Attempt was not found for this task')
@@ -403,9 +405,36 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (!repo) throw new HttpError(404, `Repository ${task.repoId} was not found`)
       const config = await configStore.get()
       const synthesizer = resolveRole('judge', config.roles as RoleConfig, task.roleOverrides)
-      if (!providers[synthesizer.provider])
+      const synthesizerProvider = providers[synthesizer.provider]
+      if (!synthesizerProvider)
         throw new HttpError(409, `No provider configured for synthesizer ${synthesizer.provider}`)
-      const started = scheduleSynthesis(task, repo, latestRun.candidates, synthesizer)
+      if (!synthesizerProvider.capabilities.codeEdit)
+        throw new HttpError(409, `Synthesizer provider ${synthesizer.provider} is not code-edit capable`)
+
+      const currentTask = requireTask(task.id)
+      if (currentTask.status !== 'review_ready')
+        throw new HttpError(409, `Task cannot synthesize strengths from ${currentTask.status}`)
+      if (running.has(task.id)) throw new HttpError(409, 'A task operation is already running')
+      const currentRun = latestSynthesisSources(db, task.id)
+      if (!currentRun.runStart || currentRun.candidates.length < 2)
+        throw new HttpError(
+          409,
+          'No completed competition run with at least two successful candidates is available',
+        )
+      if (
+        currentRun.runEvents.some((event) => {
+          if (
+            event.type !== 'synthesis_result' ||
+            typeof event.payload !== 'object' ||
+            event.payload === null
+          )
+            return false
+          return (event.payload as { status?: unknown }).status === 'succeeded'
+        })
+      )
+        throw new HttpError(409, 'This competition run already has a synthesized candidate')
+
+      const started = scheduleSynthesis(currentTask, repo, currentRun.candidates, synthesizer)
       json(res, 202, { task: getTask(db, task.id), event: started })
       return
     }
@@ -598,14 +627,51 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const anchorAttemptId = candidates[0]?.attemptId
     if (!anchorAttemptId) throw new Error('Synthesis has no source candidate')
     running.set(task.id, active)
-    const started = publish(task.id, anchorAttemptId, 'synthesis_started', {
-      sourceAttemptIds: candidates.map((candidate) => candidate.attemptId),
-      model: synthesizer,
-    })
+    let started: TaskEvent
+    try {
+      started = publish(task.id, anchorAttemptId, 'synthesis_started', {
+        sourceAttemptIds: candidates.map((candidate) => candidate.attemptId),
+        model: synthesizer,
+      })
+    } catch (error) {
+      if (running.get(task.id) === active) running.delete(task.id)
+      throw error
+    }
+
+    const markInterruptedAttempt = () => {
+      const attemptEvent = listTaskEvents(db, task.id)
+        .filter(
+          (event) =>
+            event.seq > started.seq &&
+            event.type === 'attempt' &&
+            typeof event.payload === 'object' &&
+            event.payload !== null &&
+            (event.payload as { synthesized?: unknown }).synthesized === true,
+        )
+        .at(-1)
+      if (attemptEvent && getAttempt(db, attemptEvent.attemptId))
+        updateAttempt(db, attemptEvent.attemptId, {
+          status: controller.signal.aborted ? 'cancelled' : 'failed',
+        })
+    }
     active.promise = runSynthesisTask(task, repo, candidates, synthesizer, controller)
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : 'Synthesis failed unexpectedly'
-        publish(task.id, anchorAttemptId, 'synthesis_error', { message })
+        try {
+          markInterruptedAttempt()
+          const hasTerminalEvent = listTaskEvents(db, task.id).some(
+            (event) =>
+              event.seq > started.seq &&
+              (event.type === 'synthesis_result' || event.type === 'synthesis_error'),
+          )
+          if (!hasTerminalEvent) publish(task.id, anchorAttemptId, 'synthesis_error', { message })
+        } catch {
+          try {
+            markInterruptedAttempt()
+          } catch {
+            // The operation lock is still released in finally if persistence itself is unavailable.
+          }
+        }
       })
       .finally(() => {
         if (running.get(task.id) === active) running.delete(task.id)
@@ -984,6 +1050,33 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   for (const taskId of interruptRunningWork(db)) {
     const attempt = latestAttempt(db, taskId)
     if (attempt) publish(taskId, attempt.id, 'interrupted', { taskId, attemptId: attempt.id })
+  }
+  for (const task of listTasks(db)) {
+    const events = listTaskEvents(db, task.id)
+    const started = events.filter((event) => event.type === 'synthesis_started').at(-1)
+    if (!started) continue
+    if (
+      events.some(
+        (event) =>
+          event.seq > started.seq && (event.type === 'synthesis_result' || event.type === 'synthesis_error'),
+      )
+    )
+      continue
+    const attemptEvent = events
+      .filter(
+        (event) =>
+          event.seq > started.seq &&
+          event.type === 'attempt' &&
+          typeof event.payload === 'object' &&
+          event.payload !== null &&
+          (event.payload as { synthesized?: unknown }).synthesized === true,
+      )
+      .at(-1)
+    if (attemptEvent && getAttempt(db, attemptEvent.attemptId))
+      updateAttempt(db, attemptEvent.attemptId, { status: 'failed' })
+    publish(task.id, started.attemptId, 'synthesis_error', {
+      message: 'Synthesis interrupted by server restart',
+    })
   }
 
   return {
