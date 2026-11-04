@@ -112,6 +112,7 @@ export async function startFakeJoyRuntime(port = 4317): Promise<FakeJoyRuntime> 
     onSecret: (value) => redactor.add(value),
   })
   const server = await createJoyServer({
+    allowPlaywrightOrigin: true,
     home,
     database,
     configStore: new ConfigStore(join(home, 'config.yaml')),

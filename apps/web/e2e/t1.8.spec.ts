@@ -16,7 +16,7 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   const settingsImplementerProvider = page.getByLabel('Implementer provider')
   await expect(settingsImplementerProvider.locator('option[value="openai-api"]')).toHaveCount(0)
   await settingsImplementerProvider.selectOption('claude-cli')
-  await page.getByLabel('Implementer model').fill('fake-ui-model')
+  await page.getByLabel('Implementer model').fill('claude-opus-4-6')
   await page.getByRole('button', { name: 'Save role settings' }).click()
   await expect(page.getByRole('status').filter({ hasText: 'Role and model settings saved' })).toBeVisible()
 
@@ -59,7 +59,7 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
 
   await expect(page.getByRole('heading', { name: 'Show the fake diff' })).toBeVisible()
   await expect(page.getByTestId('event-stream')).toContainText(
-    'Fake provider completed: claude-cli:fake-ui-model',
+    'Fake provider completed: claude-cli:claude-opus-4-6',
   )
   await expect(page.getByTestId('event-stream')).toContainText('Review: Fake review approved')
   await expect(page.getByTestId('diff-patch')).toContainText('hello from fake')
@@ -78,9 +78,9 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   }
   expect(details.task.roleOverrides.implementer).toMatchObject({
     provider: 'claude-cli',
-    model: 'fake-ui-model',
+    model: 'claude-opus-4-6',
   })
-  expect(details.attempts[0]).toMatchObject({ provider: 'claude-cli', model: 'fake-ui-model' })
+  expect(details.attempts[0]).toMatchObject({ provider: 'claude-cli', model: 'claude-opus-4-6' })
   expect(JSON.stringify(details.events)).not.toContain(secret)
   await page.waitForTimeout(4100)
   await page.screenshot({ path: 'test-results/t1.8-workspace.png', fullPage: true })

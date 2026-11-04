@@ -52,7 +52,7 @@ const MODEL_SUGGESTIONS: Record<ProviderKind, string[]> = {
 function providersForRole(role: Role): ProviderKind[] {
   return role === 'implementer'
     ? PROVIDER_KINDS.filter((provider) => provider !== 'openai-api')
-    : PROVIDER_KINDS
+    : [...PROVIDER_KINDS]
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
