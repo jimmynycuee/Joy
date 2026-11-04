@@ -41,6 +41,9 @@ importers:
       '@joy/core':
         specifier: workspace:*
         version: link:../core
+      '@joy/model-effort':
+        specifier: workspace:*
+        version: link:../model-effort
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
@@ -58,11 +61,20 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/model-effort:
+    dependencies:
+      '@joy/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/providers:
     dependencies:
       '@joy/core':
         specifier: workspace:*
         version: link:../core
+      '@joy/model-effort':
+        specifier: workspace:*
+        version: link:../model-effort
 
 packages:
 

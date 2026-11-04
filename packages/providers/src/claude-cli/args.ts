@@ -1,10 +1,19 @@
 import type { ModelRef, RunOptions } from '@joy/core'
+import { effortCompatibilityError } from '@joy/model-effort'
 
 /**
  * Builds the `claude` argument list. Pure, so it is unit-tested directly.
  * `mcpConfigPath` is the JSON file written from `opts.mcpServers` (see provider.ts).
  */
 export function buildClaudeArgs(opts: RunOptions, model: ModelRef, mcpConfigPath?: string): string[] {
+  if (model.provider !== 'claude-cli') {
+    throw new Error(`Claude Code cannot run model provider '${model.provider}'.`)
+  }
+  if (model.effort) {
+    const issue = effortCompatibilityError(model.provider, model.model, model.effort)
+    if (issue) throw new Error(`Invalid Claude Code model effort: ${issue}`)
+  }
+
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--model', model.model]
   if (model.effort) args.push('--effort', model.effort)
 
