@@ -7,8 +7,11 @@
 - T2.2 基礎分支：`t2.2-tools`，已合入 `t2.1-compete` head `65a026c569e4c543f9da8d33efdac18b4e616036`；PR #11 base=`t2.1-compete`。
 - T2.2 base sync 驗證：隔離繼承 Git 身分的 `pnpm check` 通過（188 passed、2 skipped）；T2.2/T2.1 fake-provider Playwright E2E 通過（4 specs）。所有 provider 測試只使用 fakes，沒有呼叫真模型。
 - T3.1 工作分支：`t3.1-assistant`，從 `t2.2-tools` live head `d67fb2a5dcca95f249c2da03806cf745f2e6c4e3` 建立；draft PR base 為 `t2.2-tools`。
-- T3.1 實作：新增 `@joy/assistant` 對話迴圈，可選現有三種 provider，依 brain/provider 分別用 MCP 或 API function calling；Tool Hub 的 MCP 與 function-calling 轉接共用同一組工具定義。Repo/task dispatch 僅以 acceptance fixture 模擬，正式派工工具留在 T3.2。
+- T3.1 實作：新增 `@joy/assistant` 對話迴圈，可選現有三種 provider，依 brain/provider 分別用 MCP 或 API function calling；Tool Hub 的 MCP 與 function-calling 轉接共用同一組工具定義。T3.1 驗收中的 repo/task dispatch 仍以 fixture 模擬；T3.2 的安全正式工具子集記於下方。
 - T3.1 驗證：隔離繼承 Git 身分的 `pnpm check` 全過（190 passed、2 skipped）；`pnpm exec vitest run --project assistant --project tools --project providers` 全過（83 passed、1 opt-in skipped）。測試只用 fake providers 與 local fixtures，未呼叫真 provider。
+- T3.2 安全部分：`@joy/tools` 提供 `create_task`、`list_tasks`、`summarize_task`；建立工具只持久化 `queued` 任務，不會排程或執行程式碼。Telegram 完成通知延至 T2.3 權限政策與 T2.4 Telegram 身分/核准決策完成後；因此 T3.2 仍未完整、計畫保持未勾選。
+- PR #17（T4.2）目前 open/draft，base `t1.8-web` (`36605031`)；head `f984271`，無衝突且三平台 CI 全綠。內容僅為本機可安裝/離線 PWA（manifest、service worker、offline shell；`/api` 與 `/ws` bypass）；Web Push 延至 T4.1，裝置安裝提示行為未驗證，T4.2 保持未勾選。
+- PR #21（T4.1）目前 open/draft，base `t1.8-web` (`36605031`)；head `0945eae`，無衝突且三平台 CI 全綠，仍待 owner review。內容為 server auth/Tailscale 指引；未包含 Web UI bearer 整合或 push，tailnet/deployment 行為未驗證。
 
 ## 分支與 PR
 
@@ -28,19 +31,30 @@ main … t1.5-review-loop
 - #8 三平台 checks 全綠；本分支不重跑其 macOS job。
 - #9 三平台 checks 全綠，secrets handling 仍須 owner human review；不在本分支更動其審核狀態。
 - #10 head=`65a026c` 三平台 checks 全綠，仍為 draft。#11 已在本地解決與新 base 的衝突並通過檢查；push 後確認新 head CI。舊 head `29229e8` 的綠色結果不驗證更新後程式碼。#12 head=`fc0439c` 三平台 checks 全綠，仍為 draft。
+- #15 T3.1 head=`68f1354b0e164c4ae0f959715011466f05d79398`，base=`t2.2-tools` head `d67fb2a5dcca95f249c2da03806cf745f2e6c4e3`；open/draft、無衝突、三平台 checks 全綠。T3.2 新分支以此 head 為基礎。
+- #17 T4.2 head=`f9842713976f149ab33d8efb4c20f62dc708c19b`，base=`t1.8-web` head `36605031a5f57e0754a669ef265af8612156f554`；open/draft、無衝突、三平台 checks 全綠。範圍為本機 installable/offline PWA；API/WS bypass，Web Push 延後，安裝提示未驗證。
+- #21 T4.1 head=`0945eae6c76714ad51cc56161b71bf51abf9671f`，base=`t1.8-web` head `36605031a5f57e0754a669ef265af8612156f554`；open/draft、無衝突、三平台 checks 全綠但仍待 owner review。Server auth/Tailscale 指引不等於 UI bearer 整合或 push；tailnet/deployment 未驗證。
 
 ## 現在的樣子
 
-| 部分                            | 狀態                                                                                                                                                                                                 |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| monorepo / CI                   | pnpm、TypeScript strict、ESLint、Prettier、Vitest；三平台 CI 執行 `pnpm check`。                                                                                                                     |
-| `packages/core` / `packages/db` | 領域介面、SQLite schema、task/repo CRUD、事件/reviews/usage 持久化已完成。                                                                                                                           |
-| `packages/tools`                | T2.2 Tool Hub 提供 task-scoped MCP：唯讀 `ask_peer`、`task_status`、持久化 `request_approval`（僅記錄提案，不執行動作）；T3.1 以相同定義輸出 MCP 與 API function tools。                             |
-| `packages/assistant`            | T3.1 in-process 對話迴圈可選 `assistant_brain` provider/model，保存各 brain 的續聊 session；CLI 用 Tool Hub MCP、OpenAI API 用同一組 function tools。正式 chat route/UI 與 T3.2 派工工具未包含。     |
-| `packages/providers`            | Claude CLI、Codex CLI、OpenAI API adapters 完成；Codex 目前仍使用合成 fixture，尚待登入電腦錄製真實 fixture。                                                                                        |
-| `packages/executor`             | 每個 attempt 使用獨立 Git worktree/branch，提供 diff、commit、cleanup。                                                                                                                              |
-| `packages/orchestrator`         | T1.5 `reviewLoop()` 完成；T2.1 支援並行競賽、自動 strengths 合成、24,000-byte provider prompt 上限與 code-edit capability 驗證；provider 呼叫可注入 task-scoped MCP Tool Hub。                       |
-| server / UI / GitHub            | T2.1 server 支援合成候選持久化與選取、競爭互斥、重啟恢復和異常收尾；UI 可檢視並選取候選。T2.2 server 暴露 loopback、token-scoped stateless MCP endpoint，並持久化 approval 狀態供 task status 查詢。 |
+| 部分                            | 狀態                                                                                                                                                                                                                                                                  |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| monorepo / CI                   | pnpm、TypeScript strict、ESLint、Prettier、Vitest；三平台 CI 執行 `pnpm check`。                                                                                                                                                                                      |
+| `packages/core` / `packages/db` | 領域介面、SQLite schema、task/repo CRUD、事件/reviews/usage 持久化已完成。                                                                                                                                                                                            |
+| `packages/tools`                | T2.2 Tool Hub 提供 task-scoped MCP：唯讀 `ask_peer`、`task_status`、持久化 `request_approval`（僅記錄提案，不執行動作）；T3.1 以相同定義輸出 MCP 與 API function tools；T3.2 安全派工 factory 提供 queued-only `create_task` 及唯讀 `list_tasks` / `summarize_task`。 |
+| `packages/assistant`            | T3.1 in-process 對話迴圈可選 `assistant_brain` provider/model，保存各 brain 的續聊 session；CLI 用 Tool Hub MCP、OpenAI API 用同一組 function tools。T3.2 工具可由既有 `ToolHubTool[]` seam 注入；正式 chat route/UI 與 Telegram 通知未包含。                         |
+| `packages/providers`            | Claude CLI、Codex CLI、OpenAI API adapters 完成；Codex 目前仍使用合成 fixture，尚待登入電腦錄製真實 fixture。                                                                                                                                                         |
+| `packages/executor`             | 每個 attempt 使用獨立 Git worktree/branch，提供 diff、commit、cleanup。                                                                                                                                                                                               |
+| `packages/orchestrator`         | T1.5 `reviewLoop()` 完成；T2.1 支援並行競賽、自動 strengths 合成、24,000-byte provider prompt 上限與 code-edit capability 驗證；provider 呼叫可注入 task-scoped MCP Tool Hub。                                                                                        |
+| server / UI / GitHub            | T2.1 server 支援合成候選持久化與選取、競爭互斥、重啟恢復和異常收尾；UI 可檢視並選取候選。T2.2 server 暴露 loopback、token-scoped stateless MCP endpoint，並持久化 approval 狀態供 task status 查詢。                                                                  |
+
+## T3.2 派工工具（安全非 Telegram 部分）
+
+- `create_task` 只接受已註冊的 `repoId`，寫入 `queued` 任務並回傳安全欄位；不排程、不執行/續跑、不套用未決的 policy tier，也不傳送通知。
+- `list_tasks` 僅回傳任務 metadata；`summarize_task` 回傳狀態、attempt/review 摘要與 approval 狀態計數，不回傳 prompt、repo path 或 event payload。
+- 工具是既有 `ToolHubTool[]` seam 的獨立 factory，可供 MCP 與 function-calling adapter 共用；未改 assistant/server 路由或 UI。
+- 驗證：`pnpm exec vitest run --project tools --project assistant --project db` 通過（23 tests）；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（193 passed、2 skipped）。測試使用記憶體 DB/local fake，不呼叫 provider。
+- 未完成：T2.3 action-tier policy 與 T2.4 Telegram 身分/核准未決，因此不做 task-completion Telegram 通知；T3.2 仍未完整，`docs/PLAN.md` 保持未勾選。
 
 ## 卡住 / 需要人做的事
 
@@ -54,6 +68,9 @@ main … t1.5-review-loop
 8. **T3.7 scheduler**：需決定 timezone/DST、錯過執行、重疊/重試策略及定時 code-writing 是否須 approval，未先猜定。
 9. **Codex 真實 fixture**：既有 fixture 是合成資料；需在已登入電腦錄製並重跑 provider contract test。確認模型名稱仍待帳號實測；Windows 實機尚未手動測過，只有 CI 證據。
 10. #2–#5 三平台 CI 綠但仍 open；#6/#7 僅合併在相依分支，尚不能聲稱全鏈已進 `main` 或已部署。
+11. **T4.2 draft PR #17**：本機 installable/offline PWA 已驗證且三平台 CI 綠；Web Push 仍依賴 T4.1，裝置安裝提示未驗證，T4.2 維持未勾選。
+12. **T4.1 draft PR #21**：三平台 CI 綠、無衝突但仍待 owner review；沒有 UI bearer 整合或 push，tailnet/deployment 未驗證。
+13. **T3.2**：安全派工工具已可建立 queued 任務並讀取狀態/摘要；不得自動執行或通知。完成 Telegram 通知仍需 T2.3/T2.4 決策。
 
 ## 下一步（依相依順序）
 

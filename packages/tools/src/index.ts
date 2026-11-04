@@ -256,3 +256,6 @@ function requestApproval(
 function textResult(text: string): CallToolResult {
   return { content: [{ type: 'text', text }] }
 }
+
+export { createTaskDispatchTools } from './dispatch.js'
+export type { TaskDispatchContext } from './dispatch.js'
