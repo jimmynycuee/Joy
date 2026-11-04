@@ -2,18 +2,18 @@
 
 > 接手前請先讀本檔、`AGENTS.md` 與 `docs/PLAN.md`。本檔記錄目前進度、阻塞與決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。
 
-- 最後更新：2026-11-04 13:38 UTC
+- 最後更新：2026-11-04 13:41 UTC
 - 目前階段：**P1 整合進 `main`**；`main` 為 `ef9338c`（已合併 PR #47 的計畫文件），目前尚無 P1 程式碼 PR 整合進 `main`。
 - 計畫依據：`docs/PLAN.md` v0.2（PR #47 已合併）。T2.5 決策已定：額度用完先交接給另一家；只有兩家都沒額度才排隊；成本上限依 config 的 `budget` 設定。這些不是待決事項。
 - 驗證：在 `main` 的 `ef9338c` 執行 `pnpm check` 通過（格式、lint、typecheck、5 tests）；同一 SHA 的 [main push CI run](https://github.com/jimmynycuee/Joy/actions/runs/41839404606) 中 Ubuntu、macOS、Windows 均成功。
 
-## PR 鏈快照（2026-11-04 13:38 UTC）
+## PR 鏈快照（2026-11-04 13:41 UTC）
 
 「三平台 CI 綠」只代表列出的遠端 PR head；衝突解除、rebase 或推送後必須等新 head 的 CI。只有 `main` 上述 `ef9338c` 的檢查是本次合併後基線驗證。
 
 1. [PR #2 — P0 foundation](https://github.com/jimmynycuee/Joy/pull/2)：open，base `main`，head `56895e83`，有衝突；三平台舊 head CI 綠。包含 `packages/core` 介面，需擁有者審核，且是基礎鏈的阻塞點。
 2. [PR #3 — Claude Code provider](https://github.com/jimmynycuee/Joy/pull/3)：open，base `t0-foundation`，head `33b1b69c`，有衝突；三平台舊 head CI 綠。變更 `packages/core` provider interface，需擁有者審核。
-3. [PR #19](https://github.com/jimmynycuee/Joy/pull/19)：open draft，base `main`，head 與 #3 相同，clean，三平台 CI 綠；是 #3 的重複 PR，不得用來繞過 #2 的 owner gate，整合時要確認後關閉多餘項。
+3. [PR #19](https://github.com/jimmynycuee/Joy/pull/19)：open draft，base `main`，head 與 #3 相同，但目前與 `main` 衝突；三平台舊 head CI 綠。它是 #3 的重複 PR，不能用來繞過 #2 的 owner gate；保留 #3 作為依賴鏈後，關閉 #19。
 4. [PR #4 — Git worktree executor](https://github.com/jimmynycuee/Joy/pull/4)：open，base `t1.1-claude-cli`，head `3e6cd927`，有衝突；三平台舊 head CI 綠。
 5. [PR #5 — config](https://github.com/jimmynycuee/Joy/pull/5)：open，base `t1.4-worktree`，head `d13197c0`，目前無衝突；三平台 CI 綠。變更 `packages/core` provider interface，需擁有者審核；依賴 #4。
 6. [PR #6](https://github.com/jimmynycuee/Joy/pull/6)、[#7](https://github.com/jimmynycuee/Joy/pull/7) 與 [#31](https://github.com/jimmynycuee/Joy/pull/31)：已合併到上游功能分支，但尚未進 `main`；#47 是文件變更，不包含這些 P1 程式碼。
