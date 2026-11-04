@@ -15,7 +15,7 @@
 | `packages/core`  | 介面定稿（T0.5），說明在 `packages/core/README.md`                                                      |
 | `packages/db`    | 完成（T0.6）。`node:sqlite`、migration、FTS5                                                            |
 | Claude Code 整合 | 已實測，報告 `docs/spikes/claude-code.md`，fixture 齊全                                                 |
-| Codex 整合       | **部分完成**。edit / MCP / resume 真實 fixtures 已錄；Windows 原生與模型名稱仍待確認                        |
+| Codex 整合       | **部分完成**。edit / MCP / resume 真實 fixtures 已錄；Windows 原生與模型名稱仍待確認                    |
 | 其他套件         | 尚未開始                                                                                                |
 
 ## 卡住 / 需要人做的事
