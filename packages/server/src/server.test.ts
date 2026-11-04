@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs'
+import { request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
@@ -175,7 +176,117 @@ async function postJson(url: string, body: unknown) {
   })
 }
 
+function rawRequest(
+  origin: string,
+  path: string,
+  method: string,
+  headers: Record<string, string>,
+  body = '',
+): Promise<{ status: number; body: string }> {
+  const { port } = new URL(origin)
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(
+      { host: '127.0.0.1', port: Number(port), path, method, headers },
+      (response) => {
+        response.setEncoding('utf8')
+        let responseBody = ''
+        response.on('data', (chunk: string) => {
+          responseBody += chunk
+        })
+        response.on('end', () => resolve({ status: response.statusCode ?? 0, body: responseBody }))
+      },
+    )
+    request.on('error', reject)
+    request.end(body)
+  })
+}
+
 describe('Joy local server', () => {
+  it('rejects non-loopback Host headers before processing API requests', async () => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const response = await rawRequest(
+      origin,
+      '/api/repos',
+      'POST',
+      { host: 'attacker.example', origin, 'content-type': 'application/json' },
+      JSON.stringify({ path: '/tmp/repo', defaultBranch: 'main' }),
+    )
+
+    expect(response.status).toBe(403)
+    const { repos } = (await (await fetch(`${origin}/api/repos`)).json()) as { repos: unknown[] }
+    expect(repos).toHaveLength(0)
+  })
+
+  it('rejects non-loopback Host headers on WebSocket upgrades', async () => {
+    const { serverPromise } = fixture()
+    const { origin, websocket } = await start(serverPromise)
+    const socket = new WebSocket(`${websocket}/ws?taskId=missing`, {
+      origin,
+      headers: { host: 'attacker.example' },
+    })
+    const status = await new Promise<number>((resolve, reject) => {
+      socket.once('unexpected-response', (_request, response) => {
+        response.resume()
+        resolve(response.statusCode ?? 0)
+      })
+      socket.once('error', reject)
+    })
+
+    expect(status).toBe(403)
+    socket.terminate()
+  })
+
+  it('rejects untrusted Origin headers before processing API requests', async () => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const response = await rawRequest(
+      origin,
+      '/api/repos',
+      'POST',
+      { host: new URL(origin).host, origin: 'https://attacker.example', 'content-type': 'text/plain' },
+      JSON.stringify({ path: '/tmp/repo', defaultBranch: 'main' }),
+    )
+
+    expect(response.status).toBe(403)
+    const { repos } = (await (await fetch(`${origin}/api/repos`)).json()) as { repos: unknown[] }
+    expect(repos).toHaveLength(0)
+  })
+
+  it('requires JSON Content-Type for API writes and preserves the local Tauri origin', async () => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const rejected = await rawRequest(
+      origin,
+      '/api/repos',
+      'POST',
+      { host: new URL(origin).host, 'content-type': 'text/plain' },
+      JSON.stringify({ path: '/tmp/rejected', defaultBranch: 'main' }),
+    )
+    expect(rejected.status).toBe(415)
+
+    const tauri = await rawRequest(
+      origin,
+      '/api/repos',
+      'POST',
+      {
+        host: new URL(origin).host,
+        origin: 'tauri://localhost',
+        'content-type': 'application/json; charset=utf-8',
+      },
+      JSON.stringify({ path: '/tmp/tauri', defaultBranch: 'main' }),
+    )
+    expect(tauri.status).toBe(201)
+  })
+
+  it('returns 400 for malformed percent encoding in task paths', async () => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const response = await fetch(`${origin}/api/tasks/%E0%A4%A`)
+
+    expect(response.status).toBe(400)
+  })
+
   it('binds only to loopback and supports repositories, task creation, replay and WebSocket events', async () => {
     const { db, executor, serverPromise } = fixture()
     const { origin, websocket, server } = await start(serverPromise)

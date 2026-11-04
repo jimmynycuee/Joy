@@ -193,8 +193,13 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   httpServer.on('upgrade', (req, socket, head) => {
     try {
+      if (!isLoopbackHost(req.headers.host) || !isLocalOrigin(req.headers.origin)) {
+        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+        socket.destroy()
+        return
+      }
       const url = requestUrl(req)
-      if (url.pathname !== '/ws' || !isLocalOrigin(req.headers.origin)) {
+      if (url.pathname !== '/ws') {
         socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
         socket.destroy()
         return
@@ -223,8 +228,13 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   })
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!isLoopbackHost(req.headers.host)) throw new HttpError(403, 'Host is not allowed')
+    if (!isLocalOrigin(req.headers.origin)) throw new HttpError(403, 'Origin is not allowed')
     const url = requestUrl(req)
     const method = req.method ?? 'GET'
+    if (url.pathname.startsWith('/api/') && ['POST', 'PUT', 'PATCH'].includes(method)) {
+      assertJsonContentType(req)
+    }
     if (url.pathname === '/api/health' && method === 'GET') {
       json(res, 200, { ok: true })
       return
@@ -270,7 +280,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
     const taskMatch = /^\/api\/tasks\/([^/]+)$/.exec(url.pathname)
     if (taskMatch && method === 'GET') {
-      const task = requireTask(decodeURIComponent(taskMatch[1] ?? ''))
+      const task = requireTask(decodePathSegment(taskMatch[1] ?? ''))
       const repo = getRepo(db, task.repoId)
       json(res, 200, {
         task,
@@ -282,7 +292,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     const eventsMatch = /^\/api\/tasks\/([^/]+)\/events$/.exec(url.pathname)
     if (eventsMatch && method === 'GET') {
-      const task = requireTask(decodeURIComponent(eventsMatch[1] ?? ''))
+      const task = requireTask(decodePathSegment(eventsMatch[1] ?? ''))
       const after = Number(url.searchParams.get('after') ?? '0')
       if (!Number.isSafeInteger(after) || after < 0)
         throw new HttpError(400, 'after must be a non-negative integer')
@@ -291,7 +301,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     const cancelMatch = /^\/api\/tasks\/([^/]+)\/cancel$/.exec(url.pathname)
     if (cancelMatch && method === 'POST') {
-      const task = requireTask(decodeURIComponent(cancelMatch[1] ?? ''))
+      const task = requireTask(decodePathSegment(cancelMatch[1] ?? ''))
       const active = running.get(task.id)
       if (active) active.controller.abort()
       else if (task.status === 'queued') setTaskStatus(db, task.id, 'cancelled')
@@ -302,7 +312,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     const resumeMatch = /^\/api\/tasks\/([^/]+)\/resume$/.exec(url.pathname)
     if (resumeMatch && method === 'POST') {
-      const task = requireTask(decodeURIComponent(resumeMatch[1] ?? ''))
+      const task = requireTask(decodePathSegment(resumeMatch[1] ?? ''))
       if (task.status !== 'failed' && task.status !== 'cancelled')
         throw new HttpError(409, `Task cannot be resumed from ${task.status}`)
       const state = resumeState(task)
@@ -584,13 +594,47 @@ function requestUrl(req: IncomingMessage): URL {
   }
 }
 
+function isLoopbackHost(host: string | undefined): boolean {
+  if (!host) return false
+  try {
+    const url = new URL(`http://${host}`)
+    return (
+      !url.username &&
+      !url.password &&
+      url.pathname === '/' &&
+      !url.search &&
+      !url.hash &&
+      isLoopbackHostname(url.hostname)
+    )
+  } catch {
+    return false
+  }
+}
+
 function isLocalOrigin(origin: string | undefined): boolean {
   if (!origin) return true
   try {
-    const host = new URL(origin).hostname
-    return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1'
+    return isLoopbackHostname(new URL(origin).hostname)
   } catch {
     return false
+  }
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1'
+}
+
+function assertJsonContentType(req: IncomingMessage): void {
+  const contentType = req.headers['content-type']
+  const mediaType = contentType?.split(';', 1)[0]?.trim().toLowerCase()
+  if (mediaType !== 'application/json') throw new HttpError(415, 'Content-Type must be application/json')
+}
+
+function decodePathSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    throw new HttpError(400, 'Malformed URL path encoding')
   }
 }
 
