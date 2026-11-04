@@ -5,6 +5,7 @@ import type { AgentEvent, RunOptions } from '@joy/core'
 import { afterEach, describe, expect, it } from 'vitest'
 import { fakeCli, fakeWsl, fixturePath } from '../../test-support/fixtures.js'
 import { CodexCliProvider } from './provider.js'
+import { CodexStreamParser } from './parse.js'
 
 const model = { provider: 'codex-cli', model: 'gpt-6-luna', effort: 'low' } as const
 const dirs: string[] = []
@@ -56,6 +57,21 @@ async function collect(it: AsyncIterable<AgentEvent>) {
 }
 
 describe('Windows Codex fallback', () => {
+  it('normalizes WSL file-change paths relative to the Linux worktree', () => {
+    const parser = new CodexStreamParser({ cwd: '/mnt/c/project', cwdStyle: 'posix' })
+    expect(
+      parser.push({
+        type: 'item.completed',
+        item: {
+          id: 'file',
+          type: 'file_change',
+          status: 'completed',
+          changes: [{ path: '/mnt/c/project/src/index.ts', kind: 'update' }],
+        },
+      }),
+    ).toEqual([{ type: 'file_change', path: 'src/index.ts', kind: 'modify' }])
+  })
+
   it('uses native Codex when version and exec probes pass', async () => {
     const { dir, provider, nativeArgs } = setup(
       { FAKE_REPLAY: fixturePath('codex', 'synthetic-edit') },
