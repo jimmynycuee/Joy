@@ -2,20 +2,20 @@
 
 > 接手前請先讀本檔、`AGENTS.md` 與 `docs/PLAN.md`。本檔記錄目前進度、阻塞與決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。
 
-- 最後更新：2026-11-04 17:29 UTC
+- 最後更新：2026-11-04 17:32 UTC
 - 目前階段：**P1 整合 PR #58**；最新 `main` 為 `2c3fdb4`，P1 尚未合併。PR #58 以 `integrate-p1` 為 head、維持 draft；目前不得標示 P1 完成。
 - 計畫與決策：依 `docs/PLAN.md` v0.2。已定案 Codex 在 P2 以 `app-server` 取代 `exec --json`（T2.7）、每個 repo 的 provider 允許清單（T1.12）、`joy doctor`（T1.13），以及額度用完先交接給另一家、兩家都無額度才排隊、成本上限依 config `budget`。決策已確定不代表 tickets 已完成；T1.12、T1.13 仍未完成。P1 順序依 PLAN §10：T1.6 + T1.7 → T1.12 → T1.9 → T1.13 → T1.8。
 - 驗證基線：`main` 的 [CI run 41848131509](https://github.com/jimmynycuee/Joy/actions/runs/41848131509) 對 SHA `2c3fdb4ca7924cd52dea62321d037a83e01766ab` 成功，Ubuntu、macOS、Windows 皆通過。
 
-## 目前整合 PR（2026-11-04 17:29 UTC）
+## 目前整合 PR（2026-11-04 17:32 UTC）
 
 - [PR #58 — Integrate the P1 stack into main](https://github.com/jimmynycuee/Joy/pull/58)：draft、base `main` (`2c3fdb4`)、head branch `integrate-p1`；P1 尚未進入 `main`。GitHub 三平台與 web E2E checks 須對最新 head 全部通過。
 - 整合內容包括 T1.6/T1.7、T1.8、T1.9、Origin/Host 驗證、單代理 provider capability guard、model-effort 驗證；修正 HTTP/WebSocket same-origin 檢查、keychain 狀態失敗時 UI 啟動、WebSocket snapshot/replay 去重與追趕，以及 implementer/fixer selector 排除 `openai-api`。另將 E2E preview 限制在 `127.0.0.1`，並讓舊設定的 OpenAI implementer fallback 對使用者可見。CI 新增 web build 與 Playwright。
 - 本機驗證通過：`pnpm install`；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check`（format、lint、typecheck、191 tests passed、2 skipped）；`pnpm --filter @joy/web build`；`pnpm test:e2e`（3 tests passed）。清除僅作用於該命令，避免 Reason 執行環境注入的 Git 身份影響 fallback-identity 測試；未改全域 Git 設定。
-- 獨立 review 兩次均未發現 blocker；指出的 pre-attempt error event 序號/replay 缺口已用新 regression test 重現並修正。伺服器目前只透過持久化 store 發佈事件，pre-attempt failure 會建立並保存 failed attempt/event。最終 server 調整已通過本機完整檢查；仍需在最新推送 head 完成 follow-up review。
+- 獨立 review 最終全 diff 檢查未發現 blocker（靜態閱讀；reviewer 未執行 tests/build/Playwright，也未覆核完整 127-file diff）。指出的 pre-attempt error event 序號/replay 缺口已用新 regression test 重現並修正。伺服器目前只透過持久化 store 發佈事件，pre-attempt failure 會建立並保存 failed attempt/event。獨立 review 未重驗 snapshot/replay 行為或 lockfile；本機完整驗證已通過，CI 仍須對最新 head 通過。
 - T2.1 的 compete orchestration 與可用 UI 刻意不在 #58；`compete` 的 pre-existing mode placeholder 仍受 gate 保護（API 回 422、UI disabled），未帶入 T2.1 實作。`#44`、`#53/#57`、`#55/#56` 保持獨立，按既定順序後續處理。P2 尚未開始。
 - **Owner review（必要）**：審核 #58 所含 `packages/core` provider/model interface 變更；審核 `packages/secrets` 的 keychain／secret handling。這兩項須列入 owner review，不因 CI 或跨模型 review 通過而視為完成。
-- **阻塞**：PR #58 保持 draft，P1 尚未合併；此 Session 的 PR policy 不允許標記 ready 或 merge。Owner 需 review 並合併 #58，之後才能按順序開始 T1.12、T1.13 與 P2。尚未關閉任何來源 PR。
+- **阻塞**：PR #58 保持 draft，P1 尚未合併；截至 17:30 UTC，head `a2c35fe` 的 Ubuntu/macOS/Windows/web E2E CI run #41878090899 仍全數 queued，runner 尚未分配；本機 `pnpm check`、web build 與 Playwright 已通過。此 Session 的 PR policy 不允許標記 ready 或 merge。Owner 需 review 並合併 #58，之後才能按順序開始 T1.12、T1.13 與 P2。尚未關閉任何來源 PR。
 - **下一步**：先完成 #58 current-head CI 與獨立 review；owner review/merge 後，關閉被取代的 P1 PR 並依序處理 T1.12（#53/#57）、T1.13，再處理 T2.2、T2.4、T2.6、T2.8、T2.3、T2.5、T2.7；最後再 reconcile/adopt #11 作為 T2.2。
 
 ## PR 鏈快照（2026-11-04 14:20 UTC；歷史狀態）
