@@ -37,11 +37,11 @@ pub fn completion_notification_title(previous: Option<&str>, current: &str) -> O
 }
 
 pub fn first_observation_notification_title(
-    task_created_at: &str,
+    task_updated_at: &str,
     watcher_started_at: &str,
     current: &str,
 ) -> Option<&'static str> {
-    if task_created_at < watcher_started_at {
+    if task_updated_at <= watcher_started_at {
         return None;
     }
     completion_notification_title(None, current)
@@ -93,21 +93,21 @@ mod tests {
     #[test]
     fn a_new_task_first_seen_after_completion_gets_one_notification() {
         let watcher_started_at = "2026-11-04T11:00:00.000Z";
-        let created_at = "2026-11-04T11:00:01.000Z";
+        let updated_at = "2026-11-04T11:00:02.000Z";
         assert_eq!(
-            first_observation_notification_title(created_at, watcher_started_at, "done"),
+            first_observation_notification_title(updated_at, watcher_started_at, "done"),
             Some("Joy task finished")
         );
         assert_eq!(
-            first_observation_notification_title(created_at, watcher_started_at, "failed"),
+            first_observation_notification_title(updated_at, watcher_started_at, "failed"),
             Some("Joy task needs attention")
         );
         assert_eq!(
-            first_observation_notification_title(created_at, watcher_started_at, "review_ready"),
+            first_observation_notification_title(updated_at, watcher_started_at, "review_ready"),
             Some("Joy task needs attention")
         );
         assert_eq!(
-            first_observation_notification_title(created_at, watcher_started_at, "cancelled"),
+            first_observation_notification_title(updated_at, watcher_started_at, "cancelled"),
             Some("Joy task needs attention")
         );
         assert_eq!(
@@ -118,7 +118,19 @@ mod tests {
     }
 
     #[test]
-    fn first_observation_does_not_alert_for_old_terminal_tasks() {
+    fn an_old_task_completed_after_startup_gets_notified() {
+        assert_eq!(
+            first_observation_notification_title(
+                "2026-11-04T11:00:00.001Z",
+                "2026-11-04T11:00:00.000Z",
+                "failed"
+            ),
+            Some("Joy task needs attention")
+        );
+    }
+
+    #[test]
+    fn a_terminal_update_before_startup_is_quiet() {
         assert_eq!(
             first_observation_notification_title(
                 "2026-11-04T10:59:59.999Z",

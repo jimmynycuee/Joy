@@ -107,6 +107,20 @@ describe('repositories', () => {
     expect(getTask(db, task.id)?.status).toBe('running')
   })
 
+  it('only advances task updatedAt when its status changes', () => {
+    const db = fresh()
+    const { task } = seed(db)
+    const previousUpdate = '2026-11-04T10:00:00.000Z'
+    db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ?').run(previousUpdate, task.id)
+
+    setTaskStatus(db, task.id, 'queued')
+    expect(getTask(db, task.id)?.updatedAt).toBe(previousUpdate)
+
+    setTaskStatus(db, task.id, 'running')
+    expect(getTask(db, task.id)).toMatchObject({ status: 'running' })
+    expect(getTask(db, task.id)?.updatedAt).not.toBe(previousUpdate)
+  })
+
   it('persists task-ordered events, reviews, and additive daily usage', () => {
     const db = fresh()
     const { task } = seed(db)

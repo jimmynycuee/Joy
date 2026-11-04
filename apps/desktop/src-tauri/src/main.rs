@@ -43,7 +43,7 @@ struct TaskList {
 struct TaskSnapshot {
     id: String,
     status: String,
-    created_at: String,
+    updated_at: String,
 }
 
 fn main() {
@@ -317,7 +317,7 @@ fn start_task_notifications(app: tauri::AppHandle) {
                 let title = match previous.as_deref() {
                     Some(previous) => completion_notification_title(Some(previous), &task.status),
                     None => first_observation_notification_title(
-                        &task.created_at,
+                        &task.updated_at,
                         &watcher_started_at,
                         &task.status,
                     ),

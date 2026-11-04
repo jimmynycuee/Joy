@@ -202,8 +202,8 @@ export function listTasks(db: Database): StoredTask[] {
 
 export function setTaskStatus(db: Database, id: TaskId, status: TaskStatus): void {
   db.prepare(
-    "UPDATE tasks SET status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
-  ).run(status, id)
+    "UPDATE tasks SET status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND status <> ?",
+  ).run(status, id, status)
 }
 
 export interface NewAttempt {
