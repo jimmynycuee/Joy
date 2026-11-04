@@ -17,7 +17,7 @@ type Task = {
   roleOverrides?: Partial<RoleConfig>
   createdAt: string
 }
-type TaskEvent = { taskId: string; seq: number; type: string; payload: unknown; ts: string }
+type TaskEvent = { taskId: string; seq: number; eventId?: string; type: string; payload: unknown; ts: string }
 type DiffFile = { path: string; status: string; additions: number; deletions: number }
 type WorkspaceDiff = { files: DiffFile[]; patch: string }
 type TaskDetails = {
@@ -87,9 +87,20 @@ function record(value: unknown): Record<string, unknown> | null {
 }
 
 function mergeEvents(first: TaskEvent[], second: TaskEvent[]): TaskEvent[] {
-  const events = new Map<number, TaskEvent>()
-  for (const event of [...first, ...second]) events.set(event.seq, event)
-  return [...events.values()].sort((a, b) => a.seq - b.seq)
+  const events = new Map<string, TaskEvent>()
+  for (const event of [...first, ...second]) {
+    const key =
+      event.seq > 0
+        ? `sequence:${event.seq}`
+        : `ephemeral:${event.eventId ?? `${event.taskId}:${event.type}:${event.ts}:${JSON.stringify(event.payload)}`}`
+    if (!events.has(key)) events.set(key, event)
+  }
+  return [...events.values()].sort((a, b) => {
+    if (a.seq > 0 && b.seq > 0) return a.seq - b.seq
+    if (a.seq > 0) return -1
+    if (b.seq > 0) return 1
+    return a.ts.localeCompare(b.ts)
+  })
 }
 
 function taskAfterEvent(task: Task, event: TaskEvent): Task {
@@ -228,14 +239,20 @@ function App() {
     let detailsLoaded = false
     let bufferedEvents: TaskEvent[] = []
     let lastAcceptedSequence = 0
-    let connectionCount = 0
+    const acceptedOutOfOrder = new Set<number>()
+    let snapshotTask: Task | null = null
+    let snapshotSequence = -1
+    let taskStatusSequence = -1
+    let ephemeralFailureSeen = false
     let reconnectAttempts = 0
     let reconnectTimer: number | undefined
     let stableConnectionTimer: number | undefined
     let socket: WebSocket | undefined
     setDetails(null)
     const socketProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const socketUrl = `${socketProtocol}//${window.location.host}/ws?taskId=${encodeURIComponent(selectedTaskId)}`
+    function socketUrl(): string {
+      return `${socketProtocol}//${window.location.host}/ws?taskId=${encodeURIComponent(selectedTaskId)}&after=${lastAcceptedSequence}`
+    }
 
     function refreshTaskList(): void {
       void request<{ tasks: Task[] }>('/api/tasks')
@@ -243,54 +260,91 @@ function App() {
         .catch(() => {})
     }
 
+    function advanceSequence(event: TaskEvent): void {
+      if (event.seq <= lastAcceptedSequence) return
+      acceptedOutOfOrder.add(event.seq)
+      while (acceptedOutOfOrder.delete(lastAcceptedSequence + 1)) lastAcceptedSequence++
+    }
+
     function acceptEvents(events: TaskEvent[]): void {
       const matching = events.filter(
-        (event) => event.taskId === selectedTaskId && Number.isSafeInteger(event.seq) && event.seq > 0,
+        (event) =>
+          event.taskId === selectedTaskId &&
+          Number.isSafeInteger(event.seq) &&
+          (event.seq > 0 || (event.seq === 0 && event.type === 'error')),
       )
       if (matching.length === 0) return
-      const newlyAccepted = matching
-        .filter((event) => event.seq > lastAcceptedSequence)
-        .sort((first, second) => first.seq - second.seq)
-      lastAcceptedSequence = Math.max(lastAcceptedSequence, ...matching.map((event) => event.seq))
       if (!detailsLoaded) {
         bufferedEvents = mergeEvents(bufferedEvents, matching)
         return
       }
+      const ephemeralErrors = matching.filter((event) => event.seq === 0 && event.type === 'error')
+      const newlyAccepted = matching
+        .filter(
+          (event) => event.seq > 0 && event.seq > lastAcceptedSequence && !acceptedOutOfOrder.has(event.seq),
+        )
+        .sort((first, second) => first.seq - second.seq)
+      const additions = [...newlyAccepted, ...ephemeralErrors]
+      if (additions.length === 0) return
+      for (const event of newlyAccepted) advanceSequence(event)
+      const statusEvents = newlyAccepted.filter(
+        (event) =>
+          (event.type === 'result' || event.type === 'error') &&
+          event.seq > taskStatusSequence &&
+          event.seq > snapshotSequence,
+      )
+      if (statusEvents.length) taskStatusSequence = statusEvents.at(-1)?.seq ?? taskStatusSequence
+      if (ephemeralErrors.length) ephemeralFailureSeen = true
       setDetails((current) => {
         if (!current || current.task.id !== selectedTaskId) return current
-        const task = newlyAccepted.reduce(taskAfterEvent, current.task)
-        return { ...current, task, events: mergeEvents(current.events, matching) }
+        let task = statusEvents.reduce(taskAfterEvent, current.task)
+        if (ephemeralErrors.length) task = { ...task, status: 'failed' }
+        return { ...current, task, events: mergeEvents(current.events, additions) }
       })
-      if (newlyAccepted.some((event) => event.type === 'result' || event.type === 'error')) refreshTaskList()
-    }
-
-    function replayEvents(): void {
-      void request<{ events: TaskEvent[] }>(
-        `/api/tasks/${encodeURIComponent(selectedTaskId)}/events?after=${lastAcceptedSequence}`,
-      )
-        .then(({ events }) => {
-          if (active) acceptEvents(events)
-        })
-        .catch((cause: unknown) => {
-          if (active) setError(cause instanceof Error ? cause.message : 'Could not replay task events')
-        })
+      if (additions.some((event) => event.type === 'result' || event.type === 'error')) refreshTaskList()
     }
 
     function connect(): void {
       if (!active) return
-      const shouldReplay = connectionCount > 0
-      connectionCount += 1
-      const nextSocket = new WebSocket(socketUrl)
+      const nextSocket = new WebSocket(socketUrl())
       socket = nextSocket
       nextSocket.onopen = () => {
         if (!active) return
-        if (shouldReplay) replayEvents()
         stableConnectionTimer = window.setTimeout(() => {
           reconnectAttempts = 0
         }, 10_000)
       }
       nextSocket.onmessage = (message) => {
-        const decoded = record(JSON.parse(String(message.data)))
+        let decoded: Record<string, unknown> | null
+        try {
+          decoded = record(JSON.parse(String(message.data)))
+        } catch {
+          return
+        }
+        if (decoded?.type === 'snapshot') {
+          const task = record(decoded.task) as unknown as Task | null
+          const sequence = decoded.lastSequence
+          if (
+            !task ||
+            task.id !== selectedTaskId ||
+            !Number.isSafeInteger(sequence) ||
+            (sequence as number) < 0
+          )
+            return
+          if ((sequence as number) >= snapshotSequence) {
+            snapshotTask = task
+            snapshotSequence = sequence as number
+          }
+          if (detailsLoaded && snapshotSequence >= taskStatusSequence) {
+            taskStatusSequence = snapshotSequence
+            setDetails((current) => {
+              if (!current || current.task.id !== selectedTaskId) return current
+              if (ephemeralFailureSeen && snapshotTask?.status !== 'failed') return current
+              return { ...current, task: snapshotTask as Task }
+            })
+          }
+          return
+        }
         if (decoded?.type !== 'event') return
         const event = record(decoded.event) as unknown as TaskEvent | null
         if (!event || typeof event.seq !== 'number') return
@@ -310,22 +364,34 @@ function App() {
     void request<TaskDetails>(`/api/tasks/${encodeURIComponent(selectedTaskId)}`)
       .then((next) => {
         if (!active) return
-        const snapshotLastSequence = next.events.reduce((latest, event) => Math.max(latest, event.seq), 0)
+        const snapshotLastSequence = next.events.reduce(
+          (latest, event) => (event.seq > 0 ? Math.max(latest, event.seq) : latest),
+          0,
+        )
         const snapshotEvents = mergeEvents(next.events, bufferedEvents)
         const pendingEvents = bufferedEvents
-          .filter((event) => event.seq > snapshotLastSequence)
+          .filter((event) => event.seq > snapshotLastSequence && event.seq > 0)
           .sort((first, second) => first.seq - second.seq)
-        const task = pendingEvents.reduce(taskAfterEvent, next.task)
-        lastAcceptedSequence = Math.max(
-          lastAcceptedSequence,
-          snapshotLastSequence,
-          ...bufferedEvents.map((event) => event.seq),
+        const ephemeralErrors = bufferedEvents.filter((event) => event.seq === 0 && event.type === 'error')
+        let task = snapshotTask && snapshotSequence >= snapshotLastSequence ? snapshotTask : next.task
+        taskStatusSequence =
+          snapshotTask && snapshotSequence >= snapshotLastSequence ? snapshotSequence : snapshotLastSequence
+        const pendingStatusEvents = pendingEvents.filter(
+          (event) => (event.type === 'result' || event.type === 'error') && event.seq > taskStatusSequence,
         )
+        task = pendingStatusEvents.reduce(taskAfterEvent, task)
+        taskStatusSequence = Math.max(taskStatusSequence, pendingStatusEvents.at(-1)?.seq ?? -1)
+        if (ephemeralErrors.length) {
+          ephemeralFailureSeen = true
+          task = ephemeralErrors.reduce(taskAfterEvent, task)
+        }
+        lastAcceptedSequence = snapshotLastSequence
+        acceptedOutOfOrder.clear()
+        for (const event of pendingEvents) advanceSequence(event)
         bufferedEvents = []
         detailsLoaded = true
         setDetails({ ...next, task, events: snapshotEvents })
-        if (pendingEvents.some((event) => event.type === 'result' || event.type === 'error'))
-          refreshTaskList()
+        if (pendingStatusEvents.length || ephemeralErrors.length) refreshTaskList()
       })
       .catch((cause: unknown) => {
         if (active) setError(cause instanceof Error ? cause.message : 'Could not load task')
@@ -770,6 +836,7 @@ function App() {
                     details.events.map((event, index) => (
                       <article
                         className={`event-card event-${eventKind(event).replaceAll('_', '-')}`}
+                        data-event-seq={event.seq}
                         key={`${event.seq}-${index}`}
                       >
                         <span className="event-marker" />

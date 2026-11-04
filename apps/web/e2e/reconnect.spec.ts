@@ -1,94 +1,115 @@
-import { test, expect } from '@playwright/test'
+import { expect, test } from '@playwright/test'
 
-test('buffers the initial snapshot and catches up once after websocket reconnect', async ({ page }) => {
-  const repo = { id: 'race-repo', path: '/tmp/joy-websocket-race', defaultBranch: 'main' }
-  const task = {
-    id: 'race-task',
-    repoId: repo.id,
-    title: 'WebSocket snapshot race',
-    prompt: 'Verify event buffering and replay.',
-    mode: 'review_loop',
-    status: 'running',
-    createdAt: '2025-01-01T00:00:00.000Z',
-  }
-  const event = (seq: number, type: string, payload: unknown) => ({
-    taskId: task.id,
-    seq,
-    type,
-    payload,
-    ts: `2025-01-01T00:00:0${seq}.000Z`,
-  })
-  const snapshotEvent = event(1, 'started', {})
-  const bufferedEvent = event(2, 'phase', { phase: 'between snapshot and apply' })
-  const replayedEvent = event(3, 'phase', { phase: 'after reconnect' })
-  let releaseDetails: (() => void) | undefined
-  const detailsGate = new Promise<void>((resolve) => {
-    releaseDetails = resolve
-  })
-  let firstConnection!: () => void
-  const firstConnectionReady = new Promise<void>((resolve) => {
-    firstConnection = resolve
-  })
-  let replayFinished!: () => void
-  const replayResponseReady = new Promise<void>((resolve) => {
-    replayFinished = resolve
-  })
+const repo = { id: 'race-repo', path: '/tmp/joy-websocket-race', defaultBranch: 'main' }
+const task = {
+  id: 'race-task',
+  repoId: repo.id,
+  title: 'WebSocket snapshot race',
+  prompt: 'Verify ordered replay and event deduplication.',
+  mode: 'review_loop',
+  status: 'running',
+  createdAt: '2025-01-01T00:00:00.000Z',
+}
+const config = { roles: {} }
+type Frame = { type: string; [key: string]: unknown }
+const event = (seq: number, type: string, payload: unknown, ts = `2025-01-01T00:00:0${seq}.000Z`) => ({
+  taskId: task.id,
+  seq,
+  type,
+  payload,
+  ts,
+})
+const initialEvent = event(1, 'started', {})
+const secondEvent = event(2, 'phase', { phase: 'before reconnect' })
+const replayedEvent = event(3, 'phase', { phase: 'after reconnect' })
+const unpersistedError = {
+  ...event(0, 'error', { message: 'Unpersisted startup error remains visible' }, '2025-01-01T00:00:04.000Z'),
+  eventId: 'ephemeral-error-1',
+}
+const collidingEvent = event(2, 'error', {
+  message: 'Collision must not replace the first sequence 2 event',
+})
+
+test('reconnects from the snapshot cursor and deduplicates replayed and sequence-zero errors', async ({
+  page,
+}) => {
+  const connectionUrls: string[] = []
+  const connectionFrames: Frame[][] = []
   let closeFirstSocket: (() => void) | undefined
-  let socketConnections = 0
-  let replayAfter: string | null = null
 
   await page.route('**/api/**', async (route) => {
-    const url = new URL(route.request().url())
-    if (url.pathname === '/api/repos') {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/api/repos') {
       await route.fulfill({ json: { repos: [repo] } })
-    } else if (url.pathname === '/api/tasks' && route.request().method() === 'GET') {
+    } else if (path === '/api/tasks') {
       await route.fulfill({ json: { tasks: [task] } })
-    } else if (url.pathname === '/api/config') {
-      await route.fulfill({ json: { config: { roles: {} } } })
-    } else if (url.pathname === '/api/secrets/openai-api-key') {
+    } else if (path === '/api/config') {
+      await route.fulfill({ json: { config } })
+    } else if (path === '/api/secrets/openai-api-key') {
       await route.fulfill({ json: { set: false } })
-    } else if (url.pathname === `/api/tasks/${task.id}/events`) {
-      replayAfter = url.searchParams.get('after')
-      await route.fulfill({ json: { events: [replayedEvent] } })
-      replayFinished()
-    } else if (url.pathname === `/api/tasks/${task.id}`) {
-      await detailsGate
-      await route.fulfill({ json: { task, repo, attempts: [], reviews: [], events: [snapshotEvent] } })
+    } else if (path === `/api/tasks/${task.id}`) {
+      await route.fulfill({ json: { task, repo, attempts: [], reviews: [], events: [initialEvent] } })
     } else {
       await route.fulfill({ json: {} })
     }
   })
 
-  await page.routeWebSocket(/\/ws\?taskId=race-task$/, (webSocket) => {
-    socketConnections += 1
-    if (socketConnections === 1) {
+  await page.routeWebSocket('**/ws?*', (webSocket) => {
+    connectionUrls.push(webSocket.url())
+    const frames: Frame[] = []
+    connectionFrames.push(frames)
+    const send = (message: Frame) => {
+      frames.push(message)
+      webSocket.send(JSON.stringify(message))
+    }
+
+    if (connectionUrls.length === 1) {
+      send({ type: 'snapshot', task: { ...task, status: 'running' }, lastSequence: 1 })
+      send({ type: 'ready' })
+      send({ type: 'event', event: initialEvent })
+      send({ type: 'event', event: secondEvent })
+      send({ type: 'event', event: unpersistedError })
+      send({ type: 'event', event: unpersistedError })
       closeFirstSocket = () => webSocket.close({ code: 1000, reason: 'test reconnect' })
-      webSocket.send(JSON.stringify({ type: 'event', event: bufferedEvent }))
-      firstConnection()
     } else {
-      webSocket.send(JSON.stringify({ type: 'event', event: snapshotEvent }))
-      webSocket.send(JSON.stringify({ type: 'event', event: bufferedEvent }))
+      send({ type: 'snapshot', task: { ...task, status: 'failed' }, lastSequence: 3 })
+      send({ type: 'ready' })
+      send({ type: 'event', event: collidingEvent })
+      send({ type: 'event', event: replayedEvent })
     }
   })
 
-  let initialFrameReceived!: () => void
-  const initialFrame = new Promise<void>((resolve) => {
-    initialFrameReceived = resolve
-  })
-  page.on('websocket', (webSocket) => webSocket.on('framereceived', initialFrameReceived))
   await page.goto('/')
-  await firstConnectionReady
-  await initialFrame
-  releaseDetails?.()
-
   await expect(page.getByRole('heading', { name: task.title })).toBeVisible()
-  await expect(page.getByTestId('event-stream')).toContainText('Phase: between snapshot and apply')
-  await expect(page.getByTestId('event-stream').locator('article')).toHaveCount(2)
+  await expect(page.getByTestId('event-stream')).toContainText('Unpersisted startup error remains visible')
+  await expect(page.locator('[data-event-seq="0"]')).toHaveCount(1)
+  await expect(page.locator('[data-event-seq]')).toHaveCount(3)
+
+  const beforeReconnect = await page
+    .locator('[data-event-seq]')
+    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-event-seq')))
+  expect(beforeReconnect).toEqual(['1', '2', '0'])
+  expect(connectionFrames[0]?.map(({ type }) => type)).toEqual([
+    'snapshot',
+    'ready',
+    'event',
+    'event',
+    'event',
+    'event',
+  ])
 
   closeFirstSocket?.()
-  await replayResponseReady
+  await expect.poll(() => connectionUrls.length).toBe(2)
   await expect(page.getByTestId('event-stream')).toContainText('Phase: after reconnect')
-  expect(replayAfter).toBe('2')
-  await expect(page.getByTestId('event-stream').locator('article')).toHaveCount(3)
-  await expect(page.getByText('Phase: between snapshot and apply', { exact: true })).toHaveCount(1)
+  await expect(page.getByTestId('event-stream')).not.toContainText('Collision must not replace')
+  await expect(page.locator('[data-event-seq]')).toHaveCount(4)
+  await expect(page.locator('[data-event-seq="0"]')).toHaveCount(1)
+
+  const sequence = await page
+    .locator('[data-event-seq]')
+    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-event-seq')))
+  expect(sequence).toEqual(['1', '2', '3', '0'])
+  expect(new Set(sequence).size).toBe(sequence.length)
+  expect(new URL(connectionUrls[1] ?? '').searchParams.get('after')).toBe('2')
+  expect(connectionFrames[1]?.map(({ type }) => type)).toEqual(['snapshot', 'ready', 'event', 'event'])
 })

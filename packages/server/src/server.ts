@@ -78,13 +78,13 @@ const taskInputSchema = z.strictObject({
 const idSchema = z.string().min(1).max(128)
 const openAiSecretInputSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
 const MAX_BODY_BYTES = 1_000_000
-const SUPPORTED_JOY_ORIGINS = ['tauri://localhost', 'http://127.0.0.1:5173', 'http://localhost:5173'] as const
 const PLAYWRIGHT_E2E_ORIGINS = ['http://127.0.0.1:4173', 'http://localhost:4173'] as const
 
 export interface TaskEvent {
   taskId: TaskId
   attemptId: AttemptId
   seq: number
+  eventId?: string
   type: string
   payload: unknown
   ts: string
@@ -194,18 +194,29 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   httpServer.on('upgrade', (req, socket, head) => {
     try {
-      if (!isLoopbackHost(req.headers.host) || !isAllowedOrigin(req, allowedOrigins)) {
+      if (
+        !isLoopbackHost(req.headers.host) ||
+        req.headers['sec-fetch-site']?.toLowerCase() === 'cross-site' ||
+        !isAllowedOrigin(req, allowedOrigins, false)
+      ) {
         socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
         socket.destroy()
         return
       }
       const url = requestUrl(req)
       if (url.pathname !== '/ws') {
-        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+        socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n')
         socket.destroy()
         return
       }
       const taskId = idSchema.parse(url.searchParams.get('taskId')) as TaskId
+      const afterText = url.searchParams.get('after')
+      const requestedAfter = afterText === null ? 0 : Number(afterText)
+      if (!Number.isSafeInteger(requestedAfter) || requestedAfter < 0) {
+        socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n')
+        socket.destroy()
+        return
+      }
       if (!getTask(db, taskId)) {
         socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n')
         socket.destroy()
@@ -215,8 +226,15 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         const current = subscribers.get(taskId) ?? new Set<WebSocket>()
         current.add(ws)
         subscribers.set(taskId, current)
+        const task = getTask(db, taskId)
+        const events = listTaskEvents(db, taskId)
+        const lastSequence = events.at(-1)?.seq ?? 0
+        const replayAfter = requestedAfter > lastSequence ? 0 : requestedAfter
+        ws.send(JSON.stringify({ type: 'snapshot', task, lastSequence }))
         ws.send(JSON.stringify({ type: 'ready', taskId }))
-        for (const event of listTaskEvents(db, taskId)) ws.send(JSON.stringify({ type: 'event', event }))
+        for (const event of events) {
+          if (event.seq > replayAfter) ws.send(JSON.stringify({ type: 'event', event }))
+        }
         ws.once('close', () => {
           current.delete(ws)
           if (current.size === 0) subscribers.delete(taskId)
@@ -230,9 +248,13 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!isLoopbackHost(req.headers.host)) throw new HttpError(403, 'Host is not allowed')
-    if (!isAllowedOrigin(req, allowedOrigins)) throw new HttpError(403, 'Origin is not allowed')
-    const url = requestUrl(req)
     const method = req.method ?? 'GET'
+    if (
+      req.headers['sec-fetch-site']?.toLowerCase() === 'cross-site' ||
+      !isAllowedOrigin(req, allowedOrigins, method === 'GET' || method === 'HEAD')
+    )
+      throw new HttpError(403, 'Origin is not allowed')
+    const url = requestUrl(req)
     if (url.pathname === '/api/health' && method === 'GET') {
       json(res, 200, { ok: true })
       return
@@ -398,9 +420,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const repo = getRepo(db, task.repoId)
     if (!repo) throw new HttpError(404, `Repository ${task.repoId} was not found`)
     const provider = providers[attempt.provider]
-    if (task.mode === 'single' && provider && !provider.capabilities.codeEdit)
-      throw new HttpError(409, `${attempt.provider} does not support code editing required by single mode`)
-    if (!provider?.capabilities.resume)
+    if (!provider?.capabilities.codeEdit)
+      throw new HttpError(
+        409,
+        `${attempt.provider} does not support code editing required to resume as implementer`,
+      )
+    if (!provider.capabilities.resume)
       throw new HttpError(409, `${attempt.provider} does not support session resume`)
     const workspace: Workspace = {
       repo,
@@ -682,39 +707,38 @@ function requestUrl(req: IncomingMessage): URL {
 
 function isLoopbackHost(host: string | undefined): boolean {
   if (!host) return false
+  const match = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::(\d{1,5}))?$/i.exec(host)
+  if (!match) return false
+  if (match[1] === undefined) return true
+  const port = Number(match[1])
+  return port > 0 && port <= 65_535
+}
+
+function createOriginAllowlist(allowPlaywrightOrigin: boolean): Set<string> {
+  return new Set(['tauri://localhost', ...(allowPlaywrightOrigin ? PLAYWRIGHT_E2E_ORIGINS : [])])
+}
+
+function isAllowedOrigin(
+  req: IncomingMessage,
+  allowedOrigins: ReadonlySet<string>,
+  allowMissing: boolean,
+): boolean {
+  const origin = req.headers.origin
+  if (origin === undefined) return allowMissing
+  if (allowedOrigins.has(origin)) return true
+  const host = req.headers.host
+  if (!host) return false
   try {
-    const url = new URL(`http://${host}`)
+    const parsedOrigin = new URL(origin)
+    const requestOrigin = new URL(`http://${host}`)
     return (
-      !url.username &&
-      !url.password &&
-      url.pathname === '/' &&
-      !url.search &&
-      !url.hash &&
-      isLoopbackHostname(url.hostname)
+      parsedOrigin.protocol === 'http:' &&
+      parsedOrigin.origin === origin &&
+      parsedOrigin.host.toLowerCase() === requestOrigin.host.toLowerCase()
     )
   } catch {
     return false
   }
-}
-
-function createOriginAllowlist(allowPlaywrightOrigin: boolean): Set<string> {
-  return new Set([...SUPPORTED_JOY_ORIGINS, ...(allowPlaywrightOrigin ? PLAYWRIGHT_E2E_ORIGINS : [])])
-}
-
-function isAllowedOrigin(req: IncomingMessage, allowedOrigins: ReadonlySet<string>): boolean {
-  const origin = req.headers.origin
-  // Non-browser loopback clients may omit Origin; browser mutations and WebSocket upgrades supply it.
-  if (origin === undefined) return true
-  if (allowedOrigins.has(origin)) return true
-  try {
-    return new URL(origin).origin === `http://${req.headers.host}`
-  } catch {
-    return false
-  }
-}
-
-function isLoopbackHostname(hostname: string): boolean {
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1'
 }
 
 function assertJsonContentType(req: IncomingMessage): void {

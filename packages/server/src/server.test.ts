@@ -16,7 +16,15 @@ import type {
 } from '@joy/core'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ConfigStore } from '@joy/config'
-import { createAttempt, createRepo, createTask, openDatabase, setTaskStatus, updateAttempt } from '@joy/db'
+import {
+  appendTaskEvent,
+  createAttempt,
+  createRepo,
+  createTask,
+  openDatabase,
+  setTaskStatus,
+  updateAttempt,
+} from '@joy/db'
 import type { Database } from '@joy/db'
 import { MemoryBackend, Redactor, SecretStore } from '@joy/secrets'
 import { createJoyServer } from './server.js'
@@ -144,10 +152,11 @@ function fixture(
   const api = new FakeProvider('openai-api')
   const redactor = options.redactor ?? new Redactor()
   const secretBackend = options.secretBackend ?? new MemoryBackend()
+  const configStore = options.configStore ?? new ConfigStore(join(dir, 'config.yaml'))
   const serverOptions: JoyServerOptions = {
     home: dir,
     database: db,
-    configStore: options.configStore ?? new ConfigStore(join(dir, 'config.yaml')),
+    configStore,
     secretStore: new SecretStore({
       backend: secretBackend,
       ...(options.secretEnv ? { env: options.secretEnv } : {}),
@@ -204,7 +213,7 @@ async function waitForStatus(origin: string, id: string, status: string): Promis
 async function postJson(url: string, body: unknown) {
   return fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', origin: new URL(url).origin },
     body: JSON.stringify(body),
   })
 }
@@ -234,9 +243,16 @@ function rawRequest(
   })
 }
 
-function tryWebSocket(url: string, origin: string): Promise<{ status: number; messages: unknown[] }> {
+function tryWebSocket(
+  url: string,
+  origin?: string,
+  headers?: Record<string, string>,
+): Promise<{ status: number; messages: unknown[] }> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(url, { origin })
+    const socket = new WebSocket(url, {
+      ...(origin ? { origin } : {}),
+      ...(headers ? { headers } : {}),
+    })
     const messages: unknown[] = []
     let settled = false
     const finish = (status: number) => {
@@ -274,6 +290,16 @@ describe('Joy local server', () => {
     expect(repos).toHaveLength(0)
   })
 
+  it.each(['localhost:abc', 'localhost:0', '127.0.0.1:70000', 'joy.attacker.example'])(
+    'rejects malformed or hostile Host headers such as %s',
+    async (host) => {
+      const { serverPromise } = fixture()
+      const { origin } = await start(serverPromise)
+      const response = await rawRequest(origin, '/api/health', 'GET', { host, origin })
+      expect(response.status).toBe(403)
+    },
+  )
+
   it.each(['http://127.0.0.1:5174', 'https://127.0.0.1:5173'])(
     'rejects cross-origin HTTP requests from %s',
     async (attackerOrigin) => {
@@ -297,41 +323,34 @@ describe('Joy local server', () => {
     },
   )
 
-  it('rejects non-loopback Host headers on WebSocket upgrades', async () => {
+  it('rejects hostile and malformed Host headers on WebSocket upgrades', async () => {
     const { serverPromise } = fixture()
     const { origin, websocket } = await start(serverPromise)
-    const socket = new WebSocket(`${websocket}/ws?taskId=missing`, {
-      origin,
-      headers: { host: 'attacker.example' },
-    })
-    const status = await new Promise<number>((resolve, reject) => {
-      socket.once('unexpected-response', (_request, response) => {
-        response.resume()
-        resolve(response.statusCode ?? 0)
-      })
-      socket.once('error', reject)
-    })
+    const url = `${websocket}/ws?taskId=missing`
+    const hostileHost = await tryWebSocket(url, origin, { host: 'attacker.example' })
+    const malformedHost = await tryWebSocket(url, origin, { host: 'localhost:abc' })
+    const overflowPort = await tryWebSocket(url, origin, { host: '127.0.0.1:70000' })
 
-    expect(status).toBe(403)
-    socket.terminate()
+    expect(hostileHost.status).toBe(403)
+    expect(malformedHost.status).toBe(403)
+    expect(overflowPort.status).toBe(403)
+    expect(hostileHost.messages).toEqual([])
   })
 
-  it('rejects untrusted Origin headers on WebSocket upgrades with a local Host', async () => {
+  it('rejects untrusted and missing Origin headers on WebSocket upgrades with a local Host', async () => {
     const { serverPromise } = fixture()
     const { websocket } = await start(serverPromise)
-    const socket = new WebSocket(`${websocket}/ws?taskId=missing`, {
-      origin: 'https://attacker.example',
-    })
-    const status = await new Promise<number>((resolve, reject) => {
-      socket.once('unexpected-response', (_request, response) => {
-        response.resume()
-        resolve(response.statusCode ?? 0)
-      })
-      socket.once('error', reject)
-    })
+    const url = `${websocket}/ws?taskId=missing`
+    const hostile = await tryWebSocket(url, 'https://attacker.example')
+    const originless = await tryWebSocket(url)
+    const crossSite = await tryWebSocket(url, 'http://127.0.0.1:4317', { 'sec-fetch-site': 'cross-site' })
 
-    expect(status).toBe(403)
-    socket.terminate()
+    expect(hostile.status).toBe(403)
+    expect(hostile.messages).toEqual([])
+    expect(originless.status).toBe(403)
+    expect(originless.messages).toEqual([])
+    expect(crossSite.status).toBe(403)
+    expect(crossSite.messages).toEqual([])
   })
 
   it('rejects untrusted Origin headers before processing API requests', async () => {
@@ -399,14 +418,14 @@ describe('Joy local server', () => {
     },
   )
 
-  it('requires JSON Content-Type and accepts the supported Vite and Tauri origins', async () => {
+  it('requires JSON Content-Type, same-authority Origin, and permits the Tauri origin', async () => {
     const { serverPromise } = fixture()
     const { origin } = await start(serverPromise)
     const rejected = await rawRequest(
       origin,
       '/api/repos',
       'POST',
-      { host: new URL(origin).host, 'content-type': 'text/plain' },
+      { host: new URL(origin).host, origin, 'content-type': 'text/plain' },
       JSON.stringify({ path: '/tmp/rejected', defaultBranch: 'main' }),
     )
     expect(rejected.status).toBe(415)
@@ -415,15 +434,18 @@ describe('Joy local server', () => {
       origin,
       '/api/config',
       'PUT',
-      { host: new URL(origin).host },
+      { host: new URL(origin).host, origin },
       JSON.stringify({}),
     )
     expect(config.status).toBe(415)
 
-    const unknownRoute = await rawRequest(origin, '/api/unknown', 'POST', { host: new URL(origin).host })
+    const unknownRoute = await rawRequest(origin, '/api/unknown', 'POST', {
+      host: new URL(origin).host,
+      origin,
+    })
     expect(unknownRoute.status).toBe(404)
 
-    const vite = await rawRequest(
+    const crossAuthority = await rawRequest(
       origin,
       '/api/repos',
       'POST',
@@ -432,18 +454,34 @@ describe('Joy local server', () => {
         origin: 'http://127.0.0.1:5173',
         'content-type': 'application/json',
       },
-      JSON.stringify({ path: '/tmp/vite', defaultBranch: 'main' }),
+      JSON.stringify({ path: '/tmp/cross-authority', defaultBranch: 'main' }),
     )
-    expect(vite.status).toBe(201)
+    expect(crossAuthority.status).toBe(403)
 
     const sameOrigin = await rawRequest(origin, '/api/health', 'GET', { host: new URL(origin).host, origin })
     expect(sameOrigin.status).toBe(200)
+    const crossSiteFetch = await rawRequest(origin, '/api/health', 'GET', {
+      host: new URL(origin).host,
+      origin,
+      'sec-fetch-site': 'cross-site',
+    })
+    expect(crossSiteFetch.status).toBe(403)
+    const originlessRead = await rawRequest(origin, '/api/health', 'GET', { host: new URL(origin).host })
+    expect(originlessRead.status).toBe(200)
+    const originlessMutation = await rawRequest(
+      origin,
+      '/api/repos',
+      'POST',
+      { host: new URL(origin).host, 'content-type': 'application/json' },
+      JSON.stringify({ path: '/tmp/originless', defaultBranch: 'main' }),
+    )
+    expect(originlessMutation.status).toBe(403)
 
     const localhostVite = await rawRequest(origin, '/api/health', 'GET', {
       host: new URL(origin).host,
       origin: 'http://localhost:5173',
     })
-    expect(localhostVite.status).toBe(200)
+    expect(localhostVite.status).toBe(403)
 
     const tauri = await rawRequest(
       origin,
@@ -459,9 +497,9 @@ describe('Joy local server', () => {
     expect(tauri.status).toBe(201)
   })
 
-  it('accepts only the explicit Playwright origin when enabled for E2E', async () => {
-    const { serverPromise } = fixture({ allowPlaywrightOrigin: true })
-    const { origin } = await start(serverPromise)
+  it('accepts only the explicit Playwright origin for HTTP and WebSocket in E2E mode', async () => {
+    const { db, serverPromise } = fixture({ allowPlaywrightOrigin: true })
+    const { origin, websocket } = await start(serverPromise)
     const accepted = await rawRequest(
       origin,
       '/api/repos',
@@ -474,6 +512,17 @@ describe('Joy local server', () => {
       JSON.stringify({ path: '/tmp/playwright', defaultBranch: 'main' }),
     )
     expect(accepted.status).toBe(201)
+    const repo = createRepo(db, { id: rid('preview-ws-repo'), path: '/preview-ws', defaultBranch: 'main' })
+    const task = createTask(db, {
+      id: tid('preview-ws-task'),
+      repoId: repo.id,
+      title: 'Verify preview origin',
+      prompt: 'Check WebSocket allowlisting',
+      mode: 'single',
+    })
+    const socket = await tryWebSocket(`${websocket}/ws?taskId=${task.id}`, 'http://127.0.0.1:4173')
+    expect(socket.status).toBe(101)
+    expect(socket.messages[0]).toMatchObject({ type: 'snapshot', task: { id: task.id } })
 
     const notConfigured = await Promise.all([
       rawRequest(
@@ -508,11 +557,46 @@ describe('Joy local server', () => {
     const responses = await Promise.all([
       fetch(`${origin}/api/tasks/%E0%A4%A`),
       fetch(`${origin}/api/tasks/%E0%A4%A/events`),
-      rawRequest(origin, '/api/tasks/%E0%A4%A/cancel', 'POST', {}),
-      rawRequest(origin, '/api/tasks/%E0%A4%A/resume', 'POST', {}),
+      rawRequest(origin, '/api/tasks/%E0%A4%A/cancel', 'POST', { host: new URL(origin).host, origin }),
+      rawRequest(origin, '/api/tasks/%E0%A4%A/resume', 'POST', { host: new URL(origin).host, origin }),
     ])
 
     expect(responses.map((response) => response.status)).toEqual([400, 400, 400, 400])
+  })
+
+  it('sends a task snapshot before replaying only events after the WebSocket cursor', async () => {
+    const { db, serverPromise } = fixture()
+    const { origin, websocket } = await start(serverPromise)
+    const repo = createRepo(db, { id: rid('cursor-repo'), path: '/cursor-repo', defaultBranch: 'main' })
+    const task = createTask(db, {
+      id: tid('cursor-task'),
+      repoId: repo.id,
+      title: 'Resume event replay',
+      prompt: 'Keep the replay ordered',
+      mode: 'single',
+    })
+    const attempt = createAttempt(db, {
+      id: aid('cursor-attempt'),
+      taskId: task.id,
+      provider: 'claude-cli',
+      model: 'haiku',
+      status: 'running',
+    })
+    appendTaskEvent(db, attempt.id, 'started', { index: 1 })
+    appendTaskEvent(db, attempt.id, 'phase', { index: 2 })
+    appendTaskEvent(db, attempt.id, 'phase', { index: 3 })
+    const { events } = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
+
+    const socket = new WebSocket(`${websocket}/ws?taskId=${task.id}&after=1`, { origin })
+    const messages = await receiveMessages(socket, 4)
+    expect(messages[0]).toMatchObject({
+      type: 'snapshot',
+      task: { id: task.id },
+      lastSequence: 3,
+    })
+    expect(messages[1]).toMatchObject({ type: 'ready', taskId: task.id })
+    expect(messages.slice(2)).toEqual(events.slice(1).map((event) => ({ type: 'event', event })))
+    socket.close()
   })
 
   it('binds only to loopback and supports repositories, task creation, replay and WebSocket events', async () => {
@@ -543,12 +627,13 @@ describe('Joy local server', () => {
     expect(taskResponse.status).toBe(201)
     const { task } = (await taskResponse.json()) as { task: { id: string } }
 
-    const socket = new WebSocket(`${websocket}/ws?taskId=${task.id}`, { origin: 'http://127.0.0.1:5173' })
-    const messages = await receiveMessages(socket, 2)
-    expect(messages[0]).toMatchObject({ type: 'ready', taskId: task.id })
-    expect(messages[1]).toMatchObject({ type: 'event', event: { taskId: task.id } })
-    socket.close()
     const result = await waitForStatus(origin, task.id, 'done')
+    const socket = new WebSocket(`${websocket}/ws?taskId=${task.id}&after=0`, { origin })
+    const messages = await receiveMessages(socket, result.events.length + 2)
+    expect(messages[0]).toMatchObject({ type: 'snapshot', task: { id: task.id } })
+    expect(messages[1]).toMatchObject({ type: 'ready', taskId: task.id })
+    expect(messages.slice(2)).toEqual(result.events.map((event) => ({ type: 'event', event })))
+    socket.close()
     expect(result.task.status).toBe('done')
     expect(result.attempts[0]).toMatchObject({ status: 'succeeded', worktreePath: '/fake/worktree' })
     expect(result.events.length).toBeGreaterThan(0)
@@ -557,11 +642,11 @@ describe('Joy local server', () => {
 
     const sameOriginSocket = await tryWebSocket(`${websocket}/ws?taskId=${task.id}`, origin)
     expect(sameOriginSocket.status).toBe(101)
-    expect(sameOriginSocket.messages[0]).toMatchObject({ type: 'ready', taskId: task.id })
+    expect(sameOriginSocket.messages[0]).toMatchObject({ type: 'snapshot', task: { id: task.id } })
 
     const tauriSocket = await tryWebSocket(`${websocket}/ws?taskId=${task.id}`, 'tauri://localhost')
     expect(tauriSocket.status).toBe(101)
-    expect(tauriSocket.messages[0]).toMatchObject({ type: 'ready', taskId: task.id })
+    expect(tauriSocket.messages[0]).toMatchObject({ type: 'snapshot', task: { id: task.id } })
 
     const compete = await postJson(`${origin}/api/tasks`, {
       repoId: repo.id,
@@ -585,7 +670,7 @@ describe('Joy local server', () => {
     expect(await emptyStatus.json()).toEqual({ set: false })
     const saved = await fetch(`${origin}/api/secrets/openai-api-key`, {
       method: 'PUT',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin },
       body: JSON.stringify({ value: key }),
     })
     expect(saved.status).toBe(200)
@@ -612,7 +697,10 @@ describe('Joy local server', () => {
     expect(responseBody).toContain('[REDACTED]')
     expect(JSON.stringify(db.prepare('SELECT payload FROM events').all())).not.toContain(key)
 
-    const deleted = await fetch(`${origin}/api/secrets/openai-api-key`, { method: 'DELETE' })
+    const deleted = await fetch(`${origin}/api/secrets/openai-api-key`, {
+      method: 'DELETE',
+      headers: { origin },
+    })
     expect(await deleted.json()).toEqual({ set: false })
     expect(secretBackend.values.has('openai_api_key')).toBe(false)
   })
@@ -630,12 +718,15 @@ describe('Joy local server', () => {
 
     const put = await fetch(`${origin}/api/secrets/openai-api-key`, {
       method: 'PUT',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin },
       body: JSON.stringify({ value: 'replacement-openai-secret-53' }),
     })
     expect(put.status).toBe(409)
     expect(await put.text()).not.toContain(envKey)
-    const deleted = await fetch(`${origin}/api/secrets/openai-api-key`, { method: 'DELETE' })
+    const deleted = await fetch(`${origin}/api/secrets/openai-api-key`, {
+      method: 'DELETE',
+      headers: { origin },
+    })
     expect(deleted.status).toBe(409)
     expect(await deleted.text()).not.toContain(envKey)
     expect(backend.values.has('openai_api_key')).toBe(false)
@@ -708,9 +799,10 @@ describe('Joy local server', () => {
     const socket = new WebSocket(`ws://127.0.0.1:${address.port}/ws?taskId=${task.id}`, {
       origin: restartedOrigin,
     })
-    const messages = await receiveMessages(socket, replayed.events.length + 1)
-    expect(messages[0]).toMatchObject({ type: 'ready', taskId: task.id })
-    expect(messages.slice(1)).toEqual(replayed.events.map((event) => ({ type: 'event', event })))
+    const messages = await receiveMessages(socket, replayed.events.length + 2)
+    expect(messages[0]).toMatchObject({ type: 'snapshot', task: { id: task.id } })
+    expect(messages[1]).toMatchObject({ type: 'ready', taskId: task.id })
+    expect(messages.slice(2)).toEqual(replayed.events.map((event) => ({ type: 'event', event })))
     socket.close()
   })
 
@@ -869,7 +961,10 @@ describe('Joy local server', () => {
     })
     const { task } = (await response.json()) as { task: { id: string } }
     await new Promise((resolve) => setTimeout(resolve, 15))
-    const cancelled = await rawRequest(origin, `/api/tasks/${task.id}/cancel`, 'POST', {})
+    const cancelled = await rawRequest(origin, `/api/tasks/${task.id}/cancel`, 'POST', {
+      host: new URL(origin).host,
+      origin,
+    })
     expect(cancelled.status).toBe(200)
     const result = await waitForStatus(origin, task.id, 'cancelled')
     expect(result.task.status).toBe('cancelled')
@@ -902,12 +997,15 @@ describe('Joy local server', () => {
     setTaskStatus(db, task.id, 'failed')
 
     const { origin } = await start(serverPromise)
-    const response = await rawRequest(origin, `/api/tasks/${task.id}/resume`, 'POST', {})
+    const response = await rawRequest(origin, `/api/tasks/${task.id}/resume`, 'POST', {
+      host: new URL(origin).host,
+      origin,
+    })
     await waitForStatus(origin, task.id, 'failed')
     const details = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
 
     expect(response.status).toBe(409)
-    expect(response.body).toContain('does not support code editing required by single mode')
+    expect(response.body).toContain('does not support code editing required to resume as implementer')
     expect(details.task.status).toBe('failed')
     expect(details.attempts[0]).toMatchObject({ status: 'failed' })
     expect(details.events).toHaveLength(0)
@@ -945,7 +1043,10 @@ describe('Joy local server', () => {
     expect(interrupted.events).toEqual(
       expect.arrayContaining([expect.objectContaining({ type: 'interrupted' })]),
     )
-    const resume = await rawRequest(origin, `/api/tasks/${task.id}/resume`, 'POST', {})
+    const resume = await rawRequest(origin, `/api/tasks/${task.id}/resume`, 'POST', {
+      host: new URL(origin).host,
+      origin,
+    })
     expect(resume.status).toBe(202)
     await waitForStatus(origin, task.id, 'done')
     expect(implementer.calls[0]).toMatchObject({
