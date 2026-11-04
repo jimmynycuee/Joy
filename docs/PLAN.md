@@ -21,10 +21,24 @@
 ### 進度
 - [x] T0.1 monorepo、TypeScript strict、ESLint、Prettier、Vitest、三平台 CI
 - [x] T0.2 `AGENTS.md` / `CLAUDE.md`
-- [ ] T0.3 Spike：Claude Code headless
-- [ ] T0.4 Spike：Codex
-- [ ] T0.5 定稿 `packages/core` 介面
-- [ ] T0.6 `packages/db`
+- [x] T0.3 Spike：Claude Code headless（`docs/spikes/claude-code.md`）
+- [ ] T0.4 Spike：Codex（方式已決定，見 `docs/spikes/codex.md`；**缺真實執行的 fixture**，需在已登入的電腦上錄）
+- [x] T0.5 定稿 `packages/core` 介面
+- [x] T0.6 `packages/db`
+- [x] T1.1 `providers/claude-cli`
+- [x] T1.2 `providers/codex-cli`（依 SDK 型別與合成 fixture 測試；**錄到真實 fixture 後要重跑 contract test**）
+- [x] T1.3 `providers/openai-api`
+- [x] T1.4 `executor/worktree`
+- [x] T1.5 `orchestrator/review-loop`
+- [x] T1.10 機密存 OS 鑰匙圈（`packages/secrets`）
+- [x] T1.11 設定（`packages/config`；UI 設定頁併入 T1.8）
+- [x] T1.6 server（HTTP + WebSocket、任務 CRUD、重啟恢復）
+- [x] T1.7 事件紀錄（寫入 DB、可回放、經 Redactor 遮罩）
+- [x] T1.9 GitHub：push 分支、開 draft PR
+- [x] T1.8 Codex 風格 Web UI（含設定頁）
+- [x] T2.1 多 provider 平行競賽（含獨立 worktree 的自動 strengths 合成候選；fake-provider 測試通過）
+
+目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
 
 ---
 
@@ -199,12 +213,12 @@ export interface ProposedAction { kind: ActionKind; summary: string; detail: unk
 ```yaml
 # ~/.joy/config.yaml（UI 可編輯）
 roles:
-  assistant_brain:  { provider: openai-api, model: gpt-5-mini }   # 高頻、便宜
-  background:       { provider: openai-api, model: gpt-5-mini }   # 記憶擷取、摘要、分類
-  orchestrator:     { provider: claude-cli, model: opus }         # 「主模型」
-  implementer:      { provider: claude-cli, model: opus }
-  reviewer:         { provider: codex-cli,  model: gpt-5-codex }
-  judge:            { provider: codex-cli,  model: gpt-5-codex }
+  assistant_brain:  { provider: openai-api, model: gpt-6-luna, effort: low }   # 高頻、便宜
+  background:       { provider: openai-api, model: gpt-6-luna, effort: low }   # 記憶擷取、摘要、分類
+  orchestrator:     { provider: claude-cli, model: opus, effort: high }        # 「主模型」
+  implementer:      { provider: claude-cli, model: opus, effort: medium }
+  reviewer:         { provider: codex-cli,  model: gpt-6.1-sol, effort: medium }
+  judge:            { provider: codex-cli,  model: gpt-6.1-sol, effort: medium }
 fallback:
   on_rate_limit: swap_provider   # swap_provider | queue | fail
 budget:
@@ -294,7 +308,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 | T1.5 | `orchestrator/review-loop`：implement → review（結構化 findings JSON）→ fix，最多 N 輪；可選「先出計畫再審」 | 用 fake provider 測完整流程與中止條件 |
 | T1.6 | `server`：REST + WebSocket，任務 CRUD、事件串流、啟動時恢復未完成任務（resume） | 重啟 server 後進行中任務可繼續 |
 | T1.7 | 事件紀錄：全部 `AgentEvent` 寫入 `events`；可回放 | UI 重新整理後能完整重現任務過程 |
-| T1.8 | `apps/web`：三欄式 UI、任務清單、即時事件流、diff viewer、角色 / 模型選單 | 能完成一次完整任務；Playwright e2e 用 fake provider |
+| T1.8 | `apps/web`：React + Vite 三欄 UI、任務清單、WebSocket 即時事件、diff viewer、角色 / 模型選單、設定頁與 OpenAI key 狀態 | 假 provider Playwright e2e 完成建 repo、設定角色模型、建立任務、即時事件與 diff；key 僅存 SecretStore，從不回傳或落入 config / DB / events |
 | T1.9 | GitHub：commit、push branch、用 `gh` 開 draft PR，PR 描述附 review 摘要 | 在測試 repo 成功開出 PR |
 | T1.10 | 機密：OS keychain 存 OpenAI key（`@napi-rs/keyring` 或同類），log 遮罩 | key 不出現在 DB、log、事件中（測試驗證） |
 | T1.11 | 設定：`config.yaml` 讀寫 + UI 設定頁（各角色模型） | 改設定後新任務立即套用 |
@@ -380,7 +394,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 ## 9. 待決事項
 - [x] 專案名稱：Joy（repo：jimmynycuee/Joy）
 - [x] 授權：BSL 1.1（Additional Use Grant 禁止以託管服務形式競爭；4 年後轉 Apache-2.0）。商業化前請律師確認；接受外部 PR 前需設置 CLA
-- [ ] P0 spike 後確認 Codex 整合方式（`exec --json` / `app-server` / SDK）
+- [x] P0 spike 後確認 Codex 整合方式：P1 用 `exec --json`，P2 評估 `app-server`
 - [ ] 確認目前兩家可用的模型名稱，更新 §3.3 預設值
 - [ ] LINE 官方帳號的推播額度與費用（以官方最新方案為準）
 - [ ] 如需參考 Reason 雲端產品細節，需在 session 網路設定允許 `reasonmachines.com`
