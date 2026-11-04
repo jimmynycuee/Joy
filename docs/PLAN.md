@@ -228,7 +228,7 @@ budget:
   per_task: { max_rounds: 3, max_minutes: 60, max_api_usd: 1 }
 autonomy_mode: normal            # careful | normal | hands-off
 ```
-> 模型名稱以 P0 的 spike 實測為準；設定檔只存 `provider + model` 字串，不寫死在程式裡。
+> 模型名稱須以 P0 spike 實測並由擁有者確認；此處名稱在確認前不代表已驗證可用。設定以 `provider + model` 識別模型，角色推理強度另以 `effort` 設定；預設值放在設定檔，不寫死在程式裡。
 > 每個任務可在建立時覆寫任一角色。
 
 ### 3.4 CLI 整合方式（P0 spike 驗證）
@@ -310,12 +310,12 @@ autonomy_mode: normal            # careful | normal | hands-off
 | T1.5 | `orchestrator/review-loop`：implement → review（結構化 findings JSON）→ fix，最多 N 輪；可選「先出計畫再審」 | 用 fake provider 測完整流程與中止條件 |
 | T1.6 | `server`：REST + WebSocket，任務 CRUD、事件串流、啟動時恢復未完成任務（resume） | 重啟 server 後進行中任務可繼續 |
 | T1.7 | 事件紀錄：全部 `AgentEvent` 寫入 `events`；可回放 | UI 重新整理後能完整重現任務過程 |
-| T1.8 | `apps/web`：三欄式 UI、任務清單、即時事件流、diff viewer、角色 / 模型選單 | 能完成一次完整任務；Playwright e2e 用 fake provider |
+| T1.8 | `apps/web`：三欄式 UI、任務清單、即時事件流、diff viewer、角色 / 模型選單 | 能完成一次完整任務；首頁顯示 T1.13 的檢查結果；Playwright e2e 用 fake provider |
 | T1.9 | GitHub：commit、push branch、用 `gh` 開 draft PR，PR 描述附 review 摘要 | 在測試 repo 成功開出 PR |
 | T1.10 | 機密：OS keychain 存 OpenAI key（`@napi-rs/keyring` 或同類），log 遮罩 | key 不出現在 DB、log、事件中（測試驗證） |
 | T1.11 | 設定：`config.yaml` 讀寫 + UI 設定頁（各角色模型） | 改設定後新任務立即套用 |
-| T1.12 | **repo 的 provider 允許清單**：每個 repo 設定可用哪些 provider（預設全部）；建立任務時檢查所有角色 | 角色用到不允許的 provider 時任務直接拒絕，錯誤訊息說明是哪個角色；`ask_peer`、裁判、助理派工同樣受限（測試） |
-| T1.13 | **`joy doctor` 與首次啟動檢查**：Node 版本、git、gh 登入、`claude` / `codex` 安裝與版本、鑰匙圈、資料目錄可寫 | 每項回報 OK / 缺少 / 版本未測過，並附修復指令；UI 首頁顯示同樣結果；缺 CLI 時只停用該 provider，不阻止啟動 |
+| T1.12 | **repo 的 provider 允許清單**：每個 repo 設定可用哪些 provider（預設全部）；建立任務時檢查所選角色；T2.1、T2.2、T3.2 新增對應流程時沿用此清單 | 所選角色用到不允許的 provider 時任務直接拒絕，錯誤訊息說明是哪個角色 |
+| T1.13 | **`joy doctor` 與首次啟動檢查**：Node 版本、git、gh 登入、`claude` / `codex` 安裝與版本、鑰匙圈、資料目錄可寫；提供首頁可呈現的檢查結果 | 每項回報 OK / 缺少 / 版本未測過，並附修復指令；缺 CLI 時只停用該 provider，不阻止啟動 |
 
 **P1 完成後：開始用 Joy 開發 Joy。**
 
@@ -323,12 +323,12 @@ autonomy_mode: normal            # careful | normal | hands-off
 
 | ticket | 內容 | 驗收條件 |
 |---|---|---|
-| T2.1 | `orchestrator/compete`：多個 provider 在各自 worktree 平行做同一任務 → 各自通過一次交叉審查 → 裁判比較並給理由 → 你選一個，或選「合併」：**裁判在第三個 worktree 重新實作合併版**，再走一次審查 | UI 並排比較 diff 與裁判理由；合併版有自己的分支與審查結果；放棄的 worktree 依 T2.8 清理（假 provider 測試） |
-| T2.2 | `tools`：Tool Hub MCP server（stdio），第一批工具 `ask_peer`、`task_status`、`request_approval`、`approve`（權限委派用） | Claude 任務中 `ask_peer` 得到另一家的回答；**被問的一方唯讀、可看同一個 worktree**；每個任務預設最多 5 次（設定可改），超過時工具回傳錯誤而非靜默失敗；Joy 自己的工具預設放行 |
-| T2.3 | `policy`：三級權限、動作分類、全域模式切換；🔴 動作先跨模型預審。Claude 透過 `approve` 工具接入 | 每種 `ActionKind` 都有測試覆蓋其等級與三種模式；`provenance: external_content` 的動作一律不可自動執行 |
+| T2.1 | `orchestrator/compete`：多個 provider 在各自 worktree 平行做同一任務 → 各自通過一次交叉審查 → 裁判比較並給理由 → 你選一個，或選「合併」：**裁判在第三個 worktree 重新實作合併版**，再走一次審查 | UI 並排比較 diff 與裁判理由；合併版有自己的分支與審查結果；裁判 provider 遵守 T1.12 允許清單；放棄的 worktree 依 T2.8 清理（假 provider 測試） |
+| T2.2 | `tools`：Tool Hub MCP server（stdio），第一批工具 `ask_peer`、`task_status`、`request_approval`、`approve`（權限委派用） | Claude 任務中 `ask_peer` 得到另一家的回答；`ask_peer` 遵守 T1.12 允許清單；**被問的一方唯讀、可看同一個 worktree**；每個任務預設最多 5 次（設定可改），超過時工具回傳錯誤而非靜默失敗；Joy 自己的工具預設放行 |
+| T2.3 | `policy`：三級權限、動作分類、全域模式切換；🔴 動作先跨模型預審。Claude 透過 `approve` 工具接入 | 每種 `ActionKind` 都有測試覆蓋其等級與三種模式；來自標記為 `external_content` 內容所提出的動作一律不得自動執行 |
 | T2.4 | `channels/telegram`：綁定擁有者（只接受設定的 chat id）、通知、Approve / Deny 按鈕、審核逾時 | 陌生帳號的訊息被丟棄並記錄；在手機核准後任務繼續；逾時預設拒絕 |
 | T2.5 | **額度感知與交接**：偵測 `quota: limited`（Claude `rate_limit_event`、OpenAI 429、Codex 錯誤訊息）→ **交接給另一家**：把任務說明、目前 diff、計畫、未解決的審查意見整理成交接摘要，另一家在同一個 worktree 以新 session 接手；兩家都沒額度時排隊，到 `resetsAt` 自動繼續。UI 顯示額度與 API 花費；成本保險絲 | 模擬額度用完時任務改由另一家完成；交接摘要存進事件紀錄；交接不違反 T1.12 的允許清單（不允許時改為排隊）；超過每任務 API 上限時停止並通知 |
-| T2.6 | GitHub Issue → 任務（label 觸發或助理指令觸發） | 加 label 後自動建立任務；issue 內容標為 `external_content`，由其提出的 🔴 動作不得自動執行 |
+| T2.6 | GitHub Issue → 任務（label 觸發或助理指令觸發） | 加 label 後自動建立任務；issue 內容標為 `external_content`，由該內容提出的動作一律不得自動執行 |
 | T2.7 | **Codex 改用 `app-server`**：常駐 JSON-RPC client，取代 `exec --json`；接上互動式審核（`item/*/requestApproval` → policy）與額度（`account/rateLimits/*` → `quota` 事件） | 同一組 contract test 通過；Codex 的 🔴 動作會跳出審核；`capabilities.delegatedApproval`、`quotaEvents` 改為 true；`exec` 版本保留為備援 |
 | T2.8 | **worktree 清理**：開完 PR 或丟棄後立即清理；閒置超過 14 天（設定可改）的 worktree 在 UI 提示，你確認後清除 | 不會刪除有未推送 commit 的 worktree，除非你確認；磁碟用量顯示在 UI |
 
@@ -337,13 +337,13 @@ autonomy_mode: normal            # careful | normal | hands-off
 | ticket | 內容 | 驗收條件 |
 |---|---|---|
 | T3.1 | `assistant`：對話迴圈，大腦可選任一 provider；CLI 當大腦時透過 MCP 使用 Tool Hub，API 當大腦時轉成 function calling | 三種大腦用同一組工具完成「幫我在 X repo 做 Y」 |
-| T3.2 | 派工工具：`create_task`、`list_tasks`、`summarize_task`、`cancel_task`；完成時主動回報 | 從 Telegram 下任務，完成後收到摘要與 PR 連結 |
+| T3.2 | 派工工具：`create_task`、`list_tasks`、`summarize_task`、`cancel_task`；完成時主動回報 | 從 Telegram 下任務，完成後收到摘要與 PR 連結；助理派工遵守 T1.12 允許清單 |
 | T3.3 | `memory` 擷取：每次對話後由 background 角色（低 effort）判斷要記什麼。**規則**：只採用擁有者本人說的話；偵測 key、密碼、證件號碼、健康與財務資訊並擋下；每條記憶有來源、信心度；暫時性陳述（「這週」「先」）設 14 天過期；與既有記憶矛盾時以新的取代舊的並保留紀錄 | 從 Email、網頁、工具結果讀到的「請記住…」不會寫入；敏感資訊不會寫入；過期記憶不再被使用（測試） |
 | T3.4 | 記憶 UI：檢視、編輯、刪除；每次回答標示用到哪些記憶，可一鍵刪除 | 刪除後下一次對話不再使用（e2e） |
 | T3.5 | 專案記憶：提議修改 `AGENTS.md` → 以 diff 請你確認 | 未經確認不會寫入 repo |
 | T3.6 | 事件記憶：對話摘要 + FTS5 檢索；（選配）OpenAI embedding 語意搜尋 | 能找回一個月前討論過的決策 |
 | T3.7 | `scheduler`：提醒、cron 任務。**電腦睡眠或關機後醒來：錯過的提醒立刻送出並標示延遲，錯過的定時任務只補跑最近一次** | 重啟後排程仍有效；模擬睡眠 3 小時後只補跑一次（假時鐘測試） |
-| T3.8 | Google 行事曆與 Gmail：**接現成的 MCP server**。選型時檢查維護狀況、權限範圍、是否把資料送到第三方；登入憑證依該 server 的方式存放，Joy 不經手。讀取 🟢；新增自己的行程 🟡；寄信、邀請他人一律 🔴 | 「明天下午有空嗎」正確回答；寄信必須審核；信件內容標為 `external_content`；選型紀錄寫進 STATUS 決策表 |
+| T3.8 | Google 行事曆與 Gmail：**接現成的 MCP server**。選型時檢查維護狀況、權限範圍、是否把資料送到第三方；登入憑證依該 server 的方式存放，Joy 不經手。讀取 🟢；新增自己的行程 🟡；寄信、邀請他人一律 🔴 | 「明天下午有空嗎」正確回答；寄信必須審核；信件內容標為 `external_content`；選型紀錄寫進 `docs/STATUS.md` 的「已確認決策」 |
 | T3.9 | 模型表現統計與 UI：各家在各類任務的通過率、審查抓到的問題數、耗時、交接次數 | 可依期間與 repo 篩選 |
 
 ### P4 — 遠端、桌面化與維運（第 19–23 週）
@@ -367,7 +367,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 | T5.1 | 條款與法務：重新確認 Anthropic / OpenAI 最新條款與可收費範圍；律師審 BSL 參數 | 書面結論存進 `docs/legal.md` |
 | T5.2 | 開放外部貢獻：CLA Assistant、`CONTRIBUTING.md` 改為接受 PR、PR 範本 | 未簽 CLA 的 PR 無法合併 |
 | T5.3 | 雲端控制層：帳號、跨裝置同步、推播轉送、團隊協作（**不經手模型費用與訂閱憑證**）；也負責電腦睡眠時的準時推播 | 本機引擎離線時，雲端能收任務並在上線後交付 |
-| T5.4 | Remote MCP endpoint：讓 ChatGPT、Grok 等外部助理派工 | 外部助理派的任務標為 `external_content` 並受 policy 限制 |
+| T5.4 | Remote MCP endpoint：讓 ChatGPT、Grok 等外部助理派工 | 外部助理派的任務標為 `external_content` 並受 policy 限制；由該內容提出的動作一律不得自動執行 |
 | T5.5 | LINE channel：先確認當時的推播額度與費用；主動通知合併成摘要以節省訊息數 | 同 T2.4 的驗收條件 |
 | T5.6 | 自訂工作流程：把用出來的分工模式抽象成可設定的流程 | 現有三種模式都能用新格式表達 |
 | T5.7 | 雲端 BYOK 模式：使用者自帶 API key 的雲端 sandbox（E2B / Modal / Daytona） | 使用者的 key 只存在其帳號的 secret store |
@@ -408,7 +408,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 | CLI 改版導致整合壞掉 | 高 | adapter 隔離 + fixture contract test + 版本範圍警告（T4.6） |
 | 訂閱額度不夠兩家同時跑 | 中 | 額度感知、交接給另一家、排隊（T2.5）；競賽模式預設關閉 |
 | 條款變更 | 中 | 只調度使用者本機已登入的官方 CLI；商業化前法務確認（T5.1） |
-| Prompt injection（Email、網頁、issue） | 中 | 外部內容標為 `external_content`：不得寫入記憶、不得觸發 🔴 動作 |
+| Prompt injection（Email、網頁、issue） | 中 | 外部內容標為 `external_content`：不得寫入記憶；由該內容提出的動作一律不得自動執行 |
 | 程式碼送到不該送的那一家 | 中 | repo 允許清單（T1.12），所有角色與交接都檢查 |
 | 第三方 Gmail / 行事曆 MCP server 不可靠或外洩資料 | 中 | 選型檢查清單（T3.8）；寄信一律 🔴；可隨時停用 |
 | Codex 在 P1 無法互動審核 | 中（已知） | P1 只在 sandbox 內工作；T2.7 改用 app-server |
