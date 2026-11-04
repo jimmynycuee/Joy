@@ -71,6 +71,8 @@ const taskInputSchema = z.strictObject({
 })
 const idSchema = z.string().min(1).max(128)
 const MAX_BODY_BYTES = 1_000_000
+const SUPPORTED_JOY_ORIGINS = ['tauri://localhost', 'http://127.0.0.1:5173'] as const
+const PLAYWRIGHT_E2E_ORIGIN = 'http://127.0.0.1:4173'
 
 export interface TaskEvent {
   taskId: TaskId
@@ -90,6 +92,8 @@ export interface JoyServerOptions {
   redactor?: Redactor
   providers?: Partial<Record<ProviderKind, AgentProvider>>
   executor?: Executor
+  /** Adds only the fixed Playwright E2E origin; this is never enabled by default. */
+  allowPlaywrightOrigin?: boolean
 }
 
 export interface JoyServer {
@@ -120,6 +124,7 @@ interface ResumeState {
 
 /** Builds the local HTTP + WebSocket service. It never binds beyond loopback. */
 export async function createJoyServer(options: JoyServerOptions = {}): Promise<JoyServer> {
+  const allowedOrigins = createOriginAllowlist(options.allowPlaywrightOrigin ?? false)
   const home = options.home ?? joyHome()
   const configStore = options.configStore ?? new ConfigStore(join(home, 'config.yaml'))
   const initialConfig = await configStore.get()
@@ -193,7 +198,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   httpServer.on('upgrade', (req, socket, head) => {
     try {
-      if (!isLoopbackHost(req.headers.host) || !isLocalOrigin(req.headers.origin)) {
+      if (!isLoopbackHost(req.headers.host) || !isLocalOrigin(req.headers.origin, allowedOrigins)) {
         socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
         socket.destroy()
         return
@@ -229,7 +234,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!isLoopbackHost(req.headers.host)) throw new HttpError(403, 'Host is not allowed')
-    if (!isLocalOrigin(req.headers.origin)) throw new HttpError(403, 'Origin is not allowed')
+    if (!isLocalOrigin(req.headers.origin, allowedOrigins)) throw new HttpError(403, 'Origin is not allowed')
     const url = requestUrl(req)
     const method = req.method ?? 'GET'
     if (url.pathname === '/api/health' && method === 'GET') {
@@ -611,13 +616,13 @@ function isLoopbackHost(host: string | undefined): boolean {
   }
 }
 
-function isLocalOrigin(origin: string | undefined): boolean {
-  if (!origin) return true
-  try {
-    return isLoopbackHostname(new URL(origin).hostname)
-  } catch {
-    return false
-  }
+function createOriginAllowlist(allowPlaywrightOrigin: boolean): Set<string> {
+  return new Set([...SUPPORTED_JOY_ORIGINS, ...(allowPlaywrightOrigin ? [PLAYWRIGHT_E2E_ORIGIN] : [])])
+}
+
+function isLocalOrigin(origin: string | undefined, allowedOrigins: ReadonlySet<string>): boolean {
+  if (origin === undefined) return true
+  return allowedOrigins.has(origin)
 }
 
 function isLoopbackHostname(hostname: string): boolean {

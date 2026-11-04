@@ -114,7 +114,7 @@ class FakeExecutor implements Executor {
   async cleanup() {}
 }
 
-function fixture() {
+function fixture(allowPlaywrightOrigin = false) {
   const dir = mkdtempSync(join(tmpdir(), 'joy-server-test-'))
   dirs.push(dir)
   const db = openDatabase(':memory:')
@@ -136,6 +136,7 @@ function fixture() {
     configStore: new ConfigStore(join(dir, 'config.yaml')),
     secretStore: new SecretStore({ backend: new MemoryBackend() }),
     executor,
+    ...(allowPlaywrightOrigin ? { allowPlaywrightOrigin } : {}),
     providers: {
       'claude-cli': implementer,
       'codex-cli': reviewer,
@@ -198,6 +199,29 @@ function rawRequest(
     )
     request.on('error', reject)
     request.end(body)
+  })
+}
+
+function tryWebSocket(url: string, origin: string): Promise<{ status: number; messages: unknown[] }> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url, { origin })
+    const messages: unknown[] = []
+    let settled = false
+    const finish = (status: number) => {
+      if (settled) return
+      settled = true
+      resolve({ status, messages })
+      socket.terminate()
+    }
+    socket.on('message', (data: RawData) => {
+      messages.push(JSON.parse(data.toString()) as unknown)
+      finish(101)
+    })
+    socket.once('unexpected-response', (_request, response) => {
+      response.resume()
+      finish(response.statusCode ?? 0)
+    })
+    socket.once('error', reject)
   })
 }
 
@@ -271,7 +295,56 @@ describe('Joy local server', () => {
     expect(repos).toHaveLength(0)
   })
 
-  it('requires JSON Content-Type for API writes and preserves the local Tauri origin', async () => {
+  it('rejects unapproved loopback ports and schemes before HTTP mutations', async () => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const host = new URL(origin).host
+    const attackerOrigins = ['http://127.0.0.1:5174', 'https://127.0.0.1:5173']
+    const responses = await Promise.all(
+      attackerOrigins.map((attackerOrigin, index) =>
+        rawRequest(
+          origin,
+          '/api/repos',
+          'POST',
+          { host, origin: attackerOrigin, 'content-type': 'application/json' },
+          JSON.stringify({ path: `/tmp/attacker-repo-${index}`, defaultBranch: 'main' }),
+        ),
+      ),
+    )
+
+    expect(responses.map((response) => response.status)).toEqual([403, 403])
+    const { repos } = (await (await fetch(`${origin}/api/repos`)).json()) as { repos: unknown[] }
+    expect(repos).toHaveLength(0)
+  })
+
+  it.each(['http://127.0.0.1:5174', 'https://127.0.0.1:5173'])(
+    'rejects unapproved WebSocket origin %s without exposing task events',
+    async (attackerOrigin) => {
+      const { db, serverPromise } = fixture()
+      const { origin, websocket } = await start(serverPromise)
+      const repo = createRepo(db, {
+        id: rid('origin-regression-repo'),
+        path: '/tmp/origin-regression-repo',
+        defaultBranch: 'main',
+      })
+      const response = await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: 'Private task data',
+        prompt: 'This task event must not be exposed',
+        mode: 'single',
+      })
+      expect(response.status).toBe(201)
+      const { task } = (await response.json()) as { task: { id: string } }
+      const details = await waitForStatus(origin, task.id, 'done')
+      expect(details.events.length).toBeGreaterThan(0)
+
+      const rejected = await tryWebSocket(`${websocket}/ws?taskId=${task.id}`, attackerOrigin)
+      expect(rejected.status).toBe(403)
+      expect(rejected.messages).toEqual([])
+    },
+  )
+
+  it('requires JSON Content-Type and accepts the supported Vite and Tauri origins', async () => {
     const { serverPromise } = fixture()
     const { origin } = await start(serverPromise)
     const rejected = await rawRequest(
@@ -295,6 +368,19 @@ describe('Joy local server', () => {
     const unknownRoute = await rawRequest(origin, '/api/unknown', 'POST', { host: new URL(origin).host })
     expect(unknownRoute.status).toBe(404)
 
+    const vite = await rawRequest(
+      origin,
+      '/api/repos',
+      'POST',
+      {
+        host: new URL(origin).host,
+        origin: 'http://127.0.0.1:5173',
+        'content-type': 'application/json',
+      },
+      JSON.stringify({ path: '/tmp/vite', defaultBranch: 'main' }),
+    )
+    expect(vite.status).toBe(201)
+
     const tauri = await rawRequest(
       origin,
       '/api/repos',
@@ -307,6 +393,49 @@ describe('Joy local server', () => {
       JSON.stringify({ path: '/tmp/tauri', defaultBranch: 'main' }),
     )
     expect(tauri.status).toBe(201)
+  })
+
+  it('accepts only the explicit Playwright origin when enabled for E2E', async () => {
+    const { serverPromise } = fixture(true)
+    const { origin } = await start(serverPromise)
+    const accepted = await rawRequest(
+      origin,
+      '/api/repos',
+      'POST',
+      {
+        host: new URL(origin).host,
+        origin: 'http://127.0.0.1:4173',
+        'content-type': 'application/json',
+      },
+      JSON.stringify({ path: '/tmp/playwright', defaultBranch: 'main' }),
+    )
+    expect(accepted.status).toBe(201)
+
+    const notConfigured = await Promise.all([
+      rawRequest(
+        origin,
+        '/api/repos',
+        'POST',
+        {
+          host: new URL(origin).host,
+          origin: 'http://127.0.0.1:4174',
+          'content-type': 'application/json',
+        },
+        JSON.stringify({ path: '/tmp/unconfigured-playwright', defaultBranch: 'main' }),
+      ),
+      rawRequest(
+        origin,
+        '/api/repos',
+        'POST',
+        {
+          host: new URL(origin).host,
+          origin: 'https://127.0.0.1:4173',
+          'content-type': 'application/json',
+        },
+        JSON.stringify({ path: '/tmp/wrong-scheme-playwright', defaultBranch: 'main' }),
+      ),
+    ])
+    expect(notConfigured.map((response) => response.status)).toEqual([403, 403])
   })
 
   it('returns 400 for malformed percent encoding in task paths', async () => {
@@ -350,7 +479,7 @@ describe('Joy local server', () => {
     expect(taskResponse.status).toBe(201)
     const { task } = (await taskResponse.json()) as { task: { id: string } }
 
-    const socket = new WebSocket(`${websocket}/ws?taskId=${task.id}`, { origin })
+    const socket = new WebSocket(`${websocket}/ws?taskId=${task.id}`, { origin: 'http://127.0.0.1:5173' })
     const messages = await receiveMessages(socket, 2)
     expect(messages[0]).toMatchObject({ type: 'ready', taskId: task.id })
     expect(messages[1]).toMatchObject({ type: 'event', event: { taskId: task.id } })
@@ -361,6 +490,10 @@ describe('Joy local server', () => {
     expect(result.events.length).toBeGreaterThan(0)
     expect(executor.prepareCalls).toBe(1)
     expect(db.isOpen).toBe(true)
+
+    const tauriSocket = await tryWebSocket(`${websocket}/ws?taskId=${task.id}`, 'tauri://localhost')
+    expect(tauriSocket.status).toBe(101)
+    expect(tauriSocket.messages[0]).toMatchObject({ type: 'ready', taskId: task.id })
 
     const compete = await postJson(`${origin}/api/tasks`, {
       repoId: repo.id,
