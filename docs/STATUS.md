@@ -54,7 +54,7 @@ main … t1.5-review-loop
 
 1. 檢查 PR #11 更新後 head 的三平台 CI；維持 draft、不合併。
 2. 追蹤 #10 的獨立 review 與 #9 owner human review；不重跑 #8 macOS，也不更改 #8/#9 的審核狀態。
-3. T3.9 模型統計/UI 由獨立分支實作；PR 維持 draft/no-merge hold。
+3. T3.9 模型統計/UI 已完成並提交 [draft PR #12](https://github.com/jimmynycuee/Joy/pull/12)；維持既有的 no-merge hold。
 4. Codex 真實 fixture、模型名稱確認與 Windows 實機驗證留待相應條件可用時處理。
 
 ## 最近的決策（新的放最上面）
@@ -84,6 +84,6 @@ main … t1.5-review-loop
 
 ## T3.9 模型表現統計
 
-- 獨立分支：`t3.9-model-stats`，以 live PR #11 的 head `29229e8da3e6de96a45cf445b9b0adbe8417c7e4` 為基底；未修改或提交到 `t2.2-tools`。
+- 獨立分支：`t3.9-model-stats`，以 live PR #11 的 head `29229e8da3e6de96a45cf445b9b0adbe8417c7e4` 為基底；[draft PR #12](https://github.com/jimmynycuee/Joy/pull/12)；未修改或提交到 `t2.2-tools`。
 - 新增 DB migration/backfill 與終端 attempt 統計：按 provider/model/task mode 記錄成功或失敗、review findings 數、elapsed ms；取消的 attempt 排除；UI 提供分組摘要。
 - 驗證：`pnpm exec vitest run --project db --project server` 通過 32 tests；`pnpm test:e2e` 通過 5 fake-provider specs；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（181 tests passed、2 skipped）。未呼叫真實模型。
