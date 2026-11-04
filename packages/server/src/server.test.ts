@@ -245,6 +245,84 @@ describe('Joy local server', () => {
     expect(compete.status).toBe(422)
   })
 
+  it('defaults repository allowlists to all providers and accepts allowed role selections', async () => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const createdRepo = await postJson(`${origin}/api/repos`, {
+      path: '/default-all-repo',
+      defaultBranch: 'main',
+    })
+    expect(createdRepo.status).toBe(201)
+    const { repo } = (await createdRepo.json()) as {
+      repo: { id: string; allowedProviders: string[] }
+    }
+    expect(repo.allowedProviders).toEqual(['openai-api', 'claude-cli', 'codex-cli'])
+
+    const createdTask = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Use all provider choices',
+      prompt: 'Verify provider selections',
+      mode: 'single',
+      roleOverrides: {
+        implementer: { provider: 'claude-cli', model: 'haiku' },
+        reviewer: { provider: 'openai-api', model: 'test-model' },
+        orchestrator: { provider: 'codex-cli', model: 'test-model' },
+      },
+    })
+    expect(createdTask.status).toBe(201)
+  })
+
+  it('allows configured providers and rejects disallowed task role selections by role', async () => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const createdRepo = await postJson(`${origin}/api/repos`, {
+      path: '/claude-only-repo',
+      defaultBranch: 'main',
+      allowedProviders: ['claude-cli'],
+    })
+    expect(createdRepo.status).toBe(201)
+    const { repo } = (await createdRepo.json()) as {
+      repo: { id: string; allowedProviders: string[] }
+    }
+    expect(repo.allowedProviders).toEqual(['claude-cli'])
+
+    const allowedTask = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Allowed implementer',
+      prompt: 'Use the repository provider',
+      mode: 'single',
+    })
+    expect(allowedTask.status).toBe(201)
+
+    const deniedCases = [
+      {
+        mode: 'single',
+        roleOverrides: { implementer: { provider: 'codex-cli', model: 'test-model' } },
+        role: 'implementer',
+      },
+      {
+        mode: 'single',
+        roleOverrides: { reviewer: { provider: 'codex-cli', model: 'test-model' } },
+        role: 'reviewer',
+      },
+      { mode: 'review_loop', roleOverrides: undefined, role: 'reviewer' },
+    ] as const
+    for (const denied of deniedCases) {
+      const response = await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: `Reject ${denied.role}`,
+        prompt: 'Reject disallowed provider',
+        mode: denied.mode,
+        ...(denied.roleOverrides ? { roleOverrides: denied.roleOverrides } : {}),
+      })
+      expect(response.status).toBe(422)
+      const body = (await response.json()) as { error: string }
+      expect(body.error).toContain(`Role "${denied.role}"`)
+      expect(body.error).toContain('codex-cli')
+      expect(body.error).toContain('Select an allowed provider')
+    }
+  })
+
   it('stores redacted events, reviews, and usage and replays persisted events after restart', async () => {
     const secret = 'joy-private-test-secret-123'
     const redactor = new Redactor()

@@ -50,6 +50,7 @@ import type { Executor, WorkspaceDiff } from '@joy/core'
 import { reviewLoop } from '@joy/orchestrator'
 import { ClaudeCliProvider, CodexCliProvider, OpenAiApiProvider } from '@joy/providers'
 import { Redactor, SecretStore } from '@joy/secrets'
+import { describeDisallowedRoleProvider, findDisallowedRoleProviders } from './provider-allowlist.js'
 
 const modelSchema = z.strictObject({
   provider: z.enum(PROVIDER_KINDS),
@@ -66,6 +67,7 @@ const repoInputSchema = z.strictObject({
   path: z.string().trim().min(1).refine(isAbsolute, 'must be an absolute path'),
   defaultBranch: z.string().trim().min(1),
   githubRemote: z.string().trim().min(1).optional(),
+  allowedProviders: z.array(z.enum(PROVIDER_KINDS)).optional(),
 })
 const taskInputSchema = z.strictObject({
   repoId: z.string().trim().min(1),
@@ -246,6 +248,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         path: input.path,
         defaultBranch: input.defaultBranch,
         ...(input.githubRemote ? { githubRemote: input.githubRemote } : {}),
+        ...(input.allowedProviders ? { allowedProviders: input.allowedProviders } : {}),
       })
       json(res, 201, { repo })
       return
@@ -259,13 +262,21 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (input.mode === 'compete') throw new HttpError(422, 'Compete mode is not available in P1 yet')
       const repo = getRepo(db, input.repoId as RepoId)
       if (!repo) throw new HttpError(404, `Repository ${input.repoId} was not found`)
+      const config = await configStore.get()
+      const configRoles = config.roles as RoleConfig
+      const roleOverrides = input.roleOverrides as Partial<RoleConfig> | undefined
+      const selectedRoles: Partial<RoleConfig> = { ...roleOverrides }
+      selectedRoles.implementer ??= configRoles.implementer
+      if (input.mode === 'review_loop') selectedRoles.reviewer ??= configRoles.reviewer
+      const disallowed = findDisallowedRoleProviders(selectedRoles, repo.allowedProviders)[0]
+      if (disallowed) throw new HttpError(422, describeDisallowedRoleProvider(disallowed))
       const task = createTask(db, {
         id: randomUUID() as TaskId,
         repoId: repo.id,
         title: input.title,
         prompt: input.prompt,
         mode: input.mode,
-        ...(input.roleOverrides ? { roleOverrides: input.roleOverrides as Partial<RoleConfig> } : {}),
+        ...(roleOverrides ? { roleOverrides } : {}),
         ...(input.planFirst !== undefined ? { planFirst: input.planFirst } : {}),
         ...(input.maxRounds !== undefined ? { maxRounds: input.maxRounds } : {}),
       })

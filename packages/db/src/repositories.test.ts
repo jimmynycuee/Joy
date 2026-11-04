@@ -64,11 +64,24 @@ describe('repositories', () => {
     const { repo, task } = seed(db)
     expect(getRepo(db, rid('r1'))).toEqual(repo)
     expect(listRepos(db)).toEqual([repo])
+    expect(repo.allowedProviders).toEqual(['openai-api', 'claude-cli', 'codex-cli'])
     expect(getTask(db, task.id)).toEqual(task)
     expect(listTasks(db)).toEqual([task])
     expect(task.roleOverrides.implementer).toEqual({ provider: 'claude-cli', model: 'haiku' })
     expect(task.planFirst).toBe(true)
     expect(task.maxRounds).toBe(4)
+  })
+
+  it('persists repository-specific provider allowlists', () => {
+    const db = fresh()
+    const repo = createRepo(db, {
+      id: rid('restricted'),
+      path: '/restricted',
+      defaultBranch: 'main',
+      allowedProviders: ['claude-cli'],
+    })
+    expect(repo.allowedProviders).toEqual(['claude-cli'])
+    expect(getRepo(db, repo.id)).toEqual(repo)
   })
 
   it('persists attempt workspaces, sessions and status updates', () => {

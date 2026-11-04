@@ -11,10 +11,16 @@ import type {
   TaskMode,
   TaskStatus,
 } from '@joy/core'
+import { PROVIDER_KINDS } from '@joy/core'
 import type { Database } from './database.js'
 
 export interface RepoRecord extends RepoRef {
+  allowedProviders: ProviderKind[]
   createdAt: string
+}
+
+export interface NewRepo extends RepoRef {
+  allowedProviders?: ProviderKind[]
 }
 
 export interface StoredTask extends Task {
@@ -83,6 +89,7 @@ interface RepoRow {
   path: string
   github_remote: string | null
   default_branch: string
+  allowed_providers: string
   created_at: string
 }
 
@@ -136,12 +143,15 @@ interface AttemptRow {
   updated_at: string
 }
 
-export function createRepo(db: Database, repo: Omit<RepoRecord, 'createdAt'>): RepoRecord {
-  db.prepare('INSERT INTO repos (id, path, github_remote, default_branch) VALUES (?, ?, ?, ?)').run(
+export function createRepo(db: Database, repo: NewRepo): RepoRecord {
+  db.prepare(
+    'INSERT INTO repos (id, path, github_remote, default_branch, allowed_providers) VALUES (?, ?, ?, ?, ?)',
+  ).run(
     repo.id,
     repo.path,
     repo.githubRemote ?? null,
     repo.defaultBranch,
+    JSON.stringify(repo.allowedProviders ?? PROVIDER_KINDS),
   )
   const stored = getRepo(db, repo.id)
   if (!stored) throw new Error(`Repository ${repo.id} was not found after insert`)
@@ -458,6 +468,7 @@ function mapRepo(row: RepoRow): RepoRecord {
     path: row.path,
     defaultBranch: row.default_branch,
     ...(row.github_remote ? { githubRemote: row.github_remote } : {}),
+    allowedProviders: JSON.parse(row.allowed_providers) as ProviderKind[],
     createdAt: row.created_at,
   }
 }

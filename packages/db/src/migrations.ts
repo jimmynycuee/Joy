@@ -155,6 +155,15 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 2,
+    name: 'repository provider allowlists',
+    sql: /* sql */ `
+      ALTER TABLE repos ADD COLUMN allowed_providers TEXT NOT NULL
+        DEFAULT '["openai-api","claude-cli","codex-cli"]'
+        CHECK (json_valid(allowed_providers));
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

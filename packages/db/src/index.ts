@@ -27,6 +27,7 @@ export type {
   AttemptRecord,
   AttemptUpdate,
   NewAttempt,
+  NewRepo,
   NewReview,
   NewTask,
   RepoRecord,
