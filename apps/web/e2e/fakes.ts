@@ -153,6 +153,12 @@ export async function startFakeJoyRuntime(port = 4317): Promise<FakeJoyRuntime> 
   blockedCodexForResume = false
   const home = mkdtempSync(join(tmpdir(), 'joy-t1.8-e2e-'))
   const database = openDatabase(':memory:')
+  database
+    .prepare(
+      `INSERT INTO memories (id, scope, content, source, confidence, sensitive)
+       VALUES ('memory-ui-fixture', 'episode', 'The test memory can be updated safely.', 'summary', 0.8, 0)`,
+    )
+    .run()
   const redactor = new Redactor()
   const secretStore = new SecretStore({
     backend: new MemoryBackend(),

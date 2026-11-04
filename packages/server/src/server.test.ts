@@ -26,6 +26,7 @@ import {
   updateAttempt,
 } from '@joy/db'
 import type { Database } from '@joy/db'
+import { writeMemory } from '@joy/memory'
 import { MemoryBackend, Redactor, SecretStore } from '@joy/secrets'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
@@ -1259,5 +1260,88 @@ describe('Joy local server', () => {
     })
     expect(executor.prepareCalls).toBe(0)
     expect(dir).toBeTruthy()
+  })
+
+  it('lists, views, edits, and deletes only active non-sensitive memories', async () => {
+    const { db, serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    writeMemory(db, {
+      id: 'memory-api-visible',
+      scope: 'episode',
+      content: 'A saved product decision.',
+      source: 'summary',
+      origin: 'summary',
+      userApproved: true,
+    })
+    writeMemory(db, {
+      id: 'memory-api-sensitive',
+      scope: 'episode',
+      content: 'A placeholder for a hidden record.',
+      source: 'summary',
+      origin: 'summary',
+      userApproved: true,
+    })
+    writeMemory(db, {
+      id: 'memory-api-expired',
+      scope: 'episode',
+      content: 'A past note.',
+      source: 'summary',
+      origin: 'summary',
+      userApproved: true,
+      expiresAt: '2025-01-01T00:00:00Z',
+    })
+    db.prepare("UPDATE memories SET sensitive = 1 WHERE id = 'memory-api-sensitive'").run()
+
+    const list = (await (await fetch(`${origin}/api/memories`)).json()) as {
+      memories: Array<Record<string, unknown>>
+    }
+    expect(list.memories).toHaveLength(1)
+    expect(list.memories[0]).toMatchObject({ id: 'memory-api-visible', source: 'summary' })
+    expect(JSON.stringify(list)).not.toContain('hidden record')
+    expect((await fetch(`${origin}/api/memories/memory-api-sensitive`)).status).toBe(404)
+    expect((await fetch(`${origin}/api/memories/memory-api-expired`)).status).toBe(404)
+
+    const viewed = (await (await fetch(`${origin}/api/memories/memory-api-visible`)).json()) as {
+      memory: Record<string, unknown>
+    }
+    expect(viewed.memory).toMatchObject({ id: 'memory-api-visible', content: 'A saved product decision.' })
+
+    const unapproved = await fetch(`${origin}/api/memories/memory-api-visible`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: 'An unapproved edit.' }),
+    })
+    expect(unapproved.status).toBe(400)
+    const sensitiveEdit = await fetch(`${origin}/api/memories/memory-api-visible`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: 'The password is hunter2', userApproved: true }),
+    })
+    expect(sensitiveEdit.status).toBe(400)
+
+    const edited = await fetch(`${origin}/api/memories/memory-api-visible`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: 'Updated product decision.', userApproved: true }),
+    })
+    expect(edited.status).toBe(200)
+    expect(await edited.json()).toMatchObject({
+      memory: { id: 'memory-api-visible', content: 'Updated product decision.', source: 'summary' },
+    })
+
+    const unconfirmedDelete = await fetch(`${origin}/api/memories/memory-api-visible`, {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    expect(unconfirmedDelete.status).toBe(400)
+    const deleted = await fetch(`${origin}/api/memories/memory-api-visible`, {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userApproved: true }),
+    })
+    expect(deleted.status).toBe(200)
+    expect(await deleted.json()).toEqual({ deleted: true })
+    expect((await fetch(`${origin}/api/memories/memory-api-visible`)).status).toBe(404)
   })
 })

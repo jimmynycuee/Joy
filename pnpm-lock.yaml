@@ -152,6 +152,9 @@ importers:
       '@joy/executor':
         specifier: workspace:*
         version: link:../executor
+      '@joy/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@joy/orchestrator':
         specifier: workspace:*
         version: link:../orchestrator

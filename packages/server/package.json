@@ -16,6 +16,7 @@
     "@joy/core": "workspace:*",
     "@joy/db": "workspace:*",
     "@joy/executor": "workspace:*",
+    "@joy/memory": "workspace:*",
     "@joy/orchestrator": "workspace:*",
     "@joy/providers": "workspace:*",
     "@joy/secrets": "workspace:*",

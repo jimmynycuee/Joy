@@ -54,6 +54,7 @@ import { compete, reviewLoop, synthesizeStrengths } from '@joy/orchestrator'
 import type { SynthesisSourceCandidate } from '@joy/orchestrator'
 import { ClaudeCliProvider, CodexCliProvider, OpenAiApiProvider } from '@joy/providers'
 import { Redactor, SecretStore } from '@joy/secrets'
+import { deleteMemory, getMemory, isSensitiveContent, listMemories, updateMemory } from '@joy/memory'
 import { handleToolHubHttpRequest } from '@joy/tools'
 import type { ToolHubContext } from '@joy/tools'
 
@@ -102,6 +103,16 @@ const synthesisSourceCandidateSchema = z.object({
   diff: workspaceDiffSchema,
 })
 const openAiSecretInputSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
+const memoryUpdateSchema = z.strictObject({
+  content: z
+    .string()
+    .trim()
+    .min(1)
+    .max(50_000)
+    .refine((content) => !isSensitiveContent(content), 'Memory content must not include sensitive values'),
+  userApproved: z.literal(true),
+})
+const memoryDeleteSchema = z.strictObject({ userApproved: z.literal(true) })
 const MAX_BODY_BYTES = 1_000_000
 
 export interface TaskEvent {
@@ -280,6 +291,33 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       })
       json(res, 201, { repo })
       return
+    }
+    if (url.pathname === '/api/memories' && method === 'GET') {
+      json(res, 200, { memories: listMemories(db) })
+      return
+    }
+    const memoryMatch = /^\/api\/memories\/([^/]+)$/.exec(url.pathname)
+    if (memoryMatch) {
+      const memoryId = idSchema.parse(decodeURIComponent(memoryMatch[1] ?? ''))
+      if (method === 'GET') {
+        const memory = getMemory(db, memoryId)
+        if (!memory) throw new HttpError(404, 'Memory was not found')
+        json(res, 200, { memory })
+        return
+      }
+      if (method === 'PATCH') {
+        const input = memoryUpdateSchema.parse(await readJson(req))
+        const memory = updateMemory(db, memoryId, input)
+        if (!memory) throw new HttpError(404, 'Memory was not found')
+        json(res, 200, { memory })
+        return
+      }
+      if (method === 'DELETE') {
+        const input = memoryDeleteSchema.parse(await readJson(req))
+        if (!deleteMemory(db, memoryId, input)) throw new HttpError(404, 'Memory was not found')
+        json(res, 200, { deleted: true })
+        return
+      }
     }
     if (url.pathname === '/api/tasks' && method === 'GET') {
       json(res, 200, { tasks: listTasks(db) })

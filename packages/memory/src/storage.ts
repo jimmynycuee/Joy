@@ -45,6 +45,21 @@ export interface SearchMemoryOptions extends ListMemoryOptions {
   limit?: number
 }
 
+export interface ManageMemoryOptions {
+  now?: Date
+}
+
+export interface UpdateMemoryInput {
+  content: string
+  /** Management edits must come from an explicit user action. */
+  userApproved?: boolean
+}
+
+export interface DeleteMemoryInput {
+  /** Deletion must come from an explicit user confirmation. */
+  userApproved?: boolean
+}
+
 interface MemoryRow {
   id: string
   scope: MemoryScope
@@ -103,6 +118,55 @@ export function listMemories(db: Database, options: ListMemoryOptions = {}): Mem
     .prepare(`SELECT * FROM memories WHERE ${conditions.join(' AND ')} ORDER BY created_at, id`)
     .all(...values) as unknown as MemoryRow[]
   return rows.map(mapMemory)
+}
+
+/** Returns one active, non-sensitive memory, using the same visibility filter as listMemories. */
+export function getMemory(
+  db: Database,
+  id: string,
+  options: ManageMemoryOptions = {},
+): MemoryRecord | undefined {
+  const now = (options.now ?? new Date()).toISOString()
+  const row = db
+    .prepare(
+      'SELECT * FROM memories WHERE id = ? AND sensitive = 0 AND (expires_at IS NULL OR expires_at > ?)',
+    )
+    .get(id, now) as MemoryRow | undefined
+  return row ? mapMemory(row) : undefined
+}
+
+/** Edits visible memory content after explicit user approval; source and scope provenance remain unchanged. */
+export function updateMemory(
+  db: Database,
+  id: string,
+  input: UpdateMemoryInput,
+  options: ManageMemoryOptions = {},
+): MemoryRecord | undefined {
+  if (input.userApproved !== true) return undefined
+  const content = input.content.trim()
+  if (!content || isSensitiveContent(content)) return undefined
+  const now = (options.now ?? new Date()).toISOString()
+  const result = db
+    .prepare(
+      'UPDATE memories SET content = ? WHERE id = ? AND sensitive = 0 AND (expires_at IS NULL OR expires_at > ?)',
+    )
+    .run(content, id, now)
+  return Number(result.changes) === 1 ? getMemory(db, id, options) : undefined
+}
+
+/** Deletes a visible memory only after explicit user confirmation. */
+export function deleteMemory(
+  db: Database,
+  id: string,
+  input: DeleteMemoryInput,
+  options: ManageMemoryOptions = {},
+): boolean {
+  if (input.userApproved !== true) return false
+  const now = (options.now ?? new Date()).toISOString()
+  const result = db
+    .prepare('DELETE FROM memories WHERE id = ? AND sensitive = 0 AND (expires_at IS NULL OR expires_at > ?)')
+    .run(id, now)
+  return Number(result.changes) === 1
 }
 
 /** Searches active, non-sensitive memories using FTS5; terms are treated as plain text, not FTS syntax. */

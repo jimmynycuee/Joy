@@ -1,7 +1,16 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { openDatabase } from '@joy/db'
 import type { Database } from '@joy/db'
-import { deleteExpiredMemories, ingestUserMemory, listMemories, writeMemory } from './index.js'
+import {
+  deleteExpiredMemories,
+  deleteMemory,
+  getMemory,
+  ingestUserMemory,
+  listMemories,
+  searchMemories,
+  updateMemory,
+  writeMemory,
+} from './index.js'
 
 const databases: Database[] = []
 function fresh(): Database {
@@ -119,6 +128,89 @@ describe('memory package', () => {
     expect(listMemories(db, { now: new Date('2026-03-01T00:00:00Z') }).map(({ id }) => id)).toEqual([
       'project-memory',
     ])
+  })
+
+  it('manages visible memories with explicit approval and keeps provenance, filters, and FTS in sync', () => {
+    const db = fresh()
+    const created = writeMemory(db, {
+      id: 'editable-memory',
+      scope: 'episode',
+      content: 'The old release used a blue theme.',
+      source: 'summary',
+      origin: 'summary',
+      userApproved: true,
+      confidence: 0.8,
+      expiresAt: '2027-01-01T00:00:00Z',
+    })
+    expect(created).toBeDefined()
+    expect(getMemory(db, 'editable-memory', { now: new Date('2026-01-01T00:00:00Z') })).toMatchObject({
+      source: 'summary',
+      scope: 'episode',
+    })
+
+    expect(updateMemory(db, 'editable-memory', { content: 'An unapproved edit.' })).toBeUndefined()
+    expect(
+      updateMemory(
+        db,
+        'editable-memory',
+        { content: 'The password is hunter2', userApproved: true },
+        { now: new Date('2026-01-01T00:00:00Z') },
+      ),
+    ).toBeUndefined()
+    const updated = updateMemory(
+      db,
+      'editable-memory',
+      { content: 'The current release uses a green theme.', userApproved: true },
+      { now: new Date('2026-01-01T00:00:00Z') },
+    )
+    expect(updated).toMatchObject({
+      id: 'editable-memory',
+      content: 'The current release uses a green theme.',
+      source: 'summary',
+      scope: 'episode',
+      confidence: 0.8,
+      expiresAt: '2027-01-01T00:00:00.000Z',
+    })
+    expect(searchMemories(db, 'old release blue', { now: new Date('2026-01-01T00:00:00Z') })).toEqual([])
+    expect(
+      searchMemories(db, 'current release green', { now: new Date('2026-01-01T00:00:00Z') }),
+    ).toHaveLength(1)
+    expect(deleteMemory(db, 'editable-memory', {}, { now: new Date('2026-01-01T00:00:00Z') })).toBe(false)
+    expect(
+      deleteMemory(db, 'editable-memory', { userApproved: true }, { now: new Date('2026-01-01T00:00:00Z') }),
+    ).toBe(true)
+    expect(getMemory(db, 'editable-memory', { now: new Date('2026-01-01T00:00:00Z') })).toBeUndefined()
+    expect(searchMemories(db, 'current release green', { now: new Date('2026-01-01T00:00:00Z') })).toEqual([])
+  })
+
+  it('does not expose or manage sensitive or expired memories by id', () => {
+    const db = fresh()
+    writeMemory(db, {
+      id: 'hidden-sensitive',
+      scope: 'episode',
+      content: 'A safe placeholder that will be hidden.',
+      source: 'summary',
+      origin: 'summary',
+      userApproved: true,
+    })
+    writeMemory(db, {
+      id: 'hidden-expired',
+      scope: 'episode',
+      content: 'A note that has expired.',
+      source: 'summary',
+      origin: 'summary',
+      userApproved: true,
+      expiresAt: '2025-01-01T00:00:00Z',
+    })
+    db.prepare("UPDATE memories SET sensitive = 1 WHERE id = 'hidden-sensitive'").run()
+    const now = new Date('2026-01-01T00:00:00Z')
+
+    for (const id of ['hidden-sensitive', 'hidden-expired']) {
+      expect(getMemory(db, id, { now })).toBeUndefined()
+      expect(updateMemory(db, id, { content: 'Edited.', userApproved: true }, { now })).toBeUndefined()
+      expect(deleteMemory(db, id, { userApproved: true }, { now })).toBe(false)
+    }
+    expect(listMemories(db, { now })).toEqual([])
   })
 
   it('rejects confidence outside the persisted range', () => {

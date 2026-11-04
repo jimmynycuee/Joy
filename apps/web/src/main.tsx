@@ -46,6 +46,18 @@ type TaskDetails = {
   events: TaskEvent[]
 }
 type SecretStatus = { set: boolean; source?: 'env' | 'keychain' }
+type Memory = {
+  id: string
+  scope: 'user' | 'project' | 'episode'
+  repoId?: string
+  content: string
+  source: 'user_utterance' | 'agent' | 'summary' | 'manual'
+  confidence: number
+  sensitive: boolean
+  expiresAt?: string
+  lastUsedAt?: string
+  createdAt: string
+}
 type ApiError = { error?: string }
 
 const ROLE_LABELS: Record<Role, string> = {
@@ -294,7 +306,11 @@ function App() {
   const [secretStatus, setSecretStatus] = useState<SecretStatus>({ set: false })
   const [selectedTaskId, setSelectedTaskId] = useState('')
   const [details, setDetails] = useState<TaskDetails | null>(null)
-  const [page, setPage] = useState<'tasks' | 'settings'>('tasks')
+  const [page, setPage] = useState<'tasks' | 'settings' | 'memories'>('tasks')
+  const [memories, setMemories] = useState<Memory[]>([])
+  const [memoryLoading, setMemoryLoading] = useState(false)
+  const [editingMemoryId, setEditingMemoryId] = useState('')
+  const [memoryDraft, setMemoryDraft] = useState('')
   const [showTaskForm, setShowTaskForm] = useState(false)
   const [showRepoForm, setShowRepoForm] = useState(false)
   const [error, setError] = useState('')
@@ -335,6 +351,25 @@ function App() {
       active = false
     }
   }, [])
+
+  useEffect(() => {
+    if (page !== 'memories') return
+    let active = true
+    setMemoryLoading(true)
+    request<{ memories: Memory[] }>('/api/memories')
+      .then(({ memories: loaded }) => {
+        if (active) setMemories(loaded)
+      })
+      .catch((cause: unknown) => {
+        if (active) setError(cause instanceof Error ? cause.message : 'Could not load memories')
+      })
+      .finally(() => {
+        if (active) setMemoryLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [page])
 
   useEffect(() => {
     if (!selectedTaskId) {
@@ -568,6 +603,44 @@ function App() {
     }
   }
 
+  async function saveMemory(memory: Memory) {
+    setError('')
+    try {
+      const { memory: saved } = await request<{ memory: Memory }>(
+        `/api/memories/${encodeURIComponent(memory.id)}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ content: memoryDraft, userApproved: true }),
+        },
+      )
+      setMemories((current) => current.map((item) => (item.id === saved.id ? saved : item)))
+      setEditingMemoryId('')
+      setMemoryDraft('')
+      setNotice('Memory updated; its provenance and other metadata were preserved.')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not update memory')
+    }
+  }
+
+  async function removeMemory(memory: Memory) {
+    if (!window.confirm(`Delete this memory? This cannot be undone.\n\n${memory.content}`)) return
+    setError('')
+    try {
+      await request(`/api/memories/${encodeURIComponent(memory.id)}`, {
+        method: 'DELETE',
+        body: JSON.stringify({ userApproved: true }),
+      })
+      setMemories((current) => current.filter((item) => item.id !== memory.id))
+      if (editingMemoryId === memory.id) {
+        setEditingMemoryId('')
+        setMemoryDraft('')
+      }
+      setNotice('Memory deleted.')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not delete memory')
+    }
+  }
+
   function updateRole<K extends keyof ModelRef>(role: Role, field: K, value: ModelRef[K]) {
     if (!config) return
     setConfig({
@@ -603,6 +676,12 @@ function App() {
           >
             Settings
           </button>
+          <button
+            className={page === 'memories' ? 'nav-button active' : 'nav-button'}
+            onClick={() => setPage('memories')}
+          >
+            Memories
+          </button>
         </nav>
       </header>
 
@@ -617,7 +696,149 @@ function App() {
         </div>
       )}
 
-      {page === 'settings' ? (
+      {page === 'memories' ? (
+        <main className="settings-page memory-page">
+          <div className="page-heading">
+            <div>
+              <p className="eyebrow">PERSONAL CONTEXT</p>
+              <h1>Memories</h1>
+              <p className="subheading">Review and manage what Joy has saved.</p>
+            </div>
+            <button className="quiet-button" onClick={() => setPage('tasks')}>
+              Back to workspace
+            </button>
+          </div>
+          <section className="settings-card memory-list" aria-label="Saved memories">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">MEMORY MANAGEMENT</p>
+                <h2>Saved memories</h2>
+              </div>
+              <span className="muted">
+                {memories.length} {memories.length === 1 ? 'memory' : 'memories'}
+              </span>
+            </div>
+            <p className="muted memory-privacy-note">
+              Only active, non-sensitive memories are shown. Edits require your explicit action.
+            </p>
+            {memoryLoading ? (
+              <div className="loading-card">Loading memories…</div>
+            ) : memories.length === 0 ? (
+              <div className="loading-card">No saved memories to manage.</div>
+            ) : (
+              <div className="memory-list-items">
+                {memories.map((memory) => (
+                  <article className="memory-card" key={memory.id}>
+                    <div className="memory-card-heading">
+                      <div>
+                        <span className="memory-scope">{memory.scope} memory</span>
+                        <span className="memory-source">Source: {memory.source.replaceAll('_', ' ')}</span>
+                      </div>
+                      <div className="memory-actions">
+                        {editingMemoryId === memory.id ? null : (
+                          <button
+                            className="quiet-button"
+                            type="button"
+                            aria-label="Edit memory"
+                            onClick={() => {
+                              setEditingMemoryId(memory.id)
+                              setMemoryDraft(memory.content)
+                            }}
+                          >
+                            Edit
+                          </button>
+                        )}
+                        <button
+                          className="text-button danger-text"
+                          type="button"
+                          aria-label="Delete memory"
+                          onClick={() => void removeMemory(memory)}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                    {editingMemoryId === memory.id ? (
+                      <form
+                        className="memory-edit-form"
+                        onSubmit={(event) => {
+                          event.preventDefault()
+                          void saveMemory(memory)
+                        }}
+                      >
+                        <label htmlFor={`memory-content-${memory.id}`}>Memory text</label>
+                        <textarea
+                          id={`memory-content-${memory.id}`}
+                          value={memoryDraft}
+                          maxLength={50_000}
+                          rows={4}
+                          required
+                          onChange={(event) => setMemoryDraft(event.target.value)}
+                        />
+                        <div className="memory-actions">
+                          <button className="primary-button" type="submit">
+                            Save changes
+                          </button>
+                          <button
+                            className="quiet-button"
+                            type="button"
+                            onClick={() => {
+                              setEditingMemoryId('')
+                              setMemoryDraft('')
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </form>
+                    ) : (
+                      <p className="memory-content">{memory.content}</p>
+                    )}
+                    <dl className="memory-metadata">
+                      <div>
+                        <dt>Confidence</dt>
+                        <dd>{Math.round(memory.confidence * 100)}%</dd>
+                      </div>
+                      <div>
+                        <dt>Saved</dt>
+                        <dd>
+                          <time dateTime={memory.createdAt}>
+                            {new Date(memory.createdAt).toLocaleDateString()}
+                          </time>
+                        </dd>
+                      </div>
+                      {memory.repoId ? (
+                        <div>
+                          <dt>Project</dt>
+                          <dd>
+                            {repos
+                              .find((repo) => repo.id === memory.repoId)
+                              ?.path.split(/[\\/]/)
+                              .filter(Boolean)
+                              .at(-1) ?? memory.repoId}
+                          </dd>
+                        </div>
+                      ) : null}
+                      {memory.lastUsedAt ? (
+                        <div>
+                          <dt>Last used</dt>
+                          <dd>{new Date(memory.lastUsedAt).toLocaleDateString()}</dd>
+                        </div>
+                      ) : null}
+                      <div>
+                        <dt>Expires</dt>
+                        <dd>
+                          {memory.expiresAt ? new Date(memory.expiresAt).toLocaleDateString() : 'Never'}
+                        </dd>
+                      </div>
+                    </dl>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        </main>
+      ) : page === 'settings' ? (
         <main className="settings-page">
           <div className="page-heading">
             <div>
