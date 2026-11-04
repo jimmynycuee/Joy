@@ -268,6 +268,7 @@ function fixture(
     secretEnv?: NodeJS.ProcessEnv
     configStore?: ConfigStore
     remoteAccessToken?: string
+    allowPlaywrightOrigin?: boolean
   } = {},
 ) {
   vi.stubEnv('JOY_REMOTE_ACCESS_TOKEN', options.remoteAccessToken)
@@ -310,6 +311,7 @@ function fixture(
     executor,
     providers: configuredProviders,
     ...(options.redactor ? { redactor: options.redactor } : {}),
+    ...(options.allowPlaywrightOrigin ? { allowPlaywrightOrigin: true } : {}),
   }
   const serverPromise = createJoyServer(serverOptions)
   return {
@@ -382,6 +384,23 @@ async function postJson(url: string, body: unknown) {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+  })
+}
+
+function requestWithHeaders(
+  url: string,
+  method: string,
+  headers: Record<string, string>,
+  body?: string,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(url, { method, headers }, (res) => {
+      const chunks: Buffer[] = []
+      res.on('data', (chunk: Buffer) => chunks.push(chunk))
+      res.once('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString() }))
+    })
+    req.once('error', reject)
+    req.end(body)
   })
 }
 
@@ -458,7 +477,7 @@ describe('Joy local server', () => {
     expect(taskResponse.status).toBe(201)
     const { task } = (await taskResponse.json()) as { task: { id: string } }
 
-    const socket = new WebSocket(`${websocket}/ws?taskId=${task.id}`, { origin })
+    const socket = new WebSocket(`${websocket}/ws?taskId=${task.id}`, { origin: 'http://127.0.0.1:5173' })
     const messages = await receiveMessages(socket, 2)
     expect(messages[0]).toMatchObject({ type: 'ready', taskId: task.id })
     expect(messages[1]).toMatchObject({ type: 'event', event: { taskId: task.id } })
@@ -505,6 +524,11 @@ describe('Joy local server', () => {
       headers: { authorization: 'Bearer invalid-token' },
     })
     expect(invalid.status).toBe(401)
+    const unauthorizedRemoteHost = await requestWithHeaders(`${origin}/api/health`, 'GET', {
+      host: 'joy.tailnet.example',
+      origin: 'https://joy.tailnet.example',
+    })
+    expect(unauthorizedRemoteHost.status).toBe(401)
     const queryCredential = await fetch(`${origin}/api/health?token=invalid-token`)
     expect(queryCredential.status).toBe(401)
     expect(db.prepare('SELECT id FROM repos').all()).toHaveLength(0)
@@ -512,6 +536,12 @@ describe('Joy local server', () => {
     const authorization = { authorization: `Bearer ${token}` }
     const health = await fetch(`${origin}/api/health`, { headers: authorization })
     expect(health.status).toBe(200)
+    const remoteHealth = await requestWithHeaders(`${origin}/api/health`, 'GET', {
+      ...authorization,
+      host: 'joy.tailnet.example',
+      origin: 'https://joy.tailnet.example',
+    })
+    expect(remoteHealth.status).toBe(200)
     const configResponse = await fetch(`${origin}/api/config`, { headers: authorization })
     expect(await configResponse.text()).not.toContain(token)
     const repoResponse = await fetch(`${origin}/api/repos`, {
@@ -535,17 +565,22 @@ describe('Joy local server', () => {
     const { task } = (await taskResponse.json()) as { task: { id: string } }
     const taskUrl = `${websocket}/ws?taskId=${task.id}`
 
-    await expect(websocketError(taskUrl, { origin: 'https://joy.tailnet.example' })).resolves.toContain('401')
     await expect(
       websocketError(taskUrl, {
         origin: 'https://joy.tailnet.example',
-        headers: { authorization: 'Bearer invalid-token' },
+        headers: { host: 'joy.tailnet.example' },
+      }),
+    ).resolves.toContain('401')
+    await expect(
+      websocketError(taskUrl, {
+        origin: 'https://joy.tailnet.example',
+        headers: { authorization: 'Bearer invalid-token', host: 'joy.tailnet.example' },
       }),
     ).resolves.toContain('401')
 
     const socket = new WebSocket(taskUrl, {
       origin: 'https://joy.tailnet.example',
-      headers: authorization,
+      headers: { ...authorization, host: 'joy.tailnet.example' },
     })
     const socketMessages = await receiveMessages(socket, 1)
     expect(socketMessages[0]).toMatchObject({ type: 'ready', taskId: task.id })
@@ -553,6 +588,7 @@ describe('Joy local server', () => {
 
     const protocolSocket = new WebSocket(taskUrl, ['joy.v1', `joy-bearer.${token}`], {
       origin: 'https://joy.tailnet.example',
+      headers: { host: 'joy.tailnet.example' },
     })
     const protocolMessages = await receiveMessages(protocolSocket, 1)
     expect(protocolMessages[0]).toMatchObject({ type: 'ready', taskId: task.id })
@@ -585,6 +621,162 @@ describe('Joy local server', () => {
       const { serverPromise } = fixture({ remoteAccessToken })
       await expect(serverPromise).rejects.toThrow(/JOY_REMOTE_ACCESS_TOKEN/)
     }
+  })
+
+  it('rejects compete tasks when either candidate provider cannot edit code before creating work', async () => {
+    const { serverPromise, executor, implementer, reviewer, api } = fixture()
+    api.capabilities.codeEdit = false
+    const { origin } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/non-editing-compete-repo', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+
+    for (const roleOverrides of [
+      {
+        implementer: { provider: 'openai-api', model: 'gpt-6-luna' },
+        reviewer: { provider: 'codex-cli', model: 'gpt-6-luna' },
+      },
+      {
+        implementer: { provider: 'claude-cli', model: 'haiku' },
+        reviewer: { provider: 'openai-api', model: 'gpt-6-luna' },
+      },
+    ]) {
+      const response = await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: 'Reject non-editing competitor',
+        prompt: 'Compare implementations',
+        mode: 'compete',
+        roleOverrides,
+      })
+      expect(response.status).toBe(400)
+      expect(await response.text()).toContain('code-edit capable')
+    }
+
+    const { tasks } = (await (await fetch(`${origin}/api/tasks`)).json()) as { tasks: unknown[] }
+    expect(tasks).toHaveLength(0)
+    expect(executor.prepareCalls).toBe(0)
+    expect(implementer.calls).toHaveLength(0)
+    expect(reviewer.calls).toHaveLength(0)
+    expect(api.calls).toHaveLength(0)
+  })
+
+  it('rejects untrusted Host and Origin headers and requires JSON for body methods', async () => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const repositoryUrl = `${origin}/api/repos`
+    const body = JSON.stringify({ path: '/rejected-repo', defaultBranch: 'main' })
+    const json = { 'content-type': 'application/json' }
+
+    const badHost = await requestWithHeaders(
+      repositoryUrl,
+      'POST',
+      { ...json, host: 'joy.attacker.test' },
+      body,
+    )
+    expect(badHost.status).toBe(403)
+    const badOrigin = await requestWithHeaders(
+      repositoryUrl,
+      'POST',
+      { ...json, origin: 'https://attacker.test' },
+      body,
+    )
+    expect(badOrigin.status).toBe(403)
+    for (const disallowedOrigin of [
+      'custom://127.0.0.1',
+      'https://127.0.0.1:5173',
+      'http://localhost:5173',
+      'http://127.0.0.1:5174',
+      'http://127.0.0.1:4173',
+    ]) {
+      const rejected = await requestWithHeaders(`${origin}/api/health`, 'GET', {
+        origin: disallowedOrigin,
+      })
+      expect(rejected.status, disallowedOrigin).toBe(403)
+    }
+    const rejectedSecretWrite = await requestWithHeaders(
+      `${origin}/api/secrets/openai-api-key`,
+      'PUT',
+      { ...json, origin: 'https://attacker.test' },
+      JSON.stringify({ value: 'must-not-be-saved' }),
+    )
+    expect(rejectedSecretWrite.status).toBe(403)
+    expect(await (await fetch(`${origin}/api/secrets/openai-api-key`)).json()).toMatchObject({ set: false })
+    const missingContentType = await requestWithHeaders(repositoryUrl, 'POST', {}, body)
+    expect(missingContentType.status).toBe(415)
+    const wrongContentType = await requestWithHeaders(
+      repositoryUrl,
+      'POST',
+      { 'content-type': 'text/plain' },
+      body,
+    )
+    expect(wrongContentType.status).toBe(415)
+    const missingPutContentType = await requestWithHeaders(`${origin}/api/config`, 'PUT', {}, '{}')
+    expect(missingPutContentType.status).toBe(415)
+    for (const [path, method] of [
+      ['/api/tasks', 'POST'],
+      ['/api/tasks/missing/select', 'POST'],
+      ['/api/tasks/missing/synthesize', 'POST'],
+      ['/api/secrets/openai-api-key', 'PUT'],
+    ] as const) {
+      const missing = await requestWithHeaders(`${origin}${path}`, method, {}, '{}')
+      expect(missing.status, `${method} ${path}`).toBe(415)
+    }
+    expect(await (await fetch(`${origin}/api/secrets/openai-api-key`)).json()).toMatchObject({ set: false })
+    const repositories = (await (await fetch(repositoryUrl)).json()) as { repos: unknown[] }
+    expect(repositories.repos).toHaveLength(0)
+
+    const accepted = await requestWithHeaders(
+      repositoryUrl,
+      'POST',
+      { ...json, host: 'localhost', origin: 'http://127.0.0.1:5173' },
+      body,
+    )
+    expect(accepted.status).toBe(201)
+    const acceptedTauri = await requestWithHeaders(`${origin}/api/health`, 'GET', {
+      origin: 'tauri://localhost',
+    })
+    expect(acceptedTauri.status).toBe(200)
+    const ipv6Loopback = await requestWithHeaders(`${origin}/api/health`, 'GET', { host: '[::1]' })
+    expect(ipv6Loopback.status).toBe(200)
+  })
+
+  it('rejects WebSocket upgrades with an untrusted Host or Origin', async () => {
+    const { serverPromise } = fixture()
+    const { websocket } = await start(serverPromise)
+    const deniedStatus = (options: { origin: string; headers?: Record<string, string> }) =>
+      new Promise<number>((resolve, reject) => {
+        const socket = new WebSocket(`${websocket}/ws?taskId=missing-task`, options)
+        socket.once('unexpected-response', (_request, response) => {
+          resolve(response.statusCode ?? 0)
+          socket.terminate()
+        })
+        socket.once('open', () => {
+          socket.close()
+          reject(new Error('Expected the WebSocket upgrade to be rejected'))
+        })
+        socket.once('error', reject)
+      })
+
+    expect(await deniedStatus({ origin: 'http://127.0.0.1:5174' })).toBe(403)
+    expect(
+      await deniedStatus({ origin: 'http://127.0.0.1:5173', headers: { host: 'joy.attacker.test' } }),
+    ).toBe(403)
+  })
+
+  it('allows the Playwright origin only when explicitly enabled', async () => {
+    const defaultServer = fixture()
+    const { origin: defaultOrigin } = await start(defaultServer.serverPromise)
+    const denied = await requestWithHeaders(`${defaultOrigin}/api/health`, 'GET', {
+      origin: 'http://127.0.0.1:4173',
+    })
+    expect(denied.status).toBe(403)
+
+    const playwrightServer = fixture({ allowPlaywrightOrigin: true })
+    const { origin: playwrightOrigin } = await start(playwrightServer.serverPromise)
+    const allowed = await requestWithHeaders(`${playwrightOrigin}/api/health`, 'GET', {
+      origin: 'http://127.0.0.1:4173',
+    })
+    expect(allowed.status).toBe(200)
   })
 
   it('runs competing providers in isolated worktrees, persists judge rationale, and selects a winner', async () => {
@@ -1160,7 +1352,7 @@ describe('Joy local server', () => {
     const replayed = (await (await fetch(`${restartedOrigin}/api/tasks/${task.id}`)).json()) as TaskDetails
     expect(replayed.events).toEqual(result.events)
     const socket = new WebSocket(`ws://127.0.0.1:${address.port}/ws?taskId=${task.id}`, {
-      origin: restartedOrigin,
+      origin: 'http://127.0.0.1:5173',
     })
     const messages = await receiveMessages(socket, replayed.events.length + 1)
     expect(messages[0]).toMatchObject({ type: 'ready', taskId: task.id })
@@ -1184,7 +1376,7 @@ describe('Joy local server', () => {
     })
     const { task } = (await response.json()) as { task: { id: string } }
     await new Promise((resolve) => setTimeout(resolve, 15))
-    const cancelled = await postJson(`${origin}/api/tasks/${task.id}/cancel`, {})
+    const cancelled = await requestWithHeaders(`${origin}/api/tasks/${task.id}/cancel`, 'POST', {})
     expect(cancelled.status).toBe(200)
     const result = await waitForStatus(origin, task.id, 'cancelled')
     expect(result.task.status).toBe('cancelled')
@@ -1221,7 +1413,7 @@ describe('Joy local server', () => {
     expect(interrupted.events).toEqual(
       expect.arrayContaining([expect.objectContaining({ type: 'interrupted' })]),
     )
-    const resume = await postJson(`${origin}/api/tasks/${task.id}/resume`, {})
+    const resume = await requestWithHeaders(`${origin}/api/tasks/${task.id}/resume`, 'POST', {})
     expect(resume.status).toBe(202)
     await waitForStatus(origin, task.id, 'done')
     expect(implementer.calls[0]).toMatchObject({

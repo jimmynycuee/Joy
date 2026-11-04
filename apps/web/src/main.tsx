@@ -66,6 +66,7 @@ const MODEL_SUGGESTIONS: Record<ProviderKind, string[]> = {
   'claude-cli': ['opus', 'sonnet', 'haiku'],
   'codex-cli': ['gpt-6.1-sol', 'gpt-6-luna'],
 }
+const CODE_EDIT_PROVIDERS = new Set<ProviderKind>(['claude-cli', 'codex-cli'])
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -101,6 +102,33 @@ function mergeEvents(first: TaskEvent[], second: TaskEvent[]): TaskEvent[] {
   const events = new Map<number, TaskEvent>()
   for (const event of [...first, ...second]) events.set(event.seq, event)
   return [...events.values()].sort((a, b) => a.seq - b.seq)
+}
+
+function taskAfterEvent(task: Task, event: TaskEvent): Task {
+  const payload = record(event.payload)
+  const hasSelectableCandidate =
+    event.type === 'result' &&
+    Array.isArray(payload?.candidates) &&
+    payload.candidates.some((value) => {
+      const candidate = record(value)
+      const diff = record(candidate?.diff)
+      return candidate?.status === 'succeeded' && Array.isArray(diff?.files) && typeof diff.patch === 'string'
+    })
+  const resultStatus =
+    event.type === 'error'
+      ? 'failed'
+      : event.type === 'winner_selected'
+        ? 'done'
+        : event.type === 'result'
+          ? payload?.status === 'succeeded'
+            ? task.mode === 'compete' || payload.approved === false
+              ? 'review_ready'
+              : 'done'
+            : task.mode === 'compete' && hasSelectableCandidate
+              ? 'review_ready'
+              : payload?.status
+          : undefined
+  return typeof resultStatus === 'string' ? { ...task, status: resultStatus } : task
 }
 
 function diffFrom(events: TaskEvent[]): WorkspaceDiff | null {
@@ -291,16 +319,30 @@ function App() {
   const [repos, setRepos] = useState<Repo[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [config, setConfig] = useState<JoyConfig | null>(null)
-  const [secretStatus, setSecretStatus] = useState<SecretStatus>({ set: false })
+  const [secretStatus, setSecretStatus] = useState<SecretStatus | null>(null)
   const [selectedTaskId, setSelectedTaskId] = useState('')
   const [details, setDetails] = useState<TaskDetails | null>(null)
   const [page, setPage] = useState<'tasks' | 'settings'>('tasks')
   const [showTaskForm, setShowTaskForm] = useState(false)
+  const [taskMode, setTaskMode] = useState('review_loop')
+  const [taskProviders, setTaskProviders] = useState<Record<'implementer' | 'reviewer', ProviderKind>>({
+    implementer: 'claude-cli',
+    reviewer: 'codex-cli',
+  })
   const [showRepoForm, setShowRepoForm] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [activeDiffFile, setActiveDiffFile] = useState('')
   const [selectingWinner, setSelectingWinner] = useState('')
+
+  function openTaskForm(): void {
+    setTaskMode('review_loop')
+    setTaskProviders({
+      implementer: roleModel(config, 'implementer').provider,
+      reviewer: roleModel(config, 'reviewer').provider,
+    })
+    setShowTaskForm(true)
+  }
 
   async function refreshLists() {
     const [repoResponse, taskResponse] = await Promise.all([
@@ -318,18 +360,23 @@ function App() {
       request<{ repos: Repo[] }>('/api/repos'),
       request<{ tasks: Task[] }>('/api/tasks'),
       request<{ config: JoyConfig }>('/api/config'),
-      request<SecretStatus>('/api/secrets/openai-api-key'),
     ])
-      .then(([repoResponse, taskResponse, configResponse, status]) => {
+      .then(([repoResponse, taskResponse, configResponse]) => {
         if (!active) return
         setRepos(repoResponse.repos)
         setTasks(taskResponse.tasks)
         setConfig(configResponse.config)
-        setSecretStatus(status)
         if (taskResponse.tasks[0]) setSelectedTaskId(taskResponse.tasks[0].id)
       })
       .catch((cause: unknown) => {
         if (active) setError(cause instanceof Error ? cause.message : 'Could not connect to Joy server')
+      })
+    void request<SecretStatus>('/api/secrets/openai-api-key')
+      .then((status) => {
+        if (active) setSecretStatus(status)
+      })
+      .catch(() => {
+        if (active) setSecretStatus(null)
       })
     return () => {
       active = false
@@ -342,73 +389,117 @@ function App() {
       return
     }
     let active = true
+    let detailsLoaded = false
+    let bufferedEvents: TaskEvent[] = []
+    let lastAcceptedSequence = 0
+    let connectionCount = 0
+    let reconnectTimer: number | undefined
+    let socket: WebSocket | undefined
     setDetails(null)
     const socketProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const socket = new WebSocket(
-      `${socketProtocol}//${window.location.host}/ws?taskId=${encodeURIComponent(selectedTaskId)}`,
-    )
-    socket.onmessage = (message) => {
-      const decoded = record(JSON.parse(String(message.data)))
-      if (decoded?.type !== 'event') return
-      const event = record(decoded.event) as unknown as TaskEvent | null
-      if (!event || typeof event.seq !== 'number') return
+    const socketUrl = `${socketProtocol}//${window.location.host}/ws?taskId=${encodeURIComponent(selectedTaskId)}`
+
+    function refreshTaskList(): void {
+      void request<{ tasks: Task[] }>('/api/tasks')
+        .then(({ tasks: updated }) => setTasks(updated))
+        .catch(() => {})
+    }
+
+    function acceptEvents(events: TaskEvent[]): void {
+      const matching = events.filter(
+        (event) => event.taskId === selectedTaskId && Number.isSafeInteger(event.seq) && event.seq > 0,
+      )
+      if (matching.length === 0) return
+      const newlyAccepted = matching
+        .filter((event) => event.seq > lastAcceptedSequence)
+        .sort((first, second) => first.seq - second.seq)
+      lastAcceptedSequence = Math.max(lastAcceptedSequence, ...matching.map((event) => event.seq))
+      if (!detailsLoaded) {
+        bufferedEvents = mergeEvents(bufferedEvents, matching)
+        return
+      }
       setDetails((current) => {
         if (!current || current.task.id !== selectedTaskId) return current
-        const payload = record(event.payload)
-        const hasSelectableCandidate =
-          event.type === 'result' &&
-          Array.isArray(payload?.candidates) &&
-          payload.candidates.some((value) => {
-            const candidate = record(value)
-            const diff = record(candidate?.diff)
-            return (
-              candidate?.status === 'succeeded' &&
-              Array.isArray(diff?.files) &&
-              typeof diff.patch === 'string'
-            )
-          })
-        const resultStatus =
-          event.type === 'error'
-            ? 'failed'
-            : event.type === 'winner_selected'
-              ? 'done'
-              : event.type === 'result'
-                ? payload?.status === 'succeeded'
-                  ? current.task.mode === 'compete' || payload.approved === false
-                    ? 'review_ready'
-                    : 'done'
-                  : current.task.mode === 'compete' && hasSelectableCandidate
-                    ? 'review_ready'
-                    : payload?.status
-                : undefined
-        const status = typeof resultStatus === 'string' ? resultStatus : current.task.status
-        return {
-          ...current,
-          task: { ...current.task, status },
-          events: mergeEvents(current.events, [event]),
-        }
+        const task = newlyAccepted.reduce(taskAfterEvent, current.task)
+        return { ...current, task, events: mergeEvents(current.events, matching) }
       })
-      if (event.type === 'result' || event.type === 'error' || event.type === 'winner_selected') {
-        void request<{ tasks: Task[] }>('/api/tasks')
-          .then(({ tasks: updated }) => setTasks(updated))
-          .catch(() => {})
+      if (
+        newlyAccepted.some(
+          (event) => event.type === 'result' || event.type === 'error' || event.type === 'winner_selected',
+        )
+      ) {
+        refreshTaskList()
       }
     }
+
+    function replayEvents(): void {
+      void request<{ events: TaskEvent[] }>(
+        `/api/tasks/${encodeURIComponent(selectedTaskId)}/events?after=${lastAcceptedSequence}`,
+      )
+        .then(({ events }) => {
+          if (active) acceptEvents(events)
+        })
+        .catch((cause: unknown) => {
+          if (active) setError(cause instanceof Error ? cause.message : 'Could not replay task events')
+        })
+    }
+
+    function connect(): void {
+      if (!active) return
+      const shouldReplay = connectionCount > 0
+      connectionCount += 1
+      const nextSocket = new WebSocket(socketUrl)
+      socket = nextSocket
+      nextSocket.onopen = () => {
+        if (active && shouldReplay) replayEvents()
+      }
+      nextSocket.onmessage = (message) => {
+        const decoded = record(JSON.parse(String(message.data)))
+        if (decoded?.type !== 'event') return
+        const event = record(decoded.event) as unknown as TaskEvent | null
+        if (!event || typeof event.seq !== 'number') return
+        acceptEvents([event])
+      }
+      nextSocket.onclose = () => {
+        if (!active) return
+        reconnectTimer = window.setTimeout(connect, 500)
+      }
+      nextSocket.onerror = () => nextSocket.close()
+    }
+
+    connect()
     void request<TaskDetails>(`/api/tasks/${encodeURIComponent(selectedTaskId)}`)
       .then((next) => {
         if (!active) return
-        setDetails((current) =>
-          current?.task.id === selectedTaskId
-            ? { ...next, events: mergeEvents(next.events, current.events) }
-            : next,
+        const snapshotLastSequence = next.events.reduce((latest, event) => Math.max(latest, event.seq), 0)
+        const snapshotEvents = mergeEvents(next.events, bufferedEvents)
+        const pendingEvents = bufferedEvents.filter((event) => event.seq > snapshotLastSequence)
+        const task = pendingEvents
+          .sort((first, second) => first.seq - second.seq)
+          .reduce(taskAfterEvent, next.task)
+        lastAcceptedSequence = Math.max(
+          lastAcceptedSequence,
+          snapshotLastSequence,
+          ...bufferedEvents.map((event) => event.seq),
         )
+        bufferedEvents = []
+        detailsLoaded = true
+        setDetails({ ...next, task, events: snapshotEvents })
+        if (
+          pendingEvents.some(
+            (event) => event.type === 'result' || event.type === 'error' || event.type === 'winner_selected',
+          )
+        ) {
+          refreshTaskList()
+        }
       })
       .catch((cause: unknown) => {
         if (active) setError(cause instanceof Error ? cause.message : 'Could not load task')
       })
     return () => {
       active = false
-      socket.close()
+      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer)
+      socket?.close()
     }
   }, [selectedTaskId])
 
@@ -488,8 +579,18 @@ function App() {
   async function createTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const form = new FormData(event.currentTarget)
+    const mode = String(form.get('mode'))
+    if (
+      mode === 'compete' &&
+      ![taskProviders.implementer, taskProviders.reviewer].every((provider) =>
+        CODE_EDIT_PROVIDERS.has(provider),
+      )
+    ) {
+      setError('Compete mode requires code-edit-capable providers. OpenAI API cannot be a competitor.')
+      return
+    }
     const model = (role: 'implementer' | 'reviewer'): ModelRef => ({
-      provider: String(form.get(`${role}-provider`)) as ProviderKind,
+      provider: taskProviders[role],
       model: String(form.get(`${role}-model`)).trim(),
       effort: String(form.get(`${role}-effort`)) as NonNullable<ModelRef['effort']>,
     })
@@ -712,15 +813,23 @@ function App() {
                     <p className="eyebrow">CREDENTIALS</p>
                     <h2>OpenAI API key</h2>
                   </div>
-                  <span className={secretStatus.set ? 'status-pill configured' : 'status-pill'}>
-                    {secretStatus.set ? 'Configured' : 'Not configured'}
+                  <span
+                    className={secretStatus?.set ? 'status-pill configured' : 'status-pill'}
+                    role="status"
+                  >
+                    {secretStatus === null
+                      ? 'Unavailable'
+                      : secretStatus.set
+                        ? 'Configured'
+                        : 'Not configured'}
                   </span>
                 </div>
                 <p className="muted secret-description">
-                  Stored in the OS keychain. Joy never returns the key to the browser or writes it to config,
-                  events, or the database.
+                  {secretStatus === null
+                    ? 'OpenAI key status is unavailable. Key management is temporarily disabled.'
+                    : 'Stored in the OS keychain. Joy never returns the key to the browser or writes it to config, events, or the database.'}
                 </p>
-                {secretStatus.source === 'env' ? (
+                {secretStatus === null ? null : secretStatus.source === 'env' ? (
                   <div className="env-managed" role="status">
                     Managed by the OPENAI_API_KEY environment variable.
                   </div>
@@ -776,12 +885,12 @@ function App() {
                 className="icon-button"
                 aria-label="Create task"
                 title="Create task"
-                onClick={() => setShowTaskForm(true)}
+                onClick={openTaskForm}
               >
                 ＋
               </button>
             </div>
-            <button className="new-task-button" onClick={() => setShowTaskForm(true)}>
+            <button className="new-task-button" onClick={openTaskForm}>
               <span>＋</span> New task
             </button>
             {repos.length === 0 ? (
@@ -897,7 +1006,7 @@ function App() {
                 </p>
                 <button
                   className="primary-button"
-                  onClick={() => (repos.length ? setShowTaskForm(true) : setShowRepoForm(true))}
+                  onClick={() => (repos.length ? openTaskForm() : setShowRepoForm(true))}
                 >
                   {repos.length ? 'Create a task' : 'Add a repository'}
                 </button>
@@ -1231,12 +1340,23 @@ function App() {
               </label>
               <label>
                 Workflow
-                <select name="mode" aria-label="Workflow">
+                <select
+                  name="mode"
+                  aria-label="Workflow"
+                  value={taskMode}
+                  onChange={(event) => setTaskMode(event.target.value)}
+                >
                   <option value="review_loop">Implement + review</option>
                   <option value="single">Single agent</option>
                   <option value="compete">Compete — compare independent candidates</option>
                 </select>
               </label>
+              {taskMode === 'compete' ? (
+                <p className="muted" role="note">
+                  Compete mode needs providers that can edit code. Providers without code-edit capability,
+                  including OpenAI API, are unavailable as competitors.
+                </p>
+              ) : null}
               <div className="task-model-grid">
                 {(['implementer', 'reviewer'] as const).map((role) => {
                   const model = roleModel(config, role)
@@ -1248,11 +1368,24 @@ function App() {
                         <select
                           aria-label={`${ROLE_LABELS[role]} provider`}
                           name={`${role}-provider`}
-                          defaultValue={model.provider}
+                          value={taskProviders[role]}
+                          onChange={(event) =>
+                            setTaskProviders((current) => ({
+                              ...current,
+                              [role]: event.target.value as ProviderKind,
+                            }))
+                          }
                         >
                           {PROVIDER_KINDS.map((provider) => (
-                            <option key={provider} value={provider}>
+                            <option
+                              key={provider}
+                              value={provider}
+                              disabled={taskMode === 'compete' && !CODE_EDIT_PROVIDERS.has(provider)}
+                            >
                               {PROVIDER_LABELS[provider]}
+                              {taskMode === 'compete' && !CODE_EDIT_PROVIDERS.has(provider)
+                                ? ' (cannot edit code)'
+                                : ''}
                             </option>
                           ))}
                         </select>
@@ -1294,7 +1427,14 @@ function App() {
                 <button className="quiet-button" type="button" onClick={() => setShowTaskForm(false)}>
                   Cancel
                 </button>
-                <button className="primary-button" type="submit">
+                <button
+                  className="primary-button"
+                  type="submit"
+                  disabled={
+                    taskMode === 'compete' &&
+                    Object.values(taskProviders).some((provider) => !CODE_EDIT_PROVIDERS.has(provider))
+                  }
+                >
                   Start task
                 </button>
               </div>

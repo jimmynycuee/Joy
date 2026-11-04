@@ -26,6 +26,8 @@ $env:JOY_REMOTE_ACCESS_TOKEN = [Convert]::ToHexString([Security.Cryptography.Ran
 Authorization: Bearer <token>
 ```
 
+啟用 token 時，server 只在 bearer 驗證成功後接受轉送進來的非本機 `Host` / `Origin`，以支援 Tailscale Serve；未啟用 token 時仍套用本機 `Host` / `Origin` 限制。Listener 一律只綁 loopback，且遠端分享仍應限定在 tailnet ACL 內。
+
 WebSocket `/ws` 同樣要求 bearer 驗證。原生 WebSocket client 可送 `Authorization` header；能設定 WebSocket subprotocol 的瀏覽器 client 可送 `joy.v1` 與 `joy-bearer.<token>`。Server 只會回選 `joy.v1`，不會把 token 回傳。**不要**把 token 放到 query string。
 
 ## 以 Tailscale Serve 分享
