@@ -4,10 +4,10 @@
 
 - 最後更新：2026-11-04
 - T3.6：`t3.6-event-memory` 以 PR #14 的 `t3.3-memory` head `9d9f350cf1c8d97c6960aad25adbba28e3576155` 為基礎；摘要只接受明確使用者核准，檢索沿用 `memories_fts`。`messages` 僅有 role/content/conversation/time，不能證明來源，因此不自動彙整舊對話；embedding 延後。
-- 目前階段：**P2 尚有待決項；P3 T3.3 PR #14、T3.6 PR #18、T3.4 PR #23 均為 draft，需 owner review；T3.4 answer citations 與 T3.5 production assistant/chat integration 仍 blocked**。舊 PR #8–#12 狀態沿用下方記錄。
+- 目前階段：**P2 尚有待決項；P3 T3.3 PR #14、T3.6 PR #18、T3.4 PR #23、T3.5 PR #25 均為 draft，需 owner review；T3.4 answer citations 與 T3.5 production assistant/chat integration 仍 blocked**。舊 PR #8–#12 狀態沿用下方記錄。
 - T3.3 parent：PR #14 `t3.3-memory` head=`9d9f350cf1c8d97c6960aad25adbba28e3576155`、base=`t2.2-tools`。T3.6 branch `t3.6-event-memory` head=`d4df4091516153ab7ed7fa554231b382770759cb`；既有 PR #18 base=`t3.3-memory`（draft），本 ticket 不修改。T3.4 新分支 `t3.4-memory-ui` 以該 T3.6 head 為 base。
 - T3.4 管理 API slice：透過 public memory APIs/server endpoints 檢視、編輯及刪除 active non-sensitive 記憶；編輯保留 source/scope provenance，變更與刪除需明確使用者動作。Answer-level citations 未實作：資料庫沒有 per-answer memory-reference 欄位，且沒有 production chat route/UI；不新增推測的聊天路由或引用契約。T3.4 保持未勾選，待該依賴存在後完成。
-- T3.5 project-memory slice：從同 repo 已存 project memories 建立 repository-root `AGENTS.md` review diff；建立與檢視不寫檔，review approve 與 apply 都需明確 user approval；僅允許固定相對路徑、原檔未變且非 symlink 時原子替換。PR #23 head `e0686afce1b59b2dfd3e60996fa3a99b42970133` 為基礎；尚無 production assistant/chat integration，ticket 保持未完成並需 owner review memory write behavior。
+- T3.5 project-memory slice：`t3.5-project-memory` / draft PR #25 從 PR #23 分支的 verified head `e0686afce1b59b2dfd3e60996fa3a99b42970133` 建立；從同 repo 已存 project memories 建立 repository-root `AGENTS.md` review diff。建立與檢視不寫檔，review approve 與 apply 都需明確 user approval；僅允許固定相對路徑、原檔未變且非 symlink 時原子替換。尚無 production assistant/chat integration，ticket 保持未完成並需 owner review memory write behavior。
 - 本次 base sync 後驗證：隔離繼承 Git 身分的 `pnpm check` 通過（188 passed、2 skipped）；T2.2/T2.1 fake-provider Playwright E2E 通過（4 specs）。所有 provider 測試只使用 fakes，沒有呼叫真模型。
 
 ## 分支與 PR
@@ -24,7 +24,7 @@ main … t1.5-review-loop
                           └─ t3.3-memory T3.3 memory（draft；base=t2.2-tools；owner review required）
                               └─ #18 T3.6 event memory（draft；base=t3.3-memory）
                                   └─ #23 T3.4 memory management（draft；base=t3.6-event-memory；citations blocked）
-                                      └─ t3.5-project-memory T3.5 project-memory proposal API（draft；base=#23 head e0686af；assistant/chat integration absent）
+                                      └─ #25 t3.5-project-memory T3.5 project-memory proposal API（draft；base=#23 head e0686af；assistant/chat integration absent）
 ```
 
 - #6/#7 已合併到相依分支，不代表已合入 `main` 或已部署。
@@ -60,7 +60,7 @@ main … t1.5-review-loop
 10. #2–#5 三平台 CI 綠但仍 open；#6/#7 僅合併在相依分支，尚不能聲稱全鏈已進 `main` 或已部署。
 11. **T3.6 draft PR #18**（[PR #18](https://github.com/jimmynycuee/Joy/pull/18)）：base=`t3.3-memory`；三平台 CI 進行中，維持 draft 等 owner review。
 12. **T3.4 answer citations**：PR #23 僅交付記憶管理 API；每則回答的 memory references 因無 schema 欄位與 production assistant route/UI 而 blocked，不推測或新增聊天端點。管理 endpoint 的 memory edits/deletes 待 owner review。
-13. **T3.5 project memory**：本分支僅交付 proposal diff/review/apply service/API；production assistant/chat integration 尚未存在，T3.5 保持未勾選。AGENTS.md 寫入與 memory write behavior 需 owner review。
+13. **T3.5 project memory draft PR #25**：本分支僅交付 proposal diff/review/apply service/API；production assistant/chat integration 尚未存在，T3.5 保持未勾選。AGENTS.md 寫入與 memory write behavior 需 owner review。
 
 ## 下一步（依相依順序）
 
@@ -71,7 +71,7 @@ main … t1.5-review-loop
 5. Codex 真實 fixture、模型名稱確認與 Windows 實機驗證留待相應條件可用時處理。
 6. PR #18 三平台 CI 尚在進行，維持 draft 等 owner review；自動摘要需待 messages schema/寫入端能提供可信來源 provenance，embedding 語意搜尋仍延後。
 7. T3.4 管理 API draft PR #23 待 owner review；answer citations 等待 production chat route 與 per-answer reference contract，屆時再完成並勾選 ticket。
-8. T3.5 project-memory draft PR 待 owner review；AGENTS.md 只允許透過明確 review/apply confirmation 的 proposal API 修改。production assistant/chat integration 尚缺，故不勾選 ticket。
+8. T3.5 project-memory draft PR #25 待 owner review；AGENTS.md 只允許透過明確 review/apply confirmation 的 proposal API 修改。production assistant/chat integration 尚缺，故不勾選 ticket。
 
 ## 最近的決策（新的放最上面）
 
