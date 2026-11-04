@@ -117,6 +117,7 @@ export interface JoyServerOptions {
   redactor?: Redactor
   providers?: Partial<Record<ProviderKind, AgentProvider>>
   executor?: Executor
+  allowPlaywrightOrigin?: boolean
 }
 
 export interface JoyServer {
@@ -220,7 +221,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   httpServer.on('upgrade', (req, socket, head) => {
     try {
       const url = requestUrl(req)
-      if (url.pathname !== '/ws' || !isLocalOrigin(req.headers.origin)) {
+      if (
+        !isLocalHostHeader(req.headers.host) ||
+        url.pathname !== '/ws' ||
+        !isAllowedOrigin(req.headers.origin, options.allowPlaywrightOrigin)
+      ) {
         socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
         socket.destroy()
         return
@@ -249,8 +254,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   })
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const url = requestUrl(req)
+    if (!isLocalHostHeader(req.headers.host))
+      throw new HttpError(403, 'Host must be localhost, 127.0.0.1, or [::1]')
+    if (!isAllowedOrigin(req.headers.origin, options.allowPlaywrightOrigin))
+      throw new HttpError(403, 'Origin is not allowed')
     const method = req.method ?? 'GET'
+    const url = requestUrl(req)
+    if (requiresJsonContentType(method, url.pathname) && !isJsonContentType(req.headers['content-type']))
+      throw new HttpError(415, 'Content-Type must be application/json')
     if (url.pathname === '/api/health' && method === 'GET') {
       json(res, 200, { ok: true })
       return
@@ -286,6 +297,16 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
             400,
             'Compete mode requires implementer and reviewer to use different providers',
           )
+        for (const model of [implementer, reviewer]) {
+          const provider = providers[model.provider]
+          if (!provider)
+            throw new HttpError(400, `Compete mode requires configured provider ${model.provider}`)
+          if (!provider.capabilities.codeEdit)
+            throw new HttpError(
+              400,
+              `Compete mode requires code-edit capable providers; ${model.provider} cannot edit code`,
+            )
+        }
       }
       const repo = getRepo(db, input.repoId as RepoId)
       if (!repo) throw new HttpError(404, `Repository ${input.repoId} was not found`)
@@ -1081,14 +1102,34 @@ function requestUrl(req: IncomingMessage): URL {
   }
 }
 
-function isLocalOrigin(origin: string | undefined): boolean {
-  if (!origin) return true
-  try {
-    const host = new URL(origin).hostname
-    return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1'
-  } catch {
-    return false
+function isLocalHostHeader(host: string | undefined): boolean {
+  if (!host) return false
+  const match = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::(\d{1,5}))?$/i.exec(host)
+  return Boolean(match && (match[1] === undefined || Number(match[1]) <= 65_535))
+}
+
+function isAllowedOrigin(origin: string | undefined, allowPlaywrightOrigin = false): boolean {
+  return (
+    origin === undefined ||
+    origin === 'tauri://localhost' ||
+    origin === 'http://127.0.0.1:5173' ||
+    (allowPlaywrightOrigin && origin === 'http://127.0.0.1:4173')
+  )
+}
+
+function requiresJsonContentType(method: string, pathname: string): boolean {
+  if (method === 'POST') {
+    return (
+      pathname === '/api/repos' ||
+      pathname === '/api/tasks' ||
+      /^\/api\/tasks\/[^/]+\/(?:select|synthesize)$/.test(pathname)
+    )
   }
+  return method === 'PUT' && ['/api/config', '/api/secrets/openai-api-key'].includes(pathname)
+}
+
+function isJsonContentType(contentType: string | undefined): boolean {
+  return contentType?.split(';', 1)[0]?.trim().toLowerCase() === 'application/json'
 }
 
 async function readJson(req: IncomingMessage): Promise<unknown> {
