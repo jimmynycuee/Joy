@@ -3,7 +3,7 @@
 > 開工前先讀本檔、`AGENTS.md`、`docs/PLAN.md`；收工前更新本檔。這裡記錄最新進度、阻塞、下一步與最近決策。
 
 - 最後更新：2026-11-04
-- 目前階段：**P2 進行中**。T2.1 自動 strengths 合成已按 owner 選擇實作，待推送至 draft PR #10 並跑新 head CI；T2.2 已交付 draft PR #11，三平台 CI 全綠。GitHub 上 #2–#5 仍 open、非 draft 且三平台 CI 全綠；#6/#7 merged 到相依分支而非 `main`；#8/#9 三平台 CI 全綠且仍 draft，#9 secrets handling 必須先由 owner human review。依目前指示所有 PR 保持 draft、不合併。
+- 目前階段：**P2 進行中**。T2.1 自動 strengths 合成已按 owner 選擇實作；commit `475197e` 在 draft PR #10 的三平台 CI 全綠，獨立唯讀審查進行中。T2.2 已交付 draft PR #11，三平台 CI 全綠；T3.9 統計/UI 已在獨立 Session 開工。GitHub 上 #2–#5 仍 open、非 draft 且三平台 CI 全綠；#6/#7 merged 到相依分支而非 `main`；#8/#9 三平台 CI 全綠且仍 draft，#9 secrets handling 必須先由 owner human review。依目前指示所有 PR 保持 draft、不合併。
 - 工作分支：`t2.1-compete`，基於 `t1.8-web` commit `a852b60`；目前包含 T2.1 引擎、server/UI、審查修正與本次合成候選實作，PR #10 為 draft。
 - 本地驗證：完整 `pnpm check` 通過（171 tests passed、2 skipped）；T2.1 Playwright E2E 通過（3 specs），目標 orchestrator/server 測試 34/34 通過。所有互動測試使用 fake providers，沒有呼叫真模型。
 
@@ -23,7 +23,7 @@ main … t1.5-review-loop
 - #2–#5 目前仍 open、非 draft；各自 Ubuntu、macOS、Windows checks 成功，尚未合併。
 - #9 的 Ubuntu、macOS、Windows checks 全綠，但 secrets 變更須 owner human review；未見 GitHub review 留言。
 - #8 的 Ubuntu、macOS、Windows checks 現已全綠；先前 macOS runner 取消已由後續成功結果解決，PR 仍 draft。
-- #10 遠端舊 head 三平台全綠；本次自動合成變更尚未推送，故新 head CI 待跑。#11 的三平台 checks 全綠且仍 draft。
+- #10 commit `475197e` 的 Ubuntu、macOS、Windows checks 全綠；PR 仍 draft，GitHub 尚無 review。#11 的三平台 checks 全綠且仍 draft。
 
 ## 現在的樣子
 
@@ -39,17 +39,20 @@ main … t1.5-review-loop
 ## 卡住 / 需要人做的事
 
 1. **T1.8 draft PR #9**（[PR #9](https://github.com/jimmynycuee/Joy/pull/9)）：三平台 CI 全綠；secrets handling 仍需 owner human review。
-2. **T2.1 draft PR #10**（[PR #10](https://github.com/jimmynycuee/Joy/pull/10)）：合成方案已決、實作與本地 fake-provider 測試完成；本次新 head 尚未推送，推送後需檢查 CI，維持 draft、不合併。
-3. **T2.3 policy**：計畫沒有定義動作對應的權限等級；分類屬安全政策，需 owner 決定後才能完成，不可臆測。
-4. **T2.5 quota**：調查未找到 Codex `exec --json` 可可靠辨識限額的結構化訊號；不可用模糊錯誤文字猜測。備援、排隊、預算與價格策略仍待決策。
-5. **Codex 真實 fixture**：既有 fixture 是合成資料；需在已登入電腦錄製並重跑 provider contract test。
-6. 確認模型名稱仍待帳號實測；Windows 實機尚未手動測過，只有 CI 證據。
-7. GitHub #2–#5 雖三平台 CI 綠仍 open；#6/#7 僅合併在相依分支，尚不能聲稱全鏈已進 `main` 或已部署。
+2. **T2.1 draft PR #10**（[PR #10](https://github.com/jimmynycuee/Joy/pull/10)）：自動合成已完成，本地全檢與新 head 三平台 CI 全綠；獨立唯讀審查進行中。保持 draft、不合併。
+3. **T2.3 policy**：動作對應權限等級是安全政策，已送 owner 問題卡；答覆前不設定 tier、不啟用分類。
+4. **T2.4 Telegram**：依賴 T2.3 審核路徑，且需 owner 的 bot token 與 chat-id 綁定；目前尚未核實可用的 Telegram 憑證或帳號。
+5. **T2.5 quota**：調查未找到 Codex `exec --json` 可可靠辨識限額的結構化訊號；不可用模糊錯誤文字猜測。備援、排隊、預算與價格策略仍待決策。
+6. **T2.6 GitHub Issue trigger**：要先決定 label/觸發語義、允許 repo/actor 與預設 task mode；production webhook 還需可達 HTTPS ingress 與簽章密鑰。伺服器目前只綁 loopback，未驗證任何 ingress。
+7. **T3.7 scheduler**：需決定 timezone/DST、錯過執行、重疊/重試策略，以及定時 code-writing 是否須 approval，未先猜定。
+8. **Codex 真實 fixture**：既有 fixture 是合成資料；需在已登入電腦錄製並重跑 provider contract test。
+9. 確認模型名稱仍待帳號實測；Windows 實機尚未手動測過，只有 CI 證據。
+10. GitHub #2–#5 雖三平台 CI 綠仍 open；#6/#7 僅合併在相依分支，尚不能聲稱全鏈已進 `main` 或已部署。
 
 ## 下一步（依相依順序）
 
-1. 完成 T2.1 最終本地檢查、截圖證據與 commit，發布到既有 #10；讀取新 head 的 CI 結果，維持 draft。
-2. 繼續推進不依賴安全分類選擇的票；T2.3 權限分級與需要 owner 資料的票先保留阻塞，並把可並行的工作分別啟動，最多三個 child。
+1. 繼續處理 #10 獨立審查意見；無缺陷時維持 draft，等待 owner readiness/review 決定，絕不越過既有 hold。
+2. 等待 T3.9 模型統計/UI 子 Session 的實作與 draft PR；同時只推進不依賴未決 tier/trigger/quota/scheduler 政策的工作。
 3. #9 等待 owner human review；#8 已全綠，不需重跑。持續核對 #2–#5 與相依 PR 狀態，不把 stack merge 說成進 `main`。
 4. Codex 真實 fixture、模型名稱確認與 Windows 實機驗證留待相應條件可用時處理。
 
