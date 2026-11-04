@@ -27,16 +27,16 @@
 - [x] T0.6 `packages/db`
 - [x] T1.1 `providers/claude-cli`
 - [x] T1.2 `providers/codex-cli`（依 SDK 型別與合成 fixture 測試；錄到真實 fixture 後需重跑 provider contract test；此後續驗證尚未開始）
-- [x] T1.3 `providers/openai-api`
+- [ ] T1.3 `providers/openai-api`（draft PR #33 已交付 Responses API provider，但 usage-table persistence 尚未實作/驗證；acceptance 未完成）
 - [x] T1.4 `executor/worktree`
-- [x] T1.5 `orchestrator/review-loop`（PR #31 增加 planFirst resume 失敗回歸測試；真實 Codex CLI read-only resume 仍未驗證）
+- [x] T1.5 `orchestrator/review-loop`（PR #31 的 planFirst resume 回歸修補已 merge 到 feature branch `t1.5-review-loop`；真實 Codex CLI read-only resume 仍未驗證）
 - [x] T1.10 機密存 OS 鑰匙圈（`packages/secrets`）
 - [x] T1.11 設定（`packages/config`；UI 設定頁併入 T1.8）
-- [x] T1.6 server（HTTP + WebSocket、任務 CRUD、重啟恢復）
+- [x] T1.6 server（HTTP + WebSocket、任務 CRUD、重啟恢復；PR #28 修補 Origin/Host 與 malformed-encoding findings，ready 且 merge 已排程但 live 仍未確認；PR #6 review 的 non-editing-provider false-done finding 由 open issue #34 追蹤，implementation owner：AI 平台，修補在依賴 #28 的 draft PR #37，三平台 checks success）
 - [x] T1.7 事件紀錄（寫入 DB、可回放、經 Redactor 遮罩）
 - [x] T1.9 GitHub：push 分支、開 draft PR
 - [x] T1.8 Codex 風格 Web UI（含設定頁）
-- [x] T2.1 多 provider 平行競賽（含獨立 worktree 的自動 strengths 合成候選；fake-provider 測試通過）
+- [x] T2.1 多 provider 平行競賽（含獨立 worktree 的自動 strengths 合成候選；fake-provider 測試通過；PR #10 已 merge 到 feature branch `t1.8-web`，尚未 merge 到 `main`，不代表已部署）
 - [x] T2.2 Tool Hub MCP 第一批工具（`ask_peer`、`task_status`、`request_approval`）
 - [x] T3.3 `memory`：三層記憶、安全的直接使用者 utterance 擷取、敏感資訊過濾、信心度與過期（PR #14 仍待 owner review；`github_pat_…` 過濾修補在獨立 draft PR #32，尚待 owner review / integration）
 - [ ] T3.4 `memory` 管理 API slice：list / view / edit / delete 已實作；每則回答的記憶引用標示仍 blocked，待 production assistant/chat route 與 answer-reference contract
