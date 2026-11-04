@@ -38,6 +38,7 @@ afterEach(async () => {
   for (const server of servers.splice(0)) await server.close()
   for (const db of databases.splice(0)) if (db.isOpen) db.close()
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  vi.restoreAllMocks()
   vi.unstubAllEnvs()
 })
 
@@ -487,6 +488,10 @@ describe('Joy local server', () => {
 
   it('requires bearer authentication for HTTP and WebSocket requests when configured', async () => {
     const token = 'b'.repeat(64)
+    const consoleLog = vi.spyOn(console, 'log')
+    const consoleInfo = vi.spyOn(console, 'info')
+    const consoleWarn = vi.spyOn(console, 'warn')
+    const consoleError = vi.spyOn(console, 'error')
     const { db, serverPromise } = fixture({ remoteAccessToken: token })
     const { origin, websocket, server } = await start(serverPromise)
     expect(server.httpServer.address()).toMatchObject({ address: '127.0.0.1' })
@@ -564,6 +569,15 @@ describe('Joy local server', () => {
       return db.prepare(`SELECT * FROM ${quotedName}`).all()
     })
     expect(JSON.stringify(persistedRows)).not.toContain(token)
+    const consoleOutput = [
+      ...consoleLog.mock.calls.flat(),
+      ...consoleInfo.mock.calls.flat(),
+      ...consoleWarn.mock.calls.flat(),
+      ...consoleError.mock.calls.flat(),
+    ]
+      .map(String)
+      .join('\n')
+    expect(consoleOutput).not.toContain(token)
   })
 
   it('rejects an empty or weak remote access token during startup', async () => {
