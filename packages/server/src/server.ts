@@ -284,16 +284,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       const input = taskInputSchema.parse(await readJson(req))
       if (input.mode === 'compete') throw new HttpError(422, 'Compete mode is not available in P1 yet')
       const roleOverrides = input.roleOverrides as Partial<RoleConfig> | undefined
-      if (input.mode === 'single') {
-        const config = await configStore.get()
-        const implementer = resolveRole('implementer', config.roles as RoleConfig, roleOverrides)
-        const provider = providers[implementer.provider]
-        if (provider && !provider.capabilities.codeEdit)
-          throw new HttpError(
-            422,
-            `${implementer.provider} does not support code editing required by single mode`,
-          )
-      }
+      const config = await configStore.get()
+      const implementer = resolveRole('implementer', config.roles as RoleConfig, roleOverrides)
+      const provider = providers[implementer.provider]
+      if (provider && !provider.capabilities.codeEdit)
+        throw new HttpError(
+          422,
+          `${implementer.provider} does not support code editing required by ${input.mode} mode`,
+        )
       const repo = getRepo(db, input.repoId as RepoId)
       if (!repo) throw new HttpError(404, `Repository ${input.repoId} was not found`)
       const task = createTask(db, {

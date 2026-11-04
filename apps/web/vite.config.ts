@@ -5,19 +5,18 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: '127.0.0.1',
-    // Keep the dev server on the local API's allowlisted 5173 origin.
+    // Preserve the browser's same-origin headers so the API can enforce them.
+    cors: false,
     strictPort: true,
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:4317',
-        changeOrigin: true,
-        headers: { origin: 'http://127.0.0.1:4317' },
+        changeOrigin: false,
       },
       '/ws': {
         target: 'ws://127.0.0.1:4317',
-        changeOrigin: true,
+        changeOrigin: false,
         ws: true,
-        headers: { origin: 'http://127.0.0.1:4317' },
       },
     },
   },

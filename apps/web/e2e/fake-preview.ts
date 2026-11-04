@@ -8,7 +8,7 @@ const runtime = await startFakeJoyRuntime()
 const vite = await createServer({
   configFile: resolve(appDirectory, 'vite.config.ts'),
   root: appDirectory,
-  server: { host: '127.0.0.1', port: 4173, strictPort: true },
+  server: { host: '127.0.0.1', port: 5173, strictPort: true },
 })
 await vite.listen()
 
@@ -22,4 +22,4 @@ async function close(): Promise<void> {
 
 process.once('SIGINT', () => void close())
 process.once('SIGTERM', () => void close())
-console.log('Joy fake-provider preview ready on port 4173')
+console.log('Joy fake-provider preview ready on port 5173')

@@ -829,38 +829,8 @@ describe('Joy local server', () => {
     expect(tasks).toHaveLength(0)
   })
 
-  it('allows a no-op single-mode task when the provider supports code editing', async () => {
-    const { executor, serverPromise } = fixture()
-    executor.diff = async () => ({ files: [], patch: '' })
-    const { origin } = await start(serverPromise)
-    const { repo } = (await (
-      await postJson(`${origin}/api/repos`, { path: '/repo', defaultBranch: 'main' })
-    ).json()) as { repo: { id: string } }
-
-    const response = await postJson(`${origin}/api/tasks`, {
-      repoId: repo.id,
-      title: 'Check whether a change is needed',
-      prompt: 'Review the implementation; do not edit if no fix is needed',
-      mode: 'single',
-      roleOverrides: { implementer: { provider: 'claude-cli', model: 'haiku' } },
-    })
-    expect(response.status).toBe(201)
-    const { task } = (await response.json()) as { task: { id: string } }
-    const result = await waitForStatus(origin, task.id, 'done')
-
-    expect(result.events).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'result',
-          payload: expect.objectContaining({ status: 'succeeded', diff: { files: [], patch: '' } }),
-        }),
-      ]),
-    )
-  })
-
-  it('rejects single-mode tasks for providers that cannot edit code', async () => {
-    const { api, executor, serverPromise } = fixture()
-    executor.diff = async () => ({ files: [], patch: '' })
+  it('rejects review-loop tasks for providers that cannot edit code', async () => {
+    const { api, serverPromise } = fixture()
     api.capabilities.codeEdit = false
     const { origin } = await start(serverPromise)
     const { repo } = (await (
@@ -869,9 +839,9 @@ describe('Joy local server', () => {
 
     const response = await postJson(`${origin}/api/tasks`, {
       repoId: repo.id,
-      title: 'Make a code change',
-      prompt: 'Change the implementation',
-      mode: 'single',
+      title: 'Review and fix a change',
+      prompt: 'Review the implementation and fix any issues',
+      mode: 'review_loop',
       roleOverrides: { implementer: { provider: 'openai-api', model: 'gpt-test' } },
     })
 
