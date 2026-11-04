@@ -16,9 +16,11 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { git } from './git.js'
 import { WorktreeExecutor, assertSafeId, parseNameStatus, parseNumstat } from './worktree.js'
 
+const gitHeavyTestTimeout = process.platform === 'win32' ? 30_000 : 5_000
+const itWithGitTimeout = (name: string, fn: () => Promise<void>) => it(name, fn, gitHeavyTestTimeout)
 const dirs: string[] = []
 afterEach(() => {
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
 })
 
 const tid = (s: string) => s as TaskId
@@ -45,7 +47,7 @@ async function setup() {
 }
 
 describe('WorktreeExecutor', () => {
-  it('creates a worktree on a new branch from the default branch', async () => {
+  itWithGitTimeout('creates a worktree on a new branch from the default branch', async () => {
     const { repo, executor, root } = await setup()
     const ws = await executor.prepare(repo, tid('t1'), aid('a1'))
     expect(ws.path).toBe(join(root, 'worktrees', 'r1', 't1-a1'))
@@ -55,7 +57,7 @@ describe('WorktreeExecutor', () => {
     expect((await git(ws.path, ['branch', '--show-current'])).trim()).toBe('joy/t1/a1')
   })
 
-  it('keeps three parallel attempts on the same repo independent', async () => {
+  itWithGitTimeout('keeps three parallel attempts on the same repo independent', async () => {
     const { repo, executor } = await setup()
     const wss = await Promise.all(['a1', 'a2', 'a3'].map((a) => executor.prepare(repo, tid('t1'), aid(a))))
     wss.forEach((ws, i) => writeFileSync(join(ws.path, 'a.txt'), `attempt ${i}\n`))
