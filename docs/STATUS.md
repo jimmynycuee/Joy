@@ -2,39 +2,41 @@
 
 > 接手前請先讀本檔、`AGENTS.md` 與 `docs/PLAN.md`。本檔記錄目前進度、阻塞與決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。
 
-- 最後更新：2026-11-04
-- 目前階段：**P1 整合中**；基礎 PR 與多條後續分支尚未合併。
-- 進度順序：`T1.6 + T1.7 → T1.12 → T1.9 → T1.13 → T1.8`（依 `docs/PLAN.md` §10）。
-- 狀態快照：2026-11-04 查核 GitHub PR #2、#3、#4、#8、#9、#19、#28、#37、#44、#46、#47。
+- 最後更新：2026-11-04 13:38 UTC
+- 目前階段：**P1 整合進 `main`**；`main` 為 `ef9338c`（已合併 PR #47 的計畫文件），目前尚無 P1 程式碼 PR 整合進 `main`。
+- 計畫依據：`docs/PLAN.md` v0.2（PR #47 已合併）。T2.5 決策已定：額度用完先交接給另一家；只有兩家都沒額度才排隊；成本上限依 config 的 `budget` 設定。這些不是待決事項。
+- 驗證：在 `main` 的 `ef9338c` 執行 `pnpm check` 通過（格式、lint、typecheck、5 tests）；同一 SHA 的 [main push CI run](https://github.com/jimmynycuee/Joy/actions/runs/41839404606) 中 Ubuntu、macOS、Windows 均成功。
 
-## 分支與 PR 快照
+## PR 鏈快照（2026-11-04 13:38 UTC）
 
-1. [PR #2 — P0 foundation](https://github.com/jimmynycuee/Joy/pull/2)：open，三平台 CI 通過；`packages/core` 介面需要擁有者審核。此 PR 是基礎分支，擁有者審核前依賴它的 base chain 不能前進。
-2. [PR #3 — Claude Code provider](https://github.com/jimmynycuee/Joy/pull/3) 與 [PR #4 — Git worktree executor](https://github.com/jimmynycuee/Joy/pull/4)：兩者均 open、三平台 CI 通過；#3 與 `t0-foundation` 衝突，#4 與 `t1.1-claude-cli` 衝突，需先解決各自的 base 衝突才能合併。
-3. [PR #19](https://github.com/jimmynycuee/Joy/pull/19)：open draft，head SHA 與 #3 相同，是 #3 的重複 PR（#19 以 `main` 為 base；#3 以 `t0-foundation` 為 base）。
-4. [PR #28](https://github.com/jimmynycuee/Joy/pull/28) 與 [PR #46](https://github.com/jimmynycuee/Joy/pull/46)：head SHA 相同，都是 T1.6 Origin 驗證修正；#28 以 `t1.6-server` 為 base 且有衝突，#46 以 `main` 為 base 且目前無衝突。兩者皆 open，三平台 CI 通過。
-5. [PR #37](https://github.com/jimmynycuee/Joy/pull/37)：open draft，以 #28 的 `fix/t1.6-origin-host-validation` 分支為 base；依賴該修正分支，三平台 CI 通過。
-6. [PR #8 — GitHub draft PR publishing](https://github.com/jimmynycuee/Joy/pull/8) 與 [PR #9 — Web UI](https://github.com/jimmynycuee/Joy/pull/9)：兩者均 open draft、三平台 CI 通過且目前無 base 衝突；#9 以 #8 的 `t1.9-github-pr` 為 base。依本次工作交接，#9 的 review 修正仍待處理；GitHub 快照未顯示 review、comment 或 thread。
-7. [PR #44 — memory FTS row keys](https://github.com/jimmynycuee/Joy/pull/44)：open，三平台 CI 通過且目前無 base 衝突；擁有者已被指定為 reviewer，仍需擁有者審核。
-8. [PR #47 — Plan v0.2 docs](https://github.com/jimmynycuee/Joy/pull/47)：open，base 為 `main`，無衝突；本分支目前包含 `docs/PLAN.md` 與 `docs/STATUS.md`。PR 描述仍稱 STATUS 未變、進度清單可能落後；本 Session 的 PR 工具拒絕修改外部建立 PR 的描述，須由原作者更新。
+「三平台 CI 綠」只代表列出的遠端 PR head；衝突解除、rebase 或推送後必須等新 head 的 CI。只有 `main` 上述 `ef9338c` 的檢查是本次合併後基線驗證。
+
+1. [PR #2 — P0 foundation](https://github.com/jimmynycuee/Joy/pull/2)：open，base `main`，head `56895e83`，有衝突；三平台舊 head CI 綠。包含 `packages/core` 介面，需擁有者審核，且是基礎鏈的阻塞點。
+2. [PR #3 — Claude Code provider](https://github.com/jimmynycuee/Joy/pull/3)：open，base `t0-foundation`，head `33b1b69c`，有衝突；三平台舊 head CI 綠。變更 `packages/core` provider interface，需擁有者審核。
+3. [PR #19](https://github.com/jimmynycuee/Joy/pull/19)：open draft，base `main`，head 與 #3 相同，clean，三平台 CI 綠；是 #3 的重複 PR，不得用來繞過 #2 的 owner gate，整合時要確認後關閉多餘項。
+4. [PR #4 — Git worktree executor](https://github.com/jimmynycuee/Joy/pull/4)：open，base `t1.1-claude-cli`，head `3e6cd927`，有衝突；三平台舊 head CI 綠。
+5. [PR #5 — config](https://github.com/jimmynycuee/Joy/pull/5)：open，base `t1.4-worktree`，head `d13197c0`，目前無衝突；三平台 CI 綠。變更 `packages/core` provider interface，需擁有者審核；依賴 #4。
+6. [PR #6](https://github.com/jimmynycuee/Joy/pull/6)、[#7](https://github.com/jimmynycuee/Joy/pull/7) 與 [#31](https://github.com/jimmynycuee/Joy/pull/31)：已合併到上游功能分支，但尚未進 `main`；#47 是文件變更，不包含這些 P1 程式碼。
+7. [PR #33](https://github.com/jimmynycuee/Joy/pull/33)：open draft，base `t1.1-claude-cli`，head `6e9efcf4`，目前 clean、三平台 CI 綠；等待基礎鏈重整後再 rebase／review／驗證。
+8. [PR #45](https://github.com/jimmynycuee/Joy/pull/45)：open draft，base `t1.11-config`，head `141e5e87`，目前 clean、三平台 CI 綠；等待依賴分支重整後再驗證。
+9. [PR #28](https://github.com/jimmynycuee/Joy/pull/28) 與 [PR #46](https://github.com/jimmynycuee/Joy/pull/46)：同一分支、同一 head `0cd9f58a` 的 T1.6 Origin 驗證修補；#28 以 `t1.6-server` 為 base、#46 以 `main` 為 base，兩者現在都與 base 衝突。舊 head 三平台 CI 綠，不代表本機未發布的解衝突修補已驗證。應合成一份修補，更新到最新 base，只保留一個 PR，推送後等新 head CI。
+10. [PR #37](https://github.com/jimmynycuee/Joy/pull/37)：open draft，base `fix/t1.6-origin-host-validation`，head `a4310d4a`，目前 clean、三平台 CI 綠；依賴 #28/#46 的修補分支，待其重整後更新 base 並重驗。
+11. [PR #8](https://github.com/jimmynycuee/Joy/pull/8)：open draft，base `t1.7-event-log`，head `38c66421`，目前 clean、三平台 CI 綠。
+12. [PR #9](https://github.com/jimmynycuee/Joy/pull/9)：open draft，base `t1.9-github-pr`，head `36605031`，目前 clean、三平台 CI 綠；目前 PR snapshot 無正式 review/comment/thread。仍需完成已列出的 review 修補：HTTP 與 WebSocket 同源驗證、keychain 不可用時 UI 降級、WebSocket 自動重連與快照後無重複補事件、排除不能改檔的 `openai-api`、CI 執行 web build 與 Playwright E2E、更新 PR 描述並列出 T2.1。完成後依序整合 #8、#9；敏感處理仍需 owner review。
+13. [PR #44 — memory FTS row keys](https://github.com/jimmynycuee/Joy/pull/44)：open，base `t0-foundation`，head `e10f3518`，目前 clean、三平台 CI 綠；涉及記憶／敏感資料規則，需擁有者審核後才能合併。
+14. [PR #47 — Plan v0.2](https://github.com/jimmynycuee/Joy/pull/47)：已合併進 `main`；merge commit 為 `ef9338c`，包含 `docs/PLAN.md` v0.2 與 T2.5 決策。合併後 main 的 CI 三平台全綠，本機 `pnpm check` 亦通過。
 
 ## 擁有者待處理
 
-- 審核 PR #2 的 `packages/core` 介面；這是基礎依賴鏈的阻塞點。
-- 審核 PR #44（目前已指定擁有者為 reviewer）。
-- 完成 PR #9 的 review 修正，再決定是否可結束 draft review（本次 GitHub 快照沒有列出具體 review 意見）。
-- 更新 PR #47 描述：目前仍稱 `docs/STATUS.md` 未變，且進度清單可能落後；本 Session 無權修改此 PR 的描述，須由原作者處理。
-- 確認實際可用的 Claude 與 Codex 模型名稱；尚未確認前不得猜測或改寫 `docs/PLAN.md` §3.3 的模型名稱。
-- T0.4 尚待驗證 Codex 的 Windows 原生行為與 rate-limit 輸出；真實模型名稱也仍待擁有者確認。
+- 審核 [PR #2](https://github.com/jimmynycuee/Joy/pull/2)、[PR #3](https://github.com/jimmynycuee/Joy/pull/3)、[PR #5](https://github.com/jimmynycuee/Joy/pull/5) 的 `packages/core` 介面變更；依賴鏈在必要審核前不得合併。
+- 審核 [PR #44](https://github.com/jimmynycuee/Joy/pull/44) 的 memory FTS／敏感記憶處理變更。
+- [PR #9](https://github.com/jimmynycuee/Joy/pull/9) 修完後，審核其中 keychain／機密處理部分；本次 snapshot 沒有正式 review，不能視為已核准。
+- T0.4 Codex 真實 fixture 需要擁有者在已登入的電腦執行 `node scripts/record-fixtures.mjs codex`，再跑 `pnpm vitest run --project providers codex` 並移除合成 edit fixture；這不是本次 `pnpm check` 的一部分。
+- 依 `docs/PLAN.md` §9 確認目前帳號可用的預設模型名稱；尚未確認前不要猜測或改寫預設值。
 
-## 已確認決策
+## 下一步（依使用者指定的整合順序）
 
-- 額度用完時先把工作交接給另一家；只有兩家都沒有額度時才排隊等待恢復。
-- 成本上限依設定檔 `budget` 欄位（包括 `budget.per_task.max_api_usd`）；這兩項均已在 `docs/PLAN.md` v0.2 定案，不是待決事項。
-- Codex P1 使用 `exec --json`，P2 改用 `app-server`（見 T2.7）。
-
-## 下一步
-
-- 等待 PR #2 的擁有者審核；依序解決 #3/#4 的 base 衝突與目前記錄的重複/相依分支問題。
-- PR #8/#9 保持 draft；先完成 #9 review 修正。PR #44 等擁有者審核。
-- 按 `docs/PLAN.md` §10 的 P1 順序繼續；本快照不啟動 P2 以上 ticket。
+1. 等 #2 的 owner review；依 #2 → #3 → #4 → #5 解衝突、更新 base 到 `main`、完成另一家模型 review 與新 head 三平台 CI，再按 owner gate 合併。同步處理與 #3 重複的 #19、以及依賴分支 #33/#45。
+2. 將 #28/#46 合併成一份修補，rebase 到最新 base，跑完整 `pnpm check` 和 server regression；推送後等新 head 三平台 CI，再處理 #37。
+3. 完成 #9 所有審查修補與 CI／PR 描述更新，再依序整合 #8、#9；涉及機密的部分須等 owner review。
+4. 處理 #44 的 owner review gate；再完成 P1 剩餘 T1.12、T1.13。所有 P1 進 `main` 且 `main` 的 `pnpm check` 與三平台 CI 綠後，才依 PLAN 順序開始 P2（從 T2.2 起）。本狀態更新不啟動任何新 ticket。
