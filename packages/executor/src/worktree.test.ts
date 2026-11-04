@@ -123,10 +123,22 @@ describe('WorktreeExecutor', () => {
       XDG_CONFIG_HOME: ws.path,
       GIT_CONFIG_GLOBAL: join(ws.path, 'none'),
     }
+    const inheritedIdentity = {
+      GIT_AUTHOR_NAME: 'Test Runner',
+      GIT_AUTHOR_EMAIL: 'runner@author.example',
+      GIT_COMMITTER_NAME: 'Test Runner',
+      GIT_COMMITTER_EMAIL: 'runner@committer.example',
+    }
     const prev = { ...process.env }
-    Object.assign(process.env, env)
+    Object.assign(process.env, env, inheritedIdentity)
     try {
-      expect(await executor.commit(ws, 'Add b')).toMatch(/^[0-9a-f]{40}$/)
+      delete process.env.GIT_AUTHOR_NAME
+      delete process.env.GIT_AUTHOR_EMAIL
+      delete process.env.GIT_COMMITTER_NAME
+      delete process.env.GIT_COMMITTER_EMAIL
+      const sha = await executor.commit(ws, 'Add b')
+      Object.assign(process.env, inheritedIdentity)
+      expect(sha).toMatch(/^[0-9a-f]{40}$/)
       expect((await git(ws.path, ['log', '-1', '--format=%an <%ae>'])).trim()).toBe('Joy <joy@localhost>')
     } finally {
       process.env = prev
