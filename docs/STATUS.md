@@ -5,6 +5,7 @@
 - 最後更新：2026-11-04
 - 文件基線：PR #25 head `4e0c143b58bcfea4b01af0adefcc572af9914f69`（`t3.5-project-memory`）。
 - Live snapshot：2026-11-04 重新查核 GitHub issues/PRs、checks、reviews 與相關 Sessions；issue [#26](https://github.com/jimmynycuee/Joy/issues/26) 仍 open，本次只處理它要求的 docs status update。Issue [#13](https://github.com/jimmynycuee/Joy/issues/13) 也仍 open，但與本次無關且未修改。
+- 下方 20 個 open PR 清單是新 status PR [#29](https://github.com/jimmynycuee/Joy/pull/29) 建立前的快照；#29 是本次 docs-only draft，base `t3.5-project-memory`，不列入該快照。
 - 整體：P2 尚有 owner/policy 決策；P3/P4 多項功能已交付部分 slice，但 acceptance 仍有缺口。Open PR 都仍 open；沒有證據可據此宣稱已部署。
 
 ## P0 / P1 狀態
