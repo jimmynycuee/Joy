@@ -3,9 +3,12 @@
 > 開工前先讀本檔、`AGENTS.md`、`docs/PLAN.md`；收工前更新本檔。這裡記錄最新進度、阻塞、下一步與最近決策。
 
 - 最後更新：2026-11-04
-- 目前階段：**P2 進行中**。T2.1 獨立審查修正已合入 `t2.1-compete`，PR #10 head `65a026c569e4c543f9da8d33efdac18b4e616036` 三平台 CI 全綠且仍為 draft。T2.2 的最新 base 已本地合入並解衝突；完整 `pnpm check` 與 fake-provider E2E 通過，PR #11 更新後的 CI 待確認。依要求 PR #11 保持 draft、不合併。T3.9 draft PR #12 head `fc0439c5ef808724590812132ad2a028eb1f0851` 三平台 CI 全綠。#8/#9 三平台 CI 全綠且仍 draft；#9 secrets handling 必須先由 owner human review。
-- 工作分支：`t2.2-tools`，已合入 `t2.1-compete` head `65a026c569e4c543f9da8d33efdac18b4e616036`；PR #11 base=`t2.1-compete`。
-- 本次 base sync 後驗證：隔離繼承 Git 身分的 `pnpm check` 通過（188 passed、2 skipped）；T2.2/T2.1 fake-provider Playwright E2E 通過（4 specs）。所有 provider 測試只使用 fakes，沒有呼叫真模型。
+- 目前階段：**P2 持續；P3 的 T3.1 已完成**。T2.1 獨立審查修正已合入 `t2.1-compete`，PR #10 head `65a026c569e4c543f9da8d33efdac18b4e616036` 三平台 CI 全綠且仍為 draft。T2.2 base head `d67fb2a` 已確認；完整 `pnpm check` 與 fake-provider E2E 通過，PR #11 head 的三平台 CI 全綠且仍為 draft。依要求 PR #11 保持 draft、不合併。T3.9 draft PR #12 head `fc0439c5ef808724590812132ad2a028eb1f0851` 三平台 CI 全綠。#8/#9 三平台 CI 全綠且仍 draft；#9 secrets handling 必須先由 owner human review。
+- T2.2 基礎分支：`t2.2-tools`，已合入 `t2.1-compete` head `65a026c569e4c543f9da8d33efdac18b4e616036`；PR #11 base=`t2.1-compete`。
+- T2.2 base sync 驗證：隔離繼承 Git 身分的 `pnpm check` 通過（188 passed、2 skipped）；T2.2/T2.1 fake-provider Playwright E2E 通過（4 specs）。所有 provider 測試只使用 fakes，沒有呼叫真模型。
+- T3.1 工作分支：`t3.1-assistant`，從 `t2.2-tools` live head `d67fb2a5dcca95f249c2da03806cf745f2e6c4e3` 建立；draft PR base 為 `t2.2-tools`。
+- T3.1 實作：新增 `@joy/assistant` 對話迴圈，可選現有三種 provider，依 brain/provider 分別用 MCP 或 API function calling；Tool Hub 的 MCP 與 function-calling 轉接共用同一組工具定義。Repo/task dispatch 僅以 acceptance fixture 模擬，正式派工工具留在 T3.2。
+- T3.1 驗證：隔離繼承 Git 身分的 `pnpm check` 全過（190 passed、2 skipped）；`pnpm exec vitest run --project assistant --project tools --project providers` 全過（83 passed、1 opt-in skipped）。測試只用 fake providers 與 local fixtures，未呼叫真 provider。
 
 ## 分支與 PR
 
@@ -32,7 +35,8 @@ main … t1.5-review-loop
 | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | monorepo / CI                   | pnpm、TypeScript strict、ESLint、Prettier、Vitest；三平台 CI 執行 `pnpm check`。                                                                                                                     |
 | `packages/core` / `packages/db` | 領域介面、SQLite schema、task/repo CRUD、事件/reviews/usage 持久化已完成。                                                                                                                           |
-| `packages/tools`                | T2.2 Tool Hub 提供 task-scoped MCP：唯讀 `ask_peer`、`task_status`、持久化 `request_approval`（僅記錄提案，不執行動作）。                                                                            |
+| `packages/tools`                | T2.2 Tool Hub 提供 task-scoped MCP：唯讀 `ask_peer`、`task_status`、持久化 `request_approval`（僅記錄提案，不執行動作）；T3.1 以相同定義輸出 MCP 與 API function tools。                             |
+| `packages/assistant`            | T3.1 in-process 對話迴圈可選 `assistant_brain` provider/model，保存各 brain 的續聊 session；CLI 用 Tool Hub MCP、OpenAI API 用同一組 function tools。正式 chat route/UI 與 T3.2 派工工具未包含。     |
 | `packages/providers`            | Claude CLI、Codex CLI、OpenAI API adapters 完成；Codex 目前仍使用合成 fixture，尚待登入電腦錄製真實 fixture。                                                                                        |
 | `packages/executor`             | 每個 attempt 使用獨立 Git worktree/branch，提供 diff、commit、cleanup。                                                                                                                              |
 | `packages/orchestrator`         | T1.5 `reviewLoop()` 完成；T2.1 支援並行競賽、自動 strengths 合成、24,000-byte provider prompt 上限與 code-edit capability 驗證；provider 呼叫可注入 task-scoped MCP Tool Hub。                       |

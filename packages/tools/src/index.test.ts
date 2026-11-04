@@ -12,7 +12,8 @@ import type { Database } from '@joy/db'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createToolHubMcpServer } from './index.js'
+import { createToolHubMcpServer, createToolHubTools, toFunctionCallingTools } from './index.js'
+import type { ToolHubContext } from './index.js'
 
 class FakeProvider implements AgentProvider {
   readonly capabilities = {
@@ -67,7 +68,7 @@ function fixture(
   })
   const controller = new AbortController()
   const approvals: string[] = []
-  const server = createToolHubMcpServer({
+  const context: ToolHubContext = {
     db,
     task,
     attempt: { id: attempt.id },
@@ -76,11 +77,12 @@ function fixture(
     peerModel: { provider: 'codex-cli', model: 'gpt-6-luna' },
     providers: provider ? { 'codex-cli': provider } : {},
     signal: controller.signal,
-    redactText: (value) => value,
-    redactValue: (value) => value,
-    onApprovalCreated: (approval) => approvals.push(approval.id),
-  })
-  return { db, task, attempt, controller, approvals, server }
+    redactText: (value: string) => value,
+    redactValue: (value: unknown) => value,
+    onApprovalCreated: (approval: { id: string }) => approvals.push(approval.id),
+  }
+  const server = createToolHubMcpServer(context)
+  return { db, task, attempt, controller, approvals, context, server }
 }
 
 const clients: Client[] = []
@@ -116,11 +118,17 @@ describe('Joy MCP Tool Hub', () => {
     const f = fixture(peer)
     const client = await connect(f.server)
     const listed = await client.listTools()
+    const apiTools = toFunctionCallingTools(createToolHubTools(f.context))
     expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
       'ask_peer',
       'request_approval',
       'task_status',
     ])
+    expect(apiTools.map((tool) => tool.name).sort()).toEqual(listed.tools.map((tool) => tool.name).sort())
+    expect(apiTools.find((tool) => tool.name === 'task_status')?.parameters).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+    })
     const askPeer = listed.tools.find((tool) => tool.name === 'ask_peer')
     expect(askPeer?.inputSchema).toMatchObject({
       type: 'object',

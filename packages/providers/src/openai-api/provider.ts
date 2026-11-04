@@ -80,6 +80,11 @@ export class OpenAiApiProvider implements AgentProvider {
     this.fetchImpl = options.fetch ?? fetch
   }
 
+  /** Returns a provider copy with per-conversation tools, without mutating other active conversations. */
+  withTools(tools: ApiTool[]): OpenAiApiProvider {
+    return new OpenAiApiProvider({ ...this.options, tools })
+  }
+
   async *run(opts: RunOptions, model: ModelRef): AsyncGenerator<AgentEvent> {
     const key = await this.options.apiKey()
     if (!key)

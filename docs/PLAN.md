@@ -38,6 +38,7 @@
 - [x] T1.8 Codex 風格 Web UI（含設定頁）
 - [x] T2.1 多 provider 平行競賽（含獨立 worktree 的自動 strengths 合成候選；fake-provider 測試通過）
 - [x] T2.2 Tool Hub MCP 第一批工具（`ask_peer`、`task_status`、`request_approval`）
+- [x] T3.1 助理對話迴圈：三種 brain 可選；CLI 走 MCP、API 走 function calling，共用 Tool Hub 工具定義（fake-provider 驗收）
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
 
@@ -143,6 +144,7 @@ joy/
 │  ├─ providers/             # openai-api / claude-cli / codex-cli adapters
 │  ├─ executor/              # worktree（之後 docker）
 │  ├─ orchestrator/          # 分工模式：review-loop / compete / ask-peer
+│  ├─ assistant/             # 可切換 provider 的對話迴圈
 │  ├─ tools/                 # 自建 MCP server（Tool Hub）
 │  ├─ memory/                # 記憶擷取、檢索、防護
 │  ├─ channels/              # web / telegram（之後 line）

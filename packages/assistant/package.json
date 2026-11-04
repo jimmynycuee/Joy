@@ -1,0 +1,20 @@
+{
+  "name": "@joy/assistant",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Provider-selectable assistant conversation loop for Joy.",
+  "license": "BUSL-1.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@joy/core": "workspace:*",
+    "@joy/providers": "workspace:*",
+    "@joy/tools": "workspace:*",
+    "zod": "^4.6.7"
+  }
+}
