@@ -3,7 +3,7 @@
 > 開工前先讀本檔、`AGENTS.md`、`docs/PLAN.md`；收工前更新本檔。這裡記錄最新進度、阻塞、下一步與最近決策。
 
 - 最後更新：2026-11-04
-- **T4.3 更新**：新增 `apps/desktop` Tauri 2 shell，分支 `t4.3-desktop` 從 `t1.8-web` commit `36605031` 建立；system tray、launch-at-login、hidden-window task notifications 和 signed updater flow 已實作。`pnpm check` 通過（181 passed、2 skipped），Tauri 純邏輯 Rust 測試 3/3 通過。
+- **T4.3 更新**：新增 `apps/desktop` Tauri 2 shell，分支 `t4.3-desktop` 從 `t1.8-web` commit `36605031` 建立；system tray、launch-at-login、hidden-window task notifications 和 signed updater flow 已實作；[draft PR #20](https://github.com/jimmynycuee/Joy/pull/20)。`pnpm check` 通過（181 passed、2 skipped），Tauri 純邏輯 Rust 測試 3/3 通過。
 - **T4.3 尚未完成 native 驗證**：Cloud Debian 缺 WebKitGTK/GLib 開發套件且無 root 權限，`cargo test` 在 GTK 依賴建置前失敗；本環境沒有正在執行的 Tauri app 可截圖。Release updater 尚需 owner 提供 HTTPS endpoint、公鑰與對應私鑰；打包後 web UI 的 backend bridge 也未在此 ticket 完成。
 - 目前專案階段：**P2 進行中**。T2.1 自動 strengths 合成及獨立審查提出的重啟恢復、競爭、prompt 容量、錯誤收尾與 provider capability 缺陷已修正並在本地驗證；PR #10 仍 draft。T2.2 draft PR #11（head `29229e8`）與 T3.9 draft PR #12（head `fc0439c`）三平台 CI 全綠。GitHub 上 #2–#5 仍 open、非 draft 且三平台 CI 全綠；#6/#7 merged 到相依分支而非 `main`；#8/#9 三平台 CI 全綠且仍 draft，#9 secrets handling 必須先由 owner human review。依目前指示所有 PR 保持 draft、不合併。
 - 先前工作分支：`t2.1-compete`，基於 `t1.8-web` commit `a852b60`；包含 T2.1 引擎、server/UI、審查修正與自動合成候選實作，PR #10 為 draft。
@@ -20,9 +20,9 @@ main … t1.5-review-loop
                   └─ #10 t2.1-compete（draft；base=t1.8-web）
                       └─ #11 t2.2-tools（draft；base=t2.1-compete）
                           └─ #12 T3.9 model stats/UI（draft；base=t2.2-tools）
-
-T4.3 獨立堆疊：`t4.3-desktop` → `t1.8-web`（未修改 PR #9 或其他 ticket PR）。
 ```
+
+T4.3 獨立堆疊：`t4.3-desktop` → `t1.8-web`（[draft PR #20](https://github.com/jimmynycuee/Joy/pull/20)；未修改 PR #9 或其他 ticket PR）。
 
 - 已 live 核實 #6/#7 為 merged，三平台 checks 成功；#7 的 base 是 `t1.6-server`，不能據此聲稱已在 `main` 經 CI 或已部署。
 - #2–#5 目前仍 open、非 draft；各自 Ubuntu、macOS、Windows checks 成功，尚未合併。
