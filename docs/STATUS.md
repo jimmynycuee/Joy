@@ -15,12 +15,12 @@
 | `packages/core`  | 介面定稿（T0.5），說明在 `packages/core/README.md`                                                      |
 | `packages/db`    | 完成（T0.6）。`node:sqlite`、migration、FTS5                                                            |
 | Claude Code 整合 | 已實測，報告 `docs/spikes/claude-code.md`，fixture 齊全                                                 |
-| Codex 整合       | **部分完成**。edit / MCP / resume 真實 fixtures 已錄；Windows 原生與模型名稱仍待確認                    |
+| Codex 整合       | **部分完成**。真實 fixtures 與 raw contract tests 已錄；Windows、模型仍待確認                    |
 | 其他套件         | 尚未開始                                                                                                |
 
 ## 卡住 / 需要人做的事
 
-1. **T0.4 尚未全數驗收**：真實 edit / MCP / resume fixture 已於 2026-11-04 在已登入 ChatGPT 的 Mac 錄製並檢查；`-c` 的 MCP 注入已在 `exec` 模式實測成功。Windows 原生行為與可用模型名稱仍未確認，rate-limit 行為也沒有測試證據；T0.4 保持未勾選。此分支尚無 `providers` 套件或 Codex provider contract tests。
+1. **T0.4 尚未全數驗收**：真實 edit / MCP / resume fixture 已於 2026-11-04 在 `codex login status` 顯示 ChatGPT 登入的 Mac 錄製並檢查；`-c` 的 MCP 注入已在 `exec` 模式實測成功。Windows 原生行為與可用模型名稱仍未確認，rate-limit 行為也沒有測試證據；T0.4 保持未勾選。新增的 raw fixture contract test 驗證錄製資料，但此分支尚無 `providers` adapter，未驗證 adapter mapping。
 2. **用使用者的訂閱重錄 Claude fixture**：`node scripts/record-fixtures.mjs claude`。
    現有的是在雲端環境錄的，格式應相同，但 `init` 事件的 plugins / skills 會不同。非必要。
 3. **Windows 實機**：兩個 CLI 在 Windows 原生能否用 `spawn`（`.cmd` shim 或原生執行檔）尚未確認。T1.1 / T1.2 處理。
@@ -31,7 +31,7 @@
 - 合併 `t0-foundation`。
 - **P1 從 T1.1（`providers/claude-cli`）開始**：fixture 已齊，可以直接做 contract test。
 - T1.4（worktree）、T1.10（keychain）、T1.11（設定）不依賴 CLI，可以平行做。
-- T1.2（codex adapter）可使用已錄製的 fixtures 開始；adapter contract tests 由 T1.2 實作與驗證。Windows 原生與模型名稱仍是 T0.4 的未完成驗收項目。
+- T1.2（codex adapter）可使用已錄製的 fixtures 開始；raw fixture contract test 不替代 adapter contract tests，後者由 T1.2 實作與驗證。Windows 原生與模型名稱仍是 T0.4 的未完成驗收項目。
 
 ## 最近的決策（新的放最上面）
 

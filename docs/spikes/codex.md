@@ -3,8 +3,10 @@
 - 測試日期：2026-11-04（fixture metadata 使用 UTC）
 - 版本：codex-cli 0.166.0、@openai/codex-sdk 0.166.0
 - Fixture：`tests/fixtures/cli-events/codex/`
-- 結果：在已登入 ChatGPT 的 macOS 帳戶上執行核准的 recorder，沿用預設 gpt-6-luna / low effort；edit、MCP、resume-1、resume-2 四次執行皆以 exit code 0 完成。Edit 實際修正暫存 repo 的加法；MCP 執行確認 `-c` 注入、`ask_peer` 回應，並成功執行 `git status --short` 與 `rm math.js`；resume-2 從 resume-1 的 thread 取回 `PELICAN`。新增 fixture 與 metadata 已檢查並移除工作區路徑、使用者名稱、Node 安裝路徑、CLI thread ID 及本機設定鍵。
-- 限制：這驗證的是原始 CLI 事件，尚無 Codex adapter / provider contract test 套件可執行；原生 Windows、有效模型名稱與 rate-limit 行為均未由此錄製驗證。
+- 結果：於已登入 ChatGPT 的 macOS 帳戶執行核准的 `node scripts/record-fixtures.mjs codex`；`codex login status` 回報 `Logged in using ChatGPT`，版本為 `codex-cli 0.166.0`。Edit、MCP、resume-1、resume-2 四次執行皆以 exit code 0 完成：edit 修正暫存 repo 的 `add()`；MCP 確認 `-c` 注入、`ask_peer` 回應及 `git status --short` / `rm math.js`；resume-2 由 resume-1 的 thread 取回 `PELICAN`。未傳 `--model` 覆寫，錄製資料不能證明實際模型名稱或 effort。
+- 隱私檢查：逐一檢視本次產生的四組 `.jsonl` / `.meta.json`，未見訂閱憑證或私人檔案內容；工作路徑、使用者、Node 路徑、本機設定鍵及 CLI thread ID 均以佔位字串脫敏；既有手工 `network-error` fixture 的 thread ID 也已替換成佔位字串。Codex 輸出的未識別設定警告只保留脫敏後的設定佔位字串。
+- 測試：新增 `tests/fixtures/cli-events/codex/codex-fixtures.test.mjs`，驗證四組已錄製的 JSONL / metadata、成功完成、事件及脫敏；`pnpm test` 會執行這些 Node fixture contract tests。此 checkout 尚無 Codex adapter / provider suite，因此這不是 adapter mapping 測試；T1.2 仍須以 adapter 實際解析 fixtures。
+- 限制：原生 Windows、有效模型名稱與 rate-limit 行為均未由此錄製驗證。現有 `network-error` fixture 僅記錄重連通知，不作 rate-limit 結論。
 
 ## 三種整合方式比較
 
@@ -67,8 +69,8 @@ codex exec resume --json [-m <model>] <thread_id> <prompt>
 
 ## 待確認
 
-- [x] 執行 `node scripts/record-fixtures.mjs codex`，錄下 edit / mcp / resume 的真實事件
+- [x] 執行 `node scripts/record-fixtures.mjs codex`，錄下 edit / mcp / resume 的真實事件；四組 fixture 的 raw-stream contract test 已加入
 - [x] 確認 MCP 用 `-c` 注入在 `exec` 模式下可用
 - [ ] Windows 原生是否可用；不行就走 WSL（T4.4）
-- [ ] 確認可用的模型名稱，更新 PLAN §3.3
+- [ ] 確認可用的模型名稱，更新 PLAN §3.3；本次未指定 `--model`，未證實實際模型
 - [ ] rate-limit 行為：目前沒有測試證據，不作任何行為結論；現有 network-error fixture 只記錄重連通知。

@@ -1,9 +1,15 @@
 {
   "cli": "codex",
   "version": "codex-cli 0.166.0",
-  "args": ["exec", "resume", "--json", "<SESSION_ID>", "What was the code word?"],
+  "args": [
+    "exec",
+    "resume",
+    "--json",
+    "<SESSION_ID>",
+    "What was the code word?"
+  ],
   "exitCode": 0,
   "signal": null,
-  "recordedAt": "2026-11-04T05:07:53.868Z",
+  "recordedAt": "2026-11-04T05:44:58.682Z",
   "stderrTail": ""
 }
