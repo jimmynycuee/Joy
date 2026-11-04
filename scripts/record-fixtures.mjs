@@ -6,11 +6,11 @@
 //
 // Uses whatever account the CLI is logged into, and spends a little of its quota.
 // Runs on macOS and Linux (and WSL). On native Windows the npm shims are .cmd files, which need a shell; not supported.
-// Output is sanitized: temp dirs, the repo dir and the home dir are replaced with <WORKDIR>, <TMP> and <HOME>.
+// Output sanitizes temp/repo/home paths, usernames, Node paths, local config keys and CLI session IDs.
 import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { homedir, tmpdir, userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -41,11 +41,22 @@ function makeRepo() {
 function sanitize(text, workdir) {
   const pairs = [
     [workdir, '<WORKDIR>'],
+    [root, '<REPO>'],
     [realpathSync(tmpdir()), '<TMP>'],
     [tmpdir(), '<TMP>'],
     [homedir(), '<HOME>'],
+    [process.execPath, '<NODE>'],
   ]
   for (const [from, to] of pairs) text = text.split(from).join(to)
+
+  const username = userInfo().username
+  if (username) {
+    const escaped = username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    text = text.replace(new RegExp(`(?<![\\w.-])${escaped}(?![\\w.-])`, 'g'), '<USER>')
+  }
+
+  text = text.replace(/`[^`]+` is ignored/g, '`<SETTING>` is ignored')
+  text = text.replace(/\b[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\b/gi, '<SESSION_ID>')
   return text
 }
 
@@ -64,8 +75,8 @@ function record(name, args, workdir) {
     timeout: 10 * 60 * 1000,
     maxBuffer: 64 * 1024 * 1024,
   })
-  const stdout = sanitize(r.stdout ?? '', workdir)
-  writeFileSync(join(outDir, `${name}.jsonl`), stdout)
+  const stdout = r.stdout ?? ''
+  writeFileSync(join(outDir, `${name}.jsonl`), sanitize(stdout, workdir))
   const meta = {
     cli,
     version: version(),

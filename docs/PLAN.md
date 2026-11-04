@@ -22,7 +22,7 @@
 - [x] T0.1 monorepo、TypeScript strict、ESLint、Prettier、Vitest、三平台 CI
 - [x] T0.2 `AGENTS.md` / `CLAUDE.md`
 - [x] T0.3 Spike：Claude Code headless（`docs/spikes/claude-code.md`）
-- [ ] T0.4 Spike：Codex（方式已決定，見 `docs/spikes/codex.md`；**缺真實執行的 fixture**，需在已登入的電腦上錄）
+- [ ] T0.4 Spike：Codex（方式已決定，見 `docs/spikes/codex.md`；edit / MCP / resume 真實 fixture 已錄，Windows 原生與模型名稱仍待確認）
 - [x] T0.5 定稿 `packages/core` 介面
 - [x] T0.6 `packages/db`
 

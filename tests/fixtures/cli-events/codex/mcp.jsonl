@@ -1,0 +1,13 @@
+{"type":"thread.started","thread_id":"<SESSION_ID>"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  user (<HOME>/.codex/config.toml): `<SETTING>` is ignored."}}
+{"type":"item.completed","item":{"id":"item_1","type":"error","message":"Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  user (<HOME>/.codex/config.toml): `<SETTING>` is ignored."}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"我會依指定順序執行，並回報各步驟結果。"}}
+{"type":"item.started","item":{"id":"item_3","type":"mcp_tool_call","server":"joy","tool":"ask_peer","arguments":{"question":"what is 2+2"},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_3","type":"mcp_tool_call","server":"joy","tool":"ask_peer","arguments":{"question":"what is 2+2"},"result":{"content":[{"type":"text","text":"PEER SAYS: 4"}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_4","type":"command_execution","command":"/bin/zsh -lc 'git status --short'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_4","type":"command_execution","command":"/bin/zsh -lc 'git status --short'","aggregated_output":"","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_5","type":"command_execution","command":"/bin/zsh -lc 'rm math.js'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_5","type":"command_execution","command":"/bin/zsh -lc 'rm math.js'","aggregated_output":"","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_6","type":"agent_message","text":"依序執行結果：\n\n1. `ask_peer` 回答 `4`。\n2. `git status --short` 無輸出，退出碼為 `0`。\n3. `rm math.js` 成功，退出碼為 `0`。"}}
+{"type":"turn.completed","usage":{"input_tokens":169700,"cached_input_tokens":143232,"cache_write_input_tokens":0,"output_tokens":230,"reasoning_output_tokens":0}}

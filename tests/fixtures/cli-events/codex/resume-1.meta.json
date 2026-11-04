@@ -1,0 +1,13 @@
+{
+  "cli": "codex",
+  "version": "codex-cli 0.166.0",
+  "args": [
+    "exec",
+    "--json",
+    "Remember the code word PELICAN. Reply only OK."
+  ],
+  "exitCode": 0,
+  "signal": null,
+  "recordedAt": "2026-11-04T05:07:42.632Z",
+  "stderrTail": "Reading additional input from stdin...\n"
+}
