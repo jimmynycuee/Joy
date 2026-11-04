@@ -371,6 +371,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const repo = getRepo(db, task.repoId)
     if (!repo) throw new HttpError(404, `Repository ${task.repoId} was not found`)
     const provider = providers[attempt.provider]
+    if (task.mode === 'single' && provider && !provider.capabilities.codeEdit)
+      throw new HttpError(409, `${attempt.provider} does not support code editing required by single mode`)
     if (!provider?.capabilities.resume)
       throw new HttpError(409, `${attempt.provider} does not support session resume`)
     const workspace: Workspace = {

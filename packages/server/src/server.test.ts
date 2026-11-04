@@ -446,6 +446,45 @@ describe('Joy local server', () => {
     expect(result.task.status).toBe('cancelled')
   })
 
+  it('rejects resuming legacy single-mode tasks with a non-editing provider before queueing', async () => {
+    const { api, db, serverPromise } = fixture()
+    api.capabilities.codeEdit = false
+    const repo = createRepo(db, { id: rid('legacy-resume-repo'), path: '/repo', defaultBranch: 'main' })
+    const task = createTask(db, {
+      id: tid('legacy-resume-task'),
+      repoId: repo.id,
+      title: 'Resume legacy task',
+      prompt: 'Finish the change',
+      mode: 'single',
+    })
+    const attempt = createAttempt(db, {
+      id: aid('legacy-resume-attempt'),
+      taskId: task.id,
+      provider: 'openai-api',
+      model: 'gpt-test',
+      status: 'failed',
+    })
+    updateAttempt(db, attempt.id, {
+      worktreePath: '/saved/worktree',
+      branch: 'joy/legacy-resume-task/legacy-resume-attempt',
+      baseCommit: 'base-sha',
+      sessionId: 'legacy-session',
+    })
+    setTaskStatus(db, task.id, 'failed')
+
+    const { origin } = await start(serverPromise)
+    const response = await rawRequest(origin, `/api/tasks/${task.id}/resume`, 'POST', {})
+    await waitForStatus(origin, task.id, 'failed')
+    const details = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
+
+    expect(response.status).toBe(409)
+    expect(response.body).toContain('does not support code editing required by single mode')
+    expect(details.task.status).toBe('failed')
+    expect(details.attempts[0]).toMatchObject({ status: 'failed' })
+    expect(details.events).toHaveLength(0)
+    expect(api.calls).toHaveLength(0)
+  })
+
   it('marks interrupted tasks on restart and resumes the saved session and worktree', async () => {
     const { db, dir, executor, implementer, serverPromise } = fixture()
     const repo = createRepo(db, { id: rid('resume-repo'), path: '/repo', defaultBranch: 'main' })
