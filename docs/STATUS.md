@@ -3,7 +3,7 @@
 > 給接手的人或 agent：**開工前先讀這份、`AGENTS.md`、`docs/PLAN.md`。收工前更新這份。**
 > 這裡只寫 PLAN 沒有的東西：現在做到哪、卡在哪、下一步、最近的決策。進度打勾在 PLAN 的「進度」。
 
-- 最後更新：2026-11-03
+- 最後更新：2026-11-04
 - 目前階段：**P1 進行中**（T1.1–T1.7、T1.9、T1.10、T1.11 已完成實作；T1.6/1.7/1.9 draft PR 等擁有者審核；剩 T1.8）
 - 最新分支：`t1.9-github-pr`，從 `t1.7-event-log`（`c196f74`）切出；T1.9 已完成，draft PR #8 以 `t1.7-event-log` 為 base。
 
@@ -39,7 +39,7 @@ main ← t0-foundation (#2) ← t1.1-claude-cli (#3) ← t1.4-worktree (#4) ← 
 
 1. **T1.6 draft PR #6**：Ubuntu、macOS、Windows 三平台 CI 已通過，等待擁有者審核/合併；依擁有者指示，agent 不合併。
 2. **T1.7 draft PR #7**（[PR](https://github.com/jimmynycuee/Joy/pull/7)）：三平台 CI 通過，等待擁有者審核。
-3. **T1.9 draft PR #8**（[PR](https://github.com/jimmynycuee/Joy/pull/8)）：以 `t1.7-event-log` 為 base；本機 `pnpm check` 通過（154 passed、2 skipped）。首次 macOS CI 因 `/private/var` 與 `/var` 路徑別名的測試字串比較失敗，已改為比較 realpath；修正推送後待新一輪 CI。依本次指示保持 draft，不合併。
+3. **T1.9 draft PR #8**（[PR](https://github.com/jimmynycuee/Joy/pull/8)）：以 `t1.7-event-log` 為 base；Windows CI 發現 `gh` timeout 測試的共用 40 ms 時限可能先被 base git fetch 用完，導致 fake gh 尚未執行，teardown 另報 EBUSY。現已將測試時限提高至 5 秒，並斷言 fake gh lookup 確實執行；本機 `pnpm check` 通過（168 passed、2 skipped）。等待新一輪 Windows/macOS CI；依本次指示保持 draft，不合併。
 4. **Codex 真實 fixture**：擁有者的 Codex 額度暫時不夠。額度恢復後在已登入的電腦上執行
    `node scripts/record-fixtures.mjs codex`（預設用 gpt-6-luna + low effort），commit 結果，
    重跑 `pnpm vitest run --project providers codex`，修正不符的地方，然後刪掉 `synthetic-edit.*`。
@@ -58,6 +58,7 @@ main ← t0-foundation (#2) ← t1.1-claude-cli (#3) ← t1.4-worktree (#4) ← 
 
 | 日期       | 決策                                                                                                                                                                               | 原因 / 出處                                                                                                   |
 | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| 2026-11-04 | T1.9 timeout regression test 將 subprocess 時限設為 5 秒，並驗證 fake gh 的 PR lookup 已執行                                                                                       | Windows runner 上 40 ms 共用時限可能先被 git fetch 消耗，讓 timeout 測試未實際涵蓋 gh                         |
 | 2026-11-03 | T1.9 GitHub 發布放在 `packages/github`；透過 Executor commit、限定非預設 worktree branch，`execFile` 無 shell push 並叫 `gh pr create --draft`，PR body 接收 `formatFindings` 字串 | 測試用本機 bare remote + 假 gh；不改 `packages/core`，push 由明確使用者動作觸發                               |
 | 2026-11-03 | T1.7 事件採 task-wide 單調序號並在 Redactor 遮罩後才寫入 DB；同 attempt/round 的重播 review 更新既有列；usage 按 UTC 日與 provider 累加                                            | 讓多次 attempt 可連續回放、secret 不落盤，且 server resume 不因 review 唯一鍵衝突失敗                         |
 | 2026-11-03 | T1.6 server 固定只綁 `127.0.0.1`；P1 尚不支援的 compete 模式回 422；重啟中斷以 `failed` 狀態加 `interrupted` 事件表示，恢復沿用原 worktree 與 implementer session/model            | loopback 維持本機邊界；避免靜默降級；現有 `TaskStatus` 沒有 interrupted 值，仍保留接續原 CLI session 的檢查點 |

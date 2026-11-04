@@ -207,11 +207,13 @@ describe('GitHubPublisher', () => {
   it('times out a noninteractive gh process', async () => {
     const fixture = await createFixture({ ghMode: 'hang' })
     await writeFile(join(fixture.workspace.path, 'change.txt'), 'published change\n')
+    const timeoutMs = 5_000
 
     await expect(
-      createPublisher(fixture, { commandTimeoutMs: 40 }).publish(fixture.workspace, input()),
-    ).rejects.toThrow(/GitHub CLI PR lookup timed out after 40 ms/)
-  })
+      createPublisher(fixture, { commandTimeoutMs: timeoutMs }).publish(fixture.workspace, input()),
+    ).rejects.toThrow(new RegExp(`GitHub CLI PR lookup timed out after ${timeoutMs} ms`))
+    expect((await readCalls(fixture))[0]?.args[1]).toBe('list')
+  }, 15_000)
 
   it('rejects bodies over GitHub’s limit before committing or pushing', async () => {
     const fixture = await createFixture()
