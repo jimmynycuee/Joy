@@ -1,0 +1,9 @@
+{
+  "cli": "codex",
+  "version": "codex-cli 0.166.0",
+  "args": ["exec", "--json", "say hi"],
+  "exitCode": null,
+  "signal": "SIGTERM",
+  "recordedAt": "2026-11-03T08:41:50.000Z",
+  "note": "Recorded by hand in a sandbox with no route to OpenAI and no login. Killed after 60 s while Codex kept retrying. Shows that `error` events can be non-fatal reconnect notices."
+}

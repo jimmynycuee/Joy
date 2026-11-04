@@ -1,0 +1,5 @@
+{
+  "cli": "codex",
+  "synthetic": true,
+  "note": "Hand-written from the @openai/codex-sdk 0.166.0 ThreadEvent types, NOT recorded. Replace with a real recording (node scripts/record-fixtures.mjs codex) and delete this file once one exists."
+}
