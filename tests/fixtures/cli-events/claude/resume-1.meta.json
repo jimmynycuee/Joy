@@ -1,0 +1,19 @@
+{
+  "cli": "claude",
+  "version": "2.1.317 (Claude Code)",
+  "args": [
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--model",
+    "haiku",
+    "--session-id",
+    "0ab2fa96-5030-4d55-a37a-25b99360b07b",
+    "Remember the code word PELICAN. Reply only OK."
+  ],
+  "exitCode": 0,
+  "signal": null,
+  "recordedAt": "2026-11-03T08:44:33.953Z",
+  "stderrTail": ""
+}
