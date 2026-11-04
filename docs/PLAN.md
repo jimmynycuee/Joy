@@ -22,7 +22,7 @@
 - [x] T0.1 monorepo、TypeScript strict、ESLint、Prettier、Vitest、三平台 CI
 - [x] T0.2 `AGENTS.md` / `CLAUDE.md`
 - [x] T0.3 Spike：Claude Code headless（`docs/spikes/claude-code.md`）
-- [ ] T0.4 Spike：Codex（方式已決定，見 `docs/spikes/codex.md`；**缺真實執行的 fixture**，需在已登入的電腦上錄）
+- [ ] T0.4 Spike：Codex（`exec --json` 已選定；PR #3 最新 patch 記錄 2026-11-04 在已登入 macOS 上錄到真實 edit、MCP、resume fixtures；原生 Windows、可用模型清單與 rate-limit 行為仍未驗證，ticket 未完成）
 - [x] T0.5 定稿 `packages/core` 介面
 - [x] T0.6 `packages/db`
 - [x] T1.1 `providers/claude-cli`
@@ -42,6 +42,9 @@
 - [ ] T3.4 `memory` 管理 API slice：list / view / edit / delete 已實作；每則回答的記憶引用標示仍 blocked，待 production assistant/chat route 與 answer-reference contract
 - [ ] T3.5 專案記憶提案：已實作 `AGENTS.md` review diff、明確 review/apply approval 與安全寫入 API；production assistant/chat integration 尚未實作，且 memory write behavior 待 owner review
 - [x] T3.6 `memory`：只儲存明確經使用者核准的對話摘要，沿用既有 FTS5 索引檢索；舊訊息缺乏來源欄位，故不自動摘要；embedding 延後
+- [ ] T3.7 `scheduler`（queue-only 實作仍在進行；尚未完成重啟後持久化等 ticket 驗收）
+- [ ] T4.2 PWA + Web Push（PR #17 僅交付 installable PWA foundation；Web Push 未實作）
+- [ ] T4.4 Windows 強化（PR #16 有原生 Codex 探測與 WSL fallback；installer/distribution 仍是 ticket gap）
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
 
