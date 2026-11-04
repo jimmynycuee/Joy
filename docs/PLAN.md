@@ -37,7 +37,7 @@
 - [x] T1.9 GitHub：push 分支、開 draft PR
 - [x] T1.8 Codex 風格 Web UI（含設定頁）
 - [x] T2.1 多 provider 平行競賽（含獨立 worktree 的自動 strengths 合成候選；fake-provider 測試通過）
-- [ ] T4.4 Windows Codex 硬化（原生 `exec` 不可用時偵測 WSL 並 fallback；安裝檔因目前沒有 distribution pipeline 暫記為 gap）
+- [x] T4.4 Windows Codex 硬化（原生 `exec` 探測、WSL 偵測與 fake-process fallback 測試；安裝檔因目前沒有 distribution pipeline 暫記為 gap）
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
 

@@ -38,8 +38,8 @@ async function capture(
   return {
     started: !exit.spawnError,
     exitCode: exit.exitCode,
-    output: output.join('\n').trim(),
-    stderr: exit.stderrTail.trim(),
+    output: output.join('\n').replace(/\0/g, '').trim(),
+    stderr: exit.stderrTail.replace(/\0/g, '').trim(),
     ...(exit.spawnError ? { spawnError: exit.spawnError } : {}),
   }
 }

@@ -3,9 +3,9 @@
 > 開工前先讀本檔、`AGENTS.md`、`docs/PLAN.md`；收工前更新本檔。這裡記錄最新進度、阻塞、下一步與最近決策。
 
 - 最後更新：2026-11-04
-- 目前階段：**P2 進行中**。T2.1 自動 strengths 合成及獨立審查提出的重啟恢復、競爭、prompt 容量、錯誤收尾與 provider capability 缺陷已修正並在本地驗證；PR #10 仍 draft。T2.2 draft PR #11（head `29229e8`）與 T3.9 draft PR #12（head `fc0439c`）三平台 CI 全綠。GitHub 上 #2–#5 仍 open、非 draft 且三平台 CI 全綠；#6/#7 merged 到相依分支而非 `main`；#8/#9 三平台 CI 全綠且仍 draft，#9 secrets handling 必須先由 owner human review。既有 PR 維持原狀；本次 T4.4 依新指示完成後可 ready 並合併至 `t2.1-compete`。
+- 目前階段：**P2 進行中**。T2.1 自動 strengths 合成及獨立審查提出的重啟恢復、競爭、prompt 容量、錯誤收尾與 provider capability 缺陷已修正並在本地驗證；PR #10 仍 draft。T2.2 draft PR #11（head `29229e8`）與 T3.9 draft PR #12（head `fc0439c`）三平台 CI 全綠。GitHub 上 #2–#5 仍 open、非 draft 且三平台 CI 全綠；#6/#7 merged 到相依分支而非 `main`；#8/#9 三平台 CI 全綠且仍 draft，#9 secrets handling 必須先由 owner human review。既有 PR 維持原狀；T4.4 #16 完成後依協調要求維持 draft/no-merge，未更動 PR #10/#11。
 - T2.1 基底分支：`t2.1-compete`，基於 `t1.8-web` commit `a852b60`，包含 T2.1 引擎、server/UI、審查修正與自動合成候選實作，PR #10 為 draft。
-- 本次工作分支：`t4.4-windows-codex`，從 `t2.1-compete` HEAD `65a026c` 建立；定向 provider 測試通過，draft PR 與完整檢查尚待處理。
+- 本次工作分支：`t4.4-windows-codex`，從 `t2.1-compete` HEAD `65a026c` 建立；draft PR #16（base=`t2.1-compete`），`pnpm check`（清除繼承 Git 身分變數）與定向 provider 測試通過；GitHub 平台 checks 待核實。
 - 本地驗證：`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（181 tests passed、2 skipped）；T2.1 Playwright E2E 通過（3 specs），orchestrator/server 定向測試 44/44 通過。所有互動測試使用 fake providers，沒有呼叫真模型。一般環境的 `pnpm check` 有一項既有 fallback-identity 測試受繼承 Git 身分影響，已另開 issue #13。
 
 ## 分支與 PR
@@ -17,8 +17,9 @@ main … t1.5-review-loop
           └─ #8 t1.9-github-pr（draft；base=t1.7-event-log）
               └─ #9 t1.8-web（draft；base=t1.9-github-pr）
                   └─ #10 t2.1-compete（draft；base=t1.8-web）
-                      └─ #11 t2.2-tools（draft；base=t2.1-compete）
-                          └─ #12 T3.9 model stats/UI（draft；base=t2.2-tools）
+                      ├─ #11 t2.2-tools（draft；base=t2.1-compete）
+                      │   └─ #12 T3.9 model stats/UI（draft；base=t2.2-tools）
+                      └─ #16 t4.4-windows-codex（draft；base=t2.1-compete）
 ```
 
 - 已 live 核實 #6/#7 為 merged，三平台 checks 成功；#7 的 base 是 `t1.6-server`，不能據此聲稱已在 `main` 經 CI 或已部署。
@@ -26,6 +27,7 @@ main … t1.5-review-loop
 - #9 的 Ubuntu、macOS、Windows checks 全綠，但 secrets 變更須 owner human review；未見 GitHub review 留言。
 - #8 的 Ubuntu、macOS、Windows checks 現已全綠；先前 macOS runner 取消已由後續成功結果解決，PR 仍 draft。
 - #10 前一個已發布 head `9fa9ca9` 的 Ubuntu、macOS、Windows checks 全綠；之後的獨立審查修正已在本地驗證，PR 仍 draft，GitHub 尚無 review。#11 head `29229e8`、#12 head `fc0439c` 的三平台 checks 全綠，兩者皆為 draft。
+- #16 T4.4 為 draft，base=`t2.1-compete`；定向 provider tests、provider typecheck、格式與 diff whitespace checks 已通過；隔離繼承 Git 身分後的完整 `pnpm check` 通過（187 tests passed、2 skipped），GitHub 平台 checks 待核實，PR 依協調要求維持 draft/no-merge。
 
 ## 現在的樣子
 
@@ -58,7 +60,7 @@ main … t1.5-review-loop
 2. #11 T2.2 與 #12 T3.9 已交付且 CI 綠；只推進不依賴未決 tier/trigger/quota/scheduler 政策的工作。
 3. #9 等待 owner human review；#8 已全綠，不需重跑。持續核對 #2–#5 與相依 PR 狀態，不把 stack merge 說成進 `main`。
 4. Codex 真實 fixture、模型名稱確認與 Windows 實機驗證留待相應條件可用時處理。
-5. T4.4 draft PR 完成 `pnpm check` 與平台 CI 後再 ready；若 base protection 允許，按本次要求合併至 `t2.1-compete`。安裝檔待後續建立 desktop/distribution pipeline。
+5. 核實 T4.4 PR #16 的三平台 CI；目前按協調要求保持 draft/no-merge。Windows/WSL 實機驗證與 installer/distribution pipeline 仍未完成，須待相應環境/後續 ticket。
 
 ## 最近的決策（新的放最上面）
 
