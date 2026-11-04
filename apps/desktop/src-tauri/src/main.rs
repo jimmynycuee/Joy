@@ -11,19 +11,26 @@ use tauri::{
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
     Manager, WindowEvent,
 };
+#[cfg(target_os = "macos")]
+use tauri::RunEvent;
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::UpdaterExt;
 
 mod startup;
-use startup::{completion_notification_title, starts_minimized};
+use startup::{
+    autostart_checked_state, completion_notification_title, should_show_main_window,
+    updater_is_configured,
+};
 
 const TASKS_URL: &str = "http://127.0.0.1:4317/api/tasks";
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 
 #[derive(Default)]
 struct DesktopPreferences {
+    launch_at_login_enabled: AtomicBool,
     task_notifications_enabled: AtomicBool,
+    update_check_in_progress: AtomicBool,
 }
 
 #[derive(Deserialize)]
@@ -38,7 +45,10 @@ struct TaskSnapshot {
 }
 
 fn main() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }))
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec!["--minimized"]),
@@ -46,15 +56,16 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            let launch_at_login_enabled = app.autolaunch().is_enabled().unwrap_or(false);
             app.manage(DesktopPreferences {
+                launch_at_login_enabled: AtomicBool::new(launch_at_login_enabled),
                 task_notifications_enabled: AtomicBool::new(true),
+                update_check_in_progress: AtomicBool::new(false),
             });
             build_tray(app)?;
             start_task_notifications(app.handle().clone());
-            if starts_minimized(std::env::args_os()) {
-                if let Some(window) = app.get_webview_window("main") {
-                    window.hide()?;
-                }
+            if should_show_main_window(std::env::args_os()) {
+                show_main_window(app.handle());
             }
             Ok(())
         })
@@ -66,8 +77,17 @@ fn main() {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("failed to run Joy desktop application");
+        .build(tauri::generate_context!())
+        .expect("failed to build Joy desktop application");
+
+    app.run(|app, event| {
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Reopen { .. } = event {
+            show_main_window(app);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = (app, event);
+    });
 }
 
 fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
@@ -79,7 +99,9 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
         "launch-at-login",
         "Launch at login",
         true,
-        app.autolaunch().is_enabled().unwrap_or(false),
+        app.state::<DesktopPreferences>()
+            .launch_at_login_enabled
+            .load(Ordering::Relaxed),
         None::<&str>,
     )?;
     let task_notifications = CheckMenuItem::with_id(
@@ -125,23 +147,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                     }
                 }
             }
-            "launch-at-login" => {
-                let autolaunch = app.autolaunch();
-                let was_enabled = autolaunch.is_enabled().unwrap_or(false);
-                let result = if was_enabled {
-                    autolaunch.disable()
-                } else {
-                    autolaunch.enable()
-                };
-                match result {
-                    Ok(()) => {
-                        if let Err(error) = launch_at_login_item.set_checked(!was_enabled) {
-                            eprintln!("Could not refresh launch-at-login menu state: {error}");
-                        }
-                    }
-                    Err(error) => eprintln!("Could not update launch-at-login setting: {error}"),
-                }
-            }
+            "launch-at-login" => toggle_launch_at_login(app, &launch_at_login_item),
             "task-notifications" => {
                 let preferences = app.state::<DesktopPreferences>();
                 let enabled = !preferences
@@ -155,18 +161,44 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 }
             }
             "check-updates" => {
+                let in_progress = app
+                    .state::<DesktopPreferences>()
+                    .update_check_in_progress
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed);
+                if in_progress.is_err() {
+                    send_notification(
+                        app,
+                        "Joy update already running",
+                        "Wait for the current update check to finish.",
+                    );
+                    return;
+                }
                 let handle = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    match check_for_updates(&handle).await {
+                    let result = check_for_updates(&handle).await;
+                    handle
+                        .state::<DesktopPreferences>()
+                        .update_check_in_progress
+                        .store(false, Ordering::Release);
+                    match result {
                         Ok(true) => {
                             send_notification(&handle, "Joy updated", "Joy is restarting now.");
                             handle.restart();
                         }
-                        Ok(false) => send_notification(&handle, "Joy is up to date", "No update is available."),
-                        Err(_) => send_notification(
+                        Ok(false) => send_notification(
                             &handle,
-                            "Joy update check unavailable",
-                            "Configure the owner-provided HTTPS endpoint and public key to enable updates.",
+                            "Joy is up to date",
+                            "No update is available.",
+                        ),
+                        Err(UpdateCheckError::NotConfigured) => send_notification(
+                            &handle,
+                            "Joy updater not configured",
+                            "The owner-provided HTTPS endpoint and public key are required.",
+                        ),
+                        Err(UpdateCheckError::Failed) => send_notification(
+                            &handle,
+                            "Joy update check failed",
+                            "Check the network and updater configuration, then try again.",
                         ),
                     }
                 });
@@ -190,6 +222,49 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+fn toggle_launch_at_login(app: &tauri::AppHandle, item: &CheckMenuItem) {
+    let preferences = app.state::<DesktopPreferences>();
+    let known_enabled = preferences
+        .launch_at_login_enabled
+        .load(Ordering::Relaxed);
+    let was_enabled = match app.autolaunch().is_enabled() {
+        Ok(enabled) => enabled,
+        Err(error) => {
+            eprintln!("Could not read launch-at-login setting: {error}");
+            if let Err(error) = item.set_checked(known_enabled) {
+                eprintln!("Could not restore launch-at-login menu state: {error}");
+            }
+            return;
+        }
+    };
+    let result = if was_enabled {
+        app.autolaunch().disable()
+    } else {
+        app.autolaunch().enable()
+    };
+    match result {
+        Ok(()) => {
+            let enabled = autostart_checked_state(was_enabled, true);
+            preferences
+                .launch_at_login_enabled
+                .store(enabled, Ordering::Relaxed);
+            if let Err(error) = item.set_checked(enabled) {
+                eprintln!("Could not refresh launch-at-login menu state: {error}");
+            }
+        }
+        Err(error) => {
+            let restored = autostart_checked_state(was_enabled, false);
+            preferences
+                .launch_at_login_enabled
+                .store(restored, Ordering::Relaxed);
+            eprintln!("Could not update launch-at-login setting: {error}");
+            if let Err(error) = item.set_checked(restored) {
+                eprintln!("Could not restore launch-at-login menu state: {error}");
+            }
+        }
+    }
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         if let Err(error) = window.show() {
@@ -204,6 +279,7 @@ fn show_main_window(app: &tauri::AppHandle) {
 fn start_task_notifications(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let client = match Client::builder()
+            .no_proxy()
             .connect_timeout(Duration::from_secs(1))
             .timeout(Duration::from_secs(2))
             .build()
@@ -282,9 +358,45 @@ fn send_notification(app: &tauri::AppHandle, title: &str, body: &str) {
     }
 }
 
-async fn check_for_updates(app: &tauri::AppHandle) -> tauri_plugin_updater::Result<bool> {
-    if let Some(update) = app.updater()?.check().await? {
-        update.download_and_install(|_, _| {}, || {}).await?;
+#[derive(Debug)]
+enum UpdateCheckError {
+    NotConfigured,
+    Failed,
+}
+
+fn updater_configuration_is_present(app: &tauri::AppHandle) -> bool {
+    let Some(updater) = app.config().plugins.0.get("updater") else {
+        return false;
+    };
+    let pubkey = updater
+        .get("pubkey")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let Some(endpoints) = updater.get("endpoints").and_then(|value| value.as_array()) else {
+        return false;
+    };
+    let endpoints = endpoints
+        .iter()
+        .filter_map(|endpoint| endpoint.as_str())
+        .collect::<Vec<_>>();
+    updater_is_configured(pubkey, &endpoints)
+}
+
+async fn check_for_updates(app: &tauri::AppHandle) -> Result<bool, UpdateCheckError> {
+    if !updater_configuration_is_present(app) {
+        return Err(UpdateCheckError::NotConfigured);
+    }
+    let update = app
+        .updater()
+        .map_err(|_| UpdateCheckError::Failed)?
+        .check()
+        .await
+        .map_err(|_| UpdateCheckError::Failed)?;
+    if let Some(update) = update {
+        update
+            .download_and_install(|_, _| {}, || {})
+            .await
+            .map_err(|_| UpdateCheckError::Failed)?;
         Ok(true)
     } else {
         Ok(false)

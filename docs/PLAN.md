@@ -37,7 +37,7 @@
 - [x] T1.9 GitHub：push 分支、開 draft PR
 - [x] T1.8 Codex 風格 Web UI（含設定頁）
 - [x] T2.1 多 provider 平行競賽（含獨立 worktree 的自動 strengths 合成候選；fake-provider 測試通過）
-- [ ] T4.3 Tauri 桌面 app（系統匣、開機啟動、原生通知、自動更新；native build 尚待具備 WebKitGTK 的環境驗證）
+- [ ] T4.3 Tauri 桌面 app（系統匣、開機啟動、原生通知、自動更新；review 修正與純邏輯測試完成，native build/runtime 尚待具備 WebKitGTK/GLib 的環境驗證）
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
 
