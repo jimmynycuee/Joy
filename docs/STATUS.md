@@ -4,8 +4,8 @@
 
 - 最後更新：2026-11-04
 - 文件基線：PR #25 head `4e0c143b58bcfea4b01af0adefcc572af9914f69`（`t3.5-project-memory`）。
-- Live snapshot：2026-11-04 重新查核 GitHub PR #1–#12、#14–#31、issues #13/#26、checks、formal reviews 與相關 Sessions。Issue [#26](https://github.com/jimmynycuee/Joy/issues/26) 仍 open，是本次唯一文件更新目標；[#13](https://github.com/jimmynycuee/Joy/issues/13) 仍 open，已有 draft PR #30。
-- 本快照共有 25 個 open PR：#2–#5、#8–#9、#11–#12、#14–#25、#27–#31（PR #13、#26 是 issues）。#29 是本次 docs-only draft，base `t3.5-project-memory`，已列入快照；#31 是新近出現的 T1.5 draft。
+- Live snapshot：2026-11-04 重新查核 GitHub PR #1–#12、#14–#32、issues #13/#26、checks、formal reviews 與相關 Sessions。Issue [#26](https://github.com/jimmynycuee/Joy/issues/26) 仍 open，是本次唯一文件更新目標；[#13](https://github.com/jimmynycuee/Joy/issues/13) 仍 open，已有 draft PR #30。
+- 本快照共有 26 個 open PR：#2–#5、#8–#9、#11–#12、#14–#25、#27–#32（PR #13、#26 是 issues）。#29 是本次 docs-only draft，base `t3.5-project-memory`，已列入快照；#31/#32 是新近出現的 draft。
 - 整體：P2 尚有 owner/policy 決策；P3/P4 多項功能已交付部分 slice，但 acceptance 仍有缺口。Open PR 與 merged-to-feature/main 分開記錄；沒有證據可據此宣稱已部署。
 
 ## P0 / P1 狀態
@@ -16,7 +16,7 @@
 
 ## GitHub PR 快照
 
-目前有 25 個 open PR：#2–#5、#8–#9、#11–#12、#14–#25、#27–#31（#13 與 #26 是 issues）。本次 live read 時，22 個 PR 的 Ubuntu、macOS、Windows checks 均 success；#29/#30 尚無 check runs，#31 的 Ubuntu success、macOS/Windows 仍 in progress。所有 open PR 均無 formal GitHub review；獨立 Session 審查另行註明，不等同 formal review。#3 與 #4 仍各自與 base branch conflict，雖有 success checks，也不能視為衝突已解或可合併。
+目前有 26 個 open PR：#2–#5、#8–#9、#11–#12、#14–#25、#27–#32（#13 與 #26 是 issues）。本次最新 live read 時，除 PR #29 外其餘 25 個 PR 的 Ubuntu、macOS、Windows checks 均 success；#29 的 Ubuntu/macOS success，Windows check 仍 in progress。所有 open PR 均無 formal GitHub review；獨立 Session 審查另行註明，不等同 formal review。#3 與 #4 仍各自與 base branch conflict，雖有 success checks，也不能視為衝突已解或可合併。
 
 非 draft open PR：
 
@@ -45,9 +45,10 @@ Draft open PR（除各項特別註明外，三平台 checks success；均無 for
 - [#24](https://github.com/jimmynycuee/Joy/pull/24)：base `reason/t3-1-add-selectable-assi-7a20bfa9`，head `t3.8-google-workspace` @ `b88f0d1`。
 - [#25](https://github.com/jimmynycuee/Joy/pull/25)：base `reason/t3-4-add-memory-manageme-5e3fdbbf`，head `t3.5-project-memory` @ `4e0c143`；project-memory proposal diff/review/apply API 已交付，production assistant/chat integration 仍缺，T3.5 未完成且 memory-write behavior 需 owner review。
 - [#27](https://github.com/jimmynycuee/Joy/pull/27)：base `t3.2-dispatch-tools`，head `t3.7-scheduler` @ `9975659`；draft，三平台 checks success。持久化 schedule 可在 DB reopen 後讀取，due 時只呼叫注入的 queue-only callback，不啟動 agent 或外部副作用；T2.3 owner policy 仍阻塞完整 T3.7 acceptance。
-- [#29](https://github.com/jimmynycuee/Joy/pull/29)：base `t3.5-project-memory`，head `joy-status-refresh` @ `0273306`（本次重新讀取時）；draft、僅改 `docs/PLAN.md` 與 `docs/STATUS.md`，當時尚無 check runs。之後的本次 refresh commit 會更新同一 PR head，這裡的 head/check 是明確的讀取時快照。
-- [#30](https://github.com/jimmynycuee/Joy/pull/30)：base `t1.5-review-loop`，head `fix/issue-13-git-identity-test` @ `da2f8c9`；draft，GitHub checks 尚無 runs。PR body 記錄修前重現失敗、focused test 與本地 `pnpm check` 通過；issue #13 仍 open。
-- [#31](https://github.com/jimmynycuee/Joy/pull/31)：base `t1.5-review-loop`，head `fix/plan-first-resume-gate` @ `8a64b21`；draft。讀取時 Ubuntu success，macOS/Windows checks 仍進行中，沒有 formal review。
+- [#29](https://github.com/jimmynycuee/Joy/pull/29)：base `t3.5-project-memory`，head `joy-status-refresh`；本次 docs-only refresh 已推到同一 draft PR，僅改 `docs/PLAN.md` 與 `docs/STATUS.md`。推送前讀到的 head `0273306` 無 checks；首個 refresh head `35f949c` 的最新讀取為 Ubuntu/macOS success、Windows in progress。這些是同一 PR 不同 head 的明確時間點快照，後續 docs 更新會再次推進此 draft head。
+- [#30](https://github.com/jimmynycuee/Joy/pull/30)：base `t1.5-review-loop`，head `fix/issue-13-git-identity-test` @ `da2f8c9`；draft，三平台 checks success，issue #13 仍 open。PR body 記錄修前重現失敗、focused test 與本地 `pnpm check` 通過。
+- [#31](https://github.com/jimmynycuee/Joy/pull/31)：base `t1.5-review-loop`，head `fix/plan-first-resume-gate` @ `8a64b21`；draft，planFirst resume 會先 read-only 重跑規劃與 plan review 再實作；三平台 checks success，沒有 formal review。
+- [#32](https://github.com/jimmynycuee/Joy/pull/32)：base `t3.3-memory`，head `fix/github-pat-memory-filter` @ `a1c04e3`；draft，三平台 checks success，新增 `github_pat_…` 過濾與 direct/generic write regression tests（focused memory tests 7 passed）。其 PR body 記錄本地完整 `pnpm check` 有 1 個 inherited Git identity failure（194 passed、2 skipped、1 failed）；此 ticket 不可因此稱 full local check 全綠，亦仍待 owner review/integration。
 
 合併狀態須和部署分開描述：
 
@@ -61,7 +62,7 @@ Draft open PR（除各項特別註明外，三平台 checks success；均無 for
 - **T2.4 Telegram**：依賴 T2.3 審核路徑，且須 owner 提供 bot credential、確認唯一允許的 chat identity；目前不宣稱已完成驗證。
 - **T2.5 quota**：`codex exec --json` 的 rate-limit 結構化訊號與可靠偵測仍未證實；換 provider、排隊、價格／預算策略尚未定案，不以一般錯誤文字推測。
 - **T2.6 Issue → task**：label / trigger 語義、允許的 repo/actor、預設 task mode 與可達 HTTPS webhook ingress / 簽章設定仍須明確決定與驗證。
-- **T3.3 credential-filtering review blocker**：`packages/memory/src/storage.ts` 的 `SENSITIVE_PATTERNS` 有 `sk-…` 與 `gh[pousr]_…` 格式，但不涵蓋 GitHub fine-grained PAT 的 `github_pat_…` 前綴；對佔位輸入「Remember my GitHub token is github_pat_PLACEHOLDER」的 `isSensitiveContent` 實測回傳 `false`。`writeMemory` 接受有直接 user provenance 的內容，僅在該 filter 命中時拒寫，因此同類內容可能落入 SQLite。這是未修補的 read-only review finding；T3.3/PR #14 仍未 owner-reviewed，需另行窄範圍 remediation，本次不改 PR #14 或程式碼。
+- **T3.3 credential-filtering review blocker**：原 PR #14 head 的 `SENSITIVE_PATTERNS` 有 `sk-…` 與 `gh[pousr]_…`，但不涵蓋 GitHub fine-grained PAT 的 `github_pat_…` 前綴；佔位輸入「Remember my GitHub token is github_pat_PLACEHOLDER」曾使 `isSensitiveContent` 回傳 `false`，相同直接 user provenance 內容可能落入 SQLite。此缺口現有獨立 draft PR #32（以 `t3.3-memory` 為 base）新增 `github_pat_…` pattern 與兩條不寫入 DB 的 regression tests，三平台 checks success；但 #32 尚未合併/整合，且仍待 owner review。#32 本地完整 `pnpm check` 有 1 個 inherited Git identity failure（194 passed、2 skipped、1 failed），故只可稱 targeted memory tests 與 GitHub checks 通過，不能稱完整本地 suite 全綠。PR #14 未修改。
 - **T3.4**：PR #23 只完成記憶管理 slice；answer-level citations 與一鍵刪除仍等 production chat route 及 per-answer memory-reference contract。
 - **T3.5**：PR #25 只完成 project-memory proposal diff/review/apply API；未有 production assistant/chat integration，且 memory write 行為仍需 owner review。
 - **T3.7 scheduler**：PR #27 已交付可持久化並可於重開 DB 後讀取的 queue-only slice；`runDue()` 只呼叫注入的 enqueue callback，不啟動 coding agent 或外部 side effect。T2.3 owner policy 對排程工作 lifecycle / approval 的決定仍缺；時區/DST、missed-run、跨 process overlap、retry/backoff 也未完成。Session 已結束，PR #27 維持 draft，T3.7 不勾 full completion。
@@ -77,8 +78,8 @@ Draft open PR（除各項特別註明外，三平台 checks success；均無 for
 - `Joy 全計畫總控續跑` 仍 running。
 - `Joy T3.7 durable scheduler queue` 已 exit；交付 draft PR #27，queue-only slice 與 T2.3 policy blocker 如上。
 - `Joy T1.6 server security remediation` 已 exit；PR #28 head `af6bb19` 的 focused server tests 9/9 與完整 `pnpm check`（155 passed、2 skipped）由該 Session 回報通過；最新 live GitHub 三平台 checks 也 success。兩個獨立 read-only security review Sessions 已 exit，無 blocker verdict，但保留上列低風險/後續相容性發現；這不是 formal GitHub review。
-- `Joy issue #13 Git identity test isolation` 已 exit，交付 draft PR #30；本地 reproduction/fix/check 結果見 PR body，遠端 checks 在本次讀取時尚無 runs。
-- `Joy T1.5 planFirst resume gate` 仍 running，已有 draft PR #31；checks 讀取時部分進行中。
-- `Joy T3.3 GitHub token memory filter` 仍 running，分支 `fix/github-pat-memory-filter`，尚無 PR；這是 #14 `github_pat_…` filtering finding 的獨立 remediation Session，PR #14 未修改。
+- `Joy issue #13 Git identity test isolation` 已 exit，交付 draft PR #30；本地 reproduction/fix/check 結果見 PR body，最新 live 三平台 checks success。
+- `Joy T1.5 planFirst resume gate` 已 exit，交付 draft PR #31；三平台 checks success。PR #31 與 #32 的兩個獨立 read-only reviewer Sessions 目前 running，尚無 formal GitHub review。
+- `Joy T3.3 GitHub token memory filter` 已 exit，交付 draft PR #32；三平台 checks success，reviewer Session 仍 running，尚無 formal GitHub review。這個修補未合併或整合進 PR #14；PR #14 未修改。
 - T1.3 OpenAI API provider 與 T1.10 OS keychain Sessions 已 exit、沒有 PR；各自工作分支保留未提交工作副本，不改變文件基線中 packages 已存在且 PLAN 已勾選的事實。
 - 本次 status refresh 對照 PR #25 head `4e0c143` 的文件基線，只更新 `docs/PLAN.md`、`docs/STATUS.md`，並沿用既有 draft PR #29；沒有改程式碼、其他 PR metadata、issue metadata 或 PR #10。
