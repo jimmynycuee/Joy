@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { openDatabase } from '@joy/db'
 import type { Database } from '@joy/db'
 import { deleteExpiredMemories, ingestUserMemory, listMemories, writeMemory } from './index.js'
+import { isSensitiveContent } from './storage.js'
 
+const githubPat = `github_pat_${'A'.repeat(22)}_${'B'.repeat(59)}`
 const databases: Database[] = []
 function fresh(): Database {
   const db = openDatabase(':memory:')
@@ -89,6 +91,34 @@ describe('memory package', () => {
     const result = writeMemory(db, {
       scope: 'episode',
       content: 'Remember my GitHub token is github_pat_PLACEHOLDER',
+      source: 'manual',
+      origin: 'manual',
+    })
+
+    expect(result).toBeUndefined()
+    expect(db.prepare('SELECT count(*) AS count FROM memories').get()).toEqual({ count: 0 })
+  })
+
+  it('matches GitHub fine-grained token-shaped content after ordinary word characters', () => {
+    expect(isSensitiveContent(`prefix${githubPat}`)).toBe(true)
+  })
+
+  it('rejects a joined GitHub fine-grained token from direct user ingest', () => {
+    const db = fresh()
+    const result = ingestUserMemory(db, {
+      origin: 'user_utterance',
+      text: `Remember my GitHub token is prefix${githubPat}`,
+    })
+
+    expect(result).toEqual({ status: 'ignored', reason: 'sensitive' })
+    expect(db.prepare('SELECT count(*) AS count FROM memories').get()).toEqual({ count: 0 })
+  })
+
+  it('rejects a joined GitHub fine-grained token from generic memory writes', () => {
+    const db = fresh()
+    const result = writeMemory(db, {
+      scope: 'episode',
+      content: `Remember my GitHub token is prefix${githubPat}`,
       source: 'manual',
       origin: 'manual',
     })

@@ -55,7 +55,7 @@ interface MemoryRow {
 const SENSITIVE_PATTERNS = [
   /\b(?:password|passcode|secret|api[\s_-]*key|access[\s_-]*token|refresh[\s_-]*token|private[\s_-]*key)\b\s*(?:is|=|:)\s*[^\s,;]+/i,
   /\b(?:sk-[a-z0-9_-]{16,}|gh[pousr]_[a-z0-9_]{20,})\b/i,
-  /\bgithub_pat_[a-z0-9_]{8,}\b/i, // GitHub fine-grained personal access tokens
+  /github_pat_[a-z0-9_]{8,}\b/i, // GitHub fine-grained personal access tokens
   /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/i,
   /\b\d{3}-\d{2}-\d{4}\b/,
 ]
