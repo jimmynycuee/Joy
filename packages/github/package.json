@@ -1,0 +1,17 @@
+{
+  "name": "@joy/github",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Publish task branches as GitHub draft pull requests.",
+  "license": "BUSL-1.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@joy/core": "workspace:*"
+  }
+}

@@ -12,11 +12,14 @@ judge, background) can use any backend. The full plan, tickets and acceptance cr
 
 ## Working on a ticket
 
-1. Read `docs/PLAN.md` and find the ticket you were given (e.g. `T1.3`). Do **only** that ticket.
-2. Every acceptance criterion needs a test that proves it.
-3. Run `pnpm check` before you finish. It must pass.
-4. Tick the ticket's box in `docs/PLAN.md`, and add anything future agents must know to this file.
-5. One ticket = one branch = one PR. Branch name: `t1.3-short-description`.
+1. **Read `docs/STATUS.md` first**: where the project is, what is blocked, recent decisions, known pitfalls.
+2. Read `docs/PLAN.md` and find the ticket you were given (e.g. `T1.3`). Do **only** that ticket.
+3. Every acceptance criterion needs a test that proves it.
+4. Run `pnpm check` before you finish. It must pass.
+5. **Before you stop, update `docs/STATUS.md`** (what changed, what is blocked, next step, new decisions at the top of
+   the decisions table) and tick the ticket in `docs/PLAN.md`'s progress list. Rules every future agent must follow go
+   in this file instead.
+6. One ticket = one branch = one PR. Branch name: `t1.3-short-description`.
 
 ## Commands
 
@@ -32,19 +35,35 @@ judge, background) can use any backend. The full plan, tickets and acceptance cr
 
 Run one package's tests: `pnpm vitest run --project core`.
 
+**Anything that calls a real model uses the cheapest model at low effort** (Claude `haiku`, Codex `gpt-6-luna`,
+`effort: 'low'`). Those runs test plumbing, not answer quality, and they spend the owner's subscription quota.
+Real-CLI e2e tests are opt-in (`JOY_E2E_CLAUDE=1`) and never run in CI.
+
+Re-record CLI fixtures (uses the logged-in account's quota, macOS/Linux/WSL only):
+`node scripts/record-fixtures.mjs claude` or `node scripts/record-fixtures.mjs codex`.
+
 ## Repository layout
 
 ```
+docs/STATUS.md       current state, blockers, next step, decisions (read first, update last)
 docs/PLAN.md         plan, tickets, acceptance criteria
+docs/spikes/         what the Claude Code and Codex CLIs actually do; read before touching providers
 packages/core        domain types and interfaces. No I/O, no dependencies on other packages
+packages/db          SQLite (node:sqlite) connection, schema, migrations
+packages/providers   Claude CLI, Codex CLI, OpenAI API → AgentEvent (the only place that spawns CLIs)
+packages/executor    git worktree per attempt
+packages/orchestrator review loop (and later compete mode)
+packages/github     commit/push task branches and open draft pull requests
+packages/config      ~/.joy/config.yaml
+packages/secrets     OS keychain + Redactor
+scripts/             dev scripts (fixture recording)
 packages/*           one package per module (created by its ticket, see PLAN §3.1)
 apps/web             React + Vite UI (T1.8)
 apps/desktop         Tauri shell (T4.3)
 tests/fixtures       recorded CLI event streams for contract tests
 ```
 
-Planned packages and their tickets: `providers` (T1.1–T1.3), `executor` (T1.4), `orchestrator` (T1.5, T2.1),
-`server` (T1.6), `db` (T0.6), `tools` (T2.2), `policy` (T2.3), `channels` (T2.4), `memory` (T3.3–T3.6).
+Planned packages and their tickets: `server` (T1.6, T1.7), `github` (T1.9), `tools` (T2.2), `policy` (T2.3), `channels` (T2.4), `memory` (T3.3–T3.6).
 Create a package only when its ticket asks for it.
 
 ## Adding a package
@@ -64,6 +83,8 @@ ticket.
 
 - **Dependency direction:** `core` ← everything. Packages depend on `core` interfaces, never on each other's
   internals. `server` is the only place that wires implementations together.
+- **Local server boundary:** HTTP and WebSocket listeners bind to `127.0.0.1` only. Do not widen to LAN or all
+  interfaces unless authenticated remote access is designed and reviewed.
 - **CLI integrations live only in `packages/providers`.** Nothing else spawns `claude` or `codex` or parses their
   output. Every adapter is tested against recorded fixtures in `tests/fixtures/cli-events/`; real CLIs are never called
   in unit tests or CI.
@@ -74,6 +95,12 @@ ticket.
 - **Cross-platform:** macOS, Windows and Linux are all supported (CI runs all three). Use `node:path`, never
   hard-coded `/`; spawn processes without a shell (`shell: false`) and with argument arrays; no bash-only scripts.
 - Model names are configuration, never hard-coded in logic.
+
+## Database
+
+- `node:sqlite` (built into Node ≥ 22.13). Only `packages/db` imports it.
+- Schema changes are new migrations appended to `packages/db/src/migrations.ts`. Never edit a shipped migration.
+- Tables are `STRICT`; enums and JSON columns have `CHECK` constraints. Keep it that way.
 
 ## Code style
 
