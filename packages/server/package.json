@@ -1,0 +1,28 @@
+{
+  "name": "@joy/server",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local HTTP and WebSocket server for Joy tasks.",
+  "license": "BUSL-1.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@joy/config": "workspace:*",
+    "@joy/core": "workspace:*",
+    "@joy/db": "workspace:*",
+    "@joy/executor": "workspace:*",
+    "@joy/orchestrator": "workspace:*",
+    "@joy/providers": "workspace:*",
+    "@joy/secrets": "workspace:*",
+    "ws": "^8.18.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
+}

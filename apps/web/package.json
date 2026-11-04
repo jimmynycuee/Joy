@@ -1,0 +1,29 @@
+{
+  "name": "@joy/web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Joy's local-first web UI.",
+  "license": "BUSL-1.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@joy/config": "workspace:*",
+    "@joy/core": "workspace:*",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "@joy/db": "workspace:*",
+    "@joy/secrets": "workspace:*",
+    "@joy/server": "workspace:*",
+    "vite": "^7.0.0"
+  }
+}
