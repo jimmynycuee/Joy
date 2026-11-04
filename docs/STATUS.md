@@ -1,55 +1,47 @@
 # Joy 目前狀態
 
-> 給接手的人或 agent：**開工前先讀這份、`AGENTS.md`、`docs/PLAN.md`。收工前更新這份。**
-> 這裡只寫 PLAN 沒有的東西：現在做到哪、卡在哪、下一步、最近的決策。進度打勾在 PLAN 的「進度」。
+> 接手前請先讀本檔、`AGENTS.md` 與 `docs/PLAN.md`。本檔記錄目前進度、阻塞與決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。
 
-- 最後更新：2026-11-04
-- 目前階段：**P0 收尾 → 準備進入 P1**
-- 分支：`t0-foundation`（T0.3–T0.6 與這份文件；尚未合併到 `main`）
+- 最後更新：2026-11-04 14:52 UTC
+- 目前階段：**P1 整合進 `main`**；目前 live `main` 為 `2c3fdb4`（PR #51 僅更新狀態快照）。PR #47（Plan v0.2）與 PR #48（STATUS 更新）已合併；目前沒有 P1 程式碼 PR 合併進 `main`，因此不可標示 P1 完成。
+- 計畫與決策：依 `docs/PLAN.md` v0.2。已定案 Codex 在 P2 以 `app-server` 取代 `exec --json`（T2.7）、每個 repo 的 provider 允許清單（T1.12）、`joy doctor`（T1.13），以及額度用完先交接給另一家、兩家都無額度才排隊、成本上限依 config `budget`。決策已確定不代表 tickets 已完成；T1.12、T1.13 仍未完成。P1 順序依 PLAN §10：T1.6 + T1.7 → T1.12 → T1.9 → T1.13 → T1.8。
+- 驗證基線：`main` 的 [CI run 41840639086](https://github.com/jimmynycuee/Joy/actions/runs/41840639086) 對 SHA `c311fe6ff6bb535151c7775d5e4728696feee02d` 成功，Ubuntu、macOS、Windows 皆通過。
 
-## 現在的樣子
+## PR 鏈快照（2026-11-04 14:20 UTC）
 
-| 部分             | 狀態                                                                                                    |
-| ---------------- | ------------------------------------------------------------------------------------------------------- |
-| monorepo / CI    | 完成。pnpm、TypeScript 6 strict、ESLint、Prettier、Vitest；CI 在 Ubuntu、macOS、Windows 跑 `pnpm check` |
-| `packages/core`  | 介面定稿（T0.5），說明在 `packages/core/README.md`                                                      |
-| `packages/db`    | 完成（T0.6）。`node:sqlite`、migration、FTS5                                                            |
-| Claude Code 整合 | 已實測，報告 `docs/spikes/claude-code.md`，fixture 齊全                                                 |
-| Codex 整合       | **部分完成**。真實 fixtures 與 raw contract tests 已錄；Windows、模型仍待確認                           |
-| 其他套件         | 尚未開始                                                                                                |
+各 PR 的 CI 狀態只代表下列當時讀到的 head；解衝突、rebase 或推送後，必須以新 head 的 CI 為準。只有上述 `main` SHA 的檢查是目前合併後基線。
 
-## 卡住 / 需要人做的事
+1. [PR #2 — P0 foundation](https://github.com/jimmynycuee/Joy/pull/2)：open、非 draft，base `main`，head `56895e83`，與 base 衝突（dirty）。該 head 的 Ubuntu、macOS、Windows CI 成功；沒有 review，討論中要求 owner review。包含 `packages/core` 介面，owner review gate 未解除；不可繞過或合併。
+2. [PR #3 — Claude Code provider](https://github.com/jimmynycuee/Joy/pull/3)：open、非 draft，base `t0-foundation`，head `33b1b69c`，有衝突；該 head 三平台 CI 成功。變更 `packages/core` provider interface，沒有 review，需 owner review。
+3. [PR #4 — Git worktree executor](https://github.com/jimmynycuee/Joy/pull/4)：open、非 draft，base `t1.1-claude-cli`，head `3e6cd927`，有衝突；該 head 三平台 CI 成功。
+4. [PR #5 — config](https://github.com/jimmynycuee/Joy/pull/5)：open、非 draft，base `t1.4-worktree`，head `d13197c0`，目前 clean；該 head 三平台 CI 成功。變更 `packages/core` 的 `ModelRef` provider 介面（加入 optional `effort`），需 owner review；目前沒有 review。
+5. [PR #19](https://github.com/jimmynycuee/Joy/pull/19)：open draft，base `main`，head 與 #3 相同（`33b1b69c`），目前與 base 衝突；該 head 三平台 CI 成功。它是 #3 的重複 PR，不能用來繞過 #2 的 owner gate；在保留 #3 的依賴鏈後應關閉重複 PR。
+6. [PR #6](https://github.com/jimmynycuee/Joy/pull/6)、[#7](https://github.com/jimmynycuee/Joy/pull/7) 與 [#31](https://github.com/jimmynycuee/Joy/pull/31)：均已合併到功能分支（#6/#31 合入 `t1.5-review-loop`，#7 合入 `t1.6-server`），尚未進 `main`。各自記錄的三平台 CI 成功，不代表其程式碼已整合至 `main`。
+7. [PR #33](https://github.com/jimmynycuee/Joy/pull/33)：open draft，base `t1.1-claude-cli`，head `6e9efcf4`，目前 clean；該 head 三平台 CI 成功。需待基礎鏈重整後再 rebase、review 與驗證。
+8. [PR #45](https://github.com/jimmynycuee/Joy/pull/45)：open draft，base `t1.11-config`，head `141e5e87`，目前 clean；該 head 三平台 CI 成功。依賴分支重整後仍須重驗。
+9. [PR #28](https://github.com/jimmynycuee/Joy/pull/28) 與 [PR #46](https://github.com/jimmynycuee/Joy/pull/46)：同一分支、同一 head `0cd9f58a` 的 T1.6 Origin 驗證修補。#28 base `t1.6-server`、#46 base `main`，兩者目前都與 base 衝突；舊 head 三平台 CI 成功。應合成一份修補、更新 base、只保留一個 PR，並在新 head 重跑檢查。
+10. [PR #37](https://github.com/jimmynycuee/Joy/pull/37)：open draft，base `fix/t1.6-origin-host-validation`，head `a4310d4a`，目前 clean；該 head 三平台 CI 成功。依賴 #28/#46 的修補分支，待其整理後更新 base 並重驗。
+11. [PR #8](https://github.com/jimmynycuee/Joy/pull/8)：open draft，base `t1.7-event-log`，head `38c66421`，目前 clean；該 head 三平台 CI 成功。
+12. [PR #9 — Web UI](https://github.com/jimmynycuee/Joy/pull/9)：截至 14:20 UTC 為 open draft，base `t1.9-github-pr`，head `965ef7341fb9c3b1f7072d6c55514f4fcda12d90`。Ubuntu、macOS、Windows CI 成功；[web E2E run 41846319550](https://github.com/jimmynycuee/Joy/actions/runs/41846319550) 失敗（6 tests passed、1 failed：建立 repo 後找不到 `Your tasks will appear here.`）。沒有正式 review、inline comment 或 discussion。PR 必須維持 draft；keychain／機密處理仍需 owner review。
+13. [PR #44 — memory FTS row keys](https://github.com/jimmynycuee/Joy/pull/44)：open、非 draft，base `t0-foundation`，head `e10f3518`，目前 clean；該 head 三平台 CI 成功，沒有 review。修補 memory FTS row key 並排除敏感 memories；依記憶／敏感資料規則需 owner review。
+14. [PR #47 — Plan v0.2](https://github.com/jimmynycuee/Joy/pull/47)：已合併至 `main`；合併 commit `ef9338c`，包含 v0.2 計畫與決策。
+15. [PR #48 — STATUS refresh](https://github.com/jimmynycuee/Joy/pull/48)：已合併至 `main`；目前 main 為 `c311fe6`。該 PR 的舊 head CI 成功；最新 `main` 的 CI 請以上方 run 41840639086 為準。
 
-1. **T0.4 尚未全數驗收**：真實 edit / MCP / resume fixture 已於 2026-11-04 在 `codex login status` 顯示 ChatGPT 登入的 Mac 錄製並檢查；`-c` 的 MCP 注入已在 `exec` 模式實測成功。Windows 原生行為與可用模型名稱仍未確認，rate-limit 行為也沒有測試證據；T0.4 保持未勾選。新增的 raw fixture contract test 驗證錄製資料，但此分支尚無 `providers` adapter，未驗證 adapter mapping。
-2. **用使用者的訂閱重錄 Claude fixture**：`node scripts/record-fixtures.mjs claude`。
-   現有的是在雲端環境錄的，格式應相同，但 `init` 事件的 plugins / skills 會不同。非必要。
-3. **Windows 實機**：兩個 CLI 在 Windows 原生能否用 `spawn`（`.cmd` shim 或原生執行檔）尚未確認。T1.1 / T1.2 處理。
-4. **確認可用的模型名稱**，更新 `docs/PLAN.md` §3.3 的預設值。
+## PR #2 base 更新（2026-11-04 14:52 UTC）
 
-## 下一步
+- PR #2 已將 live `main` SHA `2c3fdb4ca7924cd52dea62321d037a83e01766ab` 合併進原有分支；衝突僅涉及 `docs/PLAN.md` 與 `docs/STATUS.md`，`packages/core` 沒有語意衝突。舊 head 的檢查不能代替新 head 的驗證；`packages/core` 介面的 owner review 仍是必要 gate，不得繞過。
 
-- 合併 `t0-foundation`。
-- **P1 從 T1.1（`providers/claude-cli`）開始**：fixture 已齊，可以直接做 contract test。
-- T1.4（worktree）、T1.10（keychain）、T1.11（設定）不依賴 CLI，可以平行做。
-- T1.2（codex adapter）可使用已錄製的 fixtures 開始；raw fixture contract test 不替代 adapter contract tests，後者由 T1.2 實作與驗證。Windows 原生與模型名稱仍是 T0.4 的未完成驗收項目。
+## 擁有者待處理
 
-## 最近的決策（新的放最上面）
+- 審核 [PR #2](https://github.com/jimmynycuee/Joy/pull/2)、[#3](https://github.com/jimmynycuee/Joy/pull/3)、[#5](https://github.com/jimmynycuee/Joy/pull/5) 的 `packages/core` 介面變更；#2 與 live `main` 的衝突已解決，但 owner review 仍是基礎鏈的必要 gate。
+- 審核 [PR #44](https://github.com/jimmynycuee/Joy/pull/44) 的 memory FTS／敏感記憶處理變更。
+- [PR #9](https://github.com/jimmynycuee/Joy/pull/9) 的後續修補發布後，仍須由 owner 審核 keychain／機密處理；保持 draft。
+- T0.4 仍依 `docs/PLAN.md` 保持未勾選：2026-11-04 在已登入 ChatGPT 的 Mac 錄製了真實 edit / MCP / resume fixtures，且 `-c` MCP 注入已在 `exec` 模式實測成功。raw fixture contract test 驗證錄製事件，不驗證 provider adapter mapping；Windows 原生行為、rate-limit 輸出與實際可用模型名稱仍未確認。確認預設模型名稱前不要猜測或改寫 PLAN §3.3。
 
-| 日期       | 決策                                                            | 原因 / 出處                                                                               |
-| ---------- | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| 2026-11-03 | SQLite 用 Node 內建的 `node:sqlite`，Node 需 ≥ 22.13            | 不用編譯原生模組，Windows 安裝最省事；介面集中在 `packages/db`，必要時可換 better-sqlite3 |
-| 2026-11-03 | Codex 在 P1 用 `codex exec --json`；P2 評估改 `app-server`      | 只有 app-server 有互動式審核與額度資訊。`docs/spikes/codex.md`                            |
-| 2026-11-03 | Claude 用 `--permission-prompt-tool` 把審核交給 Joy 的 MCP 工具 | 實測可行，`rm` 被成功攔下。`docs/spikes/claude-code.md`                                   |
-| 2026-11-03 | Claude 用 `--session-id` 由 Joy 指定 id                         | 第一次呼叫就知道 id，當機後也能恢復                                                       |
-| 2026-11-03 | 認不得的 CLI 事件轉成 `raw`，不丟錯                             | 實測就看到文件沒寫的事件種類                                                              |
-| 2026-11-03 | 授權 BSL 1.1，4 年後轉 Apache-2.0                               | 保留商業化空間；接受外部 PR 前需 CLA                                                      |
-| 2026-11-03 | TypeScript 鎖 6.0                                               | typescript-eslint 尚未支援 7                                                              |
-| 2026-11-03 | 狀態放 repo 的 `docs/STATUS.md`，不放 Obsidian                  | agent 只讀得到 repo；Obsidian 可直接開 `docs/` 當 vault                                   |
+## 下一步（依 `docs/PLAN.md` 的 P1 順序）
 
-## 已知的坑
-
-- `claude -p` 要關閉 stdin，否則會等 3 秒。
-- Codex 沒網路時會無限重試，不會自己結束：adapter 一定要有逾時。
-- Codex 的 `error` 事件常常只是「重新連線中」，不能一律當失敗。
-- Claude 的 MCP 工具呼叫也會送去審核：Joy 自己的工具要預設放行。
-- `node:sqlite` 在 Node 22 會印 ExperimentalWarning，無害。
+1. #2 已將 live `main` 合入原有分支；驗證新 head 並等待 owner review，再依 #2 → #3 → #4 → #5 整理 base、完成必要 review，並以各新 head 的三平台 CI 驗證。不得繞過 #2 的 owner gate。
+2. 合併整理 #28/#46 的重複修補為一個更新到最新 base 的 PR，跑完整 `pnpm check` 與 server regression；新 head 三平台 CI 通過後再處理 #37。
+3. 等另一個 Session 更新 #9 的 head，重新核對修補與 PR 狀態；依序整合 #8/#9，涉及 keychain／機密的工作保持 draft 並等待 owner review。
+4. 處理 #44 的 owner review gate；完成仍未完成的 P1 工作，包括 T1.12 repo provider allowlist 與 T1.13 `joy doctor`，依 PLAN 次序推進。
+5. 只有所有 P1 程式碼都整合進 `main`，且 `main` 的 `pnpm check` 與三平台 CI 通過後，才解除 P2 hold。P2 決策已記錄在 PLAN（包括 T2.7 Codex `app-server`）；本次狀態更新不啟動任何 ticket。

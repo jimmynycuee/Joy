@@ -25,7 +25,7 @@
 1. **P1（T1.2）用 `codex exec --json`**，自己 spawn、自己解析，型別照抄 SDK 的 `ThreadEvent`。
    不直接依賴 SDK，是為了和 Claude adapter 走同一套行程管理（取消、逾時、Windows）。
    以 `--sandbox workspace-write` 限制在 worktree 內；危險動作在 P1 本來就不開放。
-2. **P2（T2.3、T2.5）評估改用 `app-server`**：互動式審核與額度資訊只有它有。介面已經抽象成 `AgentProvider`，換實作不影響其他套件。
+2. **P2（T2.7，依 `docs/PLAN.md` v0.2）改用 `app-server` 取代 `exec --json`**：互動式審核與額度資訊只有它有；同一組 contract test 保持通過，`exec` 版本保留為備援。
    協定型別可以用 `codex app-server generate-ts --out <dir>` 產生。
 
 ## 呼叫方式
