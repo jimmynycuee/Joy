@@ -112,7 +112,7 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
     let plan: string | undefined
     let planVerdict: ReviewVerdict | undefined
     let session: string | undefined = input.resumeSessionId
-    if (input.planFirst && !input.resumeSessionId) {
+    if (input.planFirst) {
       yield { type: 'phase', phase: 'planning', round: 0, role: 'implementer', model: input.implementer }
       const planned = yield* runAgent(
         implementer,
@@ -122,11 +122,11 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
         base({
           prompt: planPrompt(input.prompt),
           autonomy: 'read-only',
-          ...presetSession(implementer),
+          ...(session ? { resumeSessionId: session } : presetSession(implementer)),
         }),
       )
       plan = planned.finalMessage ?? ''
-      session = planned.sessionId
+      session = planned.sessionId || session
       yield { type: 'phase', phase: 'plan_review', round: 0, role: 'reviewer', model: input.reviewer }
       planVerdict = yield* review(
         reviewer,

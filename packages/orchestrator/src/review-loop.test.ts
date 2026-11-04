@@ -155,9 +155,12 @@ describe('reviewLoop', () => {
     expect(events.find((e) => e.type === 'review')).toMatchObject({ target: 'plan' })
   })
 
-  it('reuses a persisted worktree and resumes the implementer session after restart', async () => {
-    const impl = new FakeProvider('claude-cli', [() => ok('s1')])
-    const rev = new FakeProvider('codex-cli', [verdict(true)])
+  it('re-plans and reviews before resuming implementation after restart', async () => {
+    const impl = new FakeProvider('claude-cli', [
+      () => ok('session-before-restart', '1. inspect the saved diff'),
+      () => ok('session-before-restart'),
+    ])
+    const rev = new FakeProvider('codex-cli', [verdict(true), verdict(true)])
     const executor = new FakeExecutor([changed()])
     const workspace: Workspace = {
       repo: { id: 'r1' as RepoId, path: '/repo', defaultBranch: 'main' },
@@ -179,10 +182,19 @@ describe('reviewLoop', () => {
     expect(impl.calls[0]).toMatchObject({
       cwd: '/persisted/worktree',
       resumeSessionId: 'session-before-restart',
+      autonomy: 'read-only',
     })
+    expect(rev.calls[0]?.prompt).toContain('1. inspect the saved diff')
+    expect(impl.calls[1]).toMatchObject({ resumeSessionId: 'session-before-restart' })
+    const planReviewIndex = events.findIndex((event) => event.type === 'review' && event.target === 'plan')
+    const implementingIndex = events.findIndex(
+      (event) => event.type === 'phase' && event.phase === 'implementing',
+    )
+    expect(planReviewIndex).toBeGreaterThan(-1)
+    expect(planReviewIndex).toBeLessThan(implementingIndex)
     expect(
       events.filter((event) => event.type === 'phase').map((event) => event.type === 'phase' && event.phase),
-    ).toEqual(['preparing', 'implementing', 'reviewing'])
+    ).toEqual(['preparing', 'planning', 'plan_review', 'implementing', 'reviewing'])
   })
 
   it('fails when the implementer changes nothing', async () => {
