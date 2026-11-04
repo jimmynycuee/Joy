@@ -2,19 +2,19 @@
 
 > 接手前請先讀本檔、`AGENTS.md` 與 `docs/PLAN.md`。本檔記錄目前進度、阻塞與決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。
 
-- 最後更新：2026-11-04 18:17 UTC
+- 最後更新：2026-11-04 18:21 UTC
 - 目前階段：**P1 整合 PR #58**；`main` 為 `2c3fdb4`，P1 尚未合併。#58 維持 draft；P2 不得開始，T2.1 明確排除。
 - 計畫與決策：依 `docs/PLAN.md` v0.2。Codex 在 P2 使用 `app-server`（T2.7）、每 repo provider allowlist（T1.12）、`joy doctor`（T1.13）及額度／成本政策已定案，但 tickets 仍須完成。#53 的 T1.12 實際 allowlist 修補列為 #58 後續；它必須納入、review、重驗並合併，才算 P1 完成或解除 P2 hold。T1.13 仍未完成。
 - 驗證基線：`main` 的 [CI run 41848131509](https://github.com/jimmynycuee/Joy/actions/runs/41848131509) 對 SHA `2c3fdb4ca7924cd52dea62321d037a83e01766ab` 成功，Ubuntu、macOS、Windows 皆通過。
 
-## 目前整合 PR（2026-11-04 18:17 UTC）
+## 目前整合 PR（2026-11-04 18:21 UTC）
 
-- [PR #58 — Integrate the P1 stack into main](https://github.com/jimmynycuee/Joy/pull/58)：draft、base `main` (`2c3fdb4`)、head branch `integrate-p1`；最新已發布 head 為 `a452647`，tree 與已驗證的本機 `fc7214f` 相同。最新讀取時 Ubuntu 成功、Windows 與 web E2E 執行中、macOS queued；目前 head 尚無正式 GitHub review。
+- [PR #58 — Integrate the P1 stack into main](https://github.com/jimmynycuee/Joy/pull/58)：draft、base `main` (`2c3fdb4`)、head branch `integrate-p1`；截至 18:21 UTC，已發布 head `a984145da6cf87cc8c97b21a1ef5462b9f08c942` 與本機已驗證 tree 相同。Actions run `41885907984`：Ubuntu、Windows 成功，web E2E 執行中，macOS queued；目前 head 尚無正式 GitHub review。
 - 整合範圍包括 T1.6/T1.7、T1.8、T1.9、Origin/Host 驗證、provider capability/model-effort guard、keychain 不可用時 UI 可啟動、snapshot/cursor replay 與事件去重、implementer/fixer 不提供 `openai-api`，以及 web build/Playwright CI。Vite proxy 保留瀏覽器 Origin/Host 並關閉廣泛 CORS，`review_loop` 亦拒絕不具 code-edit 能力的 implementer。T2.1/compete 實作不在 #58；T0.4 Codex fixture、Windows 真機、登入、MCP 選擇與產品／成本選擇仍是外部或使用者項目，保留於下方追蹤。
-- 本機完整驗證在 commit `fc7214f6fc5449eedf78522ac94df3100311d361`（tree `6660588c8d77aa9e2c371c97ab99892bac5f781f`）通過：`pnpm install --frozen-lockfile`；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check`（format、lint、typecheck；195 tests passed、2 skipped）；`pnpm --filter @joy/web build`；`pnpm test:e2e`（4 tests passed，含 HTTP/WebSocket proxy Origin 回歸測試）。E2E 使用 fake provider，沒有真實模型/API 呼叫或支出。已查看並保存設定 fallback、workspace 與設定頁的 Playwright screenshots。
+- 本機程式碼完整驗證在 commit `fc7214f6fc5449eedf78522ac94df3100311d361`（tree `6660588c8d77aa9e2c371c97ab99892bac5f781f`）通過：`pnpm install --frozen-lockfile`；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check`（format、lint、typecheck；195 tests passed、2 skipped）；`pnpm --filter @joy/web build`；`pnpm test:e2e`（4 tests passed，含 HTTP/WebSocket proxy Origin 回歸測試）。之後的 STATUS-only commit `55a7764e631c7be7eb52fabe7cf1bf639f0ca50b`（tree `ad82860e9550c05bc300d819bfb8ab9bd36066fc`）亦重跑 `pnpm check` 成功；截至 18:21，PR head tree 與該 tree 相同。E2E 使用 fake provider，沒有真實模型/API 呼叫或支出。已查看並保存設定 fallback、workspace 與設定頁的 Playwright screenshots。
 - **Owner review（合併後 follow-up）**：`packages/core` provider/model interface 與 `packages/secrets` keychain/secret handling 均列入 owner review。依使用者明確授權，owner review 可在 #58 合併後持續追蹤，不是額外的合併 gate；仍須遵守 GitHub 實際 required approvals/checks。
-- **阻塞**：已發布 head `a452647` 與本機驗證 tree 相同；最新讀取時 Ubuntu 成功、Windows 與 web E2E 執行中、macOS queued。舊 head `7019bc7` 的跨模型 review 指出 Vite proxy Origin rewrite bypass、重複 server tests 與過期 STATUS/PR body；修正已在本機完整驗證並發布到 `a452647`。舊 review 不代表新 head 已獲批准；仍需所有新 head CI 通過及新一輪獨立無 blocker review。#58 維持 draft；#53/T1.12 與 T1.13 是 #58 合併後的 P1 後續，不是 #58 的額外合併 gate，且兩者須完成後才能開始 P2。#57 保持 owner action（`close:false`）；來源 PR 未關閉。
-- **下一步**：發布此狀態更新到既有 #58，維持 draft；因本次 docs commit 將再產生新 head，需以最後 head 重跑四項 CI 並取得新一輪獨立無 blocker review，滿足 #58 自身 gates 後才合併。之後完成 #53/T1.12 與 T1.13，再解除 P2 hold；保持 #57 為 owner action（`close:false`），且不要把 owner review follow-up 變成合併 gate。
+- **阻塞**：截至 18:21，已發布 head `a984145` 與本機驗證 tree 相同；Actions run `41885907984` 中 Ubuntu、Windows 成功，web E2E 執行中、macOS queued。舊 head `7019bc7` 的跨模型 review 指出 Vite proxy Origin rewrite bypass、重複 server tests 與過期 STATUS/PR body；程式修正、測試清理及狀態更新已發布至 `a984145`。舊 review 不代表新 head 已獲批准；尚需新 head 所有 CI 通過及獨立無 blocker review。這份 docs-only 狀態刷新會再推進 PR head，之後須對新 head 重跑檢查並取得新 review。#58 維持 draft；#53/T1.12 與 T1.13 是 #58 合併後的 P1 後續，不是 #58 的額外合併 gate，且兩者須完成後才能開始 P2。#57 保持 owner action（`close:false`）；來源 PR 未關閉。
+- **下一步**：將本次 docs-only 狀態刷新發布到既有 #58，維持 draft；核對新 head 後等待四項 CI 全綠及獨立無 blocker review，再依 #58 自身 gates 決定合併。之後完成 #53/T1.12 與 T1.13，再解除 P2 hold；保持 #57 為 owner action（`close:false`），且不要把 owner review follow-up 變成合併 gate。
 
 ## PR 鏈快照（2026-11-04 14:20 UTC；歷史狀態）
 
