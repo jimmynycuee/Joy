@@ -155,6 +155,26 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 2,
+    name: 'project memory proposals',
+    sql: /* sql */ `
+      CREATE TABLE project_memory_proposals (
+        id                  TEXT PRIMARY KEY,
+        repo_id             TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+        relative_path       TEXT NOT NULL CHECK (relative_path = 'AGENTS.md'),
+        source_provenance   TEXT NOT NULL CHECK (json_valid(source_provenance)),
+        base_content        TEXT,
+        proposed_content    TEXT NOT NULL,
+        status              TEXT NOT NULL DEFAULT 'pending' CHECK
+                              (status IN ('pending', 'approved', 'rejected', 'applied', 'stale')),
+        created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        reviewed_at         TEXT,
+        applied_at          TEXT
+      ) STRICT;
+      CREATE INDEX project_memory_proposals_repo ON project_memory_proposals(repo_id, created_at, id);
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

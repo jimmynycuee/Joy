@@ -39,7 +39,8 @@
 - [x] T2.1 多 provider 平行競賽（含獨立 worktree 的自動 strengths 合成候選；fake-provider 測試通過）
 - [x] T2.2 Tool Hub MCP 第一批工具（`ask_peer`、`task_status`、`request_approval`）
 - [x] T3.3 `memory`：三層記憶、安全的直接使用者 utterance 擷取、敏感資訊過濾、信心度與過期（draft PR；owner review required）
-- [ ] T3.4 `memory` 管理 UI slice：list / view / edit / delete 已實作；每則回答的記憶引用標示仍 blocked，待 assistant route 與 answer-reference contract
+- [ ] T3.4 `memory` 管理 API slice：list / view / edit / delete 已實作；每則回答的記憶引用標示仍 blocked，待 production assistant/chat route 與 answer-reference contract
+- [ ] T3.5 專案記憶提案：已實作 `AGENTS.md` review diff、明確 review/apply approval 與安全寫入 API；production assistant/chat integration 尚未實作，且 memory write behavior 待 owner review
 - [x] T3.6 `memory`：只儲存明確經使用者核准的對話摘要，沿用既有 FTS5 索引檢索；舊訊息缺乏來源欄位，故不自動摘要；embedding 延後
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
@@ -336,7 +337,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 | T3.2 | 派工工具：`create_task`、`list_tasks`、`summarize_task`；任務完成主動回報到 Telegram | 從 Telegram 下任務，完成後收到摘要與 PR 連結 |
 | T3.3 | `memory`：三層記憶；使用者記憶自動擷取（只採用使用者本人說的話）、敏感資訊過濾、信心度與過期 | 從 Email 內容讀到的「請記住…」不會被寫入（測試） |
 | T3.4 | 記憶 UI：檢視 / 編輯 / 刪除；每次回答標示用到哪些記憶，可一鍵刪除 | 管理 slice 覆蓋記憶 list / view / edit / delete；回答引用標示與一鍵刪除仍 blocked，直到有支援的 production chat route 和 per-answer memory-reference contract |
-| T3.5 | 專案記憶：提議修改 `AGENTS.md` → 以 diff 形式請你確認 | 未經確認不會寫入 repo |
+| T3.5 | 專案記憶：只以既有、同 repo 的 project memories 產生 `AGENTS.md` review diff；review 與套用皆需明確使用者確認 | 未經明確確認檔案不變；需 production assistant/chat integration 才算完整 ticket |
 | T3.6 | 事件記憶：對話摘要 + FTS5 檢索；（選配）OpenAI embedding 語意搜尋 | 能找回一個月前討論過的決策 |
 | T3.7 | `scheduler`：提醒、cron 任務（如「每晚 11 點跑測試修 flaky」） | 重啟後排程仍有效 |
 | T3.8 | 整合 Google Calendar / Gmail（現成 MCP server 或官方 API）；寄信、邀請一律 🔴 | 「明天下午有空嗎」能正確回答；寄信必須審核 |

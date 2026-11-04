@@ -23,3 +23,19 @@ export type {
 export { extractUserMemory, ingestUserMemory } from './user-memory.js'
 export type { UserMemoryInput, UserMemoryOrigin, UserMemoryResult } from './user-memory.js'
 export type { MemoryOrigin, UntrustedMemoryOrigin } from './origins.js'
+export {
+  applyProjectMemoryProposal,
+  createProjectMemoryProposal,
+  getProjectMemoryProposal,
+  listProjectMemoryProposals,
+  PROJECT_MEMORY_PATH,
+  reviewProjectMemoryProposal,
+} from './project-proposals.js'
+export type {
+  ApplyProjectMemoryProposalResult,
+  CreateProjectMemoryProposalInput,
+  ProjectMemoryProposal,
+  ProjectMemoryProposalDecision,
+  ProjectMemoryProposalStatus,
+  ProjectMemoryProvenance,
+} from './project-proposals.js'

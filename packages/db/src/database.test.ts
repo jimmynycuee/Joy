@@ -44,6 +44,7 @@ describe('openDatabase', () => {
         'events',
         'memories',
         'memories_fts',
+        'project_memory_proposals',
         'messages',
         'repos',
         'reviews',
@@ -85,7 +86,8 @@ describe('openDatabase', () => {
 
 describe('migrate', () => {
   it('rolls back a failing migration and keeps the previous version', () => {
-    const db = fresh()
+    const db = openDatabase(':memory:', { migrations: [{ version: 1, name: 'base', sql: '' }] })
+    open.push(db)
     const before = schemaVersion(db)
     expect(() =>
       migrate(db, [
@@ -160,5 +162,26 @@ describe('schema', () => {
     const db = fresh()
     expect(() => db.prepare("INSERT INTO schedules (id, payload) VALUES ('s', '{}')").run()).toThrow(/CHECK/)
     db.prepare("INSERT INTO schedules (id, cron, payload) VALUES ('s', '0 9 * * 1-5', '{}')").run()
+  })
+
+  it('restricts project memory proposal targets and states in the database', () => {
+    const db = fresh()
+    db.prepare("INSERT INTO repos (id, path, default_branch) VALUES ('repo', '/repo', 'main')").run()
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO project_memory_proposals (id, repo_id, relative_path, source_provenance, proposed_content)
+           VALUES ('proposal', 'repo', '../outside', '[]', 'content')`,
+        )
+        .run(),
+    ).toThrow(/CHECK/)
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO project_memory_proposals (id, repo_id, relative_path, source_provenance, status, proposed_content)
+           VALUES ('proposal', 'repo', 'AGENTS.md', '[]', 'auto_applied', 'content')`,
+        )
+        .run(),
+    ).toThrow(/CHECK/)
   })
 })

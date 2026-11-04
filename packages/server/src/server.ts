@@ -54,7 +54,18 @@ import { compete, reviewLoop, synthesizeStrengths } from '@joy/orchestrator'
 import type { SynthesisSourceCandidate } from '@joy/orchestrator'
 import { ClaudeCliProvider, CodexCliProvider, OpenAiApiProvider } from '@joy/providers'
 import { Redactor, SecretStore } from '@joy/secrets'
-import { deleteMemory, getMemory, isSensitiveContent, listMemories, updateMemory } from '@joy/memory'
+import {
+  applyProjectMemoryProposal,
+  createProjectMemoryProposal,
+  deleteMemory,
+  getMemory,
+  getProjectMemoryProposal,
+  isSensitiveContent,
+  listMemories,
+  listProjectMemoryProposals,
+  reviewProjectMemoryProposal,
+  updateMemory,
+} from '@joy/memory'
 import { handleToolHubHttpRequest } from '@joy/tools'
 import type { ToolHubContext } from '@joy/tools'
 
@@ -113,6 +124,18 @@ const memoryUpdateSchema = z.strictObject({
   userApproved: z.literal(true),
 })
 const memoryDeleteSchema = z.strictObject({ userApproved: z.literal(true) })
+const projectMemoryProposalInputSchema = z.strictObject({
+  memoryIds: z
+    .array(idSchema)
+    .min(1)
+    .max(20)
+    .refine((ids) => new Set(ids).size === ids.length),
+})
+const projectMemoryProposalReviewSchema = z.strictObject({
+  decision: z.enum(['approve', 'reject']),
+  userApproved: z.literal(true),
+})
+const projectMemoryProposalApplySchema = z.strictObject({ userApproved: z.literal(true) })
 const MAX_BODY_BYTES = 1_000_000
 
 export interface TaskEvent {
@@ -295,6 +318,61 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (url.pathname === '/api/memories' && method === 'GET') {
       json(res, 200, { memories: listMemories(db) })
       return
+    }
+    const repoMemoryProposalsMatch = /^\/api\/repos\/([^/]+)\/project-memory-proposals$/.exec(url.pathname)
+    if (repoMemoryProposalsMatch) {
+      const repoId = idSchema.parse(decodeURIComponent(repoMemoryProposalsMatch[1] ?? ''))
+      if (method === 'GET') {
+        json(res, 200, { proposals: listProjectMemoryProposals(db, repoId) })
+        return
+      }
+      if (method === 'POST') {
+        const input = projectMemoryProposalInputSchema.parse(await readJson(req))
+        try {
+          const proposal = await createProjectMemoryProposal(db, { repoId, memoryIds: input.memoryIds })
+          json(res, 201, { proposal })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unable to create project memory proposal'
+          throw new HttpError(400, message)
+        }
+        return
+      }
+    }
+    const projectMemoryProposalMatch = /^\/api\/project-memory-proposals\/([^/]+)(?:\/(review|apply))?$/.exec(
+      url.pathname,
+    )
+    if (projectMemoryProposalMatch) {
+      const proposalId = idSchema.parse(decodeURIComponent(projectMemoryProposalMatch[1] ?? ''))
+      const action = projectMemoryProposalMatch[2]
+      if (!action && method === 'GET') {
+        const proposal = getProjectMemoryProposal(db, proposalId)
+        if (!proposal) throw new HttpError(404, 'Project memory proposal was not found')
+        json(res, 200, { proposal })
+        return
+      }
+      if (action === 'review' && method === 'POST') {
+        const input = projectMemoryProposalReviewSchema.parse(await readJson(req))
+        const proposal = reviewProjectMemoryProposal(db, proposalId, input.decision, input.userApproved)
+        if (!proposal)
+          throw new HttpError(409, 'Proposal is missing, already reviewed, or not awaiting review')
+        json(res, 200, { proposal })
+        return
+      }
+      if (action === 'apply' && method === 'POST') {
+        const input = projectMemoryProposalApplySchema.parse(await readJson(req))
+        const result = await applyProjectMemoryProposal(db, proposalId, input.userApproved)
+        if (result.status === 'not_found') throw new HttpError(404, 'Project memory proposal was not found')
+        if (result.status === 'approval_required')
+          throw new HttpError(400, 'Explicit user confirmation is required')
+        if (result.status === 'not_approved')
+          throw new HttpError(409, 'Proposal must be explicitly approved before applying')
+        if (result.status === 'write_conflict')
+          throw new HttpError(409, 'Another project memory update is in progress')
+        if (result.status === 'stale')
+          throw new HttpError(409, 'AGENTS.md changed after review; create a new proposal')
+        json(res, 200, { proposal: result.proposal })
+        return
+      }
     }
     const memoryMatch = /^\/api\/memories\/([^/]+)$/.exec(url.pathname)
     if (memoryMatch) {

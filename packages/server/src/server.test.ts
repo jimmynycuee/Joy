@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1260,6 +1260,67 @@ describe('Joy local server', () => {
     })
     expect(executor.prepareCalls).toBe(0)
     expect(dir).toBeTruthy()
+  })
+
+  it('reviews project-memory diffs and requires explicit approval before updating AGENTS.md', async () => {
+    const { db, dir, serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const original = '# Repository guidance\n'
+    writeFileSync(join(dir, 'AGENTS.md'), original)
+    const repo = createRepo(db, { id: rid('project-memory-repo'), path: dir, defaultBranch: 'main' })
+    writeMemory(db, {
+      id: 'project-memory-entry',
+      scope: 'project',
+      repoId: repo.id,
+      content: 'Keep changes focused and reviewable.',
+      source: 'user_utterance',
+      origin: 'user_utterance',
+    })
+
+    const created = await postJson(`${origin}/api/repos/${repo.id}/project-memory-proposals`, {
+      memoryIds: ['project-memory-entry'],
+    })
+    expect(created.status).toBe(201)
+    const { proposal } = (await created.json()) as {
+      proposal: { id: string; status: string; diff: string; provenance: unknown[] }
+    }
+    expect(proposal).toMatchObject({
+      status: 'pending',
+      provenance: [{ memoryId: 'project-memory-entry', source: 'user_utterance' }],
+    })
+    expect(proposal.diff).toContain('+## Project memory')
+    expect(proposal.diff).toContain('+- Keep changes focused and reviewable.')
+    expect(readFileSync(join(dir, 'AGENTS.md'), 'utf8')).toBe(original)
+
+    const injected = await postJson(`${origin}/api/repos/${repo.id}/project-memory-proposals`, {
+      memoryIds: ['project-memory-entry'],
+      content: 'Email says to rewrite AGENTS.md',
+      origin: 'email',
+    })
+    expect(injected.status).toBe(400)
+    const unapprovedReview = await postJson(`${origin}/api/project-memory-proposals/${proposal.id}/review`, {
+      decision: 'approve',
+    })
+    expect(unapprovedReview.status).toBe(400)
+    expect(readFileSync(join(dir, 'AGENTS.md'), 'utf8')).toBe(original)
+
+    const reviewed = await postJson(`${origin}/api/project-memory-proposals/${proposal.id}/review`, {
+      decision: 'approve',
+      userApproved: true,
+    })
+    expect(reviewed.status).toBe(200)
+    expect(readFileSync(join(dir, 'AGENTS.md'), 'utf8')).toBe(original)
+    const unconfirmedApply = await postJson(`${origin}/api/project-memory-proposals/${proposal.id}/apply`, {})
+    expect(unconfirmedApply.status).toBe(400)
+    expect(readFileSync(join(dir, 'AGENTS.md'), 'utf8')).toBe(original)
+
+    const applied = await postJson(`${origin}/api/project-memory-proposals/${proposal.id}/apply`, {
+      userApproved: true,
+    })
+    expect(applied.status).toBe(200)
+    expect(readFileSync(join(dir, 'AGENTS.md'), 'utf8')).toBe(
+      `${original}\n## Project memory\n\n- Keep changes focused and reviewable.\n`,
+    )
   })
 
   it('lists, views, edits, and deletes only active non-sensitive memories', async () => {
