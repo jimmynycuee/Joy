@@ -34,6 +34,7 @@ export const fakeDiff: WorkspaceDiff = {
 }
 
 let fakeRuns = 0
+let blockedCodexForResume = false
 class E2EFakeProvider implements AgentProvider {
   readonly capabilities = {
     codeEdit: true,
@@ -51,7 +52,48 @@ class E2EFakeProvider implements AgentProvider {
     fakeRuns++
     const sessionId = `e2e-${fakeRuns}`
     yield { type: 'session_started', sessionId, model: model.model }
+    if (
+      !options.outputSchema &&
+      model.provider === 'codex-cli' &&
+      options.prompt.includes('pause-one-candidate-until-cancel') &&
+      !blockedCodexForResume
+    ) {
+      blockedCodexForResume = true
+      await new Promise<void>((resolve) => {
+        if (options.signal.aborted) resolve()
+        else options.signal.addEventListener('abort', () => resolve(), { once: true })
+      })
+      yield { type: 'done', sessionId, finalMessage: 'Cancelled fake candidate', isError: false }
+      return
+    }
     if (options.outputSchema) {
+      if (options.prompt.includes('fail-fake-judge')) {
+        yield {
+          type: 'done',
+          sessionId,
+          finalMessage: 'Fake judge failure',
+          isError: true,
+        }
+        return
+      }
+      if (options.prompt.includes('Candidate data (JSON):')) {
+        const candidateIds = [...options.prompt.matchAll(/"attemptId"\s*:\s*"([^"]+)"/g)].map(
+          (match) => match[1],
+        )
+        const winnerAttemptId = candidateIds[0]
+        yield {
+          type: 'done',
+          sessionId,
+          finalMessage: 'Fake judge selected the first successful candidate',
+          structured: {
+            winnerAttemptId,
+            summary: 'Fake judge prefers the first candidate.',
+            rationale: `Candidate ${winnerAttemptId} has the clearest implementation in this test.`,
+          },
+          isError: false,
+        }
+        return
+      }
       yield {
         type: 'done',
         sessionId,
@@ -82,8 +124,14 @@ class E2EFakeExecutor implements Executor {
     }
   }
 
-  async diff(): Promise<WorkspaceDiff> {
-    return fakeDiff
+  async diff(workspace: Workspace): Promise<WorkspaceDiff> {
+    return {
+      ...fakeDiff,
+      patch: fakeDiff.patch.replace(
+        '+export const greeting = "hello from fake"',
+        `+export const greeting = "hello from fake ${workspace.attemptId.slice(0, 8)}"`,
+      ),
+    }
   }
 
   async commit(): Promise<string | null> {
@@ -102,6 +150,7 @@ export interface FakeJoyRuntime {
 
 export async function startFakeJoyRuntime(port = 4317): Promise<FakeJoyRuntime> {
   fakeRuns = 0
+  blockedCodexForResume = false
   const home = mkdtempSync(join(tmpdir(), 'joy-t1.8-e2e-'))
   const database = openDatabase(':memory:')
   const redactor = new Redactor()
