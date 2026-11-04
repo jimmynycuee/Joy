@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { Buffer } from 'node:buffer'
 import type {
   AgentEvent,
   AgentProvider,
@@ -117,6 +118,14 @@ export const JUDGE_SCHEMA = {
 } as const
 
 const MAX_CANDIDATES = PROVIDER_KINDS.length
+const MAX_PROVIDER_PROMPT_BYTES = 24_000
+
+function providerPromptSizeError(prompt: string, label: string): string | undefined {
+  const bytes = Buffer.byteLength(prompt, 'utf8')
+  return bytes > MAX_PROVIDER_PROMPT_BYTES
+    ? `${label} exceeds the ${MAX_PROVIDER_PROMPT_BYTES.toLocaleString('en-US')} byte provider prompt limit (${bytes} bytes)`
+    : undefined
+}
 
 /** Runs independent implementations concurrently, then asks a read-only judge to choose a winner. */
 export async function* compete(input: CompeteInput, deps: CompeteDeps): AsyncGenerator<CompeteEvent> {
@@ -145,6 +154,11 @@ export async function* compete(input: CompeteInput, deps: CompeteDeps): AsyncGen
       candidates: [],
       reason: `No provider configured for judge ${input.judge.provider}`,
     }
+    return
+  }
+  const taskPromptError = providerPromptSizeError(input.prompt, 'Task prompt')
+  if (taskPromptError) {
+    yield { type: 'result', status: 'failed', candidates: [], reason: taskPromptError }
     return
   }
 
@@ -339,10 +353,15 @@ export async function* synthesizeStrengths(
   try {
     if (input.candidates.length < 2) throw new Error('Synthesis requires at least two successful candidates')
     if (!provider) throw new Error(`No provider configured for synthesizer ${input.synthesizer.provider}`)
+    if (!provider.capabilities.codeEdit)
+      throw new Error(`Synthesizer provider ${input.synthesizer.provider} is not code-edit capable`)
     const oversized = input.candidates.find((source) => source.diff.patch.length > MAX_DIFF_CHARS)
     if (oversized)
       throw new Error(`Candidate ${oversized.attemptId} has a diff too large to synthesize safely`)
     if (input.signal.aborted) throw new Error('Cancelled')
+    const prompt = synthesisPrompt(input.prompt, input.candidates)
+    const promptError = providerPromptSizeError(prompt, 'Synthesis prompt')
+    if (promptError) throw new Error(promptError)
 
     workspace = await deps.executor.prepare(input.repo, input.taskId, attemptId)
     yield { type: 'attempt', candidate: attempt('running') }
@@ -351,7 +370,7 @@ export async function* synthesizeStrengths(
     let fatalError: string | undefined
     const options: RunOptions = {
       cwd: workspace.path,
-      prompt: synthesisPrompt(input.prompt, input.candidates),
+      prompt,
       autonomy: 'workspace-write',
       signal: input.signal,
     }
@@ -408,9 +427,12 @@ async function* runJudge(
   provider: AgentProvider,
   candidates: (CompetitorResult & { workspace: Workspace; diff: WorkspaceDiff })[],
 ): AsyncGenerator<CompeteEvent, CompeteJudgment | undefined> {
+  const prompt = judgePrompt(input.prompt, candidates)
+  const promptError = providerPromptSizeError(prompt, 'Judge prompt')
+  if (promptError) throw new Error(promptError)
   const options: RunOptions = {
     cwd: input.repo.path,
-    prompt: judgePrompt(input.prompt, candidates),
+    prompt,
     autonomy: 'read-only',
     signal: input.signal,
     outputSchema: JUDGE_SCHEMA,

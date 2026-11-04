@@ -16,7 +16,15 @@ import type {
 } from '@joy/core'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ConfigStore } from '@joy/config'
-import { createAttempt, createRepo, createTask, openDatabase, setTaskStatus, updateAttempt } from '@joy/db'
+import {
+  appendTaskEvent,
+  createAttempt,
+  createRepo,
+  createTask,
+  openDatabase,
+  setTaskStatus,
+  updateAttempt,
+} from '@joy/db'
 import type { Database } from '@joy/db'
 import { MemoryBackend, Redactor, SecretStore } from '@joy/secrets'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -37,6 +45,14 @@ afterEach(async () => {
 const rid = (id: string) => id as RepoId
 const tid = (id: string) => id as TaskId
 const aid = (id: string) => id as AttemptId
+function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>((finish) => {
+    resolve = finish
+  })
+  return { promise, resolve }
+}
+
 function receiveMessages(socket: WebSocket, count: number): Promise<unknown[]> {
   return new Promise((resolve, reject) => {
     const messages: unknown[] = []
@@ -75,6 +91,7 @@ class FakeProvider implements AgentProvider {
   constructor(
     readonly kind: ProviderKind,
     private readonly output: AgentEvent[] | ((options: RunOptions) => AgentEvent[]) = [],
+    private readonly beforeEvents?: (options: RunOptions) => Promise<void>,
   ) {}
 
   async *run(options: RunOptions): AsyncGenerator<AgentEvent> {
@@ -82,6 +99,7 @@ class FakeProvider implements AgentProvider {
     const sessionId = options.resumeSessionId ?? `session-${this.calls.length}`
     if (!options.resumeSessionId) yield { type: 'session_started', sessionId }
     yield { type: 'message', text: 'working' }
+    await this.beforeEvents?.(options)
     if (options.prompt === 'wait') {
       await new Promise<void>((resolve) => {
         if (options.signal.aborted) resolve()
@@ -167,29 +185,89 @@ class FakeMcpClientProvider extends FakeProvider {
   }
 }
 
-function successfulJudgeAndSynthesizer(): FakeProvider {
-  return new FakeProvider('openai-api', (options) => {
-    if (options.prompt.includes('Synthesis candidate data (JSON):'))
+function successfulJudgeAndSynthesizer(beforeEvents?: (options: RunOptions) => Promise<void>): FakeProvider {
+  return new FakeProvider(
+    'openai-api',
+    (options) => {
+      if (options.prompt.includes('Synthesis candidate data (JSON):'))
+        return [
+          { type: 'done', sessionId: 'fake-synthesizer', isError: false, finalMessage: 'Combined strengths' },
+        ]
+      const marker = 'Candidate data (JSON): '
+      const data = JSON.parse(options.prompt.slice(options.prompt.indexOf(marker) + marker.length)) as {
+        attemptId: string
+      }[]
       return [
-        { type: 'done', sessionId: 'fake-synthesizer', isError: false, finalMessage: 'Combined strengths' },
-      ]
-    const marker = 'Candidate data (JSON): '
-    const data = JSON.parse(options.prompt.slice(options.prompt.indexOf(marker) + marker.length)) as {
-      attemptId: string
-    }[]
-    return [
-      {
-        type: 'done',
-        sessionId: 'fake-judge',
-        isError: false,
-        structured: {
-          winnerAttemptId: data[0]?.attemptId,
-          summary: 'The first candidate wins.',
-          rationale: 'This fake judgment selects the first candidate.',
+        {
+          type: 'done',
+          sessionId: 'fake-judge',
+          isError: false,
+          structured: {
+            winnerAttemptId: data[0]?.attemptId,
+            summary: 'The first candidate wins.',
+            rationale: 'This fake judgment selects the first candidate.',
+          },
         },
-      },
-    ]
-  })
+      ]
+    },
+    beforeEvents,
+  )
+}
+
+class GatedConfigStore extends ConfigStore {
+  blockedReads = 0
+  private gate: Promise<void> | undefined
+  private releaseGate: (() => void) | undefined
+
+  blockReads() {
+    this.blockedReads = 0
+    this.gate = new Promise<void>((resolve) => {
+      this.releaseGate = resolve
+    })
+  }
+
+  releaseReads() {
+    this.releaseGate?.()
+    this.releaseGate = undefined
+    this.gate = undefined
+  }
+
+  override async get() {
+    const config = await super.get()
+    if (this.gate) {
+      this.blockedReads++
+      await this.gate
+    }
+    return config
+  }
+}
+
+class ThrowOnceRedactor extends Redactor {
+  failNextSynthesisAgent = false
+  failNextSynthesisStarted = false
+
+  override redactValue<T>(value: T): T {
+    if (
+      this.failNextSynthesisAgent &&
+      typeof value === 'object' &&
+      value !== null &&
+      'role' in value &&
+      value.role === 'synthesizer'
+    ) {
+      this.failNextSynthesisAgent = false
+      throw new Error('Simulated event publishing failure')
+    }
+    if (
+      this.failNextSynthesisStarted &&
+      typeof value === 'object' &&
+      value !== null &&
+      'sourceAttemptIds' in value
+    ) {
+      this.failNextSynthesisStarted = false
+      throw new Error('Simulated synthesis-start publishing failure')
+    }
+    return super.redactValue(value)
+  }
 }
 
 class FakeExecutor implements Executor {
@@ -223,6 +301,7 @@ function fixture(
     redactor?: Redactor
     secretBackend?: MemoryBackend
     secretEnv?: NodeJS.ProcessEnv
+    configStore?: ConfigStore
   } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), 'joy-server-test-'))
@@ -254,7 +333,7 @@ function fixture(
   const serverOptions: JoyServerOptions = {
     home: dir,
     database: db,
-    configStore: new ConfigStore(join(dir, 'config.yaml')),
+    configStore: options.configStore ?? new ConfigStore(join(dir, 'config.yaml')),
     secretStore: new SecretStore({
       backend: secretBackend,
       ...(options.secretEnv ? { env: options.secretEnv } : {}),
@@ -302,6 +381,14 @@ async function waitForStatus(origin: string, id: string, status: string): Promis
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
   throw new Error(`Task did not reach ${status}`)
+}
+
+async function waitForCondition(check: () => boolean, description: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (check()) return
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  throw new Error(`Timed out waiting for ${description}`)
 }
 
 async function waitForEvent(origin: string, id: string, type: string): Promise<TaskDetails> {
@@ -668,6 +755,162 @@ describe('Joy local server', () => {
       task: { status: 'done' },
       selectedAttemptId: synthesizedCandidate.attemptId,
     })
+  })
+
+  it('rejects synthesis when the configured judge provider cannot edit code', async () => {
+    const judge = successfulJudgeAndSynthesizer()
+    judge.capabilities.codeEdit = false
+    const { serverPromise } = fixture({ judge })
+    const { origin } = await start(serverPromise)
+    const taskId = await createCompeteTask(origin, 'Non-editing judge cannot synthesize')
+    await waitForStatus(origin, taskId, 'review_ready')
+
+    const response = await postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
+    expect(response.status).toBe(409)
+    expect(await response.text()).toContain('code-edit capable')
+    expect(
+      judge.calls.filter((call) => call.prompt.includes('Synthesis candidate data (JSON):')),
+    ).toHaveLength(0)
+  })
+
+  it('serializes concurrent synthesis requests after asynchronous configuration reads', async () => {
+    const synthesisGate = deferred()
+    const judge = successfulJudgeAndSynthesizer(async (options) => {
+      if (options.prompt.includes('Synthesis candidate data (JSON):')) await synthesisGate.promise
+    })
+    const configDir = mkdtempSync(join(tmpdir(), 'joy-gated-config-'))
+    dirs.push(configDir)
+    const configStore = new GatedConfigStore(join(configDir, 'config.yaml'))
+    const { executor, api, serverPromise } = fixture({ judge, configStore })
+    const { origin } = await start(serverPromise)
+    const taskId = await createCompeteTask(origin, 'Concurrent synthesis requests')
+    await waitForStatus(origin, taskId, 'review_ready')
+
+    configStore.blockReads()
+    const firstRequest = postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
+    const secondRequest = postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
+    await waitForCondition(() => configStore.blockedReads === 2, 'both synthesis config reads')
+    configStore.releaseReads()
+    const responses = await Promise.all([firstRequest, secondRequest])
+    try {
+      expect(responses.map((response) => response.status).sort((a, b) => a - b)).toEqual([202, 409])
+    } finally {
+      synthesisGate.resolve()
+    }
+    await waitForEvent(origin, taskId, 'synthesis_result')
+    expect(api.calls.filter((call) => call.prompt.includes('Synthesis candidate data (JSON):'))).toHaveLength(
+      1,
+    )
+    expect(executor.prepareCalls).toBe(3)
+  })
+
+  it('rejects winner selection while a synthesis is already running', async () => {
+    const synthesisGate = deferred()
+    const judge = successfulJudgeAndSynthesizer(async (options) => {
+      if (options.prompt.includes('Synthesis candidate data (JSON):')) await synthesisGate.promise
+    })
+    const { serverPromise } = fixture({ judge })
+    const { origin } = await start(serverPromise)
+    const taskId = await createCompeteTask(origin, 'Selection races synthesis')
+    const details = await waitForStatus(origin, taskId, 'review_ready')
+    const source = details.attempts.find((attempt) => attempt['status'] === 'succeeded')
+    expect(source).toBeDefined()
+
+    const pendingSelection = startIncompletePost(
+      `${origin}/api/tasks/${taskId}/select`,
+      `{"attemptId":"${String(source?.['id'])}`,
+    )
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    const synthesis = await postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
+    pendingSelection.complete('"}')
+    const selection = await pendingSelection.response
+    synthesisGate.resolve()
+
+    expect(synthesis.status).toBe(202)
+    expect(selection.status).toBe(409)
+    await waitForEvent(origin, taskId, 'synthesis_result')
+    const latest = (await (await fetch(`${origin}/api/tasks/${taskId}`)).json()) as TaskDetails
+    expect(latest.task.status).toBe('review_ready')
+  })
+
+  it('marks an orphaned synthesis failed and clears its UI state after restart', async () => {
+    const { db, restart, serverPromise } = fixture({ judge: successfulJudge() })
+    const { origin, server } = await start(serverPromise)
+    const taskId = await createCompeteTask(origin, 'Recover an interrupted synthesis')
+    const initial = await waitForStatus(origin, taskId, 'review_ready')
+    const source = initial.attempts.find((attempt) => attempt['status'] === 'succeeded')
+    expect(source).toBeDefined()
+    const sourceId = String(source?.['id'])
+    const orphaned = createAttempt(db, {
+      id: aid('orphaned-synthesis'),
+      taskId: tid(taskId),
+      provider: 'openai-api',
+      model: 'gpt-6-luna',
+      status: 'running',
+    })
+    appendTaskEvent(db, aid(sourceId), 'synthesis_started', {
+      sourceAttemptIds: [sourceId],
+      model: { provider: 'openai-api', model: 'gpt-6-luna' },
+    })
+    appendTaskEvent(db, orphaned.id, 'attempt', {
+      attemptId: orphaned.id,
+      model: { provider: 'openai-api', model: 'gpt-6-luna' },
+      status: 'running',
+      synthesized: true,
+      sourceAttemptIds: [sourceId],
+    })
+    await server.close()
+
+    const { origin: restartedOrigin } = await start(restart())
+    const recovered = await waitForEvent(restartedOrigin, taskId, 'synthesis_error')
+    expect(recovered.task.status).toBe('review_ready')
+    expect(recovered.attempts.find((attempt) => attempt['id'] === orphaned.id)).toMatchObject({
+      status: 'failed',
+    })
+    expect(recovered.events).toContainEqual(
+      expect.objectContaining({
+        type: 'synthesis_error',
+        payload: { message: expect.stringContaining('interrupted by server restart') },
+      }),
+    )
+  })
+
+  it('marks a synthesis attempt failed when publishing an agent event throws', async () => {
+    const redactor = new ThrowOnceRedactor()
+    const { serverPromise } = fixture({ judge: successfulJudgeAndSynthesizer(), redactor })
+    const { origin } = await start(serverPromise)
+    const taskId = await createCompeteTask(origin, 'Synthesis event persistence failure')
+    await waitForStatus(origin, taskId, 'review_ready')
+    redactor.failNextSynthesisAgent = true
+
+    const started = await postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
+    expect(started.status).toBe(202)
+    const details = await waitForEvent(origin, taskId, 'synthesis_error')
+    const candidateEvent = details.events.find(
+      (event) =>
+        (event as { type?: string }).type === 'attempt' &&
+        (event as { payload?: { synthesized?: boolean } }).payload?.synthesized,
+    ) as { payload?: { attemptId?: string } } | undefined
+    expect(
+      details.attempts.find((attempt) => attempt['id'] === candidateEvent?.payload?.attemptId),
+    ).toMatchObject({
+      status: 'failed',
+    })
+  })
+
+  it('releases the operation lock if publishing synthesis_started throws', async () => {
+    const redactor = new ThrowOnceRedactor()
+    redactor.failNextSynthesisStarted = true
+    const { serverPromise } = fixture({ judge: successfulJudgeAndSynthesizer(), redactor })
+    const { origin } = await start(serverPromise)
+    const taskId = await createCompeteTask(origin, 'Synthesis start event failure')
+    await waitForStatus(origin, taskId, 'review_ready')
+
+    const failed = await postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
+    expect(failed.status).toBe(500)
+    const retry = await postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
+    expect(retry.status).toBe(202)
+    await waitForEvent(origin, taskId, 'synthesis_result')
   })
 
   it('keeps original candidates selectable when synthesis fails', async () => {
