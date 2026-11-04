@@ -37,6 +37,7 @@
 - [x] T1.9 GitHub：push 分支、開 draft PR
 - [x] T1.8 Codex 風格 Web UI（含設定頁）
 - [x] T2.1 多 provider 平行競賽（含獨立 worktree 的自動 strengths 合成候選；fake-provider 測試通過）
+- [ ] T4.4 Windows Codex 硬化（原生 `exec` 不可用時偵測 WSL 並 fallback；安裝檔因目前沒有 distribution pipeline 暫記為 gap）
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
 
@@ -344,7 +345,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 | T4.1 | 遠端存取：token 驗證 + Tailscale 文件（server 預設只綁 127.0.0.1） |
 | T4.2 | PWA + Web Push 通知 |
 | T4.3 | Tauri 桌面 app：系統匣、開機啟動、原生通知、自動更新 |
-| T4.4 | Windows 強化：安裝檔、WSL 偵測與 Codex fallback |
+| T4.4 | Windows 強化：原生 Codex 先以 `--version` 與 `exec --help` 探測；不可用時探測預設 WSL distro 的 Codex，轉換 worktree / schema 路徑並 fallback。安裝檔因目前沒有 installer/distribution pipeline，先記錄為 gap，不建立發行憑證或產物。 |
 | T4.5 | `executor/docker`：可選的 container 模式（掛載 CLI 憑證、網路政策） |
 
 ### P5 — 商業化準備（第 23 週以後，視使用情況決定）

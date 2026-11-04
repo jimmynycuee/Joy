@@ -68,6 +68,21 @@ describe('contract: codex/network-error (recorded)', () => {
 })
 
 describe('CodexStreamParser', () => {
+  it('normalizes WSL file-change paths relative to the Linux worktree', () => {
+    const parser = new CodexStreamParser({ cwd: '/mnt/c/project', cwdStyle: 'posix' })
+    expect(
+      parser.push({
+        type: 'item.completed',
+        item: {
+          id: 'file',
+          type: 'file_change',
+          status: 'completed',
+          changes: [{ path: '/mnt/c/project/src/index.ts', kind: 'update' }],
+        },
+      }),
+    ).toEqual([{ type: 'file_change', path: 'src/index.ts', kind: 'modify' }])
+  })
+
   it('turns turn.failed into a failing done', () => {
     const p = new CodexStreamParser()
     p.push({ type: 'thread.started', thread_id: 't' })

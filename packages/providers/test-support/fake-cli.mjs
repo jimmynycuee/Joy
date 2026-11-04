@@ -6,6 +6,10 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 
 const args = process.argv.slice(2)
+if (process.env.FAKE_EXEC_HELP_FAIL === '1' && args[0] === 'exec' && args[1] === '--help') {
+  process.stderr.write('exec is unsupported on this fake native platform\n')
+  process.exit(1)
+}
 if (process.env.FAKE_ARGS_OUT)
   writeFileSync(process.env.FAKE_ARGS_OUT, JSON.stringify({ args, pid: process.pid }))
 

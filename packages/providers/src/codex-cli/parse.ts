@@ -1,13 +1,15 @@
 // Maps `codex exec --json` lines to AgentEvents.
 // Event shapes: @openai/codex-sdk ThreadEvent types (docs/spikes/codex.md). Real fixtures are still pending
 // (STATUS.md); tests use the network-error recording plus synthetic streams built from the SDK types.
-import { isAbsolute, relative } from 'node:path'
+import { isAbsolute, posix, relative } from 'node:path'
 import type { AgentEvent, FileChangeKind } from '@joy/core'
 import type { Rec } from '../guards.js'
 import { arr, isRecord, num, opt, rec, str } from '../guards.js'
 
 export interface CodexParserOptions {
   cwd?: string
+  /** WSL Codex reports POSIX paths even when Joy runs on Windows. */
+  cwdStyle?: 'native' | 'posix'
   /** The run asked for --output-schema: parse the final message as JSON into `done.structured`. */
   structured?: boolean
 }
@@ -189,7 +191,13 @@ export class CodexStreamParser {
 
   private relPath(path: string): string {
     const cwd = this.options.cwd
-    if (!cwd || !isAbsolute(path)) return path
+    if (!cwd) return path
+    if (this.options.cwdStyle === 'posix') {
+      if (!posix.isAbsolute(path)) return path
+      const rel = posix.relative(cwd, path)
+      return rel.startsWith('..') ? path : rel
+    }
+    if (!isAbsolute(path)) return path
     const rel = relative(cwd, path)
     return rel.startsWith('..') ? path : rel
   }
