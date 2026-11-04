@@ -31,7 +31,7 @@ Draft open PR（以下各自目前三平台 checks success、沒有 formal revie
 - [#9](https://github.com/jimmynycuee/Joy/pull/9)：base `t1.9-github-pr`，head `t1.8-web` @ `3660503`。
 - [#11](https://github.com/jimmynycuee/Joy/pull/11)：base `t2.1-compete`，head `t2.2-tools` @ `d67fb2a`。
 - [#12](https://github.com/jimmynycuee/Joy/pull/12)：base `t2.2-tools`，head `t3.9-model-stats` @ `45f18d2`。
-- [#14](https://github.com/jimmynycuee/Joy/pull/14)：base `t2.2-tools`，head `t3.3-memory` @ `9d9f350`；memory-write rules 需要 owner review。
+- [#14](https://github.com/jimmynycuee/Joy/pull/14)：base `t2.2-tools`，head `t3.3-memory` @ `9d9f350`；memory-write rules 需要 owner review；另有未解 credential-filtering review blocker（見下方 T3.3）。
 - [#15](https://github.com/jimmynycuee/Joy/pull/15)：base `t2.2-tools`，head `reason/t3-1-add-selectable-assi-7a20bfa9` @ `68f1354`。
 - [#16](https://github.com/jimmynycuee/Joy/pull/16)：base `t2.1-compete`，head `t4.4-windows-codex` @ `a2cee58`；原生 CLI 探測與 WSL fallback 有實作，installer/distribution 尚缺，T4.4 保持 partial / unchecked。PR #16 自己的 PLAN patch 雖打勾，仍明列 installer 為 gap；本狀態依原 ticket acceptance 將 T4.4 保持未完成。
 - [#17](https://github.com/jimmynycuee/Joy/pull/17)：base `t1.8-web`，head `t4.2-local-pwa` @ `f984271`；只有 installable PWA foundation，沒有 Web Push，T4.2 保持 partial / unchecked。
@@ -56,6 +56,7 @@ Draft open PR（以下各自目前三平台 checks success、沒有 formal revie
 - **T2.4 Telegram**：依賴 T2.3 審核路徑，且須 owner 提供 bot credential、確認唯一允許的 chat identity；目前不宣稱已完成驗證。
 - **T2.5 quota**：`codex exec --json` 的 rate-limit 結構化訊號與可靠偵測仍未證實；換 provider、排隊、價格／預算策略尚未定案，不以一般錯誤文字推測。
 - **T2.6 Issue → task**：label / trigger 語義、允許的 repo/actor、預設 task mode 與可達 HTTPS webhook ingress / 簽章設定仍須明確決定與驗證。
+- **T3.3 credential-filtering review blocker**：`packages/memory/src/storage.ts` 的 `SENSITIVE_PATTERNS` 有 `sk-…` 與 `gh[pousr]_…` 格式，但不涵蓋 GitHub fine-grained PAT 的 `github_pat_…` 前綴；對佔位輸入「Remember my GitHub token is github_pat_PLACEHOLDER」的 `isSensitiveContent` 實測回傳 `false`。`writeMemory` 接受有直接 user provenance 的內容，僅在該 filter 命中時拒寫，因此同類內容可能落入 SQLite。這是未修補的 read-only review finding；T3.3/PR #14 仍未 owner-reviewed，需另行窄範圍 remediation，本次不改 PR #14 或程式碼。
 - **T3.4**：PR #23 只完成記憶管理 slice；answer-level citations 與一鍵刪除仍等 production chat route 及 per-answer memory-reference contract。
 - **T3.5**：PR #25 只完成 project-memory proposal diff/review/apply API；未有 production assistant/chat integration，且 memory write 行為仍需 owner review。
 - **T3.7 scheduler**：對應 Session 目前仍 running，這一輪 queue-only 實作未完成、尚無 PR。不要將 queue-only 原型或進行中的 Session 說成 ticket 完成；時區/DST、missed-run、重疊/重試及排程程式任務的 approval 語義仍未定。
