@@ -108,7 +108,8 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX messages_conversation ON messages(conversation_id, id);
 
       CREATE TABLE memories (
-        id              TEXT PRIMARY KEY,
+        memory_id       INTEGER PRIMARY KEY,
+        id              TEXT NOT NULL UNIQUE,
         scope           TEXT NOT NULL CHECK (scope IN ('user', 'project', 'episode')),
         repo_id         TEXT REFERENCES repos(id) ON DELETE CASCADE,
         content         TEXT NOT NULL,
@@ -121,16 +122,18 @@ export const MIGRATIONS: readonly Migration[] = [
         created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       ) STRICT;
 
-      CREATE VIRTUAL TABLE memories_fts USING fts5(content, content='memories', content_rowid='rowid');
-      CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
-        INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+      CREATE VIRTUAL TABLE memories_fts USING fts5(content, content='memories', content_rowid='memory_id');
+      CREATE TRIGGER memories_ai AFTER INSERT ON memories WHEN new.sensitive = 0 BEGIN
+        INSERT INTO memories_fts(rowid, content) VALUES (new.memory_id, new.content);
       END;
-      CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
-        INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+      CREATE TRIGGER memories_ad AFTER DELETE ON memories WHEN old.sensitive = 0 BEGIN
+        INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.memory_id, old.content);
       END;
-      CREATE TRIGGER memories_au AFTER UPDATE OF content ON memories BEGIN
-        INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
-        INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+      CREATE TRIGGER memories_au AFTER UPDATE OF memory_id, content, sensitive ON memories BEGIN
+        INSERT INTO memories_fts(memories_fts, rowid, content)
+          SELECT 'delete', old.memory_id, old.content WHERE old.sensitive = 0;
+        INSERT INTO memories_fts(rowid, content)
+          SELECT new.memory_id, new.content WHERE new.sensitive = 0;
       END;
 
       CREATE TABLE schedules (

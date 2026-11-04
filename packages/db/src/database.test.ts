@@ -156,6 +156,53 @@ describe('schema', () => {
     expect(search('squash')).toEqual([])
   })
 
+  it('keeps FTS rows associated after VACUUM and excludes sensitive memories', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'joy-db-'))
+    dirs.push(dir)
+    const db = openDatabase(join(dir, 'joy.sqlite'))
+    open.push(db)
+    const insert = db.prepare(
+      "INSERT INTO memories (id, scope, content, source, sensitive) VALUES (?, 'user', ?, 'user_utterance', ?)",
+    )
+    insert.run('m1', 'shared target alpha', 0)
+    insert.run('m2', 'deleted filler', 0)
+    insert.run('m3', 'shared target beta', 0)
+    insert.run('m4', 'unrelated gamma', 0)
+    insert.run('ms', 'private sensitive phrase', 1)
+    expect(() => insert.run(null, 'missing id', 0)).toThrow(/NOT NULL/)
+    expect(() => insert.run('m1', 'duplicate id', 0)).toThrow(/UNIQUE/)
+    db.prepare("DELETE FROM memories WHERE id = 'm2'").run()
+    const keysBeforeVacuum = db.prepare('SELECT id, memory_id FROM memories ORDER BY id').all()
+    db.exec('VACUUM')
+    expect(db.prepare('SELECT id, memory_id FROM memories ORDER BY id').all()).toEqual(keysBeforeVacuum)
+
+    const search = (query: string) =>
+      (
+        db
+          .prepare(
+            'SELECT m.id FROM memories_fts f JOIN memories m ON m.memory_id = f.rowid WHERE memories_fts MATCH ? ORDER BY m.id',
+          )
+          .all(query) as { id: string }[]
+      ).map((row) => row.id)
+
+    expect(search('target')).toEqual(['m1', 'm3'])
+    expect(search('sensitive')).toEqual([])
+
+    db.prepare("UPDATE memories SET content = 'replaced banana' WHERE id = 'm3'").run()
+    expect(search('target')).toEqual(['m1'])
+    expect(search('replaced')).toEqual(['m3'])
+
+    db.prepare("UPDATE memories SET sensitive = 0 WHERE id = 'ms'").run()
+    expect(search('sensitive')).toEqual(['ms'])
+    db.prepare("UPDATE memories SET sensitive = 1 WHERE id = 'ms'").run()
+    expect(search('sensitive')).toEqual([])
+
+    db.prepare("DELETE FROM memories WHERE id = 'm3'").run()
+    expect(search('replaced')).toEqual([])
+    insert.run('m5', 'shared target cherry', 0)
+    expect(search('target')).toEqual(['m1', 'm5'])
+  })
+
   it('requires exactly one of cron or run_at on schedules', () => {
     const db = fresh()
     expect(() => db.prepare("INSERT INTO schedules (id, payload) VALUES ('s', '{}')").run()).toThrow(/CHECK/)
