@@ -4,7 +4,7 @@
 
 - 最後更新：2026-11-04
 - 目前階段：**P2 進行中**。T2.1 自動 strengths 合成及獨立審查提出的重啟恢復、競爭、prompt 容量、錯誤收尾與 provider capability 缺陷已修正並在本地驗證；PR #10 已 squash-merge 至相依分支 `t1.8-web`，未合併至 `main`。T2.2 draft PR #11（head `29229e8`）與 T3.9 draft PR #12（head `fc0439c`）三平台 CI 全綠。GitHub 上 #2–#5 仍 open、非 draft 且三平台 CI 全綠；#6/#7 merged 到相依分支而非 `main`；#8/#9 三平台 CI 全綠且仍 draft，#9 secrets handling 必須先由 owner human review。本 T4.1 PR 也必須保持 draft、不合併。
-- **T4.1 遠端存取：** 已在 `t4.1-remote-auth`（基於 `t1.8-web` `3660503`）加入 loopback-only bearer 驗證、WebSocket 驗證與 [Tailscale Serve 指引](remote-access.md)。server 定向測試 21/21 通過；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（183 tests passed、2 skipped）。一般 `pnpm check` 僅因 runner 注入 Git identity 令既有 fallback-identity test 失敗；隔離後通過。Draft PR 交付待完成；未合併、未部署，真實 tailnet 行為未驗證。`apps/web` 未修改，因此目前 Web UI 尚不會附加 token。
+- **T4.1 遠端存取：** 已在 `t4.1-remote-auth`（基於 `t1.8-web` `3660503`）加入 loopback-only bearer 驗證、WebSocket 驗證與 [Tailscale Serve 指引](remote-access.md)。server 定向測試 21/21 通過；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（183 tests passed、2 skipped）。一般 `pnpm check` 僅因 runner 注入 Git identity 令既有 fallback-identity test 失敗；隔離後通過。[PR #21](https://github.com/jimmynycuee/Joy/pull/21) 已以 draft 開啟，需 owner human review；不得標 ready 或合併。未部署，真實 tailnet 行為未驗證。`apps/web` 未修改，因此目前 Web UI 尚不會附加 token。
 - T2.1 分支：`t2.1-compete`，基於當時的 `t1.8-web` commit `a852b60`；PR #10 已 squash-merge 至 `t1.8-web`，其目前 live tip 為 `3660503`。
 - 本地驗證：`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（181 tests passed、2 skipped）；T2.1 Playwright E2E 通過（3 specs），orchestrator/server 定向測試 44/44 通過。所有互動測試使用 fake providers，沒有呼叫真模型。一般環境的 `pnpm check` 有一項既有 fallback-identity 測試受繼承 Git 身分影響，已另開 issue #13。
 
@@ -12,13 +12,14 @@
 
 ```
 main … t1.5-review-loop
-  └─ #6 t1.6-server（已合併到依賴分支）
-      └─ #7 t1.7-event-log（已合併到依賴分支）
-          └─ #8 t1.9-github-pr（draft；base=t1.7-event-log）
-              └─ #9 t1.8-web（draft；base=t1.9-github-pr）
-                  └─ #10 t2.1-compete（已 squash-merge 至 t1.8-web；base=t1.8-web）
-                      └─ #11 t2.2-tools（draft；base=t2.1-compete）
-                          └─ #12 T3.9 model stats/UI（draft；base=t2.2-tools）
+└─ #6 t1.6-server（已合併到依賴分支）
+   └─ #7 t1.7-event-log（已合併到依賴分支）
+      └─ #8 t1.9-github-pr（draft；base=t1.7-event-log）
+         └─ #9 t1.8-web（draft；base=t1.9-github-pr）
+            ├─ #10 t2.1-compete（已 squash-merge 至 t1.8-web；base=t1.8-web）
+            │  └─ #11 t2.2-tools（draft；base=t2.1-compete）
+            │     └─ #12 T3.9 model stats/UI（draft；base=t2.2-tools）
+            └─ #21 t4.1-remote-auth（draft；base=t1.8-web）
 ```
 
 - 已 live 核實 #6/#7 為 merged，三平台 checks 成功；#7 的 base 是 `t1.6-server`，不能據此聲稱已在 `main` 經 CI 或已部署。
@@ -39,6 +40,8 @@ main … t1.5-review-loop
 | server / UI / GitHub            | T2.1 server 支援合成成功候選的事件持久化與選取、競爭互斥、重啟恢復和異常收尾；UI 將合成候選置頂、顯示 diff 並可選取；fake-provider E2E 通過。 |
 
 ## 卡住 / 需要人做的事
+
+- **T4.1 draft PR #21**：token authentication / secret handling 依規定等待 owner human review；保持 draft、不合併。
 
 1. **T1.8 draft PR #9**（[PR #9](https://github.com/jimmynycuee/Joy/pull/9)）：三平台 CI 全綠；secrets handling 仍需 owner human review。
 2. **T2.3 policy**：動作對應權限等級是安全政策，已送 owner 問題卡；答覆前不設定 tier、不啟用分類。
