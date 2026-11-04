@@ -34,10 +34,10 @@
 - [x] T1.11 設定（`packages/config`；UI 設定頁併入 T1.8）
 - [ ] T1.6 server（HTTP + WebSocket、任務 CRUD、重啟恢復）
 - [ ] T1.7 事件紀錄（寫入 DB、可回放、經 Redactor 遮罩）
-- [ ] T1.9 GitHub：push 分支、開 draft PR
-- [ ] T1.8 Codex 風格 Web UI（含設定頁）
 - [ ] T1.12 repo 的 provider 允許清單
+- [ ] T1.9 GitHub：push 分支、開 draft PR
 - [ ] T1.13 `joy doctor` 與首次啟動檢查
+- [ ] T1.8 Codex 風格 Web UI（含設定頁）
 - [ ] P2（T2.1–T2.8）、P3（T3.1–T3.9）、P4（T4.1–T4.9）、P5（T5.1–T5.7）：見 §6
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
@@ -314,7 +314,6 @@ autonomy_mode: normal            # careful | normal | hands-off
 | T1.9 | GitHub：commit、push branch、用 `gh` 開 draft PR，PR 描述附 review 摘要 | 在測試 repo 成功開出 PR |
 | T1.10 | 機密：OS keychain 存 OpenAI key（`@napi-rs/keyring` 或同類），log 遮罩 | key 不出現在 DB、log、事件中（測試驗證） |
 | T1.11 | 設定：`config.yaml` 讀寫 + UI 設定頁（各角色模型） | 改設定後新任務立即套用 |
-
 | T1.12 | **repo 的 provider 允許清單**：每個 repo 設定可用哪些 provider（預設全部）；建立任務時檢查所有角色 | 角色用到不允許的 provider 時任務直接拒絕，錯誤訊息說明是哪個角色；`ask_peer`、裁判、助理派工同樣受限（測試） |
 | T1.13 | **`joy doctor` 與首次啟動檢查**：Node 版本、git、gh 登入、`claude` / `codex` 安裝與版本、鑰匙圈、資料目錄可寫 | 每項回報 OK / 缺少 / 版本未測過，並附修復指令；UI 首頁顯示同樣結果；缺 CLI 時只停用該 provider，不阻止啟動 |
 
@@ -329,7 +328,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 | T2.3 | `policy`：三級權限、動作分類、全域模式切換；🔴 動作先跨模型預審。Claude 透過 `approve` 工具接入 | 每種 `ActionKind` 都有測試覆蓋其等級與三種模式；`provenance: external_content` 的動作一律不可自動執行 |
 | T2.4 | `channels/telegram`：綁定擁有者（只接受設定的 chat id）、通知、Approve / Deny 按鈕、審核逾時 | 陌生帳號的訊息被丟棄並記錄；在手機核准後任務繼續；逾時預設拒絕 |
 | T2.5 | **額度感知與交接**：偵測 `quota: limited`（Claude `rate_limit_event`、OpenAI 429、Codex 錯誤訊息）→ **交接給另一家**：把任務說明、目前 diff、計畫、未解決的審查意見整理成交接摘要，另一家在同一個 worktree 以新 session 接手；兩家都沒額度時排隊，到 `resetsAt` 自動繼續。UI 顯示額度與 API 花費；成本保險絲 | 模擬額度用完時任務改由另一家完成；交接摘要存進事件紀錄；交接不違反 T1.12 的允許清單（不允許時改為排隊）；超過每任務 API 上限時停止並通知 |
-| T2.6 | GitHub Issue → 任務（label 觸發或助理指令觸發） | 加 label 後自動建立任務；issue 內容標為 `external_content`，不能觸發 🔴 動作 |
+| T2.6 | GitHub Issue → 任務（label 觸發或助理指令觸發） | 加 label 後自動建立任務；issue 內容標為 `external_content`，由其提出的 🔴 動作不得自動執行 |
 | T2.7 | **Codex 改用 `app-server`**：常駐 JSON-RPC client，取代 `exec --json`；接上互動式審核（`item/*/requestApproval` → policy）與額度（`account/rateLimits/*` → `quota` 事件） | 同一組 contract test 通過；Codex 的 🔴 動作會跳出審核；`capabilities.delegatedApproval`、`quotaEvents` 改為 true；`exec` 版本保留為備援 |
 | T2.8 | **worktree 清理**：開完 PR 或丟棄後立即清理；閒置超過 14 天（設定可改）的 worktree 在 UI 提示，你確認後清除 | 不會刪除有未推送 commit 的 worktree，除非你確認；磁碟用量顯示在 UI |
 
@@ -356,7 +355,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 | T4.3 | Tauri 桌面 app：系統匣、開機啟動、原生通知、自動更新 | macOS 與 Windows 安裝檔可安裝、更新、移除 |
 | T4.4 | Windows 強化：安裝檔、`.cmd` shim 的 spawn、WSL 偵測與 Codex fallback | Windows 實機完成一次交叉審查任務 |
 | T4.5 | `executor/docker`：可選的 container 模式（掛載 CLI 憑證、網路政策） | 不信任的 repo 可在 container 內跑完任務 |
-| T4.6 | **CLI 版本管理**：記錄每個 provider 測過的版本範圍；啟動與 `doctor` 遇到未測過的版本時警告；CI 每週用最新版 CLI 重跑 contract test（只解析 fixture，不呼叫模型）；重錄流程寫進文件 | 版本超出範圍時 UI 顯示警告與重錄指令 |
+| T4.6 | **CLI 版本管理**：記錄每個 provider 測過的版本範圍；啟動與 `doctor` 遇到未測過的版本時警告；CI 每週用最新版 CLI 重跑 contract test（只解析 fixture，不呼叫模型）；重錄流程寫進文件 | 啟動與 `doctor` 對未測版本顯示警告與重錄指令；每週 CI 用最新版 CLI 跑 fixture contract test 且不呼叫模型；重錄流程有文件 |
 | T4.7 | **備份與匯出**：每天自動備份 SQLite（保留 7 份）；匯出任務紀錄與記憶為 JSON；從備份還原 | 還原後資料完整；匯出內容經過 Redactor |
 | T4.8 | **除錯 log**：結構化 log 寫到 `~/.joy/logs`，依天輪替、保留 14 天，一律經過 Redactor；UI 可下載最近 log | log 中找不到任何已知 secret（測試） |
 | T4.9 | **使用者文件**：README 的安裝、第一次設定、日常使用、疑難排解；隱私說明（見 §7.1） | 新電腦照 README 能在 15 分鐘內跑完第一個任務 |
