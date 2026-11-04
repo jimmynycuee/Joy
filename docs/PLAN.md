@@ -36,7 +36,7 @@
 - [x] T1.7 事件紀錄（寫入 DB、可回放、經 Redactor 遮罩）
 - [x] T1.9 GitHub：push 分支、開 draft PR
 - [x] T1.8 Codex 風格 Web UI（含設定頁）
-- [ ] T2.1 多 provider 平行競賽（進行中；「合併優點」方案待產品選擇）
+- [x] T2.1 多 provider 平行競賽（含獨立 worktree 的自動 strengths 合成候選；fake-provider 測試通過）
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
 

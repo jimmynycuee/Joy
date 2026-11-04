@@ -119,6 +119,31 @@ function successfulJudge(): FakeProvider {
   })
 }
 
+function successfulJudgeAndSynthesizer(): FakeProvider {
+  return new FakeProvider('openai-api', (options) => {
+    if (options.prompt.includes('Synthesis candidate data (JSON):'))
+      return [
+        { type: 'done', sessionId: 'fake-synthesizer', isError: false, finalMessage: 'Combined strengths' },
+      ]
+    const marker = 'Candidate data (JSON): '
+    const data = JSON.parse(options.prompt.slice(options.prompt.indexOf(marker) + marker.length)) as {
+      attemptId: string
+    }[]
+    return [
+      {
+        type: 'done',
+        sessionId: 'fake-judge',
+        isError: false,
+        structured: {
+          winnerAttemptId: data[0]?.attemptId,
+          summary: 'The first candidate wins.',
+          rationale: 'This fake judgment selects the first candidate.',
+        },
+      },
+    ]
+  })
+}
+
 class FakeExecutor implements Executor {
   prepareCalls = 0
   async prepare(repo: Workspace['repo'], taskId: TaskId, attemptId: AttemptId): Promise<Workspace> {
@@ -228,6 +253,21 @@ async function waitForStatus(origin: string, id: string, status: string): Promis
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
   throw new Error(`Task did not reach ${status}`)
+}
+
+async function waitForEvent(origin: string, id: string, type: string): Promise<TaskDetails> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const response = await fetch(`${origin}/api/tasks/${id}`)
+    const body = (await response.json()) as TaskDetails
+    if (
+      body.events.some(
+        (value) => typeof value === 'object' && value !== null && (value as { type?: unknown }).type === type,
+      )
+    )
+      return body
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  throw new Error(`Task did not emit ${type}`)
 }
 
 async function postJson(url: string, body: unknown) {
@@ -429,6 +469,100 @@ describe('Joy local server', () => {
     )
     expect(db.isOpen).toBe(true)
     expect(executor.prepareCalls).toBe(2)
+  })
+
+  it('synthesizes strengths into a separate candidate that can be selected', async () => {
+    const judge = successfulJudgeAndSynthesizer()
+    const { executor, api, serverPromise } = fixture({ judge })
+    const { origin } = await start(serverPromise)
+    const taskId = await createCompeteTask(origin, 'Synthesize candidate strengths')
+    const initial = await waitForStatus(origin, taskId, 'review_ready')
+    const sourceIds = initial.attempts.map((attempt) => String(attempt['id']))
+
+    const started = await postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
+    expect(started.status).toBe(202)
+    const details = await waitForEvent(origin, taskId, 'synthesis_result')
+    expect(details.task.status).toBe('review_ready')
+    expect(details.attempts).toHaveLength(3)
+    expect(executor.prepareCalls).toBe(3)
+    expect(api.calls).toHaveLength(2)
+    expect(api.calls[1]).toMatchObject({
+      cwd: expect.stringMatching(/^\/fake\/worktree\//),
+      autonomy: 'workspace-write',
+    })
+    for (const sourceId of sourceIds) expect(api.calls[1]?.prompt).toContain(sourceId)
+
+    const events = details.events as Array<{ type: string; payload: unknown }>
+    const synthesizedEvent = events
+      .filter((event) => event.type === 'attempt' && (event.payload as { synthesized?: boolean }).synthesized)
+      .at(-1)
+    expect(synthesizedEvent?.payload).toMatchObject({
+      status: 'succeeded',
+      synthesized: true,
+      diff: { patch: 'diff --git a/src/fix.ts b/src/fix.ts\n+fixed\n' },
+    })
+    const synthesizedPayload = synthesizedEvent?.payload as {
+      attemptId: string
+      sourceAttemptIds: string[]
+    }
+    expect(new Set(synthesizedPayload.sourceAttemptIds)).toEqual(new Set(sourceIds))
+    const synthesizedCandidate = synthesizedPayload
+
+    const duplicate = await postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
+    expect(duplicate.status).toBe(409)
+    const selection = await postJson(`${origin}/api/tasks/${taskId}/select`, {
+      attemptId: synthesizedCandidate.attemptId,
+    })
+    expect(selection.status).toBe(200)
+    expect(await selection.json()).toMatchObject({
+      task: { status: 'done' },
+      selectedAttemptId: synthesizedCandidate.attemptId,
+    })
+  })
+
+  it('keeps original candidates selectable when synthesis fails', async () => {
+    const judge = new FakeProvider('openai-api', (options) => {
+      if (options.prompt.includes('Synthesis candidate data (JSON):'))
+        return [
+          {
+            type: 'done',
+            sessionId: 'failed-synthesis',
+            isError: true,
+            finalMessage: 'Fake synthesis failure',
+          },
+        ]
+      const marker = 'Candidate data (JSON): '
+      const data = JSON.parse(options.prompt.slice(options.prompt.indexOf(marker) + marker.length)) as {
+        attemptId: string
+      }[]
+      return [
+        {
+          type: 'done',
+          sessionId: 'fake-judge',
+          isError: false,
+          structured: {
+            winnerAttemptId: data[0]?.attemptId,
+            summary: 'First candidate',
+            rationale: 'Selected by fake judge',
+          },
+        },
+      ]
+    })
+    const { serverPromise } = fixture({ judge })
+    const { origin } = await start(serverPromise)
+    const taskId = await createCompeteTask(origin, 'Failed synthesis preserves candidates')
+    const initial = await waitForStatus(origin, taskId, 'review_ready')
+    const started = await postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
+    expect(started.status).toBe(202)
+    const details = await waitForEvent(origin, taskId, 'synthesis_result')
+    expect(details.task.status).toBe('review_ready')
+    const result = (details.events as Array<{ type: string; payload: unknown }>).find(
+      (event) => event.type === 'synthesis_result',
+    )?.payload as { status?: string; reason?: string } | undefined
+    expect(result).toMatchObject({ status: 'failed', reason: 'Fake synthesis failure' })
+    const source = initial.attempts.find((attempt) => attempt['status'] === 'succeeded')
+    const selection = await postJson(`${origin}/api/tasks/${taskId}/select`, { attemptId: source?.['id'] })
+    expect(selection.status).toBe(200)
   })
 
   it('keeps successful candidates selectable when the judge fails', async () => {

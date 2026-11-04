@@ -748,6 +748,31 @@ p {
   line-height: 1.55;
   white-space: pre-wrap;
 }
+.synthesis-controls {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.synthesis-controls p,
+.synthesis-success {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.synthesis-error {
+  color: var(--red) !important;
+}
+.synthesis-success {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
 .candidate-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
