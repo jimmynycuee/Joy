@@ -1,0 +1,1 @@
+`joy.svg` is the editable source icon. Generate the platform icon assets with `pnpm --filter @joy/desktop exec tauri icon src-tauri/icons/joy.svg` from the repository root; the generated PNG, ICO, and ICNS files are referenced by `tauri.conf.json` and should be committed with the app.

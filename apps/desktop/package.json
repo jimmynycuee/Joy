@@ -1,0 +1,16 @@
+{
+  "name": "@joy/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Joy's Tauri desktop shell.",
+  "license": "BUSL-1.1",
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}
