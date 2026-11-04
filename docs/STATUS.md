@@ -4,8 +4,8 @@
 
 - 最後更新：2026-11-04
 - T3.6：`t3.6-event-memory` 以 PR #14 的 `t3.3-memory` head `9d9f350cf1c8d97c6960aad25adbba28e3576155` 為基礎；摘要只接受明確使用者核准，檢索沿用 `memories_fts`。`messages` 僅有 role/content/conversation/time，不能證明來源，因此不自動彙整舊對話；embedding 延後。
-- 目前階段：**P2 尚有待決項；P3 T3.3 實作完成、draft PR 待 owner review**。T3.3 新增 `@joy/memory`，沿用既有 `memories` schema，user scope 僅從直接 user utterance 擷取；Email 等外部來源在擷取前拒絕，敏感內容不落庫，confidence / expiry 有測試。PR #11 已確認 published `t2.2-tools` head 與本地 base 一致；三平台 CI 皆已通過，PR #11 保持 draft、不合併。T2.1 PR #10、T3.9 PR #12 及 #8/#9 狀態沿用下方記錄。
-- 本 ticket 分支：`t3.3-memory`，從 PR #11 published `t2.2-tools` head `d67fb2a5dcca95f249c2da03806cf745f2e6c4e3` 建立；原 `t2.2-tools` 同步自 `t2.1-compete` head `65a026c569e4c543f9da8d33efdac18b4e616036`；PR #11 base=`t2.1-compete`。
+- 目前階段：**P2 尚有待決項；P3 T3.3 PR #14 與 T3.6 PR #18 均為 draft，需 owner review**。T3.6 本地 `pnpm check` 通過；PR #18 的 macOS、Ubuntu、Windows checks 於最近查詢仍在進行。舊 PR #8–#12 狀態沿用下方記錄。
+- T3.3 parent：PR #14 `t3.3-memory` head=`9d9f350cf1c8d97c6960aad25adbba28e3576155`、base=`t2.2-tools`。本 ticket 分支 `t3.6-event-memory` 以該 head 為基礎；PR #18 base=`t3.3-memory`（draft）。
 - 本次 base sync 後驗證：隔離繼承 Git 身分的 `pnpm check` 通過（188 passed、2 skipped）；T2.2/T2.1 fake-provider Playwright E2E 通過（4 specs）。所有 provider 測試只使用 fakes，沒有呼叫真模型。
 
 ## 分支與 PR
@@ -53,6 +53,7 @@ main … t1.5-review-loop
 8. **T3.7 scheduler**：需決定 timezone/DST、錯過執行、重疊/重試策略及定時 code-writing 是否須 approval，未先猜定。
 9. **Codex 真實 fixture**：既有 fixture 是合成資料；需在已登入電腦錄製並重跑 provider contract test。確認模型名稱仍待帳號實測；Windows 實機尚未手動測過，只有 CI 證據。
 10. #2–#5 三平台 CI 綠但仍 open；#6/#7 僅合併在相依分支，尚不能聲稱全鏈已進 `main` 或已部署。
+11. **T3.6 draft PR #18**（[PR #18](https://github.com/jimmynycuee/Joy/pull/18)）：base=`t3.3-memory`；三平台 CI 進行中，維持 draft 等 owner review。
 
 ## 下一步（依相依順序）
 
@@ -61,7 +62,7 @@ main … t1.5-review-loop
 3. #12 T3.9 draft PR 的三平台 CI 已綠；同時只推進不依賴未決 tier/trigger/quota/scheduler 政策的工作。
 4. T3.3 draft PR 等待 owner human review；memory-write rules 維持 draft，未合併。
 5. Codex 真實 fixture、模型名稱確認與 Windows 實機驗證留待相應條件可用時處理。
-6. T3.6 只交付安全的 user-approved 摘要寫入與 FTS5 檢索；待 messages schema/寫入端能提供可信來源 provenance 後，才可開啟自動對話摘要。embedding 語意搜尋仍延後。
+6. PR #18 三平台 CI 尚在進行，維持 draft 等 owner review；自動摘要需待 messages schema/寫入端能提供可信來源 provenance，embedding 語意搜尋仍延後。
 
 ## 最近的決策（新的放最上面）
 
