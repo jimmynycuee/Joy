@@ -73,6 +73,30 @@ describe('memory package', () => {
     expect(db.prepare('SELECT count(*) AS count FROM memories').get()).toEqual({ count: 0 })
   })
 
+  it('rejects GitHub fine-grained token-shaped content from direct user ingest', () => {
+    const db = fresh()
+    const result = ingestUserMemory(db, {
+      origin: 'user_utterance',
+      text: 'Remember my GitHub token is github_pat_PLACEHOLDER',
+    })
+
+    expect(result).toEqual({ status: 'ignored', reason: 'sensitive' })
+    expect(db.prepare('SELECT count(*) AS count FROM memories').get()).toEqual({ count: 0 })
+  })
+
+  it('rejects GitHub fine-grained token-shaped content from generic memory writes', () => {
+    const db = fresh()
+    const result = writeMemory(db, {
+      scope: 'episode',
+      content: 'Remember my GitHub token is github_pat_PLACEHOLDER',
+      source: 'manual',
+      origin: 'manual',
+    })
+
+    expect(result).toBeUndefined()
+    expect(db.prepare('SELECT count(*) AS count FROM memories').get()).toEqual({ count: 0 })
+  })
+
   it('stores all three scopes, preserves confidence, and omits expired memories from reads', () => {
     const db = fresh()
     db.prepare("INSERT INTO repos (id, path, default_branch) VALUES ('repo-1', '/repo', 'main')").run()
