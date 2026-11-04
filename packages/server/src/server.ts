@@ -232,9 +232,6 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (!isLocalOrigin(req.headers.origin)) throw new HttpError(403, 'Origin is not allowed')
     const url = requestUrl(req)
     const method = req.method ?? 'GET'
-    if (url.pathname.startsWith('/api/') && ['POST', 'PUT', 'PATCH'].includes(method)) {
-      assertJsonContentType(req)
-    }
     if (url.pathname === '/api/health' && method === 'GET') {
       json(res, 200, { ok: true })
       return
@@ -244,6 +241,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       return
     }
     if (url.pathname === '/api/repos' && method === 'POST') {
+      assertJsonContentType(req)
       const input = repoInputSchema.parse(await readJson(req))
       const repo = createRepo(db, {
         id: (input.id ?? randomUUID()) as RepoId,
@@ -259,6 +257,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       return
     }
     if (url.pathname === '/api/tasks' && method === 'POST') {
+      assertJsonContentType(req)
       const input = taskInputSchema.parse(await readJson(req))
       if (input.mode === 'compete') throw new HttpError(422, 'Compete mode is not available in P1 yet')
       const repo = getRepo(db, input.repoId as RepoId)
@@ -327,6 +326,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       return
     }
     if (url.pathname === '/api/config' && method === 'PUT') {
+      assertJsonContentType(req)
       const config = configSchema.parse(await readJson(req)) as JoyConfig
       json(res, 200, { config: await configStore.save(config) })
       return

@@ -237,6 +237,24 @@ describe('Joy local server', () => {
     socket.terminate()
   })
 
+  it('rejects untrusted Origin headers on WebSocket upgrades with a local Host', async () => {
+    const { serverPromise } = fixture()
+    const { websocket } = await start(serverPromise)
+    const socket = new WebSocket(`${websocket}/ws?taskId=missing`, {
+      origin: 'https://attacker.example',
+    })
+    const status = await new Promise<number>((resolve, reject) => {
+      socket.once('unexpected-response', (_request, response) => {
+        response.resume()
+        resolve(response.statusCode ?? 0)
+      })
+      socket.once('error', reject)
+    })
+
+    expect(status).toBe(403)
+    socket.terminate()
+  })
+
   it('rejects untrusted Origin headers before processing API requests', async () => {
     const { serverPromise } = fixture()
     const { origin } = await start(serverPromise)
@@ -265,6 +283,18 @@ describe('Joy local server', () => {
     )
     expect(rejected.status).toBe(415)
 
+    const config = await rawRequest(
+      origin,
+      '/api/config',
+      'PUT',
+      { host: new URL(origin).host },
+      JSON.stringify({}),
+    )
+    expect(config.status).toBe(415)
+
+    const unknownRoute = await rawRequest(origin, '/api/unknown', 'POST', { host: new URL(origin).host })
+    expect(unknownRoute.status).toBe(404)
+
     const tauri = await rawRequest(
       origin,
       '/api/repos',
@@ -282,9 +312,14 @@ describe('Joy local server', () => {
   it('returns 400 for malformed percent encoding in task paths', async () => {
     const { serverPromise } = fixture()
     const { origin } = await start(serverPromise)
-    const response = await fetch(`${origin}/api/tasks/%E0%A4%A`)
+    const responses = await Promise.all([
+      fetch(`${origin}/api/tasks/%E0%A4%A`),
+      fetch(`${origin}/api/tasks/%E0%A4%A/events`),
+      rawRequest(origin, '/api/tasks/%E0%A4%A/cancel', 'POST', {}),
+      rawRequest(origin, '/api/tasks/%E0%A4%A/resume', 'POST', {}),
+    ])
 
-    expect(response.status).toBe(400)
+    expect(responses.map((response) => response.status)).toEqual([400, 400, 400, 400])
   })
 
   it('binds only to loopback and supports repositories, task creation, replay and WebSocket events', async () => {
@@ -352,7 +387,7 @@ describe('Joy local server', () => {
     })
     const { task } = (await response.json()) as { task: { id: string } }
     await new Promise((resolve) => setTimeout(resolve, 15))
-    const cancelled = await postJson(`${origin}/api/tasks/${task.id}/cancel`, {})
+    const cancelled = await rawRequest(origin, `/api/tasks/${task.id}/cancel`, 'POST', {})
     expect(cancelled.status).toBe(200)
     const result = await waitForStatus(origin, task.id, 'cancelled')
     expect(result.task.status).toBe('cancelled')
@@ -389,7 +424,7 @@ describe('Joy local server', () => {
     expect(interrupted.events).toEqual(
       expect.arrayContaining([expect.objectContaining({ type: 'interrupted' })]),
     )
-    const resume = await postJson(`${origin}/api/tasks/${task.id}/resume`, {})
+    const resume = await rawRequest(origin, `/api/tasks/${task.id}/resume`, 'POST', {})
     expect(resume.status).toBe(202)
     await waitForStatus(origin, task.id, 'done')
     expect(implementer.calls[0]).toMatchObject({
