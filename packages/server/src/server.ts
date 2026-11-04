@@ -29,7 +29,6 @@ import {
   createRepo,
   createReview,
   createTask,
-  getAttempt,
   getRepo,
   getTask,
   interruptRunningWork,
@@ -165,17 +164,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   const publish = (taskId: TaskId, attemptId: AttemptId, type: string, payload: unknown): TaskEvent => {
     const safe = redactor.redactValue(payload)
-    const storedAttempt = getAttempt(db, attemptId)
-    const event = storedAttempt
-      ? appendTaskEvent(db, attemptId, type, safe)
-      : {
-          taskId,
-          attemptId,
-          seq: (listTaskEvents(db, taskId).at(-1)?.seq ?? 0) + 1,
-          type,
-          payload: safe,
-          ts: new Date().toISOString(),
-        }
+    const event = appendTaskEvent(db, attemptId, type, safe)
     const message = JSON.stringify({ type: 'event', event })
     for (const socket of subscribers.get(taskId) ?? []) {
       if (socket.readyState === WebSocket.OPEN) socket.send(message)
@@ -435,10 +424,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   async function runTask(task: StoredTask, controller: AbortController, resume?: ResumeState): Promise<void> {
     let attempt = resume?.attempt
+    let failureConfig = initialConfig
     try {
       const repo = getRepo(db, task.repoId)
       if (!repo) throw new Error(`Repository ${task.repoId} was not found`)
       const config = await configStore.get()
+      failureConfig = config
       const roles = config.roles as RoleConfig
       const configuredImplementer = resolveRole('implementer', roles, task.roleOverrides)
       const implementer = resume
@@ -471,7 +462,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (!attempt) {
         const fallbackImplementer = resolveRole(
           'implementer',
-          initialConfig.roles as RoleConfig,
+          failureConfig.roles as RoleConfig,
           task.roleOverrides,
         )
         attempt = createAttempt(db, {
