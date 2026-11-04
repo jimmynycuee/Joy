@@ -2,25 +2,41 @@
 
 > 接手前請先讀本檔、`AGENTS.md` 與 `docs/PLAN.md`。本檔記錄目前進度、阻塞與決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。
 
-- 最後更新：2026-11-04 18:49 UTC
-- 目前階段：**P1 整合後續**；`main` 最新 tip 為 `59eb6b9f60d714b6208afd3e6d89af24dd200e9c`（PR #58 合併）。#58 已合併，但 P1 的 T1.12、T1.13 尚未完成；P2 仍 hold，T2.1 不在 #58 範圍。
-- 計畫與決策：依 `docs/PLAN.md` v0.2。Codex 在 P2 使用 `app-server`（T2.7）、每 repo provider allowlist（T1.12）、`joy doctor`（T1.13）及額度／成本政策已定案；決策不代表 tickets 已完成。PR #53 是 T1.12 待處理項；T1.13 尚無對應開啟中的 PR。
-- 合併後 `main` CI：[run 41889004890](https://github.com/jimmynycuee/Joy/actions/runs/41889004890) 對 SHA `59eb6b9f60d714b6208afd3e6d89af24dd200e9c` 已完成且成功：Ubuntu、macOS、Windows checks 與 web E2E 全部成功。
+- 最後更新：2026-11-04 19:02 UTC
+- 目前階段：**P1 尚未完成；P2 暫停，不開始或擴大。** 最新 `main` 為 `686b4f942962bc02dd5d615fa4d32421188b488c`（PR #55 的 STATUS 更新合併）；PR #47、#48、#51、#55、#58 已合併。#58 整合了主要 P1 堆疊，但 T1.12（#53）與 T1.13 `joy doctor` 仍未完成／未併入 `main`。
+- 合併後驗證：PR #58 head `8383dd80f5a5168d1db59728810e5bb91730e4da` 的 Ubuntu、macOS、Windows 與 web E2E 四項 checks 均成功。前一個 `main` SHA `59eb6b9f60d714b6208afd3e6d89af24dd200e9c` 的 [CI run 41889004890](https://github.com/jimmynycuee/Joy/actions/runs/41889004890) 四項 jobs 均成功；最新 `main` SHA `686b4f942962bc02dd5d615fa4d32421188b488c` 的 [CI run 41891442701](https://github.com/jimmynycuee/Joy/actions/runs/41891442701) 已完成，Ubuntu、macOS、Windows 與 web E2E 四項 jobs 均成功。
+- 計畫與決策：依 `docs/PLAN.md` v0.2；P1 剩餘順序為 T1.12 → T1.13。所有 P1 工作與最新 `main` 驗證完成前維持 P2 hold；T2.1 明確不在 #58 範圍，也不開始或擴大 P2。
 
-## P1 與 GitHub 快照（2026-11-04 18:49 UTC）
+## P1 狀態與依賴 PR 快照（PR 狀態截至 2026-11-04 18:49 UTC；main 更新至 18:52 UTC）
 
-- [PR #58 — Integrate the P1 stack into main](https://github.com/jimmynycuee/Joy/pull/58)：已合併；PR head `8383dd80f5a5168d1db59728810e5bb91730e4da` 的 Ubuntu、macOS、Windows 與 web E2E checks 均成功。其描述列出 T1.6/T1.7、T1.8、T1.9 與相關修補為已整合或取代範圍；T2.1 明確排除。合併後 `main` 的 CI 仍以本節所列 run 41889004890 為準。
-- PR #58 的說明列出已納入或取代的來源 PR：#2–#9、#19、#28/#46、#33、#37、#45、#50/#54；#53 的 T1.12 與 T1.13 是後續 P1 工作，不在 #58 範圍。
-- PR #58 的 PR 描述記錄：`pnpm check` 成功（196 tests passed、2 skipped）、web build 成功、4 個 Playwright E2E 通過；其 exact-head Actions run 41887998301 的四個 jobs 皆成功。這些結果只適用該 PR head，不取代合併後 `main` SHA 的 CI run。
-- PR #58 的正式 review 記錄為 0。依 `AGENTS.md`，`packages/core` provider/model interfaces 與 `packages/secrets` secret handling 的 owner review 仍須追蹤；PR #58 描述將其列為合併後 follow-up。
-- [PR #53 — T1.12 provider allowlist](https://github.com/jimmynycuee/Joy/pull/53)：open draft，base `t1.7-event-log`，head `3fd90219695c34bb38d37539158c765853208c21`，GitHub merge state clean；Ubuntu、macOS、Windows checks 均成功，正式 review 為 0。它仍未合併到 `main`，且依 PLAN §7.3 仍需 owner review。
-- [PR #57 — T1.12 provider allowlist](https://github.com/jimmynycuee/Joy/pull/57)：open、非 draft，與 #53 同一 head `3fd90219695c34bb38d37539158c765853208c21`，但 base 為 `main`；此讀取的 merge state 為 unknown、沒有 conflict 訊息，正式 review 為 0，三平台 checks 均成功。討論中記錄它是同一 T1.12 工作的意外重複 PR；本次未修改它。
-- #8/#54（T1.9）仍 open 且同一 head `604c3b2a`；#8 為 draft、base `t1.7-event-log`，#54 非 draft、base `main`。其 Ubuntu、Windows checks 成功，macOS check cancelled。#9 仍為 open draft、head `27c3de79`、base `t1.9-github-pr` 並與該 base 衝突；該 head 的 Ubuntu、macOS、Windows 與 web E2E checks 成功。PR #58 描述列出 #8/#54/#9 的 P1 工作為已整合或取代；以上舊 PR checks 不代表合併後 `main` 的狀態。
-- **下一步**：將 #53 對齊合併後的 `main`，在新 head 重驗並完成 owner review；完成 T1.13 `joy doctor` 後，且合併後 `main` 的 CI 通過，才解除 P2 hold。T0.4 真實 Codex fixture 仍依 PLAN 保持未勾選；Windows 真機行為、rate-limit 輸出與實際模型名稱不視為已驗收。
+下列依賴 PR 的 head、checks 與 reviews 取自 18:49 UTC 的 live `pr_get` 快照；PR #55 隨後合併，使 `main` 前進至 `686b4f942962bc02dd5d615fa4d32421188b488c`。因此以下依賴 PR 狀態不是 #55 合併後重新讀取的 live 狀態；檢查結果只代表指定 head.
+
+1. **主要 P1 堆疊已進 `main`：** [PR #58](https://github.com/jimmynycuee/Joy/pull/58) 已合併；其 head `8383dd80f5a5168d1db59728810e5bb91730e4da` 的 Ubuntu、macOS、Windows 與 web E2E 四項 checks 全通過（run `41887998301`）。整合內容涵蓋 T1.6/T1.7、T1.8、T1.9 及相關驗證修補；T2.1/compete 明確排除。PR #55 的 STATUS 更新亦已合併到最新 `main`；新 main 的 CI run `41891442701` 四項 jobs 全成功，先前 `59eb6b9` 的 run `41889004890` 亦四項全成功.
+2. **T1.12 尚未合入：** [#53](https://github.com/jimmynycuee/Joy/pull/53) open/draft、base `t1.7-event-log`、head `3fd90219695c34bb38d37539158c765853208c21`、無衝突；Ubuntu、macOS、Windows checks 全成功，但沒有 owner review/approval。PR 說明列出 resume 前重新驗證 provider、allowlist 非空且唯一及錯誤指引等修正。18:49 UTC 快照亦記錄 [#57](https://github.com/jimmynycuee/Joy/pull/57) open、非 draft，與 #53 共用 head、base `main`，三平台 checks 成功且無正式 review；討論將其描述為重複 PR。須在合併後 `main` 上重新核對／驗證並取得 owner review，否則 T1.12 尚未完成.
+3. **T1.13 尚未完成：** `joy doctor`／首次啟動檢查仍待實作與驗收；依序在 T1.12 後推進。
+4. **已被 #58 整合的來源 PR：** #6、#7 本身只合入依賴分支，不是直接合入 `main`；其功能已隨 #58 進入 `main`。18:49 UTC 快照記錄 #8/#54 open 且共用 head `604c3b2a`；#8 為 draft、base `t1.7-event-log`，#54 為非 draft、base `main`，Ubuntu/Windows 成功、macOS cancelled。#8 的 T1.9 範圍已由 #58 整合。#9 仍 open/draft，head `27c3de79514fe16e187f77ca9d04ddd7ec817e5c`，四項 checks 成功但與 `t1.9-github-pr` 衝突，無 owner review；其 P1 UI 範圍由 #58 整合。此狀態更新不修改 #8/#9/#54 或其共用分支.
+5. **基礎與重複修補 PR：** 18:49 UTC 快照記錄 #2 open、非 draft，base `main`、head `8de3b7abf944a474e1881af1c3a8c7de5ea67dab`；當時與 `main` 衝突，沒有 owner approval 或該 head 的 checks；基礎內容已透過 #58 整合，core 介面 owner review 仍是後續事項。#28/#46 當時皆 open、同 branch/head `fix/t1.6-origin-host-validation` / `0cd9f58a4f36649121d7872fbd1cbd782fe5f820`，分別與 `t1.6-server`／`main` 衝突；其 Origin/Host 修補已由 #58 整合。**#46 仍 open 時不要發布 #28。**
+6. **其他 owner gate：** [#44](https://github.com/jimmynycuee/Joy/pull/44) 仍 open、非 draft、base `t0-foundation`、clean；Ubuntu、macOS、Windows checks 成功，但沒有 owner review。memory FTS／敏感記憶處理的 owner review 仍待完成。
+7. [#21](https://github.com/jimmynycuee/Joy/pull/21) 的較後階段 E2E 失敗仍屬 out of scope；不調查、不修復。
+
+## 下一步（P1 依賴順序）
+
+1. 將 #53 T1.12 對齊目前 `main`，取得必要 owner review，對新 head 重跑 checks 後再整合。
+2. 完成 T1.13 `joy doctor`／首次啟動檢查，依其驗收條件測試並整合。
+3. T1.12 與 T1.13 完成後，在最新 `main` 重跑 `pnpm check` 與三平台 CI；只有全數通過才可標示 P1 完成並解除 P2 hold。#44、core interface 與 keychain/secret handling 的 owner review 仍須追蹤；#21 維持 out of scope。
+
+## 歷史整合 PR #58（2026-11-04 18:30 UTC；合併前快照）
+
+- [PR #58 — Integrate the P1 stack into main](https://github.com/jimmynycuee/Joy/pull/58)：draft、base `main` (`2c3fdb4`)、head branch `integrate-p1`；head `398d8f14472df8644e3d3ae56938f93d2a420efc`。最新讀取時 Ubuntu、macOS、web E2E 成功，Windows 仍執行中；獨立 review 尚待完成。
+- 整合範圍包括 T1.6/T1.7、T1.8、T1.9、Origin/Host 驗證、provider capability/model-effort guard、keychain 不可用時 UI 可啟動、snapshot/cursor replay 與事件去重、implementer/fixer 不提供 `openai-api`，以及 web build/Playwright CI。Vite proxy 保留瀏覽器 Origin/Host 並關閉廣泛 CORS，`review_loop` 亦拒絕不具 code-edit 能力的 implementer。T2.1/compete 實作不在 #58；T0.4 Codex fixture、Windows 真機、登入、MCP 選擇與產品／成本選擇仍是外部或使用者項目，保留於下方追蹤。
+- 本機驗證在本機 commit `2382074a11b21a2524a0a81e83e6ef293da39061`、tree `f2cb48c6fd0953608fbd39499d229536d267e6bf` 通過；已確認發布 head `398d8f14472df8644e3d3ae56938f93d2a420efc` 有完全相同的 tree。`pnpm install --frozen-lockfile` 成功；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 成功（196 tests passed、2 skipped）；`pnpm --filter @joy/web build` 成功；`pnpm test:e2e` 成功（4 個 Playwright 測試，含 HTTP/WebSocket proxy Origin regression）。E2E 使用 fake provider，沒有真實模型/API 呼叫或支出。
+- **Owner review（合併後 follow-up）**：`packages/core` provider/model interface 與 `packages/secrets` keychain/secret handling 均列入 owner review。依使用者明確授權，owner review 可在 #58 合併後持續追蹤，不是額外的合併 gate；仍須遵守 GitHub 實際 required approvals/checks。
+- **阻塞**：config-save guard 已推送至 #58，新增 regression 已在未修正的 `4114d9b` 重現回應 200，修正後確認回應 422、沒有 provider call 且舊設定不變。新 head `398d8f1` 的 CI 最新讀取為 Ubuntu/macOS/web E2E 成功、Windows 執行中；仍需 Windows 通過及對此 head 的獨立無 blocker review。#58 維持 draft；T1.12 與 T1.13 是 #58 後的 P1 工作，不是 #58 合併 gate，完成後才開始 P2。#57 保持 owner action（`close:false`）；來源 PR 未關閉。此 Session 的 draft-only PR policy 不允許標 ready 或 merge。
+- **下一步**：等待 #58 的 Windows CI 及對 head `398d8f1` 的獨立 review；若兩者通過，交由有權限者按 merge-commit 要求處理 ready/merge。之後按使用者順序完成 T1.12、T1.13，再解除 P2 hold；保持 #57 為 owner action（`close:false`），且不要把 owner review follow-up 變成合併 gate。
 
 ## PR 鏈快照（2026-11-04 14:20 UTC；歷史狀態）
 
-各 PR 的 CI 狀態只代表下列當時讀到的 head；解衝突、rebase 或推送後，必須以新 head 的 CI 為準。本節是 14:20 UTC 的歷史快照；目前 `main` SHA 的檢查狀態見上方，該 run 已成功。
+以下僅保留 14:20 UTC 的歷史 PR/CI 快照；其狀態與 checks 不代表目前 `main` 或任何 PR 的即時狀態。解衝突、rebase 或推送後，舊 head 的 CI 不代表新 head。
 
 1. [PR #2 — P0 foundation](https://github.com/jimmynycuee/Joy/pull/2)：open、非 draft，base `main`，head `56895e83`，與 base 衝突（dirty）。該 head 的 Ubuntu、macOS、Windows CI 成功；沒有 review，討論中要求 owner review。包含 `packages/core` 介面，owner review gate 未解除；不可繞過或合併。
 2. [PR #3 — Claude Code provider](https://github.com/jimmynycuee/Joy/pull/3)：open、非 draft，base `t0-foundation`，head `33b1b69c`，有衝突；該 head 三平台 CI 成功。變更 `packages/core` provider interface，沒有 review，需 owner review。
@@ -38,13 +54,15 @@
 14. [PR #47 — Plan v0.2](https://github.com/jimmynycuee/Joy/pull/47)：已合併至 `main`；合併 commit `ef9338c`，包含 v0.2 計畫與決策。
 15. [PR #48 — STATUS refresh](https://github.com/jimmynycuee/Joy/pull/48)：已合併至 `main`；目前 main 為 `c311fe6`。該 PR 的舊 head CI 成功；最新 `main` 的 CI 請以上方 run 41840639086 為準。
 
-## Owner 與外部待辦（2026-11-04 18:49 UTC）
+## 擁有者待處理（2026-11-04 18:49 UTC 快照）
 
-- PR #58 的正式 review 為 0；依 `AGENTS.md`，仍須 owner review `packages/core` provider/model interfaces 與 `packages/secrets` secret handling。PR #58 描述將此列為合併後 follow-up。
-- PR #53 的正式 review 為 0；T1.12 repo provider allowlist 依 PLAN §7.3 仍需 owner review。
-- T0.4 仍依 `docs/PLAN.md` 保持未勾選；Codex 真實 fixture 尚缺。Windows 原生行為、rate-limit 輸出與實際可用模型名稱仍未由現有驗收確認；確認模型名稱前不要猜測或改寫 PLAN §3.3。
+- 審核 [PR #53](https://github.com/jimmynycuee/Joy/pull/53) 的 T1.12 provider allowlist；目前沒有 owner review/approval。保持 draft，且在更新後的 head checks 通過前不視為完成。
+- `packages/core` provider/model interface 與 `packages/secrets` keychain/secret handling 已由 #58 整合；依 #58 合併後 follow-up 仍需 owner review。#2 本身仍 open、與 `main` 衝突且無 owner approval，但其基礎內容已由 #58 整合。
+- 審核 [PR #44](https://github.com/jimmynycuee/Joy/pull/44) 的 memory FTS／敏感記憶處理變更；目前無 owner review。
+- [PR #9](https://github.com/jimmynycuee/Joy/pull/9) 的 P1 UI 範圍已由 #58 整合；其 keychain／機密處理仍列為 owner review follow-up，不在本次 STATUS PR 中修改來源 PR。
+- T0.4 仍依 `docs/PLAN.md` 保持未勾選；Codex 真實執行 fixture 尚缺，需在已登入電腦上錄製。Windows 原生行為、rate-limit 輸出與實際可用模型名稱也尚不可視為完成驗收；確認預設模型名稱前不要猜測或改寫 PLAN §3.3。
 
-## 歷史下一步（截至 14:20 UTC；目前進度以上方「P1 與 GitHub 快照」為準）
+## 歷史下一步（截至 14:20 UTC；目前進度以上方「P1 狀態與依賴 PR 快照」為準）
 
 1. 等待 #2 owner review；再依 #2 → #3 → #4 → #5 整理衝突與 base、完成必要 review，並以各新 head 的三平台 CI 驗證。不得繞過 #2 的 owner gate。
 2. 合併整理 #28/#46 的重複修補為一個更新到最新 base 的 PR，跑完整 `pnpm check` 與 server regression；新 head 三平台 CI 通過後再處理 #37。
