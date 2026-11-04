@@ -42,7 +42,7 @@
 - [ ] T3.4 `memory` 管理 API slice：list / view / edit / delete 已實作；每則回答的記憶引用標示仍 blocked，待 production assistant/chat route 與 answer-reference contract
 - [ ] T3.5 專案記憶提案：已實作 `AGENTS.md` review diff、明確 review/apply approval 與安全寫入 API；production assistant/chat integration 尚未實作，且 memory write behavior 待 owner review
 - [x] T3.6 `memory`：只儲存明確經使用者核准的對話摘要，沿用既有 FTS5 索引檢索；舊訊息缺乏來源欄位，故不自動摘要；embedding 延後
-- [ ] T3.7 `scheduler`（queue-only 實作仍在進行；尚未完成重啟後持久化等 ticket 驗收）
+- [ ] T3.7 `scheduler`（PR #27 draft 已交付可持久化、重啟後可讀的 queue-only slice；due callback 只 enqueue。T2.3 owner policy 仍阻塞完整 ticket acceptance，保持未勾選）
 - [ ] T4.2 PWA + Web Push（PR #17 僅交付 installable PWA foundation；Web Push 未實作）
 - [ ] T4.4 Windows 強化（PR #16 有原生 Codex 探測與 WSL fallback；installer/distribution 仍是 ticket gap）
 
