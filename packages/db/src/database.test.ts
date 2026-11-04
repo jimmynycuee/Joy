@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { Database } from './database.js'
 import { migrate, openDatabase, schemaVersion } from './database.js'
-import { LATEST_VERSION } from './migrations.js'
+import { LATEST_VERSION, MIGRATIONS } from './migrations.js'
 
 const open: Database[] = []
 const dirs: string[] = []
@@ -44,6 +44,7 @@ describe('openDatabase', () => {
         'events',
         'memories',
         'memories_fts',
+        'model_stats',
         'messages',
         'repos',
         'reviews',
@@ -67,6 +68,33 @@ describe('openDatabase', () => {
     expect(second.prepare('SELECT count(*) AS n FROM tasks').get()).toEqual({ n: 1 })
   })
 
+  it('backfills model statistics when upgrading an existing database', () => {
+    const db = openDatabase(':memory:', { migrations: MIGRATIONS.slice(0, 1) })
+    open.push(db)
+    seedTask(db)
+    db.prepare(
+      "INSERT INTO attempts (id, task_id, provider, model, status, created_at, updated_at) VALUES ('a1', 't1', 'claude-cli', 'haiku', 'succeeded', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:30.000Z')",
+    ).run()
+    db.prepare(
+      `INSERT INTO reviews (id, attempt_id, reviewer_provider, reviewer_model, round, approve, summary, findings)
+       VALUES ('review-1', 'a1', 'codex-cli', 'gpt-6-luna', 1, 0, 'One issue', '[{"severity":"minor","message":"Review finding"}]')`,
+    ).run()
+
+    expect(migrate(db, MIGRATIONS)).toEqual([2])
+    expect(
+      db
+        .prepare('SELECT provider, model, task_kind, success, review_issues, duration_ms FROM model_stats')
+        .get(),
+    ).toEqual({
+      provider: 'claude-cli',
+      model: 'haiku',
+      task_kind: 'review_loop',
+      success: 1,
+      review_issues: 1,
+      duration_ms: 30000,
+    })
+  })
+
   it('refuses a database from a newer Joy', () => {
     const dir = mkdtempSync(join(tmpdir(), 'joy-db-'))
     dirs.push(dir)
@@ -85,7 +113,8 @@ describe('openDatabase', () => {
 
 describe('migrate', () => {
   it('rolls back a failing migration and keeps the previous version', () => {
-    const db = fresh()
+    const db = openDatabase(':memory:', { migrations: MIGRATIONS.slice(0, 1) })
+    open.push(db)
     const before = schemaVersion(db)
     expect(() =>
       migrate(db, [

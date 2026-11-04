@@ -25,12 +25,14 @@ export {
   listTaskEvents,
   listTasks,
   listUsage,
+  listModelStats,
   setTaskStatus,
   updateAttempt,
 } from './repositories.js'
 export type {
   ApprovalRecord,
   ApprovalStatus,
+  ModelStatsSummary,
   NewApproval,
   AttemptRecord,
   AttemptUpdate,

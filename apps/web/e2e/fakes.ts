@@ -94,11 +94,14 @@ class E2EFakeProvider implements AgentProvider {
         }
         return
       }
+      const findings = options.prompt.includes('T3.9_STATS_REVIEW_ISSUE')
+        ? [{ severity: 'minor', file: 'src/hello.ts', line: 1, message: 'Fake review issue for statistics' }]
+        : []
       yield {
         type: 'done',
         sessionId,
         finalMessage: 'Fake review approved',
-        structured: { approve: true, summary: 'Fake review approved', findings: [] },
+        structured: { approve: true, summary: 'Fake review approved', findings },
         isError: false,
       }
       return

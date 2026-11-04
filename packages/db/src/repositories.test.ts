@@ -28,6 +28,7 @@ import {
   listTaskEvents,
   listTasks,
   listUsage,
+  listModelStats,
   setTaskStatus,
   updateAttempt,
 } from './repositories.js'
@@ -186,6 +187,89 @@ describe('repositories', () => {
         rateLimitHits: 1,
       },
     ])
+  })
+
+  it('aggregates persisted model performance by provider, model, and task kind', () => {
+    const db = fresh()
+    const { task } = seed(db)
+    const successful = createAttempt(db, {
+      id: aid('stats-success'),
+      taskId: task.id,
+      provider: 'claude-cli',
+      model: 'haiku',
+      status: 'running',
+    })
+    createReview(db, {
+      id: 'stats-review-success',
+      attemptId: successful.id,
+      reviewerProvider: 'codex-cli',
+      reviewerModel: 'gpt-6-luna',
+      round: 1,
+      approve: false,
+      summary: 'Two issues',
+      findings: [
+        { severity: 'major', message: 'First issue' },
+        { severity: 'minor', message: 'Second issue' },
+      ],
+    })
+    db.prepare('UPDATE attempts SET created_at = ? WHERE id = ?').run(
+      '2026-01-01T00:00:00.000Z',
+      successful.id,
+    )
+    db.prepare('UPDATE attempts SET status = ?, updated_at = ? WHERE id = ?').run(
+      'succeeded',
+      '2026-01-01T00:02:00.000Z',
+      successful.id,
+    )
+
+    const failed = createAttempt(db, {
+      id: aid('stats-failed'),
+      taskId: task.id,
+      provider: 'claude-cli',
+      model: 'haiku',
+      status: 'running',
+    })
+    createReview(db, {
+      id: 'stats-review-failed',
+      attemptId: failed.id,
+      reviewerProvider: 'codex-cli',
+      reviewerModel: 'gpt-6-luna',
+      round: 1,
+      approve: false,
+      summary: 'One issue',
+      findings: [{ severity: 'major', message: 'Third issue' }],
+    })
+    db.prepare('UPDATE attempts SET created_at = ? WHERE id = ?').run('2026-01-01T00:00:00.000Z', failed.id)
+    db.prepare('UPDATE attempts SET status = ?, updated_at = ? WHERE id = ?').run(
+      'failed',
+      '2026-01-01T00:01:00.000Z',
+      failed.id,
+    )
+
+    const cancelled = createAttempt(db, {
+      id: aid('stats-cancelled'),
+      taskId: task.id,
+      provider: 'claude-cli',
+      model: 'haiku',
+      status: 'cancelled',
+    })
+    expect(getAttempt(db, cancelled.id)?.status).toBe('cancelled')
+    expect(listModelStats(db)).toEqual([
+      {
+        provider: 'claude-cli',
+        model: 'haiku',
+        taskKind: 'review_loop',
+        attemptCount: 2,
+        successCount: 1,
+        successRate: 0.5,
+        totalReviewIssues: 3,
+        averageReviewIssues: 1.5,
+        averageDurationMs: 90000,
+      },
+    ])
+
+    updateAttempt(db, successful.id, { status: 'running' })
+    expect(listModelStats(db)).toMatchObject([{ attemptCount: 1, successCount: 0, successRate: 0 }])
   })
 
   it('persists pending approval requests across database reopen and expires them on task cancellation', () => {

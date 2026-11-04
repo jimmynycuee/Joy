@@ -155,6 +155,80 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 2,
+    name: 'model performance statistics',
+    sql: /* sql */ `
+      CREATE TABLE model_stats (
+        attempt_id      TEXT PRIMARY KEY REFERENCES attempts(id) ON DELETE CASCADE,
+        provider        TEXT NOT NULL CHECK (provider IN ('openai-api', 'claude-cli', 'codex-cli')),
+        model           TEXT NOT NULL,
+        task_kind       TEXT NOT NULL CHECK (task_kind IN ('single', 'review_loop', 'compete')),
+        success         INTEGER NOT NULL CHECK (success IN (0, 1)),
+        review_issues   INTEGER NOT NULL CHECK (review_issues >= 0),
+        duration_ms     INTEGER NOT NULL CHECK (duration_ms >= 0),
+        recorded_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      ) STRICT;
+
+      INSERT INTO model_stats (attempt_id, provider, model, task_kind, success, review_issues, duration_ms)
+      SELECT a.id, a.provider, a.model, t.mode, a.status = 'succeeded',
+        COALESCE((SELECT SUM(json_array_length(r.findings)) FROM reviews r WHERE r.attempt_id = a.id), 0),
+        MAX(0, CAST(ROUND((julianday(a.updated_at) - julianday(a.created_at)) * 86400000) AS INTEGER))
+      FROM attempts a JOIN tasks t ON t.id = a.task_id
+      WHERE a.status IN ('succeeded', 'failed');
+
+      CREATE TRIGGER model_stats_after_attempt_insert
+      AFTER INSERT ON attempts
+      WHEN NEW.status IN ('succeeded', 'failed')
+      BEGIN
+        INSERT INTO model_stats (attempt_id, provider, model, task_kind, success, review_issues, duration_ms)
+        VALUES (
+          NEW.id, NEW.provider, NEW.model,
+          (SELECT mode FROM tasks WHERE id = NEW.task_id),
+          NEW.status = 'succeeded',
+          COALESCE((SELECT SUM(json_array_length(findings)) FROM reviews WHERE attempt_id = NEW.id), 0),
+          MAX(0, CAST(ROUND((julianday(NEW.updated_at) - julianday(NEW.created_at)) * 86400000) AS INTEGER))
+        )
+        ON CONFLICT (attempt_id) DO UPDATE SET
+          provider = excluded.provider,
+          model = excluded.model,
+          task_kind = excluded.task_kind,
+          success = excluded.success,
+          review_issues = excluded.review_issues,
+          duration_ms = excluded.duration_ms,
+          recorded_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+      END;
+
+      CREATE TRIGGER model_stats_after_attempt_status_update
+      AFTER UPDATE OF status ON attempts
+      WHEN NEW.status IN ('succeeded', 'failed')
+      BEGIN
+        INSERT INTO model_stats (attempt_id, provider, model, task_kind, success, review_issues, duration_ms)
+        VALUES (
+          NEW.id, NEW.provider, NEW.model,
+          (SELECT mode FROM tasks WHERE id = NEW.task_id),
+          NEW.status = 'succeeded',
+          COALESCE((SELECT SUM(json_array_length(findings)) FROM reviews WHERE attempt_id = NEW.id), 0),
+          MAX(0, CAST(ROUND((julianday(NEW.updated_at) - julianday(NEW.created_at)) * 86400000) AS INTEGER))
+        )
+        ON CONFLICT (attempt_id) DO UPDATE SET
+          provider = excluded.provider,
+          model = excluded.model,
+          task_kind = excluded.task_kind,
+          success = excluded.success,
+          review_issues = excluded.review_issues,
+          duration_ms = excluded.duration_ms,
+          recorded_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+      END;
+
+      CREATE TRIGGER model_stats_remove_resumed_attempt
+      AFTER UPDATE OF status ON attempts
+      WHEN NEW.status IN ('preparing', 'running', 'reviewing', 'fixing')
+      BEGIN
+        DELETE FROM model_stats WHERE attempt_id = NEW.id;
+      END;
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

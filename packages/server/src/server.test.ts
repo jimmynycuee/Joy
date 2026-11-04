@@ -428,6 +428,44 @@ describe('Joy local server', () => {
     expect(compete.status).toBe(400)
   })
 
+  it('serves grouped model performance statistics from the database', async () => {
+    const f = fixture()
+    const { origin } = await start(f.serverPromise)
+    const repo = createRepo(f.db, { id: rid('stats-repo'), path: '/stats-repo', defaultBranch: 'main' })
+    const task = createTask(f.db, {
+      id: tid('stats-task'),
+      repoId: repo.id,
+      title: 'Stats task',
+      prompt: 'Review metrics',
+      mode: 'single',
+    })
+    createAttempt(f.db, {
+      id: aid('stats-attempt'),
+      taskId: task.id,
+      provider: 'claude-cli',
+      model: 'fake-model',
+      status: 'succeeded',
+    })
+
+    const response = await fetch(`${origin}/api/model-stats`)
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      stats: [
+        expect.objectContaining({
+          provider: 'claude-cli',
+          model: 'fake-model',
+          taskKind: 'single',
+          attemptCount: 1,
+          successCount: 1,
+          successRate: 1,
+          totalReviewIssues: 0,
+          averageReviewIssues: 0,
+          averageDurationMs: expect.any(Number),
+        }),
+      ],
+    })
+  })
+
   it('lets a fake Claude task ask the fake Codex peer through the exposed MCP Tool Hub', async () => {
     const implementer = new FakeMcpClientProvider('claude-cli', 'ask_peer', {
       question: 'What edge case should the implementation test?',

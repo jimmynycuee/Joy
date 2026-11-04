@@ -86,6 +86,18 @@ export interface UsageIncrement {
   rateLimitHits?: number
 }
 
+export interface ModelStatsSummary {
+  provider: ProviderKind
+  model: string
+  taskKind: TaskMode
+  attemptCount: number
+  successCount: number
+  successRate: number
+  totalReviewIssues: number
+  averageReviewIssues: number
+  averageDurationMs: number
+}
+
 export interface AttemptRecord {
   id: AttemptId
   taskId: TaskId
@@ -169,6 +181,17 @@ interface AttemptRow {
   diff_stats: string | null
   created_at: string
   updated_at: string
+}
+
+interface ModelStatsRow {
+  provider: ProviderKind
+  model: string
+  task_kind: TaskMode
+  attempt_count: number
+  success_count: number
+  total_review_issues: number
+  average_review_issues: number
+  average_duration_ms: number
 }
 
 export function createRepo(db: Database, repo: Omit<RepoRecord, 'createdAt'>): RepoRecord {
@@ -419,6 +442,31 @@ export function listUsage(db: Database): UsageRecord[] {
   return (db.prepare('SELECT * FROM usage ORDER BY day DESC, provider').all() as unknown as UsageRow[]).map(
     mapUsage,
   )
+}
+
+/** Aggregates completed attempt snapshots by provider, model, and task mode. */
+export function listModelStats(db: Database): ModelStatsSummary[] {
+  const rows = db
+    .prepare(
+      `SELECT provider, model, task_kind, COUNT(*) AS attempt_count, SUM(success) AS success_count,
+         SUM(review_issues) AS total_review_issues, AVG(review_issues) AS average_review_issues,
+         AVG(duration_ms) AS average_duration_ms
+       FROM model_stats
+       GROUP BY provider, model, task_kind
+       ORDER BY task_kind, provider, model`,
+    )
+    .all() as unknown as ModelStatsRow[]
+  return rows.map((row) => ({
+    provider: row.provider,
+    model: row.model,
+    taskKind: row.task_kind,
+    attemptCount: row.attempt_count,
+    successCount: row.success_count,
+    successRate: row.attempt_count === 0 ? 0 : row.success_count / row.attempt_count,
+    totalReviewIssues: row.total_review_issues,
+    averageReviewIssues: row.average_review_issues,
+    averageDurationMs: row.average_duration_ms,
+  }))
 }
 
 export function createAttempt(db: Database, input: NewAttempt): AttemptRecord {

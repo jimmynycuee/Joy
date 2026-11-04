@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { FormEvent } from 'react'
 import { EFFORTS, PROVIDER_KINDS, ROLES } from '@joy/core'
-import type { ModelRef, ProviderKind, Role, RoleConfig } from '@joy/core'
+import type { ModelRef, ProviderKind, Role, RoleConfig, TaskMode } from '@joy/core'
 import type { JoyConfig } from '@joy/config'
 import './styles.css'
 
@@ -47,6 +47,17 @@ type TaskDetails = {
 }
 type SecretStatus = { set: boolean; source?: 'env' | 'keychain' }
 type ApiError = { error?: string }
+type ModelStatsSummary = {
+  provider: ProviderKind
+  model: string
+  taskKind: TaskMode
+  attemptCount: number
+  successCount: number
+  successRate: number
+  totalReviewIssues: number
+  averageReviewIssues: number
+  averageDurationMs: number
+}
 
 const ROLE_LABELS: Record<Role, string> = {
   assistant_brain: 'Assistant brain',
@@ -60,6 +71,11 @@ const PROVIDER_LABELS: Record<ProviderKind, string> = {
   'openai-api': 'OpenAI API',
   'claude-cli': 'Claude Code',
   'codex-cli': 'Codex',
+}
+const TASK_KIND_LABELS: Record<TaskMode, string> = {
+  single: 'Single agent',
+  review_loop: 'Implement + review',
+  compete: 'Compete',
 }
 const MODEL_SUGGESTIONS: Record<ProviderKind, string[]> = {
   'openai-api': ['gpt-6-luna'],
@@ -277,6 +293,14 @@ function modelIdentity(model?: ModelRef): string {
   return `${PROVIDER_LABELS[model.provider]} · ${model.model}`
 }
 
+function formatDuration(milliseconds: number): string {
+  const seconds = Math.round(milliseconds / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = seconds % 60
+  return remainingSeconds ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`
+}
+
 function splitDiff(patch: string): Map<string, string> {
   const chunks = patch.split(/(?=^diff --git )/m).filter((chunk) => chunk.trim())
   return new Map(
@@ -294,7 +318,9 @@ function App() {
   const [secretStatus, setSecretStatus] = useState<SecretStatus>({ set: false })
   const [selectedTaskId, setSelectedTaskId] = useState('')
   const [details, setDetails] = useState<TaskDetails | null>(null)
-  const [page, setPage] = useState<'tasks' | 'settings'>('tasks')
+  const [page, setPage] = useState<'tasks' | 'stats' | 'settings'>('tasks')
+  const [modelStats, setModelStats] = useState<ModelStatsSummary[]>([])
+  const [statsLoading, setStatsLoading] = useState(false)
   const [showTaskForm, setShowTaskForm] = useState(false)
   const [showRepoForm, setShowRepoForm] = useState(false)
   const [error, setError] = useState('')
@@ -335,6 +361,25 @@ function App() {
       active = false
     }
   }, [])
+
+  useEffect(() => {
+    if (page !== 'stats') return
+    let active = true
+    setStatsLoading(true)
+    void request<{ stats: ModelStatsSummary[] }>('/api/model-stats')
+      .then(({ stats }) => {
+        if (active) setModelStats(stats)
+      })
+      .catch((cause: unknown) => {
+        if (active) setError(cause instanceof Error ? cause.message : 'Could not load model statistics')
+      })
+      .finally(() => {
+        if (active) setStatsLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [page])
 
   useEffect(() => {
     if (!selectedTaskId) {
@@ -598,6 +643,13 @@ function App() {
             Workspace
           </button>
           <button
+            className={page === 'stats' ? 'nav-button active' : 'nav-button'}
+            aria-current={page === 'stats' ? 'page' : undefined}
+            onClick={() => setPage('stats')}
+          >
+            Performance
+          </button>
+          <button
             className={page === 'settings' ? 'nav-button active' : 'nav-button'}
             onClick={() => setPage('settings')}
           >
@@ -763,6 +815,86 @@ function App() {
           ) : (
             <div className="loading-card">Loading settings…</div>
           )}
+        </main>
+      ) : page === 'stats' ? (
+        <main className="settings-page model-stats-page" aria-label="Model performance statistics">
+          <div className="page-heading">
+            <div>
+              <p className="eyebrow">PERFORMANCE</p>
+              <h1>Model performance</h1>
+              <p className="subheading">Success, review findings, and elapsed time by model and task kind.</p>
+            </div>
+            <button className="quiet-button" onClick={() => setPage('tasks')}>
+              Back to workspace
+            </button>
+          </div>
+          <section className="settings-card stats-card">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">COMPLETED ATTEMPTS</p>
+                <h2>Provider and model breakdown</h2>
+              </div>
+              <span className="muted">Cancelled attempts are excluded</span>
+            </div>
+            {statsLoading ? (
+              <p className="muted" role="status">
+                Loading model statistics…
+              </p>
+            ) : modelStats.length ? (
+              <div className="model-stats-table-wrap">
+                <table className="model-stats-table" data-testid="model-stats-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Task kind</th>
+                      <th scope="col">Provider / model</th>
+                      <th scope="col">Runs</th>
+                      <th scope="col">Success rate</th>
+                      <th scope="col">Review issues</th>
+                      <th scope="col">Avg elapsed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {modelStats.map((stat) => (
+                      <tr
+                        key={`${stat.taskKind}:${stat.provider}:${stat.model}`}
+                        data-testid="model-stat-row"
+                      >
+                        <td>{TASK_KIND_LABELS[stat.taskKind]}</td>
+                        <td className="stats-model-cell">
+                          <strong>{PROVIDER_LABELS[stat.provider]}</strong>
+                          <span>{stat.model}</span>
+                        </td>
+                        <td>{stat.attemptCount}</td>
+                        <td>
+                          <strong>{Math.round(stat.successRate * 100)}%</strong>
+                          <span>
+                            {stat.successCount} / {stat.attemptCount} successful
+                          </span>
+                        </td>
+                        <td>
+                          <strong>{stat.averageReviewIssues.toFixed(1)} avg</strong>
+                          <span>{stat.totalReviewIssues} total</span>
+                        </td>
+                        <td>{formatDuration(stat.averageDurationMs)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="empty-stats" data-testid="model-stats-empty">
+                <h2>No completed attempts yet</h2>
+                <p>
+                  Performance summaries appear after tasks finish. Failed attempts count toward success rate;
+                  cancellations do not.
+                </p>
+              </div>
+            )}
+            <p className="stats-footnote">
+              Review issues are findings saved by the review loop. Success means the model attempt completed
+              without an execution error.
+            </p>
+          </section>
         </main>
       ) : (
         <main className="workspace-grid">

@@ -43,6 +43,7 @@ import {
   listTaskEvents,
   listTasks,
   listUsage,
+  listModelStats,
   openDatabase,
   setTaskStatus,
   updateAttempt,
@@ -437,6 +438,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     if (url.pathname === '/api/usage' && method === 'GET') {
       json(res, 200, { usage: listUsage(db) })
+      return
+    }
+    if (url.pathname === '/api/model-stats' && method === 'GET') {
+      json(res, 200, { stats: listModelStats(db) })
       return
     }
     if (url.pathname === '/api/config' && method === 'GET') {
