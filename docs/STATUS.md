@@ -2,12 +2,12 @@
 
 > 接手前請先讀本檔、`AGENTS.md` 與 `docs/PLAN.md`。本檔記錄目前進度、阻塞與決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。
 
-- 最後更新：2026-11-04 19:16 UTC
+- 最後更新：2026-11-04 19:26 UTC
 - 目前階段：**P1 尚未完成；P2 暫停，不開始或擴大。** 最新 `main` 為 `52b9c174b8bcb3f6463f5c67b7dff0a22304b689`（PR #56 的 STATUS 更新於 19:16:24 UTC 合併）。PR #58 已於 18:37:31 UTC 合併並整合主要 P1 堆疊；T1.12（#53）與 T1.13 `joy doctor` 仍未完成／未併入 `main`。
 - 最新 `main` 驗證：SHA `52b9c174b8bcb3f6463f5c67b7dff0a22304b689` 的 [CI run 41895342098](https://github.com/jimmynycuee/Joy/actions/runs/41895342098) 仍在執行；Ubuntu、Windows 與 web E2E 已成功，macOS 仍 queued，故尚不能宣稱該 SHA 全部通過。前一個 main SHA `686b4f942962bc02dd5d615fa4d32421188b488c` 的 CI run `41891442701` 四項 jobs 全成功；PR #58 head `8383dd80f5a5168d1db59728810e5bb91730e4da` 的四項 checks 亦全成功。
 - 計畫與決策：依 `docs/PLAN.md` v0.2；剩餘 P1 順序為 T1.12 → T1.13。完成 T1.12/T1.13 並驗證最新 `main` 前維持 P2 hold；T2.1 明確不在 #58 範圍，也不開始或擴大 P2。
 
-## P1 狀態與 owner follow-ups（live snapshot：2026-11-04 19:16 UTC）
+## P1 狀態與 owner follow-ups（live snapshot：2026-11-04 19:25 UTC）
 
 1. **主要 P1 整合已進 main：** [PR #58](https://github.com/jimmynycuee/Joy/pull/58) 於 2026-11-04 18:37:31 UTC 合併，merge commit `59eb6b9f60d714b6208afd3e6d89af24dd200e9c`；其 head 的 Ubuntu、macOS、Windows 與 web E2E 四項 checks 全通過（run `41887998301`）。[PR #56](https://github.com/jimmynycuee/Joy/pull/56) 於 19:16:24 UTC 合併，將 STATUS 更新帶入 main，merge commit `52b9c174b8bcb3f6463f5c67b7dff0a22304b689`。該 main SHA 的 CI run `41895342098` 中 Ubuntu、Windows 與 web E2E 已成功，macOS queued；前一個 main SHA `686b4f942962bc02dd5d615fa4d32421188b488c` 的 run `41891442701` 四項 jobs 成功。
 2. **T1.12 / PR #53：** [#53](https://github.com/jimmynycuee/Joy/pull/53) 仍 open/draft，base `t1.7-event-log` (`c196f74a`)，head `3fd90219695c34bb38d37539158c765853208c21`，clean；該 head 的 Ubuntu、macOS、Windows checks 均成功。owner `jimmynycuee` 已列為 requested reviewer，但 live snapshot 沒有 review/approval。PR 說明指出 policy/enforcement 範圍須 owner human review，並維持 draft。
