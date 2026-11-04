@@ -38,6 +38,7 @@
 - [x] T1.8 Codex 風格 Web UI（含設定頁）
 - [x] T2.1 多 provider 平行競賽（含獨立 worktree 的自動 strengths 合成候選；fake-provider 測試通過）
 - [x] T2.2 Tool Hub MCP 第一批工具（`ask_peer`、`task_status`、`request_approval`）
+- [x] T3.3 `memory`：三層記憶、安全的直接使用者 utterance 擷取、敏感資訊過濾、信心度與過期（draft PR；owner review required）
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
 

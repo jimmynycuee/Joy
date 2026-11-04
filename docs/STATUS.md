@@ -3,8 +3,8 @@
 > 開工前先讀本檔、`AGENTS.md`、`docs/PLAN.md`；收工前更新本檔。這裡記錄最新進度、阻塞、下一步與最近決策。
 
 - 最後更新：2026-11-04
-- 目前階段：**P2 進行中**。T2.1 獨立審查修正已合入 `t2.1-compete`，PR #10 head `65a026c569e4c543f9da8d33efdac18b4e616036` 三平台 CI 全綠且仍為 draft。T2.2 的最新 base 已本地合入並解衝突；完整 `pnpm check` 與 fake-provider E2E 通過，PR #11 更新後的 CI 待確認。依要求 PR #11 保持 draft、不合併。T3.9 draft PR #12 head `fc0439c5ef808724590812132ad2a028eb1f0851` 三平台 CI 全綠。#8/#9 三平台 CI 全綠且仍 draft；#9 secrets handling 必須先由 owner human review。
-- 工作分支：`t2.2-tools`，已合入 `t2.1-compete` head `65a026c569e4c543f9da8d33efdac18b4e616036`；PR #11 base=`t2.1-compete`。
+- 目前階段：**P2 尚有待決項；P3 T3.3 實作完成、draft PR 待 owner review**。T3.3 新增 `@joy/memory`，沿用既有 `memories` schema，user scope 僅從直接 user utterance 擷取；Email 等外部來源在擷取前拒絕，敏感內容不落庫，confidence / expiry 有測試。PR #11 已確認 published `t2.2-tools` head 與本地 base 一致；三平台 CI 皆已通過，PR #11 保持 draft、不合併。T2.1 PR #10、T3.9 PR #12 及 #8/#9 狀態沿用下方記錄。
+- 本 ticket 分支：`t3.3-memory`，從 PR #11 published `t2.2-tools` head `d67fb2a5dcca95f249c2da03806cf745f2e6c4e3` 建立；原 `t2.2-tools` 同步自 `t2.1-compete` head `65a026c569e4c543f9da8d33efdac18b4e616036`；PR #11 base=`t2.1-compete`。
 - 本次 base sync 後驗證：隔離繼承 Git 身分的 `pnpm check` 通過（188 passed、2 skipped）；T2.2/T2.1 fake-provider Playwright E2E 通過（4 specs）。所有 provider 測試只使用 fakes，沒有呼叫真模型。
 
 ## 分支與 PR
@@ -17,7 +17,8 @@ main … t1.5-review-loop
               └─ #9 t1.8-web（draft；base=t1.9-github-pr）
                   └─ #10 t2.1-compete（draft；base=t1.8-web；head=`65a026c`）
                       └─ #11 t2.2-tools（draft；base=t2.1-compete）
-                          └─ #12 T3.9 model stats/UI（draft；base=t2.2-tools）
+                          ├─ #12 T3.9 model stats/UI（draft；base=t2.2-tools）
+                          └─ t3.3-memory T3.3 memory（draft；base=t2.2-tools；owner review required）
 ```
 
 - #6/#7 已合併到相依分支，不代表已合入 `main` 或已部署。
@@ -33,6 +34,7 @@ main … t1.5-review-loop
 | monorepo / CI                   | pnpm、TypeScript strict、ESLint、Prettier、Vitest；三平台 CI 執行 `pnpm check`。                                                                                                                     |
 | `packages/core` / `packages/db` | 領域介面、SQLite schema、task/repo CRUD、事件/reviews/usage 持久化已完成。                                                                                                                           |
 | `packages/tools`                | T2.2 Tool Hub 提供 task-scoped MCP：唯讀 `ask_peer`、`task_status`、持久化 `request_approval`（僅記錄提案，不執行動作）。                                                                            |
+| `packages/memory`               | T3.3 三層 memory storage 沿用既有 schema；user-memory 僅接受直接 user utterance，敏感內容拒寫，讀取排除已過期記憶。                                                                                  |
 | `packages/providers`            | Claude CLI、Codex CLI、OpenAI API adapters 完成；Codex 目前仍使用合成 fixture，尚待登入電腦錄製真實 fixture。                                                                                        |
 | `packages/executor`             | 每個 attempt 使用獨立 Git worktree/branch，提供 diff、commit、cleanup。                                                                                                                              |
 | `packages/orchestrator`         | T1.5 `reviewLoop()` 完成；T2.1 支援並行競賽、自動 strengths 合成、24,000-byte provider prompt 上限與 code-edit capability 驗證；provider 呼叫可注入 task-scoped MCP Tool Hub。                       |
@@ -56,12 +58,14 @@ main … t1.5-review-loop
 1. 推送 PR #11 的 base sync 修正並確認更新後 head 的三平台 CI；依要求不改成 ready、不合併。
 2. 追蹤 #10 獨立 review 與 #9 owner human review；不重跑 #8 macOS，也不更改 #8/#9 審核狀態。
 3. #12 T3.9 draft PR 的三平台 CI 已綠；同時只推進不依賴未決 tier/trigger/quota/scheduler 政策的工作。
-4. Codex 真實 fixture、模型名稱確認與 Windows 實機驗證留待相應條件可用時處理。
+4. T3.3 draft PR 等待 owner human review；memory-write rules 維持 draft，未合併。
+5. Codex 真實 fixture、模型名稱確認與 Windows 實機驗證留待相應條件可用時處理。
 
 ## 最近的決策（新的放最上面）
 
 | 日期       | 決策                                                                                                                                                                                         | 原因 / 出處                                                                                            |
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| 2026-11-04 | T3.3 user-scope 記憶只從明確標記的直接 user utterance 擷取；Email 等外部來源不解析，credential-like / government-ID 內容不寫入，confidence 與 expiry 沿用既有欄位。                          | T3.3 ticket 與既有外部內容不可信規則；保留 owner 對 memory-write rules 的審核。                        |
 | 2026-11-04 | 「合併優點」採自動 synthesis；使用配置的 Judge 模型在獨立 worktree 執行額外呼叫，輸出可檢視、可明確選取的新候選，原候選保留。                                                                | owner 回答自動合成；維持明確勝者選取與 worktree 隔離。                                                 |
 | 2026-11-03 | T2.2 Tool Hub 使用 loopback、token-scoped stateless MCP；`ask_peer` 僅呼叫不同 provider 且以 read-only 運行，approval request 與 awaiting 狀態持久化，取消時 pending approval 轉為 expired。 | provider 與 server 整合、schema/error/cancellation、重啟持久化及 fake-provider acceptance 均有測試。   |
 | 2026-11-03 | T2.1 以 Implementer/Reviewer 不同 provider 作平行候選，各在獨立 worktree 執行；read-only Judge 結構化比較，使用者明確選勝並將 `winner_selected` 持久化。                                     | 後續 owner 選擇自動 synthesis，同時保留原候選與明確勝者選取。                                          |

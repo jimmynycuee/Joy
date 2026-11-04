@@ -111,6 +111,12 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/memory:
+    dependencies:
+      '@joy/db':
+        specifier: workspace:*
+        version: link:../db
+
   packages/orchestrator:
     dependencies:
       '@joy/core':

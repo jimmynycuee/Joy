@@ -1,0 +1,17 @@
+{
+  "name": "@joy/memory",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Three-tier memory storage and safe user-utterance extraction for Joy.",
+  "license": "BUSL-1.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@joy/db": "workspace:*"
+  }
+}
