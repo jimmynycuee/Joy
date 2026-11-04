@@ -171,7 +171,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       : {
           taskId,
           attemptId,
-          seq: listTaskEvents(db, taskId).at(-1)?.seq ?? 0,
+          seq: (listTaskEvents(db, taskId).at(-1)?.seq ?? 0) + 1,
           type,
           payload: safe,
           ts: new Date().toISOString(),
@@ -467,10 +467,24 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Task failed'
-      if (attempt)
-        updateAttempt(db, attempt.id, { status: controller.signal.aborted ? 'cancelled' : 'failed' })
-      setTaskStatus(db, task.id, controller.signal.aborted ? 'cancelled' : 'failed')
-      publish(task.id, attempt?.id ?? ('unknown' as AttemptId), 'error', { message })
+      const status = controller.signal.aborted ? 'cancelled' : 'failed'
+      if (!attempt) {
+        const fallbackImplementer = resolveRole(
+          'implementer',
+          initialConfig.roles as RoleConfig,
+          task.roleOverrides,
+        )
+        attempt = createAttempt(db, {
+          id: randomUUID() as AttemptId,
+          taskId: task.id,
+          provider: fallbackImplementer.provider,
+          model: fallbackImplementer.model,
+          status,
+        })
+      }
+      updateAttempt(db, attempt.id, { status })
+      setTaskStatus(db, task.id, status)
+      publish(task.id, attempt.id, 'error', { message })
     }
   }
 
@@ -698,6 +712,7 @@ function createOriginAllowlist(allowPlaywrightOrigin: boolean): Set<string> {
 
 function isAllowedOrigin(req: IncomingMessage, allowedOrigins: ReadonlySet<string>): boolean {
   const origin = req.headers.origin
+  // Non-browser loopback clients may omit Origin; browser mutations and WebSocket upgrades supply it.
   if (origin === undefined) return true
   if (allowedOrigins.has(origin)) return true
   try {

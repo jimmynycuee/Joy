@@ -2,6 +2,16 @@ import { test, expect } from '@playwright/test'
 import type { ModelRef } from '@joy/core'
 
 test('settings, secure key status, and a complete fake-provider task flow', async ({ page, request }) => {
+  await page.route('**/api/config', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue()
+      return
+    }
+    const response = await route.fetch()
+    const body = (await response.json()) as { config: { roles: Record<string, unknown> } }
+    body.config.roles.implementer = { provider: 'openai-api', model: 'gpt-6-luna', effort: 'medium' }
+    await route.fulfill({ response, json: body })
+  })
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
   await expect(page.getByRole('region', { name: 'Task activity' })).toBeVisible()
@@ -9,6 +19,8 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
 
   await page.getByRole('button', { name: 'Settings' }).click()
   await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
+  await expect(page.getByRole('status').filter({ hasText: 'OpenAI API cannot edit code' })).toBeVisible()
+  await page.screenshot({ path: 'test-results/t1.8-legacy-openai-implementer.png', fullPage: true })
   for (const role of ['Assistant brain', 'Background', 'Orchestrator', 'Implementer', 'Reviewer', 'Judge']) {
     await expect(page.getByLabel(`${role} provider`)).toBeVisible()
     await expect(page.getByLabel(`${role} model`)).toBeVisible()

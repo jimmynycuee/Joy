@@ -522,6 +522,12 @@ function App() {
                     {ROLES.map((role) => (
                       <fieldset className="role-card" key={role}>
                         <legend>{ROLE_LABELS[role]}</legend>
+                        {role === 'implementer' && config.roles.implementer.provider === 'openai-api' ? (
+                          <p className="muted" role="status">
+                            OpenAI API cannot edit code, so Joy selected Claude Code for this role. Save to
+                            update routing.
+                          </p>
+                        ) : null}
                         <label>
                           Provider
                           <select

@@ -122,6 +122,7 @@ function fixture(
     secretBackend?: MemoryBackend
     secretEnv?: NodeJS.ProcessEnv
     allowPlaywrightOrigin?: boolean
+    configStore?: ConfigStore
   } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), 'joy-server-test-'))
@@ -146,7 +147,7 @@ function fixture(
   const serverOptions: JoyServerOptions = {
     home: dir,
     database: db,
-    configStore: new ConfigStore(join(dir, 'config.yaml')),
+    configStore: options.configStore ?? new ConfigStore(join(dir, 'config.yaml')),
     secretStore: new SecretStore({
       backend: secretBackend,
       ...(options.secretEnv ? { env: options.secretEnv } : {}),
@@ -815,6 +816,41 @@ describe('Joy local server', () => {
         }),
       ]),
     )
+  })
+
+  it('persists pre-attempt failures as replayable events with a unique sequence', async () => {
+    const configDir = mkdtempSync(join(tmpdir(), 'joy-config-test-'))
+    dirs.push(configDir)
+    const configStore = new ConfigStore(join(configDir, 'config.yaml'))
+    const originalGet = configStore.get.bind(configStore)
+    let reads = 0
+    configStore.get = async () => {
+      reads++
+      if (reads === 3) throw new Error('config became unavailable')
+      return originalGet()
+    }
+    const { serverPromise } = fixture({ configStore })
+    const { origin } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/repo', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    const response = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Fail before starting an attempt',
+      prompt: 'This task should record its failure',
+      mode: 'single',
+    })
+    const { task } = (await response.json()) as { task: { id: string } }
+    const result = await waitForStatus(origin, task.id, 'failed')
+
+    expect(result.attempts).toHaveLength(1)
+    expect(result.events).toEqual([
+      expect.objectContaining({ seq: 1, type: 'error', payload: { message: 'config became unavailable' } }),
+    ])
+    const replay = (await (await fetch(`${origin}/api/tasks/${task.id}/events?after=0`)).json()) as {
+      events: Array<{ seq: number; type: string }>
+    }
+    expect(replay.events).toMatchObject([{ seq: 1, type: 'error' }])
   })
 
   it('cancels a running task through the API', async () => {
