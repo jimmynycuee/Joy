@@ -1,0 +1,17 @@
+{
+  "name": "@joy/google-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Typed read-only adapter boundary for Google Calendar and Gmail integrations.",
+  "license": "BUSL-1.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  }
+}

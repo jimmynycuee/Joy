@@ -126,6 +126,12 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/google-workspace:
+    dependencies:
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+
   packages/orchestrator:
     dependencies:
       '@joy/core':

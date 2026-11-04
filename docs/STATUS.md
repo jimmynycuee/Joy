@@ -86,3 +86,12 @@ main … t1.5-review-loop
 - Windows Git 預設 `core.autocrlf=true`；測試比對內容前需在臨時 repo 關閉。
 - 新套件須 `pnpm install` 才會加入 workspace；Vitest project 名稱依套件設定。
 - 雲端 checkout 內 git 命令宜直接於 checkout 執行，避免某些環境下 `cd <repo> && git ...` 的 cwd 問題。
+
+## T3.8 Google Workspace（部分完成；保持未完成）
+
+- 工作分支 `t3.8-google-workspace` 從 PR #15 的 live head `68f1354b0e164c4ae0f959715011466f05d79398` 建立；#15 與 #11 保持未修改。
+- 新增獨立 `@joy/google-workspace` 唯讀 adapter boundary，包含列出日曆、free/busy、列出/讀取事件、搜尋/讀取 Gmail 郵件與 thread 的型別及邊界驗證；測試僅使用合成 fake connector responses。
+- 尚無 Joy app-facing outbound MCP client/configuration，也沒有 Google OAuth/token lifecycle 或 Google connector 設定。現有 server MCP 是 Joy Tool Hub inbound；assistant 的 `mcpServers` 只提供 CLI provider 注入，沒有 Google runtime integration。Reason Workspace OAuth connection 不會供應 Joy runtime credential，本分支未使用該 connection，也未讀取真實郵件/行事曆或呼叫 live provider。
+- End-to-end blocker：需由後續整合決定並實作 Joy-owned outbound MCP/API connector、provider tool/schema 對應、app-facing assistant registration，以及 Joy runtime 的 OAuth 授權、token 儲存/更新與 read-only scope 設定；在這些 seam/config 尚未建立前，本 adapter 不會連線。T2.3 owner policy 與明確 workflow approval 前，Gmail draft/send、event create/update/delete、邀請一律不實作。
+- 本地驗證：`pnpm exec vitest run --project google-workspace` 通過（4 tests）；清除繼承的 Git author/committer identity 後執行 `pnpm check` 通過（format、lint、typecheck、194 passed、2 skipped）。未執行任何 live provider call。
+- 本 ticket 驗收仍未完成；`docs/PLAN.md` 的 T3.8 條目明確保留未完成狀態。

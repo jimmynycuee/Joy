@@ -338,7 +338,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 | T3.5 | 專案記憶：提議修改 `AGENTS.md` → 以 diff 形式請你確認 | 未經確認不會寫入 repo |
 | T3.6 | 事件記憶：對話摘要 + FTS5 檢索；（選配）OpenAI embedding 語意搜尋 | 能找回一個月前討論過的決策 |
 | T3.7 | `scheduler`：提醒、cron 任務（如「每晚 11 點跑測試修 flaky」） | 重啟後排程仍有效 |
-| T3.8 | 整合 Google Calendar / Gmail（現成 MCP server 或官方 API）；寄信、邀請一律 🔴 | 「明天下午有空嗎」能正確回答；寄信必須審核 |
+| T3.8 | 整合 Google Calendar / Gmail（現成 MCP server 或官方 API）；寄信、邀請一律 🔴（本次僅建立獨立的唯讀 adapter boundary 與 fake 測試；未完成 app-facing MCP/OAuth runtime wiring，票務保持未完成） | 「明天下午有空嗎」能正確回答；寄信必須審核 |
 | T3.9 | 模型表現統計與 UI | 可看到兩家在各類任務的表現 |
 
 ### P4 — 遠端與桌面化（第 19–22 週）
