@@ -320,6 +320,8 @@ function App() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [config, setConfig] = useState<JoyConfig | null>(null)
   const [secretStatus, setSecretStatus] = useState<SecretStatus | null>(null)
+  const [secretStatusLoading, setSecretStatusLoading] = useState(true)
+  const [secretStatusRetry, setSecretStatusRetry] = useState(0)
   const [selectedTaskId, setSelectedTaskId] = useState('')
   const [details, setDetails] = useState<TaskDetails | null>(null)
   const [page, setPage] = useState<'tasks' | 'settings'>('tasks')
@@ -371,17 +373,28 @@ function App() {
       .catch((cause: unknown) => {
         if (active) setError(cause instanceof Error ? cause.message : 'Could not connect to Joy server')
       })
-    void request<SecretStatus>('/api/secrets/openai-api-key')
-      .then((status) => {
-        if (active) setSecretStatus(status)
-      })
-      .catch(() => {
-        if (active) setSecretStatus(null)
-      })
     return () => {
       active = false
     }
   }, [])
+
+  useEffect(() => {
+    let active = true
+    void request<SecretStatus>('/api/secrets/openai-api-key')
+      .then((status) => {
+        if (!active) return
+        setSecretStatus(status)
+        setSecretStatusLoading(false)
+      })
+      .catch(() => {
+        if (!active) return
+        setSecretStatus(null)
+        setSecretStatusLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [secretStatusRetry])
 
   useEffect(() => {
     if (!selectedTaskId) {
@@ -393,7 +406,9 @@ function App() {
     let bufferedEvents: TaskEvent[] = []
     let lastAcceptedSequence = 0
     let connectionCount = 0
+    let reconnectAttempts = 0
     let reconnectTimer: number | undefined
+    let stableConnectionTimer: number | undefined
     let socket: WebSocket | undefined
     setDetails(null)
     const socketProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -451,7 +466,11 @@ function App() {
       const nextSocket = new WebSocket(socketUrl)
       socket = nextSocket
       nextSocket.onopen = () => {
-        if (active && shouldReplay) replayEvents()
+        if (!active) return
+        if (shouldReplay) replayEvents()
+        stableConnectionTimer = window.setTimeout(() => {
+          reconnectAttempts = 0
+        }, 10_000)
       }
       nextSocket.onmessage = (message) => {
         const decoded = record(JSON.parse(String(message.data)))
@@ -461,8 +480,11 @@ function App() {
         acceptEvents([event])
       }
       nextSocket.onclose = () => {
+        if (stableConnectionTimer !== undefined) window.clearTimeout(stableConnectionTimer)
         if (!active) return
-        reconnectTimer = window.setTimeout(connect, 500)
+        const delay = Math.min(500 * 2 ** reconnectAttempts, 30_000)
+        reconnectAttempts = Math.min(reconnectAttempts + 1, 6)
+        reconnectTimer = window.setTimeout(connect, delay)
       }
       nextSocket.onerror = () => nextSocket.close()
     }
@@ -499,6 +521,7 @@ function App() {
     return () => {
       active = false
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer)
+      if (stableConnectionTimer !== undefined) window.clearTimeout(stableConnectionTimer)
       socket?.close()
     }
   }, [selectedTaskId])
@@ -817,19 +840,34 @@ function App() {
                     className={secretStatus?.set ? 'status-pill configured' : 'status-pill'}
                     role="status"
                   >
-                    {secretStatus === null
-                      ? 'Unavailable'
-                      : secretStatus.set
-                        ? 'Configured'
-                        : 'Not configured'}
+                    {secretStatusLoading
+                      ? 'Checking…'
+                      : secretStatus === null
+                        ? 'Unavailable'
+                        : secretStatus.set
+                          ? 'Configured'
+                          : 'Not configured'}
                   </span>
                 </div>
                 <p className="muted secret-description">
-                  {secretStatus === null
-                    ? 'OpenAI key status is unavailable. Key management is temporarily disabled.'
-                    : 'Stored in the OS keychain. Joy never returns the key to the browser or writes it to config, events, or the database.'}
+                  {secretStatusLoading
+                    ? 'Checking OpenAI key status…'
+                    : secretStatus === null
+                      ? 'OpenAI key status is unavailable. Key management is temporarily disabled.'
+                      : 'Stored in the OS keychain. Joy never returns the key to the browser or writes it to config, events, or the database.'}
                 </p>
-                {secretStatus === null ? null : secretStatus.source === 'env' ? (
+                {secretStatusLoading ? null : secretStatus === null ? (
+                  <button
+                    className="outline-button"
+                    type="button"
+                    onClick={() => {
+                      setSecretStatusLoading(true)
+                      setSecretStatusRetry((attempt) => attempt + 1)
+                    }}
+                  >
+                    Retry key status
+                  </button>
+                ) : secretStatus.source === 'env' ? (
                   <div className="env-managed" role="status">
                     Managed by the OPENAI_API_KEY environment variable.
                   </div>

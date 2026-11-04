@@ -19,11 +19,14 @@ const config = {
   ),
 }
 
-test('loads workspace and settings when OpenAI key status is unavailable', async ({ page }) => {
+test('loads workspace when OpenAI key status is unavailable and retries the lookup', async ({ page }) => {
+  let keyStatusRequests = 0
   await page.route('**/api/**', async (route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/api/secrets/openai-api-key') {
-      await route.abort('failed')
+      keyStatusRequests++
+      if (keyStatusRequests === 1) await route.abort('failed')
+      else await route.fulfill({ json: { set: false } })
     } else if (path === '/api/repos') {
       await route.fulfill({ json: { repos: [repo] } })
     } else if (path === '/api/tasks') {
@@ -47,5 +50,9 @@ test('loads workspace and settings when OpenAI key status is unavailable', async
   await expect(page.getByLabel('Implementer model')).toHaveValue('startup-test-model')
   await expect(page.getByRole('heading', { name: 'OpenAI API key' })).toBeVisible()
   await expect(page.getByText('Unavailable', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Retry key status' })).toBeVisible()
   await page.screenshot({ path: 'test-results/key-status-unavailable.png', fullPage: true })
+  await page.getByRole('button', { name: 'Retry key status' }).click()
+  await expect(page.getByText('Not configured', { exact: true })).toBeVisible()
+  expect(keyStatusRequests).toBe(2)
 })

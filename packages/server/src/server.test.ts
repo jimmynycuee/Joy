@@ -194,6 +194,18 @@ class GatedConfigStore extends ConfigStore {
   }
 }
 
+class FailOnceConfigStore extends ConfigStore {
+  failNextRead = false
+
+  override async get() {
+    if (this.failNextRead) {
+      this.failNextRead = false
+      throw new Error('Simulated config read failure')
+    }
+    return super.get()
+  }
+}
+
 class ThrowOnceRedactor extends Redactor {
   failNextSynthesisAgent = false
   failNextSynthesisStarted = false
@@ -522,6 +534,84 @@ describe('Joy local server', () => {
     expect(api.calls).toHaveLength(0)
   })
 
+  it('persists early task failures so clients can replay a unique error event', async () => {
+    const configDir = mkdtempSync(join(tmpdir(), 'joy-failing-config-'))
+    dirs.push(configDir)
+    const configStore = new FailOnceConfigStore(join(configDir, 'config.yaml'))
+    const { serverPromise } = fixture({ configStore })
+    const { origin } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/early-failure-repo', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    configStore.failNextRead = true
+
+    const response = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Fail before attempt setup',
+      prompt: 'This should fail during config loading',
+      mode: 'review_loop',
+    })
+    expect(response.status).toBe(201)
+    const { task } = (await response.json()) as { task: { id: string } }
+    const details = await waitForEvent(origin, task.id, 'error')
+    const errorEvent = details.events.find(
+      (value) =>
+        typeof value === 'object' && value !== null && (value as { type?: unknown }).type === 'error',
+    ) as { seq: number; payload: { message: string } }
+    expect(errorEvent.seq).toBeGreaterThan(0)
+    expect(errorEvent.payload.message).toContain('Simulated config read failure')
+    expect(details.attempts).toHaveLength(1)
+    expect(details.attempts[0]).toMatchObject({ status: 'failed' })
+    expect(details.task.status).toBe('failed')
+  })
+
+  it('revalidates compete provider capabilities when resuming after configuration changes', async () => {
+    const configDir = mkdtempSync(join(tmpdir(), 'joy-changed-roles-'))
+    dirs.push(configDir)
+    const configStore = new ConfigStore(join(configDir, 'config.yaml'))
+    const { db, api, executor, implementer, reviewer, serverPromise } = fixture({ configStore })
+    api.capabilities.codeEdit = false
+    const { origin } = await start(serverPromise)
+    const repo = createRepo(db, {
+      id: rid('repo-config-changed'),
+      path: '/config-changed-repo',
+      defaultBranch: 'main',
+    })
+    const task = createTask(db, {
+      id: tid('task-config-changed'),
+      repoId: repo.id,
+      title: 'Resume with changed providers',
+      prompt: 'Do not run unsupported providers',
+      mode: 'compete',
+    })
+    setTaskStatus(db, task.id, 'failed')
+    const config = await configStore.get()
+    await configStore.save({
+      ...config,
+      roles: {
+        ...config.roles,
+        reviewer: { ...config.roles.reviewer, provider: 'openai-api' },
+      },
+    })
+
+    const resumed = await postJson(`${origin}/api/tasks/${task.id}/resume`, {})
+    expect(resumed.status).toBe(202)
+    const details = await waitForEvent(origin, task.id, 'result')
+    expect(details.task.status).toBe('failed')
+    expect(details.attempts).toHaveLength(1)
+    expect(details.attempts[0]).toMatchObject({ provider: 'openai-api', status: 'failed' })
+    expect(details.events).toContainEqual(
+      expect.objectContaining({
+        type: 'result',
+        payload: expect.objectContaining({ reason: expect.stringContaining('code-edit capable') }),
+      }),
+    )
+    expect(executor.prepareCalls).toBe(0)
+    expect(implementer.calls).toHaveLength(0)
+    expect(reviewer.calls).toHaveLength(0)
+    expect(api.calls).toHaveLength(0)
+  })
+
   it('rejects untrusted Host and Origin headers and requires JSON for body methods', async () => {
     const { serverPromise } = fixture()
     const { origin } = await start(serverPromise)
@@ -546,15 +636,20 @@ describe('Joy local server', () => {
     for (const disallowedOrigin of [
       'custom://127.0.0.1',
       'https://127.0.0.1:5173',
-      'http://localhost:5173',
       'http://127.0.0.1:5174',
+      'http://localhost:5174',
       'http://127.0.0.1:4173',
+      'http://localhost:4173',
     ]) {
       const rejected = await requestWithHeaders(`${origin}/api/health`, 'GET', {
         origin: disallowedOrigin,
       })
       expect(rejected.status, disallowedOrigin).toBe(403)
     }
+    const localhostDevOrigin = await requestWithHeaders(`${origin}/api/health`, 'GET', {
+      origin: 'http://localhost:5173',
+    })
+    expect(localhostDevOrigin.status).toBe(200)
     const rejectedSecretWrite = await requestWithHeaders(
       `${origin}/api/secrets/openai-api-key`,
       'PUT',
@@ -632,6 +727,10 @@ describe('Joy local server', () => {
       origin: 'http://127.0.0.1:4173',
     })
     expect(denied.status).toBe(403)
+    const deniedLocalhost = await requestWithHeaders(`${defaultOrigin}/api/health`, 'GET', {
+      origin: 'http://localhost:4173',
+    })
+    expect(deniedLocalhost.status).toBe(403)
 
     const playwrightServer = fixture({ allowPlaywrightOrigin: true })
     const { origin: playwrightOrigin } = await start(playwrightServer.serverPromise)
@@ -639,6 +738,10 @@ describe('Joy local server', () => {
       origin: 'http://127.0.0.1:4173',
     })
     expect(allowed.status).toBe(200)
+    const allowedLocalhost = await requestWithHeaders(`${playwrightOrigin}/api/health`, 'GET', {
+      origin: 'http://localhost:4173',
+    })
+    expect(allowedLocalhost.status).toBe(200)
   })
 
   it('runs competing providers in isolated worktrees, persists judge rationale, and selects a winner', async () => {
