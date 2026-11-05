@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { parse, stringify } from 'yaml'
 import { ZodError } from 'zod'
 import type { JoyConfig } from './schema.js'
@@ -8,7 +8,9 @@ import { configSchema, defaultConfig } from './schema.js'
 
 /** Joy's data directory. `JOY_HOME` overrides `~/.joy` (tests, portable installs). */
 export function joyHome(env: NodeJS.ProcessEnv = process.env): string {
-  return env.JOY_HOME ?? join(homedir(), '.joy')
+  const home = env.JOY_HOME ?? join(homedir(), '.joy')
+  if (!isAbsolute(home)) throw new Error('JOY_HOME must be an absolute path')
+  return resolve(home)
 }
 
 export function resolvePaths(config: JoyConfig, home: string = joyHome()) {

@@ -148,6 +148,10 @@ describe('paths', () => {
     })
   })
 
+  it('rejects a relative JOY_HOME so separate processes resolve one token directory', () => {
+    expect(() => joyHome({ JOY_HOME: 'relative/joy' })).toThrow('JOY_HOME must be an absolute path')
+  })
+
   it('honors explicit paths in the config', () => {
     const config = parseConfig('paths: { worktrees: /fast/wt }')
     expect(resolvePaths(config, '/h').worktrees).toBe('/fast/wt')

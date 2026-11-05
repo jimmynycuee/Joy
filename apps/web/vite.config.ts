@@ -1,6 +1,6 @@
 import { lstatSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -15,8 +15,7 @@ export function readApiToken(command: 'build' | 'serve', isPreview = false): str
     return environmentToken
   }
 
-  const joyHome = process.env.JOY_HOME ?? join(homedir(), '.joy')
-  const tokenFile = process.env.JOY_API_TOKEN_FILE?.trim() || join(joyHome, 'api-token')
+  const tokenFile = process.env.JOY_API_TOKEN_FILE?.trim() || join(joyHome(), 'api-token')
   let fileToken = ''
   let metadata: ReturnType<typeof lstatSync> | undefined
   try {
@@ -52,6 +51,12 @@ export function readApiToken(command: 'build' | 'serve', isPreview = false): str
   }
   assertApiToken(fileToken)
   return fileToken
+}
+
+function joyHome(): string {
+  const home = process.env.JOY_HOME ?? join(homedir(), '.joy')
+  if (!isAbsolute(home)) throw new Error('JOY_HOME must be an absolute path')
+  return resolve(home)
 }
 
 function assertApiToken(token: string): void {

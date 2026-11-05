@@ -37,6 +37,14 @@ describe('Vite API token configuration', () => {
     expect(readApiToken('serve')).toBe(token)
   })
 
+  it('requires an absolute JOY_HOME to keep server and UI token paths consistent', () => {
+    process.env.JOY_HOME = 'relative-joy-home'
+    delete process.env.JOY_API_TOKEN
+    delete process.env.JOY_API_TOKEN_FILE
+
+    expect(() => readApiToken('serve')).toThrow(/JOY_HOME must be an absolute path/)
+  })
+
   it('supports an explicit token file and gives an environment token precedence', () => {
     const directory = temporaryDirectory()
     const tokenFile = join(directory, 'api-token')

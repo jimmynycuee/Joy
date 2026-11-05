@@ -747,7 +747,12 @@ async function loadOrCreateApiToken(home: string): Promise<string> {
       await link(temporaryPath, tokenPath)
       return token
     } catch (error) {
-      if (!hasErrorCode(error, 'EEXIST')) throw error
+      if (!hasErrorCode(error, 'EEXIST')) {
+        throw new Error(
+          `Could not atomically create the Joy API token in ${home}; ensure JOY_HOME is writable and its filesystem supports hard links.`,
+          { cause: error },
+        )
+      }
       try {
         return await readApiToken(tokenPath)
       } catch (readError) {

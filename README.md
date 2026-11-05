@@ -20,7 +20,7 @@ pnpm check
 
 ### 本機 API 認證
 
-Joy 首次啟動時會在 `${JOY_HOME:-~/.joy}/api-token` 建立隨機 API token；POSIX 系統使用 owner-only `0600` 權限，Windows 依賴目前使用者目錄的 ACL。Vite 開發伺服器從同一位置讀取 token；若要輪替，先停止 server 與 Vite，刪除 token 檔，再先啟動 server、後啟動 Vite。開發版 UI bundle 需要攜帶 token，因此本機 server／Vite 維持 loopback，不要把開發埠公開給其他裝置；production build 與 `vite preview` 不注入 token。
+Joy 首次啟動時會在 `${JOY_HOME:-~/.joy}/api-token` 建立隨機 API token；若設定 `JOY_HOME`，請使用絕對路徑。POSIX 系統使用 owner-only `0600` 權限，Windows 依賴目前使用者目錄的 ACL。Vite 開發伺服器從同一位置讀取 token；若要輪替，先停止 server 與 Vite，刪除 token 檔，再先啟動 server、後啟動 Vite。開發版 UI bundle 需要攜帶 token，因此本機 server／Vite 維持 loopback，不要把開發埠公開給其他裝置；token 不防禦同機其他帳號或程序，只適用單一使用者的本機開發。production build 與 `vite preview` 不注入 token。
 
 狀態：P0（地基）進行中，還不能使用。
 
