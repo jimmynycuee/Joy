@@ -16,9 +16,11 @@
     "@joy/core": "workspace:*",
     "@joy/db": "workspace:*",
     "@joy/executor": "workspace:*",
+    "@joy/model-effort": "workspace:*",
     "@joy/orchestrator": "workspace:*",
     "@joy/providers": "workspace:*",
     "@joy/secrets": "workspace:*",
+    "@joy/tools": "workspace:*",
     "ws": "^8.18.3",
     "zod": "^4.6.7"
   },

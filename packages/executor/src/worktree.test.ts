@@ -10,6 +10,7 @@ import {
   renameSync,
   symlinkSync,
 } from 'node:fs'
+import { realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AttemptId, RepoId, RepoRef, TaskId } from '@joy/core'
@@ -189,7 +190,7 @@ describe('WorktreeExecutor', () => {
 
     const worktrees = await executor.listWorktrees(repo)
     expect(worktrees).toHaveLength(1)
-    expect(worktrees[0]).toMatchObject({ path: ws.path, branch: ws.branch, stale: true })
+    expect(worktrees[0]).toMatchObject({ path: await realpath(ws.path), branch: ws.branch, stale: true })
     expect(worktrees[0]?.headCommit).toBe(ws.baseCommit)
     expect(worktrees[0]?.lastActivityAt).toBeInstanceOf(Date)
     expect(worktrees[0]?.diskUsageBytes).toBeGreaterThanOrEqual(1024)
