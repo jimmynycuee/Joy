@@ -59,6 +59,8 @@ const MODEL_SUGGESTIONS: Record<ProviderKind, string[]> = {
   'codex-cli': ['gpt-6.1-sol', 'gpt-6-luna'],
 }
 
+declare const __JOY_API_TOKEN__: string
+
 function providersForRole(role: Role): ProviderKind[] {
   return role === 'implementer'
     ? PROVIDER_KINDS.filter((provider) => provider !== 'openai-api')
@@ -70,10 +72,10 @@ function doctorStatusLabel(status: DoctorStatus): string {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    headers: { ...(init?.body ? { 'content-type': 'application/json' } : {}), ...init?.headers },
-  })
+  const headers = new Headers(init?.headers)
+  if (init?.body && !headers.has('content-type')) headers.set('content-type', 'application/json')
+  headers.set('authorization', `Bearer ${__JOY_API_TOKEN__}`)
+  const response = await fetch(path, { ...init, headers })
   const text = await response.text()
   const body = text ? (JSON.parse(text) as T & ApiError) : ({} as T & ApiError)
   if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`)
@@ -341,7 +343,7 @@ function App() {
 
     function connect(): void {
       if (!active) return
-      const nextSocket = new WebSocket(socketUrl())
+      const nextSocket = new WebSocket(socketUrl(), ['joy', `joy-auth.${__JOY_API_TOKEN__}`])
       socket = nextSocket
       nextSocket.onopen = () => {
         if (!active) return

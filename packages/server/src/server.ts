@@ -1,8 +1,9 @@
+import { constants as fsConstants } from 'node:fs'
 import { createServer as createHttpServer } from 'node:http'
-import { mkdir } from 'node:fs/promises'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
+import { link, lstat, mkdir, open, unlink } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import { z, ZodError } from 'zod'
@@ -81,6 +82,7 @@ const taskInputSchema = z.strictObject({
 const idSchema = z.string().min(1).max(128)
 const openAiSecretInputSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
 const MAX_BODY_BYTES = 1_000_000
+const API_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,}$/
 const PLAYWRIGHT_E2E_ORIGINS = ['http://127.0.0.1:4173', 'http://localhost:4173'] as const
 
 export interface TaskEvent {
@@ -106,6 +108,8 @@ export interface JoyServerOptions {
   allowPlaywrightOrigin?: boolean
   /** Test seams for prerequisite checks; production uses the current process and OS services. */
   doctor?: Omit<DoctorOptions, 'home' | 'commands'>
+  /** Trusted runtime injection/testing only. Otherwise the token is persisted in <home>/api-token. */
+  apiToken?: string
 }
 
 export interface JoyServer {
@@ -142,9 +146,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const configStore = options.configStore ?? new ConfigStore(join(home, 'config.yaml'))
   const initialConfig = await configStore.get()
   const paths = resolvePaths(initialConfig, home)
+  const apiToken = options.apiToken ?? (await loadOrCreateApiToken(home))
+  assertApiToken(apiToken)
   const ownsDatabase = !options.database
   const db = options.database ?? openDatabase(paths.database)
   const redactor = options.redactor ?? new Redactor()
+  redactor.add(apiToken)
   const secretStore = options.secretStore ?? new SecretStore({ onSecret: (secret) => redactor.add(secret) })
   const providers: Partial<Record<ProviderKind, AgentProvider>> = {
     'claude-cli': new ClaudeCliProvider({
@@ -165,7 +172,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const executor = options.executor ?? new WorktreeExecutor({ worktreesDir: paths.worktrees })
   const running = new Map<TaskId, ActiveTask>()
   const subscribers = new Map<TaskId, Set<WebSocket>>()
-  const wsServer = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY_BYTES })
+  const wsServer = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_BODY_BYTES,
+    handleProtocols: (protocols) => (protocols.has('joy') ? 'joy' : false),
+  })
   let closed = false
 
   const publish = (taskId: TaskId, attemptId: AttemptId, type: string, payload: unknown): TaskEvent => {
@@ -203,7 +214,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (
         !isLoopbackHost(req.headers.host) ||
         req.headers['sec-fetch-site']?.toLowerCase() === 'cross-site' ||
-        !isAllowedOrigin(req, allowedOrigins, false)
+        !isAllowedOrigin(req, allowedOrigins, false) ||
+        !hasValidWebSocketAuth(req, apiToken)
       ) {
         socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
         socket.destroy()
@@ -261,6 +273,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     )
       throw new HttpError(403, 'Origin is not allowed')
     const url = requestUrl(req)
+    const isPublicHealth = url.pathname === '/api/health' && method === 'GET'
+    const isApiRoute = url.pathname === '/api' || url.pathname.startsWith('/api/')
+    if (
+      !isPublicHealth &&
+      (isApiRoute || !['GET', 'HEAD', 'OPTIONS'].includes(method)) &&
+      !hasValidBearerToken(req, apiToken)
+    )
+      throw new HttpError(403, 'Authentication required')
     if (url.pathname === '/api/health' && method === 'GET') {
       json(res, 200, { ok: true })
       return
@@ -719,6 +739,117 @@ function summarizeDiff(diff: WorkspaceDiff): Record<string, unknown> {
   }
 }
 
+async function loadOrCreateApiToken(home: string): Promise<string> {
+  await mkdir(home, { recursive: true, mode: 0o700 })
+  const tokenPath = join(home, 'api-token')
+
+  try {
+    return await readApiToken(tokenPath)
+  } catch (error) {
+    if (!hasErrorCode(error, 'ENOENT')) throw error
+  }
+
+  const token = randomBytes(32).toString('base64url')
+  const temporaryPath = join(home, `.api-token-${randomUUID()}.tmp`)
+  let temporaryCreated = false
+  try {
+    const file = await open(temporaryPath, 'wx', 0o600)
+    temporaryCreated = true
+    try {
+      await file.writeFile(token, 'utf8')
+    } finally {
+      await file.close()
+    }
+
+    try {
+      await link(temporaryPath, tokenPath)
+      return token
+    } catch (error) {
+      if (!hasErrorCode(error, 'EEXIST')) {
+        throw new Error(
+          `Could not atomically create the Joy API token in ${home}; ensure JOY_HOME is writable and its filesystem supports hard links.`,
+          { cause: error },
+        )
+      }
+      try {
+        return await readApiToken(tokenPath)
+      } catch (readError) {
+        if (hasErrorCode(readError, 'ENOENT')) return loadOrCreateApiToken(home)
+        throw readError
+      }
+    }
+  } finally {
+    if (temporaryCreated) {
+      await unlink(temporaryPath).catch((error: unknown) => {
+        if (!hasErrorCode(error, 'ENOENT')) throw error
+      })
+    }
+  }
+}
+
+async function readApiToken(tokenPath: string): Promise<string> {
+  const metadata = await lstat(tokenPath)
+  if (metadata.isSymbolicLink()) throw new Error('API token file must not be a symbolic link')
+  if (!metadata.isFile()) throw new Error('API token path must be a regular file')
+  if (process.platform !== 'win32' && (metadata.mode & 0o077) !== 0) {
+    throw new Error(
+      'API token file permissions must restrict access to its owner; remove it and restart Joy to rotate the token',
+    )
+  }
+
+  const flags = process.platform === 'win32' ? 'r' : fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW
+  const file = await open(tokenPath, flags).catch((error: unknown) => {
+    if (hasErrorCode(error, 'ELOOP'))
+      throw new Error('API token file must not be a symbolic link', { cause: error })
+    throw error
+  })
+  try {
+    const openedMetadata = await file.stat()
+    if (openedMetadata.dev !== metadata.dev || openedMetadata.ino !== metadata.ino) {
+      throw new Error('API token file changed while it was being opened; restart Joy to retry')
+    }
+    if (process.platform !== 'win32' && (openedMetadata.mode & 0o077) !== 0) {
+      throw new Error('API token file permissions must restrict access to its owner')
+    }
+    const token = (await file.readFile('utf8')).trim()
+    if (!token) throw new Error('API token file is empty; remove it and restart Joy to generate a new token')
+    assertApiToken(token)
+    return token
+  } finally {
+    await file.close()
+  }
+}
+
+function assertApiToken(token: string): void {
+  if (!API_TOKEN_PATTERN.test(token)) {
+    throw new Error('API token must contain at least 16 URL-safe characters')
+  }
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return error instanceof Error && 'code' in error && error.code === code
+}
+
+function hasValidBearerToken(req: IncomingMessage, token: string): boolean {
+  const match = /^Bearer +([A-Za-z0-9_-]+)$/i.exec(req.headers.authorization ?? '')
+  return match?.[1] !== undefined && tokensMatch(match[1], token)
+}
+
+function hasValidWebSocketAuth(req: IncomingMessage, token: string): boolean {
+  const protocols = req.headers['sec-websocket-protocol']?.split(',').map((protocol) => protocol.trim()) ?? []
+  const credentials = protocols.filter((protocol) => protocol.startsWith('joy-auth.'))
+  if (!protocols.includes('joy') || credentials.length !== 1) return false
+  return tokensMatch(credentials[0]?.slice('joy-auth.'.length) ?? '', token)
+}
+
+function tokensMatch(candidate: string, token: string): boolean {
+  const expected = Buffer.from(token)
+  const supplied = Buffer.from(candidate)
+  const sameLength = supplied.length === expected.length
+  const comparable = sameLength ? supplied : Buffer.alloc(expected.length)
+  return timingSafeEqual(expected, comparable) && sameLength
+}
+
 function requestUrl(req: IncomingMessage): URL {
   try {
     return new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`)
@@ -740,6 +871,7 @@ function createOriginAllowlist(allowPlaywrightOrigin: boolean): Set<string> {
   return new Set([
     'tauri://localhost',
     'http://127.0.0.1:5173',
+    'http://localhost:5173',
     ...(allowPlaywrightOrigin ? PLAYWRIGHT_E2E_ORIGINS : []),
   ])
 }

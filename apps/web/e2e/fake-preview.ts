@@ -1,9 +1,10 @@
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'vite'
-import { startFakeJoyRuntime } from './fakes.js'
+import { E2E_API_TOKEN, startFakeJoyRuntime } from './fakes.js'
 
 const appDirectory = resolve(fileURLToPath(new URL('..', import.meta.url)))
+process.env.JOY_API_TOKEN = E2E_API_TOKEN
 const runtime = await startFakeJoyRuntime()
 const vite = await createServer({
   configFile: resolve(appDirectory, 'vite.config.ts'),

@@ -1,4 +1,14 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -36,6 +46,14 @@ const dirs: string[] = []
 const servers: JoyServer[] = []
 const databases: Database[] = []
 const VITE_ORIGIN = 'http://127.0.0.1:5173'
+const TEST_API_TOKEN = 'test-api-token-for-server-tests-72'
+
+function fetch(input: string | URL, init?: RequestInit): Promise<Response> {
+  const headers = new Headers(init?.headers)
+  if (!headers.has('authorization')) headers.set('authorization', `Bearer ${TEST_API_TOKEN}`)
+  return globalThis.fetch(input, { ...init, headers })
+}
+
 afterEach(async () => {
   for (const server of servers.splice(0)) await server.close()
   for (const db of databases.splice(0)) if (db.isOpen) db.close()
@@ -134,11 +152,20 @@ function fixture(
     allowPlaywrightOrigin?: boolean
     configStore?: ConfigStore
     doctor?: Omit<DoctorOptions, 'home' | 'commands'>
+    apiToken?: string
+    generateApiToken?: boolean
     home?: string
+    tokenFileContents?: string
+    tokenFileMode?: number
   } = {},
 ) {
-  const dir = mkdtempSync(join(tmpdir(), 'joy-server-test-'))
-  dirs.push(dir)
+  const dir = options.home ?? mkdtempSync(join(tmpdir(), 'joy-server-test-'))
+  if (!options.home) dirs.push(dir)
+  if (options.tokenFileContents !== undefined) {
+    const tokenPath = join(dir, 'api-token')
+    writeFileSync(tokenPath, options.tokenFileContents, { mode: options.tokenFileMode ?? 0o600 })
+    if (options.tokenFileMode !== undefined) chmodSync(tokenPath, options.tokenFileMode)
+  }
   const db = openDatabase(':memory:')
   databases.push(db)
   const executor = new FakeExecutor()
@@ -170,6 +197,7 @@ function fixture(
     executor,
     ...(options.allowPlaywrightOrigin ? { allowPlaywrightOrigin: true } : {}),
     ...(options.doctor ? { doctor: options.doctor } : {}),
+    ...(options.generateApiToken ? {} : { apiToken: options.apiToken ?? TEST_API_TOKEN }),
     providers: {
       'claude-cli': implementer,
       'codex-cli': reviewer,
@@ -180,6 +208,7 @@ function fixture(
   const serverPromise = createJoyServer(serverOptions)
   return {
     dir,
+    apiToken: options.apiToken ?? (options.generateApiToken ? undefined : TEST_API_TOKEN),
     db,
     executor,
     implementer,
@@ -218,7 +247,11 @@ async function waitForStatus(origin: string, id: string, status: string): Promis
 async function postJson(url: string, body: unknown) {
   return fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', origin: VITE_ORIGIN },
+    headers: {
+      'content-type': 'application/json',
+      origin: VITE_ORIGIN,
+      authorization: `Bearer ${TEST_API_TOKEN}`,
+    },
     body: JSON.stringify(body),
   })
 }
@@ -229,10 +262,15 @@ function rawRequest(
   method: string,
   headers: Record<string, string>,
   body = '',
+  authToken: string | null = TEST_API_TOKEN,
 ): Promise<{ status: number; body: string }> {
   const { port } = new URL(origin)
-  const requestHeaders =
+  const normalizedHeaders =
     headers.origin === new URL(origin).origin ? { ...headers, origin: VITE_ORIGIN } : headers
+  const requestHeaders = {
+    ...(authToken ? { authorization: `Bearer ${authToken}` } : {}),
+    ...normalizedHeaders,
+  }
   return new Promise((resolve, reject) => {
     const request = httpRequest(
       { host: '127.0.0.1', port: Number(port), path, method, headers: requestHeaders },
@@ -254,9 +292,10 @@ function tryWebSocket(
   url: string,
   origin?: string,
   headers?: Record<string, string>,
-): Promise<{ status: number; messages: unknown[] }> {
+  protocols: string[] = ['joy', `joy-auth.${TEST_API_TOKEN}`],
+): Promise<{ status: number; messages: unknown[]; protocol: string }> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(url, {
+    const socket = new WebSocket(url, protocols, {
       ...(origin ? { origin } : {}),
       ...(headers ? { headers } : {}),
     })
@@ -265,7 +304,7 @@ function tryWebSocket(
     const finish = (status: number) => {
       if (settled) return
       settled = true
-      resolve({ status, messages })
+      resolve({ status, messages, protocol: socket.protocol })
       socket.terminate()
     }
     socket.on('message', (data: RawData) => {
@@ -326,6 +365,320 @@ describe('Joy local server', () => {
     expect(commandCalls).toContain('gh auth status --hostname github.com capture=false')
     expect(commandCalls).toContain('claude --version capture=true')
     expect(commandCalls).toContain('codex --version capture=true')
+  })
+
+  it('requires a bearer token for HTTP mutations and a token protocol for WebSocket upgrades', async () => {
+    const { db, serverPromise } = fixture()
+    const { origin, websocket } = await start(serverPromise)
+    const body = JSON.stringify({ path: '/tmp/unauthorized-repo', defaultBranch: 'main' })
+    const missing = await rawRequest(
+      origin,
+      '/api/repos',
+      'POST',
+      { host: new URL(origin).host, origin: VITE_ORIGIN, 'content-type': 'application/json' },
+      body,
+      null,
+    )
+    const wrongToken = `${TEST_API_TOKEN}-wrong`
+    const unauthenticatedRead = await rawRequest(
+      origin,
+      '/api/repos',
+      'GET',
+      { host: new URL(origin).host, origin: VITE_ORIGIN },
+      '',
+      null,
+    )
+    const wrong = await rawRequest(
+      origin,
+      '/api/repos',
+      'POST',
+      { host: new URL(origin).host, origin: VITE_ORIGIN, 'content-type': 'application/json' },
+      body,
+      wrongToken,
+    )
+    expect(missing.status).toBe(403)
+    expect(unauthenticatedRead.status).toBe(403)
+    expect(wrong.status).toBe(403)
+    const publicHealth = await rawRequest(
+      origin,
+      '/api/health',
+      'GET',
+      { host: new URL(origin).host, origin: VITE_ORIGIN },
+      '',
+      null,
+    )
+    expect(publicHealth.status).toBe(200)
+    expect(missing.body).not.toContain(TEST_API_TOKEN)
+    expect(wrong.body).not.toContain(wrongToken)
+    const { repos } = (await (await fetch(`${origin}/api/repos`)).json()) as { repos: unknown[] }
+    expect(repos).toEqual([])
+    expect(db.prepare('SELECT COUNT(*) AS count FROM repos').get()).toMatchObject({ count: 0 })
+    const lowercaseScheme = await rawRequest(
+      origin,
+      '/api/repos',
+      'GET',
+      { host: new URL(origin).host, origin: VITE_ORIGIN, authorization: `bearer ${TEST_API_TOKEN}` },
+      '',
+      null,
+    )
+    expect(lowercaseScheme.status).toBe(200)
+
+    const repo = createRepo(db, { id: rid('auth-ws-repo'), path: '/auth-ws-repo', defaultBranch: 'main' })
+    const task = createTask(db, {
+      id: tid('auth-ws-task'),
+      repoId: repo.id,
+      title: 'Auth-gated socket',
+      prompt: 'Do not expose this task without authentication',
+      mode: 'single',
+    })
+    const missingSocket = await tryWebSocket(`${websocket}/ws?taskId=${task.id}`, VITE_ORIGIN, undefined, [
+      'joy',
+    ])
+    const wrongSocket = await tryWebSocket(`${websocket}/ws?taskId=${task.id}`, VITE_ORIGIN, undefined, [
+      'joy',
+      `joy-auth.${wrongToken}`,
+    ])
+    const missingMarkerSocket = await tryWebSocket(
+      `${websocket}/ws?taskId=${task.id}`,
+      VITE_ORIGIN,
+      undefined,
+      [`joy-auth.${TEST_API_TOKEN}`],
+    )
+    const duplicateCredentialSocket = await rawRequest(
+      websocket,
+      `/ws?taskId=${task.id}`,
+      'GET',
+      {
+        host: new URL(websocket).host,
+        origin: VITE_ORIGIN,
+        connection: 'Upgrade',
+        upgrade: 'websocket',
+        'sec-websocket-key': randomBytes(16).toString('base64'),
+        'sec-websocket-version': '13',
+        'sec-websocket-protocol': `joy, joy-auth.${TEST_API_TOKEN}, joy-auth.${TEST_API_TOKEN}`,
+      },
+      '',
+      null,
+    )
+    expect(missingSocket.status).toBe(403)
+    expect(wrongSocket.status).toBe(403)
+    expect(missingMarkerSocket.status).toBe(403)
+    expect(duplicateCredentialSocket.status).toBe(403)
+    expect(missingSocket.messages).toEqual([])
+    expect(wrongSocket.messages).toEqual([])
+    expect(missingMarkerSocket.messages).toEqual([])
+    expect(missingSocket.protocol).toBe('')
+    expect(wrongSocket.protocol).toBe('')
+    expect(missingMarkerSocket.protocol).toBe('')
+  })
+
+  it('rejects missing and incorrect credentials for every API route before dispatch', async () => {
+    const { db, executor, serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const protectedRequests: Array<[string, string]> = [
+      ['GET', '/api'],
+      ['GET', '/api/'],
+      ['GET', '/api/repos'],
+      ['POST', '/api/repos'],
+      ['GET', '/api/tasks'],
+      ['POST', '/api/tasks'],
+      ['GET', '/api/tasks/auth-test'],
+      ['GET', '/api/tasks/auth-test/events'],
+      ['POST', '/api/tasks/auth-test/cancel'],
+      ['POST', '/api/tasks/auth-test/resume'],
+      ['GET', '/api/usage'],
+      ['GET', '/api/config'],
+      ['PUT', '/api/config'],
+      ['GET', '/api/secrets/openai-api-key'],
+      ['PUT', '/api/secrets/openai-api-key'],
+      ['DELETE', '/api/secrets/openai-api-key'],
+      ['GET', '/api/providers'],
+      ['GET', '/api/unknown'],
+      ['HEAD', '/api/health'],
+      ['OPTIONS', '/api/health'],
+    ]
+
+    for (const [method, path] of protectedRequests) {
+      for (const token of [null, 'wrong-auth-token-12345']) {
+        const response = await rawRequest(
+          origin,
+          path,
+          method,
+          {
+            host: new URL(origin).host,
+            origin: VITE_ORIGIN,
+            ...(method === 'POST' || method === 'PUT' ? { 'content-type': 'application/json' } : {}),
+          },
+          method === 'POST' || method === 'PUT' ? '{}' : '',
+          token,
+        )
+        expect(response.status, `${method} ${path}`).toBe(403)
+      }
+    }
+
+    expect(db.prepare('SELECT COUNT(*) AS count FROM repos').get()).toMatchObject({ count: 0 })
+    expect(db.prepare('SELECT COUNT(*) AS count FROM tasks').get()).toMatchObject({ count: 0 })
+    expect(executor.prepareCalls).toBe(0)
+  })
+
+  it('generates and reuses a private random API token without returning it publicly', async () => {
+    const generated = fixture({ generateApiToken: true })
+    const { server, origin } = await start(generated.serverPromise)
+    const tokenPath = join(generated.dir, 'api-token')
+    const token = readFileSync(tokenPath, 'utf8')
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    if (process.platform !== 'win32') expect(statSync(tokenPath).mode & 0o777).toBe(0o600)
+    expect(Object.keys(server)).not.toContain('apiToken')
+    expect(await (await fetch(`${origin}/api/health`)).text()).not.toContain(token)
+    expect(existsSync(tokenPath)).toBe(true)
+
+    const second = fixture({ generateApiToken: true })
+    await start(second.serverPromise)
+    expect(readFileSync(join(second.dir, 'api-token'), 'utf8')).not.toBe(token)
+
+    await server.close()
+    const restarted = await generated.restart()
+    servers.push(restarted)
+    const address = await restarted.listen()
+    const restartedOrigin = `http://127.0.0.1:${address.port}`
+    const accepted = await rawRequest(
+      restartedOrigin,
+      '/api/repos',
+      'POST',
+      {
+        host: new URL(restartedOrigin).host,
+        origin: VITE_ORIGIN,
+        'content-type': 'application/json',
+      },
+      JSON.stringify({ path: '/tmp/reused-token', defaultBranch: 'main' }),
+      token,
+    )
+    expect(accepted.status).toBe(201)
+  })
+
+  it('trims a trailing newline from a private token file', async () => {
+    const app = fixture({ generateApiToken: true, tokenFileContents: `${TEST_API_TOKEN}\n` })
+    const { origin } = await start(app.serverPromise)
+    const accepted = await rawRequest(
+      origin,
+      '/api/repos',
+      'GET',
+      { host: new URL(origin).host, origin: VITE_ORIGIN },
+      '',
+      TEST_API_TOKEN,
+    )
+    expect(accepted.status).toBe(200)
+  })
+
+  it('fails closed with recovery instructions for an empty token file', async () => {
+    const app = fixture({ generateApiToken: true, tokenFileContents: '' })
+    await expect(app.serverPromise).rejects.toThrow(/API token file is empty; remove it and restart Joy/)
+  })
+
+  it('atomically shares one generated token across concurrent server startups', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'joy-server-shared-token-'))
+    dirs.push(home)
+    const first = fixture({ home, generateApiToken: true })
+    const second = fixture({ home, generateApiToken: true })
+    const [firstServer, secondServer] = await Promise.all([
+      start(first.serverPromise),
+      start(second.serverPromise),
+    ])
+    const token = readFileSync(join(home, 'api-token'), 'utf8')
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/)
+
+    const accepted = await Promise.all(
+      [firstServer.origin, secondServer.origin].map((origin) =>
+        rawRequest(
+          origin,
+          '/api/repos',
+          'GET',
+          { host: new URL(origin).host, origin: VITE_ORIGIN },
+          '',
+          token,
+        ),
+      ),
+    )
+    expect(accepted.map((response) => response.status)).toEqual([200, 200])
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects a token file with group or world permissions without changing it',
+    async () => {
+      const app = fixture({
+        generateApiToken: true,
+        tokenFileContents: TEST_API_TOKEN,
+        tokenFileMode: 0o644,
+      })
+      await expect(app.serverPromise).rejects.toThrow(/permissions must restrict access to its owner/)
+      expect(statSync(join(app.dir, 'api-token')).mode & 0o777).toBe(0o644)
+    },
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects a symbolic token file without changing its target',
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), 'joy-server-token-link-'))
+      dirs.push(home)
+      const target = join(home, 'shared-token')
+      writeFileSync(target, TEST_API_TOKEN, { mode: 0o644 })
+      chmodSync(target, 0o644)
+      symlinkSync(target, join(home, 'api-token'))
+      const app = fixture({ home, generateApiToken: true })
+
+      await expect(app.serverPromise).rejects.toThrow(/must not be a symbolic link/)
+      expect(statSync(target).mode & 0o777).toBe(0o644)
+    },
+  )
+
+  it('rejects malformed injected tokens before starting the server', async () => {
+    const app = fixture({ apiToken: 'short' })
+    await expect(app.serverPromise).rejects.toThrow(/at least 16 URL-safe characters/)
+  })
+
+  it('redacts the API token from authentication errors and persisted task replay', async () => {
+    const implementer = new FakeProvider('claude-cli', [
+      { type: 'message', text: `Provider echoed ${TEST_API_TOKEN}` },
+      { type: 'done', sessionId: 'token-redaction-session', isError: false },
+    ])
+    const { dir, serverPromise } = fixture({ implementer })
+    const { origin, websocket } = await start(serverPromise)
+    expect(existsSync(join(dir, 'api-token'))).toBe(false)
+    const badToken = `${TEST_API_TOKEN}-invalid`
+    const error = await rawRequest(
+      origin,
+      '/api/repos',
+      'POST',
+      { host: new URL(origin).host, origin: VITE_ORIGIN, 'content-type': 'application/json' },
+      JSON.stringify({ path: '/tmp/token-redaction-repo', defaultBranch: 'main' }),
+      badToken,
+    )
+    expect(error.status).toBe(403)
+    expect(error.body).not.toContain(TEST_API_TOKEN)
+    expect(error.body).not.toContain(badToken)
+
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/tmp/token-redaction-repo', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    const { task } = (await (
+      await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: 'Redact auth token',
+        prompt: 'Return an event containing the token',
+        mode: 'single',
+      })
+    ).json()) as { task: { id: string } }
+    const details = await waitForStatus(origin, task.id, 'done')
+    const replay = await (await fetch(`${origin}/api/tasks/${task.id}/events?after=0`)).text()
+    expect(JSON.stringify(details.events)).not.toContain(TEST_API_TOKEN)
+    expect(JSON.stringify(details.events)).toContain('[REDACTED]')
+    expect(replay).not.toContain(TEST_API_TOKEN)
+    expect(replay).toContain('[REDACTED]')
+
+    const socket = await tryWebSocket(`${websocket}/ws?taskId=${task.id}`, VITE_ORIGIN)
+    expect(socket.status).toBe(101)
+    expect(socket.protocol).toBe('joy')
+    expect(JSON.stringify(socket.messages)).not.toContain(TEST_API_TOKEN)
   })
 
   it('rejects non-loopback Host headers before processing API requests', async () => {
@@ -563,7 +916,7 @@ describe('Joy local server', () => {
       host: new URL(origin).host,
       origin: 'http://localhost:5173',
     })
-    expect(localhostVite.status).toBe(403)
+    expect(localhostVite.status).toBe(200)
 
     const tauri = await rawRequest(
       origin,
@@ -678,7 +1031,11 @@ describe('Joy local server', () => {
     appendTaskEvent(db, attempt.id, 'phase', { index: 3 })
     const { events } = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
 
-    const socket = new WebSocket(`${websocket}/ws?taskId=${task.id}&after=1`, { origin: VITE_ORIGIN })
+    const socket = new WebSocket(
+      `${websocket}/ws?taskId=${task.id}&after=1`,
+      ['joy', `joy-auth.${TEST_API_TOKEN}`],
+      { origin: VITE_ORIGIN },
+    )
     const messages = await receiveMessages(socket, 4)
     expect(messages[0]).toMatchObject({
       type: 'snapshot',
@@ -719,7 +1076,11 @@ describe('Joy local server', () => {
     const { task } = (await taskResponse.json()) as { task: { id: string } }
 
     const result = await waitForStatus(origin, task.id, 'done')
-    const socket = new WebSocket(`${websocket}/ws?taskId=${task.id}&after=0`, { origin: VITE_ORIGIN })
+    const socket = new WebSocket(
+      `${websocket}/ws?taskId=${task.id}&after=0`,
+      ['joy', `joy-auth.${TEST_API_TOKEN}`],
+      { origin: VITE_ORIGIN },
+    )
     const messages = await receiveMessages(socket, result.events.length + 2)
     expect(messages[0]).toMatchObject({ type: 'snapshot', task: { id: task.id } })
     expect(messages[1]).toMatchObject({ type: 'ready', taskId: task.id })
@@ -733,7 +1094,12 @@ describe('Joy local server', () => {
 
     const viteOriginSocket = await tryWebSocket(`${websocket}/ws?taskId=${task.id}`, VITE_ORIGIN)
     expect(viteOriginSocket.status).toBe(101)
+    expect(viteOriginSocket.protocol).toBe('joy')
     expect(viteOriginSocket.messages[0]).toMatchObject({ type: 'snapshot', task: { id: task.id } })
+
+    const localhostSocket = await tryWebSocket(`${websocket}/ws?taskId=${task.id}`, 'http://localhost:5173')
+    expect(localhostSocket.status).toBe(101)
+    expect(localhostSocket.protocol).toBe('joy')
 
     const tauriSocket = await tryWebSocket(`${websocket}/ws?taskId=${task.id}`, 'tauri://localhost')
     expect(tauriSocket.status).toBe(101)
@@ -761,7 +1127,11 @@ describe('Joy local server', () => {
     expect(await emptyStatus.json()).toEqual({ set: false })
     const saved = await fetch(`${origin}/api/secrets/openai-api-key`, {
       method: 'PUT',
-      headers: { 'content-type': 'application/json', origin: VITE_ORIGIN },
+      headers: {
+        'content-type': 'application/json',
+        origin: VITE_ORIGIN,
+        authorization: `Bearer ${TEST_API_TOKEN}`,
+      },
       body: JSON.stringify({ value: key }),
     })
     expect(saved.status).toBe(200)
@@ -790,7 +1160,7 @@ describe('Joy local server', () => {
 
     const deleted = await fetch(`${origin}/api/secrets/openai-api-key`, {
       method: 'DELETE',
-      headers: { origin: VITE_ORIGIN },
+      headers: { origin: VITE_ORIGIN, authorization: `Bearer ${TEST_API_TOKEN}` },
     })
     expect(await deleted.json()).toEqual({ set: false })
     expect(secretBackend.values.has('openai_api_key')).toBe(false)
@@ -809,14 +1179,18 @@ describe('Joy local server', () => {
 
     const put = await fetch(`${origin}/api/secrets/openai-api-key`, {
       method: 'PUT',
-      headers: { 'content-type': 'application/json', origin: VITE_ORIGIN },
+      headers: {
+        'content-type': 'application/json',
+        origin: VITE_ORIGIN,
+        authorization: `Bearer ${TEST_API_TOKEN}`,
+      },
       body: JSON.stringify({ value: 'replacement-openai-secret-53' }),
     })
     expect(put.status).toBe(409)
     expect(await put.text()).not.toContain(envKey)
     const deleted = await fetch(`${origin}/api/secrets/openai-api-key`, {
       method: 'DELETE',
-      headers: { origin: VITE_ORIGIN },
+      headers: { origin: VITE_ORIGIN, authorization: `Bearer ${TEST_API_TOKEN}` },
     })
     expect(deleted.status).toBe(409)
     expect(await deleted.text()).not.toContain(envKey)
@@ -887,9 +1261,11 @@ describe('Joy local server', () => {
     const restartedOrigin = `http://127.0.0.1:${address.port}`
     const replayed = (await (await fetch(`${restartedOrigin}/api/tasks/${task.id}`)).json()) as TaskDetails
     expect(replayed.events).toEqual(result.events)
-    const socket = new WebSocket(`ws://127.0.0.1:${address.port}/ws?taskId=${task.id}`, {
-      origin: VITE_ORIGIN,
-    })
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${address.port}/ws?taskId=${task.id}`,
+      ['joy', `joy-auth.${TEST_API_TOKEN}`],
+      { origin: VITE_ORIGIN },
+    )
     const messages = await receiveMessages(socket, replayed.events.length + 2)
     expect(messages[0]).toMatchObject({ type: 'snapshot', task: { id: task.id } })
     expect(messages[1]).toMatchObject({ type: 'ready', taskId: task.id })

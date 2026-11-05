@@ -3,7 +3,7 @@
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
 - 最後更新：2026-11-05 UTC
-- 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** `t1.13-doctor` 已整合最新 `main`（`14168cc686f403711b2cd823a262ab6d6c537f88`），完整本地驗證通過。T1.13 與 T1.8 首頁檢查仍待 owner review/merge，保持未勾選，不標 ready 或合併。
+- 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** `t1.13-doctor` 已整合最新 `main`（`ed1560a7af0527c286c569e533203507c8bc4d5a`），衝突修復後本地驗證通過；更新後的 PR CI 以 live 狀態為準。T1.13 與 T1.8 首頁檢查仍待 owner review/merge，保持未勾選，不標 ready 或合併。
 
 ## 驗證結果
 
@@ -17,12 +17,17 @@
 ### T1.13 `joy doctor` 與首頁首次啟動檢查
 
 - 實作涵蓋 Node、Git、GitHub CLI 登入狀態、Claude/Codex CLI、OS keychain 可用性及 Joy 資料目錄可寫入狀態；首頁顯示檢查結果與修復指引。Windows npm `.cmd`/`.bat` shim 僅以檔案存在性辨識並標示版本未測；低於 Node 22.13 的版本標示為不支援；缺少資料目錄的指引說明啟動 server 會自動建立。
-- 整合最新 main 後，`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 通過（Prettier、ESLint、workspace typechecks；205 passed、2 skipped，含 7 個 doctor tests）；`pnpm --filter @joy/web exec playwright test e2e/doctor.spec.ts` 通過（1 passed）。首頁 E2E 使用 fake `/api/doctor` 回應；Windows 情境使用 `win32` 注入與 fake `.cmd`/暫存目錄。未在原生 Windows 執行，未呼叫真實模型 CLI、GitHub CLI auth 或讀取 keychain/訂閱憑證。
+- 最新 main 整合及衝突修復後，`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 通過：Prettier、ESLint、workspace typechecks；225 tests passed、2 skipped（含 7 個 doctor tests 與 41 個 server tests）。另執行 `pnpm exec vitest run packages/server/src/server.test.ts`（41/41 passed）及 `pnpm --filter @joy/web exec playwright test e2e/doctor.spec.ts`（1/1 passed）。首頁 E2E 使用 fake `/api/doctor` 回應；Windows 情境使用 `win32` 注入與 fake `.cmd`/暫存目錄。未在原生 Windows 執行，未呼叫真實模型 CLI、GitHub CLI auth 或讀取 keychain/訂閱憑證。
 - T1.13/T1.8 在 owner review 與 merge 前保持未勾選、P2 繼續暫停。
+
+### T1.14 本機 API 與 WebSocket token 認證
+
+- 本機 Linux 相關測試：`pnpm exec vitest run packages/server/src/server.test.ts packages/config/src/config.test.ts apps/web/src/vite-config.test.ts` 通過（63/63）。測試使用假 token／fake runtime，沒有呼叫真實模型或外部 API。
+- Playwright E2E 與 macOS、Windows CI 留待 PR CI 驗證；本機未執行這些平台測試。
 
 ## 已確認決策
 
-- T1.14 採用 PR #73；PR #74 以留言「改採 #73」關閉。PR #46、#70 已由 #71 取代，關閉並說明。
+- T1.14 採用 PR #73；PR #74 以留言「改採 #73」關閉。PR #46、#70 已由 #71 取代；已留言說明重複原因並請作者關閉。
 - T1.9 真實驗收在 Joy repository 開一個標題以 `[test] ` 開頭的測試 draft PR；驗收後立即關閉 PR 並刪除測試分支。
 - T2.4 Telegram 審核：🔴 審核 30 分鐘未回應即拒絕，任務停在 `awaiting_approval`，擁有者可在 UI 重新核准。先以 fake Telegram API 實作與測試；bot token 待擁有者提供。
 - 預算維持設定預設：OpenAI API 每月上限 30 美元、每任務上限 1 美元；不提高預設值。
@@ -47,4 +52,5 @@
 ## 卡住
 
 - T1.9 仍需依 PLAN 的安全測試 repo 流程完成實際驗收；fake `gh`／local bare remote 不足以勾選。
+- PR #46、#70 的關閉待作者處理：本 Session 的 GitHub 權限拒絕關閉非 Reason Session 開啟的 PR；已留言請作者關閉。
 - 目前沒有新增的產品功能阻塞。P1 及明列的擁有者處理項目完成前，P2 保持暫停。

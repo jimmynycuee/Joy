@@ -20,6 +20,8 @@ import { MemoryBackend, Redactor, SecretStore } from '@joy/secrets'
 import { createJoyServer } from '@joy/server'
 import type { JoyServer } from '@joy/server'
 
+export const E2E_API_TOKEN = 'joy-e2e-only-api-token'
+
 export const fakeDiff: WorkspaceDiff = {
   files: [{ path: 'src/hello.ts', status: 'modified', additions: 1, deletions: 1 }],
   patch: [
@@ -113,6 +115,7 @@ export async function startFakeJoyRuntime(port = 4317): Promise<FakeJoyRuntime> 
   })
   const server = await createJoyServer({
     home,
+    apiToken: E2E_API_TOKEN,
     database,
     configStore: new ConfigStore(join(home, 'config.yaml')),
     secretStore,
