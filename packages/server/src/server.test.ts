@@ -1398,8 +1398,27 @@ describe('Joy local server', () => {
         signal: controller.signal,
       })
       await waitForProviderCalls(reviewer, 1)
+      const peerSignal = reviewer.calls[0]?.signal
+      if (!peerSignal) throw new Error('Reviewer did not receive an abort signal')
+      const peerAbortObserved = new Promise<void>((resolve, reject) => {
+        if (peerSignal.aborted) {
+          resolve()
+          return
+        }
+        const timeout = setTimeout(() => reject(new Error('Peer was not aborted on client disconnect')), 1000)
+        peerSignal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timeout)
+            resolve()
+          },
+          { once: true },
+        )
+      })
       controller.abort()
       await peerRequest.catch(() => undefined)
+      await peerAbortObserved
+      expect(peerSignal.aborted).toBe(true)
     }
     await waitForStatus(origin, task.id, 'done')
     expect(reviewer.calls[0]?.signal.aborted).toBe(true)
