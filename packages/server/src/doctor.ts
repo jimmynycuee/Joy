@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
+import type { ChildProcess, SpawnOptions } from 'node:child_process'
 import { open, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { KeychainBackend } from '@joy/secrets'
@@ -34,6 +35,14 @@ export type DoctorCommandRunner = (
   captureOutput: boolean,
 ) => Promise<DoctorCommandResult>
 
+export type DoctorSpawnCommand = (command: string, args: string[], options: SpawnOptions) => ChildProcess
+
+export interface DoctorSystemCommandRunnerOptions {
+  platform?: NodeJS.Platform
+  searchPath?: string
+  spawnCommand?: DoctorSpawnCommand
+}
+
 export interface DoctorOptions {
   home: string
   commands?: { claude?: string; codex?: string }
@@ -51,7 +60,7 @@ const MAX_VERSION_OUTPUT_LENGTH = 4_096
 
 /** Runs local prerequisite checks without exposing command output or keychain values. */
 export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
-  const runCommand = options.runCommand ?? runSystemCommand
+  const runCommand = options.runCommand ?? createSystemCommandRunner()
   const checks = await Promise.all([
     checkNode(options.nodeVersion ?? process.versions.node),
     checkGit(runCommand),
@@ -355,56 +364,80 @@ async function isFile(path: string): Promise<boolean> {
   }
 }
 
-async function runSystemCommand(
-  command: string,
-  args: readonly string[],
-  captureOutput: boolean,
-): Promise<DoctorCommandResult> {
-  if (await hasWindowsBatchShim(command, process.env.PATH ?? '', process.platform)) {
-    return { exitCode: null, commandFound: true }
+export function createSystemCommandRunner(
+  options: DoctorSystemCommandRunnerOptions = {},
+): DoctorCommandRunner {
+  const platform = options.platform ?? process.platform
+  const searchPath = options.searchPath ?? process.env.PATH ?? ''
+  const spawnCommand = options.spawnCommand ?? ((file, args, spawnOptions) => spawn(file, args, spawnOptions))
+
+  return async (command, args, captureOutput) => {
+    const result = await spawnOnce(command, args, captureOutput, false)
+    if (
+      result.spawnErrorCode !== 'ENOENT' ||
+      platform !== 'win32' ||
+      !(await hasWindowsBatchShim(command, searchPath, platform))
+    ) {
+      return result
+    }
+
+    // npm's .cmd shims need cmd.exe; only the literal version probe is safe to pass through it.
+    if (args.length !== 1 || args[0] !== '--version' || !/^[A-Za-z0-9_.-]+$/.test(command)) {
+      return { ...result, commandFound: true }
+    }
+
+    const retry = await spawnOnce(command, args, captureOutput, true)
+    return retry.spawnErrorCode === 'ENOENT' ? { ...retry, commandFound: true } : retry
   }
 
-  return new Promise((resolve) => {
-    let child: ReturnType<typeof spawn>
-    try {
-      child = spawn(command, [...args], {
-        shell: false,
-        windowsHide: true,
-        stdio: ['ignore', captureOutput ? 'pipe' : 'ignore', 'ignore'],
-      })
-    } catch (error) {
-      const spawnErrorCode = (error as NodeJS.ErrnoException).code
-      resolve({ exitCode: null, ...(spawnErrorCode ? { spawnErrorCode } : {}) })
-      return
-    }
-
-    let output = ''
-    let timedOut = false
-    let settled = false
-    const timeout = setTimeout(() => {
-      timedOut = true
-      child.kill()
-    }, COMMAND_TIMEOUT_MS)
-    const finish = (result: DoctorCommandResult) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      resolve(result)
-    }
-    child.stdout?.setEncoding('utf8').on('data', (chunk: string) => {
-      if (output.length < MAX_VERSION_OUTPUT_LENGTH) {
-        output += chunk.slice(0, MAX_VERSION_OUTPUT_LENGTH - output.length)
+  function spawnOnce(
+    file: string,
+    args: readonly string[],
+    captureOutput: boolean,
+    shell: boolean,
+  ): Promise<DoctorCommandResult> {
+    return new Promise((resolve) => {
+      let child: ChildProcess
+      try {
+        child = spawnCommand(file, [...args], {
+          shell,
+          windowsHide: true,
+          stdio: ['ignore', captureOutput ? 'pipe' : 'ignore', 'ignore'],
+        })
+      } catch (error) {
+        const spawnErrorCode = (error as NodeJS.ErrnoException).code
+        resolve({ exitCode: null, ...(spawnErrorCode ? { spawnErrorCode } : {}) })
+        return
       }
-    })
-    child.once('error', (error: NodeJS.ErrnoException) => {
-      finish({ exitCode: null, ...(error.code ? { spawnErrorCode: error.code } : {}), timedOut })
-    })
-    child.once('close', (exitCode) => {
-      finish({
-        exitCode,
-        ...(captureOutput ? { output } : {}),
-        ...(timedOut ? { timedOut: true } : {}),
+
+      let output = ''
+      let timedOut = false
+      let settled = false
+      const timeout = setTimeout(() => {
+        timedOut = true
+        child.kill()
+      }, COMMAND_TIMEOUT_MS)
+      const finish = (result: DoctorCommandResult) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
+        resolve(result)
+      }
+      child.stdout?.setEncoding('utf8').on('data', (chunk: string) => {
+        if (output.length < MAX_VERSION_OUTPUT_LENGTH) {
+          output += chunk.slice(0, MAX_VERSION_OUTPUT_LENGTH - output.length)
+        }
+      })
+      child.once('error', (error: NodeJS.ErrnoException) => {
+        finish({ exitCode: null, ...(error.code ? { spawnErrorCode: error.code } : {}) })
+      })
+      child.once('close', (exitCode) => {
+        finish({
+          exitCode,
+          ...(captureOutput ? { output } : {}),
+          ...(timedOut ? { timedOut: true } : {}),
+        })
       })
     })
-  })
+  }
 }

@@ -1,8 +1,11 @@
+import { EventEmitter } from 'node:events'
+import type { ChildProcess, SpawnOptions } from 'node:child_process'
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it } from 'vitest'
-import { hasWindowsBatchShim, runDoctor } from './doctor.js'
+import { createSystemCommandRunner, hasWindowsBatchShim, runDoctor } from './doctor.js'
 import type { DoctorCheck, DoctorCommandResult, DoctorCommandRunner } from './doctor.js'
 
 const dirs: string[] = []
@@ -43,6 +46,64 @@ describe('Windows CLI shim detection', () => {
     expect(await hasWindowsBatchShim(join(directory, 'claude.cmd'), '', 'win32')).toBe(true)
     expect(await hasWindowsBatchShim('claude', directory, 'linux')).toBe(false)
     expect(await hasWindowsBatchShim('unrelated', directory, 'win32')).toBe(false)
+  })
+
+  it('tries shell-free first, then uses a shell only for the fixed version argument', async () => {
+    const directory = tempHome()
+    writeFileSync(join(directory, 'claude.cmd'), '@echo off\r\n')
+    const calls: Array<{ command: string; args: string[]; shell: SpawnOptions['shell'] }> = []
+    const runner = createSystemCommandRunner({
+      platform: 'win32',
+      searchPath: directory,
+      spawnCommand: (command, args, options) => {
+        calls.push({ command, args, shell: options.shell })
+        const child = new EventEmitter() as ChildProcess
+        const stdout = new PassThrough()
+        Object.assign(child, { stdout, kill: () => true })
+        queueMicrotask(() => {
+          if (options.shell !== true) {
+            child.emit('error', Object.assign(new Error('batch shim requires cmd.exe'), { code: 'ENOENT' }))
+          } else {
+            stdout.write('Claude Code v2.1.317\n')
+            child.emit('close', 0)
+          }
+        })
+        return child
+      },
+    })
+
+    await expect(runner('claude', ['--version'], true)).resolves.toMatchObject({
+      exitCode: 0,
+      output: 'Claude Code v2.1.317\n',
+    })
+    expect(calls).toEqual([
+      { command: 'claude', args: ['--version'], shell: false },
+      { command: 'claude', args: ['--version'], shell: true },
+    ])
+  })
+
+  it('does not enable a shell for non-fixed arguments, but still recognizes the shim', async () => {
+    const directory = tempHome()
+    writeFileSync(join(directory, 'claude.cmd'), '@echo off\r\n')
+    const shells: SpawnOptions['shell'][] = []
+    const runner = createSystemCommandRunner({
+      platform: 'win32',
+      searchPath: directory,
+      spawnCommand: (_command, _args, options) => {
+        shells.push(options.shell)
+        const child = new EventEmitter() as ChildProcess
+        Object.assign(child, { stdout: null, kill: () => true })
+        queueMicrotask(() => {
+          child.emit('error', Object.assign(new Error('batch shim requires cmd.exe'), { code: 'ENOENT' }))
+        })
+        return child
+      },
+    })
+
+    await expect(runner('claude', ['--version', 'untrusted'], true)).resolves.toMatchObject({
+      commandFound: true,
+    })
+    expect(shells).toEqual([false])
   })
 
   it('reports a found Windows shim as installed but version-untested', async () => {
