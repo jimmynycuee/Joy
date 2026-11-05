@@ -1,8 +1,8 @@
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { runDoctor } from './doctor.js'
+import { hasWindowsBatchShim, runDoctor } from './doctor.js'
 import type { DoctorCheck, DoctorCommandResult, DoctorCommandRunner } from './doctor.js'
 
 const dirs: string[] = []
@@ -29,6 +29,43 @@ function commandRunner(
     return responses[command] ?? { exitCode: null, spawnErrorCode: 'ENOENT' }
   }
 }
+
+describe('Windows CLI shim detection', () => {
+  it('detects fake npm-installed Claude and Codex shims without executing them', async () => {
+    const directory = tempHome()
+    writeFileSync(join(directory, 'claude.cmd'), '@echo off\r\n')
+    writeFileSync(join(directory, 'codex.cmd'), '@echo off\r\n')
+
+    expect(await hasWindowsBatchShim('claude', directory, 'win32')).toBe(true)
+    expect(await hasWindowsBatchShim('codex', directory, 'win32')).toBe(true)
+    expect(await hasWindowsBatchShim(join(directory, 'claude.cmd'), '', 'win32')).toBe(true)
+    expect(await hasWindowsBatchShim('claude', directory, 'linux')).toBe(false)
+    expect(await hasWindowsBatchShim('unrelated', directory, 'win32')).toBe(false)
+  })
+
+  it('reports a found Windows shim as installed but version-untested', async () => {
+    const report = await runDoctor({
+      home: tempHome(),
+      platform: 'win32',
+      runCommand: async (command) =>
+        command === 'claude' || command === 'codex'
+          ? { exitCode: null, commandFound: true }
+          : { exitCode: null, spawnErrorCode: 'ENOENT' },
+      keychainLookup: async () => {},
+    })
+    const checks = checksById(report.checks)
+
+    expect(checks.get('claude-cli')).toMatchObject({
+      status: 'untested',
+      summary: expect.stringContaining('installed as a Windows command shim'),
+      repair: expect.stringContaining('No installation repair is needed'),
+    })
+    expect(checks.get('codex-cli')).toMatchObject({
+      status: 'untested',
+      summary: expect.stringContaining('installed as a Windows command shim'),
+    })
+  })
+})
 
 describe('runDoctor', () => {
   it('reports available prerequisites, keeps CLI compatibility untested, and omits command and keychain output', async () => {
@@ -113,7 +150,7 @@ describe('runDoctor', () => {
     })
   })
 
-  it('keeps uncertain versions and login status untested instead of guessing', async () => {
+  it('marks unsupported Node as missing and keeps uncertain CLI status untested', async () => {
     const report = await runDoctor({
       home: tempHome(),
       nodeVersion: '20.11.1',
@@ -127,7 +164,12 @@ describe('runDoctor', () => {
     })
     const checks = checksById(report.checks)
 
-    expect(checks.get('node')).toMatchObject({ status: 'untested', version: '20.11.1' })
+    expect(checks.get('node')).toMatchObject({
+      status: 'missing',
+      version: '20.11.1',
+      summary: expect.stringContaining("below Joy's declared runtime requirement"),
+      repair: expect.stringContaining('Upgrade to Node.js 22.13.0 or later'),
+    })
     expect(checks.get('git')).toMatchObject({ status: 'untested' })
     expect(checks.get('gh-auth')).toMatchObject({ status: 'untested' })
     expect(checks.get('claude-cli')).toMatchObject({ status: 'untested' })
@@ -178,7 +220,7 @@ describe('runDoctor', () => {
 
     expect(checksById(report.checks).get('data-directory')).toMatchObject({
       status: 'missing',
-      repair: expect.stringContaining('JOY_HOME'),
+      repair: expect.stringContaining('automatically when the server starts'),
     })
     expect(readdirSync(parent)).toEqual([])
   })

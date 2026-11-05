@@ -24,6 +24,7 @@ export interface DoctorCommandResult {
   exitCode: number | null
   output?: string
   spawnErrorCode?: string
+  commandFound?: boolean
   timedOut?: boolean
 }
 
@@ -84,7 +85,7 @@ function checkNode(version: string): DoctorCheck {
     return {
       id,
       label,
-      status: 'untested',
+      status: 'missing',
       version: detected,
       summary: `Node.js ${detected} is below Joy's declared runtime requirement (22.13.0).`,
       repair: 'Upgrade to Node.js 22.13.0 or later, then restart Joy.',
@@ -168,6 +169,15 @@ async function checkOptionalCli(
 ): Promise<DoctorCheck> {
   const id = label === 'Claude Code' ? 'claude-cli' : 'codex-cli'
   const result = await safeRunCommand(runCommand, command, ['--version'], true)
+  if (result.commandFound) {
+    return {
+      id,
+      label: `${label} CLI`,
+      status: 'untested',
+      summary: `${label} CLI is installed as a Windows command shim; Joy could not check its version without invoking a shell.`,
+      repair: 'No installation repair is needed; version detection for this Windows shim remains untested.',
+    }
+  }
   if (result.spawnErrorCode === 'ENOENT') {
     return {
       id,
@@ -258,7 +268,7 @@ async function checkDataDirectory(home: string): Promise<DoctorCheck> {
         status: 'missing',
         summary: 'Joy data directory is missing or not writable.',
         repair:
-          'Create a writable Joy data directory or set JOY_HOME to a writable folder, then restart Joy.',
+          'Joy creates its data directory automatically when the server starts. If it already exists but is not writable, fix its permissions or set JOY_HOME to a writable folder, then restart Joy.',
       }
 }
 
@@ -313,11 +323,47 @@ function compareVersions(first: readonly number[], second: readonly number[]): n
   return 0
 }
 
-function runSystemCommand(
+export async function hasWindowsBatchShim(
+  command: string,
+  searchPath: string,
+  platform: NodeJS.Platform,
+): Promise<boolean> {
+  if (platform !== 'win32') return false
+
+  const isBatchCommand = /\.(?:cmd|bat)$/i.test(command)
+  const candidates = isBatchCommand
+    ? [command]
+    : /^(claude|codex)$/i.test(command)
+      ? [`${command}.cmd`, `${command}.bat`]
+      : []
+  if (candidates.length === 0) return false
+
+  if (isBatchCommand && /[\\/]/.test(command)) return isFile(command)
+  for (const directory of searchPath.split(';').filter(Boolean)) {
+    for (const candidate of candidates) {
+      if (await isFile(join(directory, candidate))) return true
+    }
+  }
+  return false
+}
+
+async function isFile(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile()
+  } catch {
+    return false
+  }
+}
+
+async function runSystemCommand(
   command: string,
   args: readonly string[],
   captureOutput: boolean,
 ): Promise<DoctorCommandResult> {
+  if (await hasWindowsBatchShim(command, process.env.PATH ?? '', process.platform)) {
+    return { exitCode: null, commandFound: true }
+  }
+
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>
     try {

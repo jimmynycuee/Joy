@@ -6,10 +6,10 @@ const doctor = {
     {
       id: 'node',
       label: 'Node.js',
-      status: 'ok',
-      version: '22.13.0',
-      summary: 'Node.js 22.13.0 meets Joy’s declared runtime requirement.',
-      repair: 'No action needed.',
+      status: 'missing',
+      version: '20.11.1',
+      summary: 'Node.js 20.11.1 is below Joy’s declared runtime requirement (22.13.0).',
+      repair: 'Upgrade to Node.js 22.13.0 or later, then restart Joy.',
     },
     {
       id: 'git',
@@ -75,8 +75,11 @@ test('homepage shows setup status and actionable repair guidance', async ({ page
   await expect(panel).toContainText('Codex CLI')
   await expect(panel).toContainText('OS keychain')
   await expect(panel).toContainText('Joy data directory')
-  await expect(panel.getByText('OK', { exact: true })).toHaveCount(3)
-  await expect(panel.getByText('Missing', { exact: true })).toHaveCount(2)
+  const nodeCheck = panel.getByRole('listitem').filter({ hasText: 'Node.js' })
+  await expect(nodeCheck.getByText('Missing', { exact: true })).toBeVisible()
+  await expect(panel.getByText('OK', { exact: true })).toHaveCount(2)
+  await expect(panel.getByText('Missing', { exact: true })).toHaveCount(3)
+  await expect(panel).toContainText('Upgrade to Node.js 22.13.0 or later')
   await expect(panel.getByText('Untested', { exact: true })).toHaveCount(2)
   await expect(panel).toContainText('gh auth login --hostname github.com')
   await expect(panel).toContainText('Start and unlock a Secret Service')
