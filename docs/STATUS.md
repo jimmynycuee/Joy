@@ -2,7 +2,13 @@
 
 > 接手前請先讀本檔、`AGENTS.md` 與 `docs/PLAN.md`。本檔記錄目前進度、阻塞與決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。
 
-- 最後更新：2026-11-05 04:14 UTC
+## Windows CI 修復
+
+- 2026-11-05 main 的 Windows CI 重現 publisher 測試在 Vitest 預設 5 秒 timeout 中超時，緊接著暫存 repo 清理回報 `EBUSY`。失敗測試建立兩個 fixture repo，需執行多個序列 Git 子程序。
+- 測試 timeout 改為 30 秒，遞迴刪除暫存目錄加入 10 次、每次 100 ms 的 busy/permission retry。
+- 本機 Linux 驗證：`pnpm exec vitest run --project github packages/github/src/publisher.test.ts` 通過（17/17）；隔離 runner Git 身分後 `pnpm check` 通過（197 passed、2 skipped）。此修正的 Windows 行為由 CI 驗證；本機沒有 Windows 執行環境。
+
+- 最後更新：2026-11-05 08:39 UTC
 - 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** 本 checkout 的 `origin/main` 為 `a0c7627`；PR #64 已合併，該 PR 四項 checks 通過，但未另行確認合併後 `main` CI。T1.12 的 #53 仍 open/draft、base `t1.7-event-log`、四項 checks 通過並等待 owner review；T1.13/T1.8 的 #62 仍 open/draft，但目前與 `main` 衝突且新 head 尚無 checks。相關計畫仍未勾選；T1.9 真實測試 repo 驗收亦未完成。
 - 後續階段有部分獨立進度：T4.2 的 #17 為 open/draft、base `t1.8-web`、無衝突；Ubuntu、macOS、Windows 與 web E2E 四項 GitHub checks 全通過。這是本機 PWA 基礎，不是已完成 Web Push 驗收，也不解除 P1/P2 的依賴順序。
 
