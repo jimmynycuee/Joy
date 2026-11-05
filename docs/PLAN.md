@@ -3,7 +3,7 @@
 > 多模型協作的 coding agent 平台 + 個人助理。
 > Claude 與 GPT 分工、每一層可自由切換模型、Codex 風格介面、跑在自己電腦上用自己的訂閱。
 
-- 版本：v0.1（2026-11-03）
+- 版本：v0.2（2026-11-04）：補齊 P2–P5 的 ticket 與驗收條件、隱私與維運、決策紀錄
 - 開發方式：主要由 Claude Code / Codex 撰寫，人負責決策、審核、驗收
 - 投入：每週 10–20 小時
 - 授權：Business Source License 1.1（原始碼公開，非 OSI 開源），見 `LICENSE`
@@ -32,10 +32,14 @@
 - [x] T1.5 `orchestrator/review-loop`
 - [x] T1.10 機密存 OS 鑰匙圈（`packages/secrets`）
 - [x] T1.11 設定（`packages/config`；UI 設定頁併入 T1.8）
-- [x] T1.6 server（HTTP + WebSocket、任務 CRUD、重啟恢復）
-- [x] T1.7 事件紀錄（寫入 DB、可回放、經 Redactor 遮罩）
-- [x] T1.9 GitHub：push 分支、開 draft PR
-- [ ] T1.8 Codex 風格 Web UI（含設定頁）
+- [x] T1.6 server（HTTP + WebSocket、任務 CRUD、重啟恢復；已整合至 main，PR #58）
+- [x] T1.7 事件紀錄（寫入 DB、可回放、經 Redactor 遮罩；已整合至 main，PR #58）
+- [x] T1.12 repo 的 provider 允許清單
+- [ ] T1.9 GitHub：push 分支、開 draft PR（publisher 實作已整合至 main 並完成安全與歷史掃描補強；本機測試 35/35、完整 `pnpm check` 通過；依驗收條件仍待在 Joy 測試 repo 實際開啟並清理 `[test] ` draft PR）
+- [ ] T1.13 `joy doctor` 與首次啟動檢查（實作在 open/draft PR #62；最新 head `348593b` 與 `main` 衝突，尚無該 head checks；等待既定 owner 流程處理與驗收後再標完成）
+- [ ] T1.14 本機 API 與 WebSocket token 認證（Issue #72；修改請求與 WebSocket 驗證、Origin 雙層防護、私密 token 儲存與 UI 注入；需 owner review）
+- [ ] T1.8 Codex 風格 Web UI（含設定頁；UI 主體已整合至 main，PR #58；首頁檢查實作在 open/draft PR #62，但最新 head `348593b` 與 `main` 衝突且尚無 checks；整合及驗收前保持未勾選）
+- [ ] P2（T2.1–T2.8）、P3（T3.1–T3.9）、P4（T4.1–T4.9）、P5（T5.1–T5.7）：見 §6
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
 
@@ -225,7 +229,7 @@ budget:
   per_task: { max_rounds: 3, max_minutes: 60, max_api_usd: 1 }
 autonomy_mode: normal            # careful | normal | hands-off
 ```
-> 模型名稱以 P0 的 spike 實測為準；設定檔只存 `provider + model` 字串，不寫死在程式裡。
+> 模型名稱須以 P0 spike 實測並由擁有者確認；此處名稱在確認前不代表已驗證可用。設定以 `provider + model` 識別模型，角色推理強度另以 `effort` 設定；預設值放在設定檔，不寫死在程式裡。
 > 每個任務可在建立時覆寫任一角色。
 
 ### 3.4 CLI 整合方式（P0 spike 驗證）
@@ -307,72 +311,95 @@ autonomy_mode: normal            # careful | normal | hands-off
 | T1.5 | `orchestrator/review-loop`：implement → review（結構化 findings JSON）→ fix，最多 N 輪；可選「先出計畫再審」 | 用 fake provider 測完整流程與中止條件 |
 | T1.6 | `server`：REST + WebSocket，任務 CRUD、事件串流、啟動時恢復未完成任務（resume） | 重啟 server 後進行中任務可繼續 |
 | T1.7 | 事件紀錄：全部 `AgentEvent` 寫入 `events`；可回放 | UI 重新整理後能完整重現任務過程 |
-| T1.8 | `apps/web`：三欄式 UI、任務清單、即時事件流、diff viewer、角色 / 模型選單 | 能完成一次完整任務；Playwright e2e 用 fake provider |
+| T1.8 | `apps/web`：三欄式 UI、任務清單、即時事件流、diff viewer、角色 / 模型選單 | 能完成一次完整任務；首頁顯示 T1.13 的檢查結果；Playwright e2e 用 fake provider |
 | T1.9 | GitHub：commit、push branch、用 `gh` 開 draft PR，PR 描述附 review 摘要 | 在測試 repo 成功開出 PR |
 | T1.10 | 機密：OS keychain 存 OpenAI key（`@napi-rs/keyring` 或同類），log 遮罩 | key 不出現在 DB、log、事件中（測試驗證） |
 | T1.11 | 設定：`config.yaml` 讀寫 + UI 設定頁（各角色模型） | 改設定後新任務立即套用 |
+| T1.12 | **repo 的 provider 允許清單**：每個 repo 設定可用哪些 provider（預設全部）；建立任務與 resume 前檢查所選角色；T2.1、T2.2、T3.2 新增對應流程時沿用此清單。更新清單只影響之後的新任務、resume 與 provider dispatch preflight，不會取消或動態改變已在執行中的任務。 | 所選角色用到不允許的 provider 時任務直接拒絕，錯誤訊息說明是哪個角色；provider 允許清單與 `PROVIDER_KINDS` 同步受 DB regression 保護。 |
+| T1.13 | **`joy doctor` 與首次啟動檢查**：Node 版本、git、gh 登入、`claude` / `codex` 安裝與版本、鑰匙圈、資料目錄可寫；提供首頁可呈現的檢查結果 | 每項回報 OK / 缺少 / 版本未測過，並附修復指令；缺 CLI 時只停用該 provider，不阻止啟動 |
+| T1.14 | 本機 API 與 WebSocket 認證：server 首次啟動產生隨機 token，存於 `~/.joy` 私密檔案；Joy UI 對 API 與 WebSocket 連線附帶 token，保留 Origin 白名單並接受 `localhost` 與 `127.0.0.1` | 除 `GET /api/health` 外，沒有或錯誤 token 的 API 請求與 WebSocket 一律 403 且不產生副作用；合法 UI 流程正常；token 不出現在 log、事件或錯誤訊息；`pnpm check` 通過；需 owner review |
 
 **P1 完成後：開始用 Joy 開發 Joy。**
 
 ### P2 — 更多分工模式、審核、手機（第 9–12 週）
+
 | ticket | 內容 | 驗收條件 |
 |---|---|---|
-| T2.1 | `orchestrator/compete`：多個 provider 平行做同一任務，各自 worktree；裁判模型比較；可「合併優點」 | UI 能並排比較並選定；裁判給出理由 |
-| T2.2 | `tools`：Tool Hub MCP server 第一批工具：`ask_peer`、`task_status`、`request_approval` | Claude 任務中呼叫 `ask_peer` 能得到 Codex 的回答 |
-| T2.3 | `policy`：三級權限、動作分類、全域模式切換；🔴 動作先跨模型預審 | 每類動作都有測試覆蓋其等級 |
-| T2.4 | `channels/telegram`：綁定你的帳號（只接受你的 chat id）、通知、Approve / Deny 按鈕 | 在手機上核准 push 後任務繼續 |
-| T2.5 | 額度感知：偵測 `rate_limited` → 依設定換家 / 排隊；UI 顯示額度與 API 花費；成本保險絲 | 模擬 rate limit 時自動切換 |
-| T2.6 | GitHub Issue → 任務（label 觸發或指令觸發） | 加 label 後自動建立任務 |
+| T2.1 | `orchestrator/compete`：多個 provider 在各自 worktree 平行做同一任務 → 各自通過一次交叉審查 → 裁判比較並給理由 → 你選一個，或選「合併」：**裁判在第三個 worktree 重新實作合併版**，再走一次審查 | UI 並排比較 diff 與裁判理由；合併版有自己的分支與審查結果；裁判 provider 遵守 T1.12 允許清單；放棄的 worktree 依 T2.8 清理（假 provider 測試） |
+| T2.2 | `tools`：Tool Hub MCP server（stdio），第一批工具 `ask_peer`、`task_status`、`request_approval`、`approve`（權限委派用） | Claude 任務中 `ask_peer` 得到另一家的回答；`ask_peer` 遵守 T1.12 允許清單；**被問的一方唯讀、可看同一個 worktree**；每個任務預設最多 5 次（設定可改），超過時工具回傳錯誤而非靜默失敗；Joy 自己的工具預設放行 |
+| T2.3 | `policy`：三級權限、動作分類、全域模式切換；🔴 動作先跨模型預審。Claude 透過 `approve` 工具接入 | 每種 `ActionKind` 都有測試覆蓋其等級與三種模式；來自標記為 `external_content` 內容所提出的動作一律不得自動執行 |
+| T2.4 | `channels/telegram`：綁定擁有者（只接受設定的 chat id）、通知、Approve / Deny 按鈕、審核逾時 | 陌生帳號的訊息被丟棄並記錄；在手機核准後任務繼續；逾時預設拒絕 |
+| T2.5 | **額度感知與交接**：偵測 `quota: limited`（Claude `rate_limit_event`、OpenAI 429、Codex 錯誤訊息）→ **交接給另一家**：把任務說明、目前 diff、計畫、未解決的審查意見整理成交接摘要，另一家在同一個 worktree 以新 session 接手；兩家都沒額度時排隊，到 `resetsAt` 自動繼續。UI 顯示額度與 API 花費；成本保險絲 | 模擬額度用完時任務改由另一家完成；交接摘要存進事件紀錄；交接不違反 T1.12 的允許清單（不允許時改為排隊）；超過每任務 API 上限時停止並通知 |
+| T2.6 | GitHub Issue → 任務（label 觸發或助理指令觸發） | 加 label 後自動建立任務；issue 內容標為 `external_content`，由該內容提出的動作一律不得自動執行 |
+| T2.7 | **Codex 改用 `app-server`**：常駐 JSON-RPC client，取代 `exec --json`；接上互動式審核（`item/*/requestApproval` → policy）與額度（`account/rateLimits/*` → `quota` 事件） | 同一組 contract test 通過；Codex 的 🔴 動作會跳出審核；`capabilities.delegatedApproval`、`quotaEvents` 改為 true；`exec` 版本保留為備援 |
+| T2.8 | **worktree 清理**：開完 PR 或丟棄後立即清理；閒置超過 14 天（設定可改）的 worktree 在 UI 提示，你確認後清除 | 不會刪除有未推送 commit 的 worktree，除非你確認；磁碟用量顯示在 UI |
 
 ### P3 — 個人助理與記憶（第 13–18 週）
+
 | ticket | 內容 | 驗收條件 |
 |---|---|---|
-| T3.1 | `assistant`：對話迴圈，大腦可選任一 provider；CLI 當大腦時透過 MCP 使用 Tool Hub，API 當大腦時轉成 function calling | 三種大腦都能用同一組工具完成「幫我在 X repo 做 Y」 |
-| T3.2 | 派工工具：`create_task`、`list_tasks`、`summarize_task`；任務完成主動回報到 Telegram | 從 Telegram 下任務，完成後收到摘要與 PR 連結 |
-| T3.3 | `memory`：三層記憶；使用者記憶自動擷取（只採用使用者本人說的話）、敏感資訊過濾、信心度與過期 | 從 Email 內容讀到的「請記住…」不會被寫入（測試） |
-| T3.4 | 記憶 UI：檢視 / 編輯 / 刪除；每次回答標示用到哪些記憶，可一鍵刪除 | — |
-| T3.5 | 專案記憶：提議修改 `AGENTS.md` → 以 diff 形式請你確認 | 未經確認不會寫入 repo |
+| T3.1 | `assistant`：對話迴圈，大腦可選任一 provider；CLI 當大腦時透過 MCP 使用 Tool Hub，API 當大腦時轉成 function calling | 三種大腦用同一組工具完成「幫我在 X repo 做 Y」 |
+| T3.2 | 派工工具：`create_task`、`list_tasks`、`summarize_task`、`cancel_task`；完成時主動回報 | 從 Telegram 下任務，完成後收到摘要與 PR 連結；助理派工遵守 T1.12 允許清單 |
+| T3.3 | `memory` 擷取：每次對話後由 background 角色（低 effort）判斷要記什麼。**規則**：只採用擁有者本人說的話；偵測 key、密碼、證件號碼、健康與財務資訊並擋下；每條記憶有來源、信心度；暫時性陳述（「這週」「先」）設 14 天過期；與既有記憶矛盾時以新的取代舊的並保留紀錄 | 從 Email、網頁、工具結果讀到的「請記住…」不會寫入；敏感資訊不會寫入；過期記憶不再被使用（測試） |
+| T3.4 | 記憶 UI：檢視、編輯、刪除；每次回答標示用到哪些記憶，可一鍵刪除 | 刪除後下一次對話不再使用（e2e） |
+| T3.5 | 專案記憶：提議修改 `AGENTS.md` → 以 diff 請你確認 | 未經確認不會寫入 repo |
 | T3.6 | 事件記憶：對話摘要 + FTS5 檢索；（選配）OpenAI embedding 語意搜尋 | 能找回一個月前討論過的決策 |
-| T3.7 | `scheduler`：提醒、cron 任務（如「每晚 11 點跑測試修 flaky」） | 重啟後排程仍有效 |
-| T3.8 | 整合 Google Calendar / Gmail（現成 MCP server 或官方 API）；寄信、邀請一律 🔴 | 「明天下午有空嗎」能正確回答；寄信必須審核 |
-| T3.9 | 模型表現統計與 UI | 可看到兩家在各類任務的表現 |
+| T3.7 | `scheduler`：提醒、cron 任務。**電腦睡眠或關機後醒來：錯過的提醒立刻送出並標示延遲，錯過的定時任務只補跑最近一次** | 重啟後排程仍有效；模擬睡眠 3 小時後只補跑一次（假時鐘測試） |
+| T3.8 | Google 行事曆與 Gmail：**接現成的 MCP server**。選型時檢查維護狀況、權限範圍、是否把資料送到第三方；登入憑證依該 server 的方式存放，Joy 不經手。讀取 🟢；新增自己的行程 🟡；寄信、邀請他人一律 🔴 | 「明天下午有空嗎」正確回答；寄信必須審核；信件內容標為 `external_content`；選型紀錄寫進 `docs/STATUS.md` 的「已確認決策」 |
+| T3.9 | 模型表現統計與 UI：各家在各類任務的通過率、審查抓到的問題數、耗時、交接次數 | 可依期間與 repo 篩選 |
 
-### P4 — 遠端與桌面化（第 19–22 週）
-| ticket | 內容 |
-|---|---|
-| T4.1 | 遠端存取：token 驗證 + Tailscale 文件（server 預設只綁 127.0.0.1） |
-| T4.2 | PWA + Web Push 通知 |
-| T4.3 | Tauri 桌面 app：系統匣、開機啟動、原生通知、自動更新 |
-| T4.4 | Windows 強化：安裝檔、WSL 偵測與 Codex fallback |
-| T4.5 | `executor/docker`：可選的 container 模式（掛載 CLI 憑證、網路政策） |
+### P4 — 遠端、桌面化與維運（第 19–23 週）
 
-### P5 — 商業化準備（第 23 週以後，視使用情況決定）
-| 項目 | 內容 |
-|---|---|
-| 條款確認 | 重新確認 Anthropic / OpenAI 最新條款，確定可收費的範圍 |
-| 雲端控制層 | 帳號、跨裝置同步、推播轉送、團隊協作（不經手模型費用） |
-| Remote MCP endpoint | 讓 ChatGPT、Grok 等外部助理派工（參考 Reason 的 `mcp.reasonmachines.com/mcp`） |
-| LINE channel | 評估推播費用後實作 |
-| 自訂工作流程 | 把用出來的分工模式抽象成可設定的流程 |
-| 雲端 BYOK 模式 | 使用者自帶 API key 的雲端 sandbox 版本（E2B / Modal / Daytona） |
+| ticket | 內容 | 驗收條件 |
+|---|---|---|
+| T4.1 | 遠端存取：token 驗證 + Tailscale 文件；server 預設只綁 127.0.0.1，開啟遠端要明確設定 | 沒有 token 的請求一律 401；token 可在 UI 重新產生並讓舊的失效 |
+| T4.2 | PWA + Web Push 通知（PR #17 提交本機可安裝 PWA 基礎；open/draft、base `t1.8-web`、head `ad4539d`，Ubuntu/macOS/Windows/web E2E 四項 checks 全通過；本機驗證報告與 PR 說明中的測試數字不一致，須核對；Web Push 仍待 T4.1） | 手機加到主畫面後收得到任務完成與審核通知 |
+| T4.3 | Tauri 桌面 app：系統匣、開機啟動、原生通知、自動更新 | macOS 與 Windows 安裝檔可安裝、更新、移除 |
+| T4.4 | Windows 強化：安裝檔、`.cmd` shim 的 spawn、WSL 偵測與 Codex fallback | Windows 實機完成一次交叉審查任務 |
+| T4.5 | `executor/docker`：可選的 container 模式（掛載 CLI 憑證、網路政策） | 不信任的 repo 可在 container 內跑完任務 |
+| T4.6 | **CLI 版本管理**：記錄每個 provider 測過的版本範圍；啟動與 `doctor` 遇到未測過的版本時警告；CI 每週用最新版 CLI 重跑 contract test（只解析 fixture，不呼叫模型）；重錄流程寫進文件 | 啟動與 `doctor` 對未測版本顯示警告與重錄指令；每週 CI 用最新版 CLI 跑 fixture contract test 且不呼叫模型；重錄流程有文件 |
+| T4.7 | **備份與匯出**：每天自動備份 SQLite（保留 7 份）；匯出任務紀錄與記憶為 JSON；從備份還原 | 還原後資料完整；匯出內容經過 Redactor |
+| T4.8 | **除錯 log**：結構化 log 寫到 `~/.joy/logs`，依天輪替、保留 14 天，一律經過 Redactor；UI 可下載最近 log | log 中找不到任何已知 secret（測試） |
+| T4.9 | **使用者文件**：README 的安裝、第一次設定、日常使用、疑難排解；隱私說明（見 §7.1） | 新電腦照 README 能在 15 分鐘內跑完第一個任務 |
+
+### P5 — 商業化準備（第 24 週以後，視使用情況決定）
+
+| ticket | 內容 | 驗收條件 |
+|---|---|---|
+| T5.1 | 條款與法務：重新確認 Anthropic / OpenAI 最新條款與可收費範圍；律師審 BSL 參數 | 書面結論存進 `docs/legal.md` |
+| T5.2 | 開放外部貢獻：CLA Assistant、`CONTRIBUTING.md` 改為接受 PR、PR 範本 | 未簽 CLA 的 PR 無法合併 |
+| T5.3 | 雲端控制層：帳號、跨裝置同步、推播轉送、團隊協作（**不經手模型費用與訂閱憑證**）；也負責電腦睡眠時的準時推播 | 本機引擎離線時，雲端能收任務並在上線後交付 |
+| T5.4 | Remote MCP endpoint：讓 ChatGPT、Grok 等外部助理派工 | 外部助理派的任務標為 `external_content` 並受 policy 限制；由該內容提出的動作一律不得自動執行 |
+| T5.5 | LINE channel：先確認當時的推播額度與費用；主動通知合併成摘要以節省訊息數 | 同 T2.4 的驗收條件 |
+| T5.6 | 自訂工作流程：把用出來的分工模式抽象成可設定的流程 | 現有三種模式都能用新格式表達 |
+| T5.7 | 雲端 BYOK 模式：使用者自帶 API key 的雲端 sandbox（E2B / Modal / Daytona） | 使用者的 key 只存在其帳號的 secret store |
 
 ---
 
-## 7. 品質策略（AI 主寫時的安全網）
+## 7. 品質、隱私與維運
 
+### 7.1 隱私（資料會送去哪裡）
+- 交叉審查、`ask_peer`、交接都會把程式碼送給**另一家**。敏感 repo 用 T1.12 的允許清單限制只用一家。
+- 助理大腦與背景工作走 OpenAI API：對話內容、記憶摘要會送到 OpenAI。
+- Gmail / 行事曆內容只在需要時讀取，經過你選的 MCP server（T3.8 選型時確認它是否把資料送到第三方）。
+- Joy 不讀取、不保存、不轉送訂閱登入憑證；API key 只存在鑰匙圈。
+- 不收集使用統計；P5 雲端層若要收集，必須預設關閉並可選擇加入。
+
+### 7.2 測試與審查
 - **型別優先**：`packages/core` 由人審過才能改；其他套件只依賴介面。
-- **Contract test**：每個 CLI adapter 都以錄下的 fixture 測試；CLI 升級時重錄 fixture，差異即為需要修的地方。
-- **Fake provider**：orchestrator / UI 測試一律用假的 provider，不燒額度、可重現。
-- **e2e 冒煙測試**（手動觸發、會用真實額度）：每週一次跑真實 CLI 的最小任務。
+- **Contract test**：每個 adapter 都以錄下的 fixture 測試；CLI 升級時重錄（T4.6）。
+- **Fake provider**：orchestrator / server / UI 測試一律用假 provider。
+- **真實模型測試**：只用最便宜的模型 + low effort，opt-in，不進 CI。
 - **CI 三平台矩陣**：macOS、Windows、Linux。
-- **雙模型 review**：每個 PR 由非作者那一家 review；🔴 類程式碼（policy、secrets、channels 驗證）必須由你親自看。
+- **雙模型 review**：每個 PR 由非作者那一家 review。
 
-### 你需要親自看懂的地方
+### 7.3 你需要親自看懂的地方
 1. `packages/core` 的介面定義
 2. `packages/policy`（什麼動作需要審核）
-3. `packages/channels/telegram` 的身分驗證（只接受你）
-4. 機密處理（keychain、log 遮罩）
-5. 記憶寫入的來源限制
+3. `packages/channels` 的身分驗證（只接受你）
+4. 機密處理（鑰匙圈、Redactor）
+5. 記憶寫入規則（T3.3）
+6. repo 允許清單（T1.12）
 
 ---
 
@@ -380,28 +407,43 @@ autonomy_mode: normal            # careful | normal | hands-off
 
 | 風險 | 可能性 | 對策 |
 |---|---|---|
-| CLI 改版導致整合壞掉 | 高 | adapter 隔離 + fixture contract test + 鎖定 CLI 版本並在 UI 顯示 |
-| 訂閱額度不夠兩家同時跑 | 中 | 額度感知、排隊、自動換家；競賽模式預設關閉 |
-| 條款變更 | 中 | 只調度使用者本機已登入的官方 CLI；商業化前法務確認 |
-| Prompt injection（Email、網頁、issue） | 中 | 外部內容不得寫入記憶、不得觸發 🔴 動作；工具結果標示為不可信 |
-| Windows 上 Codex 支援不足 | 中 | WSL fallback；P0 先驗證 |
+| CLI 改版導致整合壞掉 | 高 | adapter 隔離 + fixture contract test + 版本範圍警告（T4.6） |
+| 訂閱額度不夠兩家同時跑 | 中 | 額度感知、交接給另一家、排隊（T2.5）；競賽模式預設關閉 |
+| 條款變更 | 中 | 只調度使用者本機已登入的官方 CLI；商業化前法務確認（T5.1） |
+| Prompt injection（Email、網頁、issue） | 中 | 外部內容標為 `external_content`：不得寫入記憶；由該內容提出的動作一律不得自動執行 |
+| 程式碼送到不該送的那一家 | 中 | repo 允許清單（T1.12），所有角色與交接都檢查 |
+| 第三方 Gmail / 行事曆 MCP server 不可靠或外洩資料 | 中 | 選型檢查清單（T3.8）；寄信一律 🔴；可隨時停用 |
+| Codex 在 P1 無法互動審核 | 中（已知） | P1 只在 sandbox 內工作；T2.7 改用 app-server |
+| Windows 上 Codex 支援不足 | 中 | WSL fallback（T4.4） |
 | 範圍膨脹（助理功能） | 高 | 嚴格照階段走；P1 完成前不碰助理 |
 | API 額度燒太快 | 低 | 月預算上限 + 每任務保險絲 + 小模型 |
+| 資料遺失 | 低 | 每日備份（T4.7） |
 
 ---
 
-## 9. 待決事項
+## 9. 決策紀錄與待決事項
+
+### 已決定
 - [x] 專案名稱：Joy（repo：jimmynycuee/Joy）
-- [x] 授權：BSL 1.1（Additional Use Grant 禁止以託管服務形式競爭；4 年後轉 Apache-2.0）。商業化前請律師確認；接受外部 PR 前需設置 CLA
-- [x] P0 spike 後確認 Codex 整合方式：P1 用 `exec --json`，P2 評估 `app-server`
-- [ ] 確認目前兩家可用的模型名稱，更新 §3.3 預設值
-- [ ] LINE 官方帳號的推播額度與費用（以官方最新方案為準）
+- [x] 授權：BSL 1.1（禁止以託管服務競爭；4 年後轉 Apache-2.0）
+- [x] Codex 整合：P1 用 `exec --json`，**P2 改用 `app-server`**（T2.7）
+- [x] 隱私：**每個 repo 可設允許的 provider**（T1.12）
+- [x] 額度用完：**交接給另一家**，兩家都沒額度時排隊（T2.5）
+- [x] 競賽合併：**裁判在第三個 worktree 重做**，再審查一次（T2.1）
+- [x] Gmail / 行事曆：**接現成的 MCP server**（T3.8）
+- [x] 排程遇到睡眠：**醒來後補跑**，定時任務只補最近一次（T3.7）
+- [x] 外部貢獻：**暫不接受 PR**，只收 issue；商業化前再設 CLA（T5.2）
+- [x] LINE：**P5 商業化時**再做（T5.5）
+
+### 待決（不影響 P1）
+- [ ] 確認兩家實際可用的模型名稱，更新 §3.3 與 `packages/config` 預設值
+- [ ] T3.8 選定哪一個 Gmail / 行事曆 MCP server
+- [ ] T5.5 前確認 LINE 推播費用
 - [ ] 如需參考 Reason 雲端產品細節，需在 session 網路設定允許 `reasonmachines.com`
 
 ---
 
-## 10. 第一週可以馬上做的事
-1. 在 GitHub 建立 repo（已建立：jimmynycuee/Joy），把本檔放到 `docs/PLAN.md`。
-2. 用 Claude Code 做 T0.1、T0.2；用 Codex review。
-3. 自己動手跑一次 T0.3、T0.4 的 spike（這兩張最需要人判斷）。
-4. 確認 `claude` 與 `codex` 兩個 CLI 都已登入訂閱：`claude --version`、`codex --version`。
+## 10. 接下來
+
+目前做到哪、下一步做什麼，以 [`docs/STATUS.md`](STATUS.md) 為準。P1 剩下的順序：
+T1.6 + T1.7 → T1.12 → T1.9 → T1.13 → T1.8。

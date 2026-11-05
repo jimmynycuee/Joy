@@ -5,6 +5,7 @@ export type { Migration } from './migrations.js'
 export {
   addUsage,
   appendTaskEvent,
+  appendTaskFailureEvent,
   createAttempt,
   createRepo,
   createReview,
@@ -22,11 +23,13 @@ export {
   listUsage,
   setTaskStatus,
   updateAttempt,
+  updateRepoAllowedProviders,
 } from './repositories.js'
 export type {
   AttemptRecord,
   AttemptUpdate,
   NewAttempt,
+  NewRepo,
   NewReview,
   NewTask,
   RepoRecord,

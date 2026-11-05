@@ -1,12 +1,19 @@
 import { EFFORTS, PROVIDER_KINDS, ROLES } from '@joy/core'
 import type { ModelRef, Role } from '@joy/core'
+import { effortCompatibilityError } from '@joy/model-effort'
 import { z } from 'zod'
 
-const modelRef = z.strictObject({
-  provider: z.enum(PROVIDER_KINDS),
-  model: z.string().trim().min(1),
-  effort: z.enum(EFFORTS).optional(),
-})
+const modelRef = z
+  .strictObject({
+    provider: z.enum(PROVIDER_KINDS),
+    model: z.string().trim().min(1),
+    effort: z.enum(EFFORTS).optional(),
+  })
+  .superRefine((ref, ctx) => {
+    if (!ref.effort) return
+    const issue = effortCompatibilityError(ref.provider, ref.model, ref.effort)
+    if (issue) ctx.addIssue({ code: 'custom', path: ['effort'], message: issue })
+  })
 
 /**
  * Model names here are defaults the owner is expected to change; nothing in code depends on them.

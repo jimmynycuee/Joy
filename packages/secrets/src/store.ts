@@ -101,8 +101,17 @@ export class SecretStore {
   async status(name: SecretName): Promise<{ set: boolean; source?: SecretSource }> {
     assertName(name)
     const envVar = ENV_OVERRIDES[name]
-    if (envVar && this.env[envVar]?.trim()) return { set: true, source: 'env' }
-    return (await this.backend.get(name)) ? { set: true, source: 'keychain' } : { set: false }
+    const fromEnv = envVar ? this.env[envVar]?.trim() : undefined
+    if (fromEnv) {
+      this.onSecret(fromEnv)
+      return { set: true, source: 'env' }
+    }
+    const fromBackend = await this.backend.get(name)
+    if (fromBackend) {
+      this.onSecret(fromBackend)
+      return { set: true, source: 'keychain' }
+    }
+    return { set: false }
   }
 
   async set(name: SecretName, value: string): Promise<void> {

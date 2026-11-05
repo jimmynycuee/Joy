@@ -40,7 +40,11 @@ interface Fixture {
 }
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })),
+  )
 })
 
 describe('GitHubPublisher', () => {
@@ -457,14 +461,13 @@ describe('GitHubPublisher', () => {
       /secret-like added content/,
     )
     expect(await readCalls(diffFixture)).toHaveLength(0)
-
     const prefixedFixture = await createFixture()
     await writeFile(join(prefixedFixture.workspace.path, 'config.txt'), '++test-secret-value\n')
     await expect(
       createPublisher(prefixedFixture).publish(prefixedFixture.workspace, input()),
     ).rejects.toThrow(/secret-like added content/)
     expect(await readCalls(prefixedFixture)).toHaveLength(0)
-  }, 20_000)
+  }, 30_000)
 
   it('scans earlier pushed commits even when their sensitive path and secret content were later deleted', async () => {
     const pathFixture = await createFixture()

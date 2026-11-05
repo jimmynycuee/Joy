@@ -1,7 +1,9 @@
+import { constants as fsConstants } from 'node:fs'
 import { createServer as createHttpServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
+import { link, lstat, mkdir, open, unlink } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import { z, ZodError } from 'zod'
@@ -17,6 +19,7 @@ import type {
   RoleConfig,
   RunOptions,
   TaskId,
+  TaskMode,
   TaskStatus,
   Workspace,
 } from '@joy/core'
@@ -25,11 +28,11 @@ import { ConfigStore, configSchema, joyHome, resolvePaths, type JoyConfig } from
 import {
   addUsage,
   appendTaskEvent,
+  appendTaskFailureEvent,
   createAttempt,
   createRepo,
   createReview,
   createTask,
-  getAttempt,
   getRepo,
   getTask,
   interruptRunningWork,
@@ -43,6 +46,7 @@ import {
   openDatabase,
   setTaskStatus,
   updateAttempt,
+  updateRepoAllowedProviders,
 } from '@joy/db'
 import type { AttemptRecord, Database, RepoRecord, StoredTask } from '@joy/db'
 import { WorktreeExecutor } from '@joy/executor'
@@ -50,6 +54,7 @@ import type { Executor, WorkspaceDiff } from '@joy/core'
 import { reviewLoop } from '@joy/orchestrator'
 import { ClaudeCliProvider, CodexCliProvider, OpenAiApiProvider } from '@joy/providers'
 import { Redactor, SecretStore } from '@joy/secrets'
+import { describeDisallowedRoleProvider, findDisallowedRoleProviders } from './provider-allowlist.js'
 
 const modelSchema = z.strictObject({
   provider: z.enum(PROVIDER_KINDS),
@@ -61,12 +66,18 @@ const roleOverridesSchema = z.strictObject(
     [R in Role]: z.ZodOptional<typeof modelSchema>
   },
 )
+const allowedProvidersSchema = z
+  .array(z.enum(PROVIDER_KINDS))
+  .min(1, 'must allow at least one provider')
+  .refine((providers) => new Set(providers).size === providers.length, 'providers must be unique')
 const repoInputSchema = z.strictObject({
   id: z.string().trim().min(1).optional(),
   path: z.string().trim().min(1).refine(isAbsolute, 'must be an absolute path'),
   defaultBranch: z.string().trim().min(1),
   githubRemote: z.string().trim().min(1).optional(),
+  allowedProviders: allowedProvidersSchema.optional(),
 })
+const repoAllowlistInputSchema = z.strictObject({ allowedProviders: allowedProvidersSchema })
 const taskInputSchema = z.strictObject({
   repoId: z.string().trim().min(1),
   title: z.string().trim().min(1).max(500),
@@ -77,12 +88,16 @@ const taskInputSchema = z.strictObject({
   maxRounds: z.number().int().min(1).max(20).optional(),
 })
 const idSchema = z.string().min(1).max(128)
+const openAiSecretInputSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
 const MAX_BODY_BYTES = 1_000_000
+const API_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,}$/
+const PLAYWRIGHT_E2E_ORIGINS = ['http://127.0.0.1:4173', 'http://localhost:4173'] as const
 
 export interface TaskEvent {
   taskId: TaskId
-  attemptId: AttemptId
+  attemptId?: AttemptId
   seq: number
+  eventId?: string
   type: string
   payload: unknown
   ts: string
@@ -97,6 +112,10 @@ export interface JoyServerOptions {
   redactor?: Redactor
   providers?: Partial<Record<ProviderKind, AgentProvider>>
   executor?: Executor
+  /** Adds only the fixed Playwright E2E origins; this is never enabled by default. */
+  allowPlaywrightOrigin?: boolean
+  /** Trusted runtime injection/testing only. Otherwise the token is persisted in <home>/api-token. */
+  apiToken?: string
 }
 
 export interface JoyServer {
@@ -114,6 +133,8 @@ class HttpError extends Error {
   }
 }
 
+class ProviderAllowlistError extends Error {}
+
 interface ActiveTask {
   controller: AbortController
   promise: Promise<void>
@@ -125,15 +146,32 @@ interface ResumeState {
   sessionId: string
 }
 
+function selectActiveRoles(
+  mode: TaskMode,
+  config: RoleConfig,
+  overrides: Partial<RoleConfig>,
+  implementer?: ModelRef,
+): Partial<RoleConfig> {
+  const selected: Partial<RoleConfig> = {
+    implementer: implementer ?? resolveRole('implementer', config, overrides),
+  }
+  if (mode === 'review_loop') selected.reviewer = resolveRole('reviewer', config, overrides)
+  return selected
+}
+
 /** Builds the local HTTP + WebSocket service. It never binds beyond loopback. */
 export async function createJoyServer(options: JoyServerOptions = {}): Promise<JoyServer> {
+  const allowedOrigins = createOriginAllowlist(options.allowPlaywrightOrigin ?? false)
   const home = options.home ?? joyHome()
   const configStore = options.configStore ?? new ConfigStore(join(home, 'config.yaml'))
   const initialConfig = await configStore.get()
   const paths = resolvePaths(initialConfig, home)
+  const apiToken = options.apiToken ?? (await loadOrCreateApiToken(home))
+  assertApiToken(apiToken)
   const ownsDatabase = !options.database
   const db = options.database ?? openDatabase(paths.database)
   const redactor = options.redactor ?? new Redactor()
+  redactor.add(apiToken)
   const secretStore = options.secretStore ?? new SecretStore({ onSecret: (secret) => redactor.add(secret) })
   const providers: Partial<Record<ProviderKind, AgentProvider>> = {
     'claude-cli': new ClaudeCliProvider({
@@ -154,27 +192,31 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const executor = options.executor ?? new WorktreeExecutor({ worktreesDir: paths.worktrees })
   const running = new Map<TaskId, ActiveTask>()
   const subscribers = new Map<TaskId, Set<WebSocket>>()
-  const wsServer = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY_BYTES })
+  const wsServer = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_BODY_BYTES,
+    handleProtocols: (protocols) => (protocols.has('joy') ? 'joy' : false),
+  })
   let closed = false
 
   const publish = (taskId: TaskId, attemptId: AttemptId, type: string, payload: unknown): TaskEvent => {
     const safe = redactor.redactValue(payload)
-    const storedAttempt = getAttempt(db, attemptId)
-    const event = storedAttempt
-      ? appendTaskEvent(db, attemptId, type, safe)
-      : {
-          taskId,
-          attemptId,
-          seq: listTaskEvents(db, taskId).at(-1)?.seq ?? 0,
-          type,
-          payload: safe,
-          ts: new Date().toISOString(),
-        }
+    const event = appendTaskEvent(db, attemptId, type, safe)
+    sendEvent(taskId, event)
+    return event
+  }
+
+  const publishTaskFailure = (taskId: TaskId, message: string): TaskEvent => {
+    const event = appendTaskFailureEvent(db, taskId, redactor.redact(message))
+    sendEvent(taskId, event)
+    return event
+  }
+
+  function sendEvent(taskId: TaskId, event: TaskEvent): void {
     const message = JSON.stringify({ type: 'event', event })
     for (const socket of subscribers.get(taskId) ?? []) {
       if (socket.readyState === WebSocket.OPEN) socket.send(message)
     }
-    return event
   }
 
   const httpServer = createHttpServer((req, res) => {
@@ -189,23 +231,40 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           issues: error.issues.map(({ path, message }) => ({ path, message })),
         })
       } else if (error instanceof HttpError) {
-        json(res, error.status, { error: error.message })
+        json(res, error.status, { error: redactor.redact(error.message) })
       } else {
         const message = error instanceof Error ? error.message : 'Unexpected server error'
-        json(res, 500, { error: message })
+        json(res, 500, { error: redactor.redact(message) })
       }
     })
   })
 
   httpServer.on('upgrade', (req, socket, head) => {
     try {
-      const url = requestUrl(req)
-      if (url.pathname !== '/ws' || !isLocalOrigin(req.headers.origin)) {
+      if (
+        !isLoopbackHost(req.headers.host) ||
+        req.headers['sec-fetch-site']?.toLowerCase() === 'cross-site' ||
+        !isAllowedOrigin(req, allowedOrigins, false) ||
+        !hasValidWebSocketAuth(req, apiToken)
+      ) {
         socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
         socket.destroy()
         return
       }
+      const url = requestUrl(req)
+      if (url.pathname !== '/ws') {
+        socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n')
+        socket.destroy()
+        return
+      }
       const taskId = idSchema.parse(url.searchParams.get('taskId')) as TaskId
+      const afterText = url.searchParams.get('after')
+      const requestedAfter = afterText === null ? 0 : Number(afterText)
+      if (!Number.isSafeInteger(requestedAfter) || requestedAfter < 0) {
+        socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n')
+        socket.destroy()
+        return
+      }
       if (!getTask(db, taskId)) {
         socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n')
         socket.destroy()
@@ -215,8 +274,15 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         const current = subscribers.get(taskId) ?? new Set<WebSocket>()
         current.add(ws)
         subscribers.set(taskId, current)
+        const task = getTask(db, taskId)
+        const events = listTaskEvents(db, taskId)
+        const lastSequence = events.at(-1)?.seq ?? 0
+        const replayAfter = requestedAfter > lastSequence ? 0 : requestedAfter
+        ws.send(JSON.stringify({ type: 'snapshot', task, lastSequence }))
         ws.send(JSON.stringify({ type: 'ready', taskId }))
-        for (const event of listTaskEvents(db, taskId)) ws.send(JSON.stringify({ type: 'event', event }))
+        for (const event of events) {
+          if (event.seq > replayAfter) ws.send(JSON.stringify({ type: 'event', event }))
+        }
         ws.once('close', () => {
           current.delete(ws)
           if (current.size === 0) subscribers.delete(taskId)
@@ -229,8 +295,22 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   })
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const url = requestUrl(req)
+    if (!isLoopbackHost(req.headers.host)) throw new HttpError(403, 'Host is not allowed')
     const method = req.method ?? 'GET'
+    if (
+      req.headers['sec-fetch-site']?.toLowerCase() === 'cross-site' ||
+      !isAllowedOrigin(req, allowedOrigins, method === 'GET' || method === 'HEAD')
+    )
+      throw new HttpError(403, 'Origin is not allowed')
+    const url = requestUrl(req)
+    const isPublicHealth = url.pathname === '/api/health' && method === 'GET'
+    const isApiRoute = url.pathname === '/api' || url.pathname.startsWith('/api/')
+    if (
+      !isPublicHealth &&
+      (isApiRoute || !['GET', 'HEAD', 'OPTIONS'].includes(method)) &&
+      !hasValidBearerToken(req, apiToken)
+    )
+      throw new HttpError(403, 'Authentication required')
     if (url.pathname === '/api/health' && method === 'GET') {
       json(res, 200, { ok: true })
       return
@@ -240,14 +320,26 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       return
     }
     if (url.pathname === '/api/repos' && method === 'POST') {
+      assertJsonContentType(req)
       const input = repoInputSchema.parse(await readJson(req))
       const repo = createRepo(db, {
         id: (input.id ?? randomUUID()) as RepoId,
         path: input.path,
         defaultBranch: input.defaultBranch,
         ...(input.githubRemote ? { githubRemote: input.githubRemote } : {}),
+        ...(input.allowedProviders ? { allowedProviders: input.allowedProviders } : {}),
       })
       json(res, 201, { repo })
+      return
+    }
+    const repoMatch = /^\/api\/repos\/([^/]+)$/.exec(url.pathname)
+    if (repoMatch && method === 'PATCH') {
+      const repoId = idSchema.parse(decodePathSegment(repoMatch[1] ?? '')) as RepoId
+      assertJsonContentType(req)
+      const input = repoAllowlistInputSchema.parse(await readJson(req))
+      const repo = updateRepoAllowedProviders(db, repoId, input.allowedProviders)
+      if (!repo) throw new HttpError(404, `Repository ${repoId} was not found`)
+      json(res, 200, { repo })
       return
     }
     if (url.pathname === '/api/tasks' && method === 'GET') {
@@ -255,17 +347,31 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       return
     }
     if (url.pathname === '/api/tasks' && method === 'POST') {
+      assertJsonContentType(req)
       const input = taskInputSchema.parse(await readJson(req))
       if (input.mode === 'compete') throw new HttpError(422, 'Compete mode is not available in P1 yet')
+      const roleOverrides = input.roleOverrides as Partial<RoleConfig> | undefined
+      const config = await configStore.get()
+      const implementer = resolveRole('implementer', config.roles as RoleConfig, roleOverrides)
+      const provider = providers[implementer.provider]
+      if (provider && !provider.capabilities.codeEdit)
+        throw new HttpError(
+          422,
+          `${implementer.provider} does not support code editing required by ${input.mode} mode`,
+        )
       const repo = getRepo(db, input.repoId as RepoId)
       if (!repo) throw new HttpError(404, `Repository ${input.repoId} was not found`)
+      const configRoles = config.roles as RoleConfig
+      const selectedRoles = selectActiveRoles(input.mode, configRoles, roleOverrides ?? {})
+      const disallowed = findDisallowedRoleProviders(selectedRoles, repo.allowedProviders)[0]
+      if (disallowed) throw new HttpError(422, describeDisallowedRoleProvider(disallowed))
       const task = createTask(db, {
         id: randomUUID() as TaskId,
         repoId: repo.id,
         title: input.title,
         prompt: input.prompt,
         mode: input.mode,
-        ...(input.roleOverrides ? { roleOverrides: input.roleOverrides as Partial<RoleConfig> } : {}),
+        ...(roleOverrides ? { roleOverrides } : {}),
         ...(input.planFirst !== undefined ? { planFirst: input.planFirst } : {}),
         ...(input.maxRounds !== undefined ? { maxRounds: input.maxRounds } : {}),
       })
@@ -276,7 +382,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
     const taskMatch = /^\/api\/tasks\/([^/]+)$/.exec(url.pathname)
     if (taskMatch && method === 'GET') {
-      const task = requireTask(decodeURIComponent(taskMatch[1] ?? ''))
+      const task = requireTask(decodePathSegment(taskMatch[1] ?? ''))
       const repo = getRepo(db, task.repoId)
       json(res, 200, {
         task,
@@ -289,7 +395,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     const eventsMatch = /^\/api\/tasks\/([^/]+)\/events$/.exec(url.pathname)
     if (eventsMatch && method === 'GET') {
-      const task = requireTask(decodeURIComponent(eventsMatch[1] ?? ''))
+      const task = requireTask(decodePathSegment(eventsMatch[1] ?? ''))
       const after = Number(url.searchParams.get('after') ?? '0')
       if (!Number.isSafeInteger(after) || after < 0)
         throw new HttpError(400, 'after must be a non-negative integer')
@@ -298,7 +404,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     const cancelMatch = /^\/api\/tasks\/([^/]+)\/cancel$/.exec(url.pathname)
     if (cancelMatch && method === 'POST') {
-      const task = requireTask(decodeURIComponent(cancelMatch[1] ?? ''))
+      const task = requireTask(decodePathSegment(cancelMatch[1] ?? ''))
       const active = running.get(task.id)
       if (active) active.controller.abort()
       else if (task.status === 'queued') setTaskStatus(db, task.id, 'cancelled')
@@ -309,10 +415,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     const resumeMatch = /^\/api\/tasks\/([^/]+)\/resume$/.exec(url.pathname)
     if (resumeMatch && method === 'POST') {
-      const task = requireTask(decodeURIComponent(resumeMatch[1] ?? ''))
+      const task = requireTask(decodePathSegment(resumeMatch[1] ?? ''))
       if (task.status !== 'failed' && task.status !== 'cancelled')
         throw new HttpError(409, `Task cannot be resumed from ${task.status}`)
-      const state = resumeState(task)
+      const state = await resumeState(task)
       if (running.has(task.id)) throw new HttpError(409, 'Task is already running')
       setTaskStatus(db, task.id, 'queued')
       scheduleTask({ ...task, status: 'queued' }, state)
@@ -328,8 +434,35 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       return
     }
     if (url.pathname === '/api/config' && method === 'PUT') {
+      assertJsonContentType(req)
       const config = configSchema.parse(await readJson(req)) as JoyConfig
+      if (!providers[config.roles.implementer.provider]?.capabilities.codeEdit)
+        throw new HttpError(
+          422,
+          `${config.roles.implementer.provider} does not support code editing required by the implementer role`,
+        )
       json(res, 200, { config: await configStore.save(config) })
+      return
+    }
+    if (url.pathname === '/api/secrets/openai-api-key' && method === 'GET') {
+      json(res, 200, await secretStore.status('openai_api_key'))
+      return
+    }
+    if (url.pathname === '/api/secrets/openai-api-key' && method === 'PUT') {
+      const { value } = openAiSecretInputSchema.parse(await readJson(req))
+      const status = await secretStore.status('openai_api_key')
+      if (status.source === 'env')
+        throw new HttpError(409, 'OPENAI_API_KEY is supplied by the environment; manage it there instead.')
+      await secretStore.set('openai_api_key', value)
+      json(res, 200, await secretStore.status('openai_api_key'))
+      return
+    }
+    if (url.pathname === '/api/secrets/openai-api-key' && method === 'DELETE') {
+      const status = await secretStore.status('openai_api_key')
+      if (status.source === 'env')
+        throw new HttpError(409, 'OPENAI_API_KEY is supplied by the environment; manage it there instead.')
+      await secretStore.delete('openai_api_key')
+      json(res, 200, await secretStore.status('openai_api_key'))
       return
     }
     if (url.pathname === '/api/providers' && method === 'GET') {
@@ -354,14 +487,32 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     return task
   }
 
-  function resumeState(task: StoredTask): ResumeState {
+  async function resumeState(task: StoredTask): Promise<ResumeState> {
     const attempt = latestAttempt(db, task.id)
-    if (!attempt?.sessionId || !attempt.worktreePath || !attempt.branch || !attempt.baseCommit)
+    if (!attempt)
+      throw new HttpError(
+        409,
+        'This task has no provider attempt or saved session and cannot be resumed; create a new task.',
+      )
+    if (!attempt.sessionId || !attempt.worktreePath || !attempt.branch || !attempt.baseCommit)
       throw new HttpError(409, 'No saved worktree and provider session are available to resume')
     const repo = getRepo(db, task.repoId)
     if (!repo) throw new HttpError(404, `Repository ${task.repoId} was not found`)
+    const config = await configStore.get()
+    const configuredImplementer = resolveRole('implementer', config.roles as RoleConfig, task.roleOverrides)
+    const implementer = { ...configuredImplementer, provider: attempt.provider, model: attempt.model }
+    const disallowed = findDisallowedRoleProviders(
+      selectActiveRoles(task.mode, config.roles as RoleConfig, task.roleOverrides, implementer),
+      repo.allowedProviders,
+    )[0]
+    if (disallowed) throw new HttpError(422, describeDisallowedRoleProvider(disallowed, { resuming: true }))
     const provider = providers[attempt.provider]
-    if (!provider?.capabilities.resume)
+    if (!provider?.capabilities.codeEdit)
+      throw new HttpError(
+        409,
+        `${attempt.provider} does not support code editing required to resume as implementer`,
+      )
+    if (!provider.capabilities.resume)
       throw new HttpError(409, `${attempt.provider} does not support session resume`)
     const workspace: Workspace = {
       repo,
@@ -385,16 +536,20 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   async function runTask(task: StoredTask, controller: AbortController, resume?: ResumeState): Promise<void> {
     let attempt = resume?.attempt
+    let failureConfig = initialConfig
     try {
       const repo = getRepo(db, task.repoId)
       if (!repo) throw new Error(`Repository ${task.repoId} was not found`)
       const config = await configStore.get()
+      failureConfig = config
       const roles = config.roles as RoleConfig
       const configuredImplementer = resolveRole('implementer', roles, task.roleOverrides)
       const implementer = resume
         ? { ...configuredImplementer, provider: resume.attempt.provider, model: resume.attempt.model }
         : configuredImplementer
-      const reviewer = resolveRole('reviewer', roles, task.roleOverrides)
+      const selectedRoles = selectActiveRoles(task.mode, roles, task.roleOverrides, implementer)
+      const disallowed = findDisallowedRoleProviders(selectedRoles, repo.allowedProviders)[0]
+      if (disallowed) throw new ProviderAllowlistError(describeDisallowedRoleProvider(disallowed))
       if (!attempt) {
         attempt = createAttempt(db, {
           id: randomUUID() as AttemptId,
@@ -411,16 +566,42 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (task.mode === 'single') {
         await runSingle(task, repo, attempt, implementer, controller, resume)
       } else if (task.mode === 'review_loop') {
+        const reviewer = resolveRole('reviewer', roles, task.roleOverrides)
         await runReviewLoop(task, repo, attempt, implementer, reviewer, controller, resume)
       } else {
         throw new Error(`Task mode ${task.mode} is not supported`)
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Task failed'
-      if (attempt)
-        updateAttempt(db, attempt.id, { status: controller.signal.aborted ? 'cancelled' : 'failed' })
-      setTaskStatus(db, task.id, controller.signal.aborted ? 'cancelled' : 'failed')
-      publish(task.id, attempt?.id ?? ('unknown' as AttemptId), 'error', { message })
+      const status = controller.signal.aborted ? 'cancelled' : 'failed'
+      if (error instanceof ProviderAllowlistError) {
+        if (attempt) updateAttempt(db, attempt.id, { status })
+        setTaskStatus(db, task.id, status)
+        if (attempt) publish(task.id, attempt.id, 'error', { message })
+        else
+          publishTaskFailure(
+            task.id,
+            `${message} No provider attempt was started; after changing the provider configuration or repository allowlist, create a new task.`,
+          )
+        return
+      }
+      if (!attempt) {
+        const fallbackImplementer = resolveRole(
+          'implementer',
+          failureConfig.roles as RoleConfig,
+          task.roleOverrides,
+        )
+        attempt = createAttempt(db, {
+          id: randomUUID() as AttemptId,
+          taskId: task.id,
+          provider: fallbackImplementer.provider,
+          model: fallbackImplementer.model,
+          status,
+        })
+      }
+      updateAttempt(db, attempt.id, { status })
+      setTaskStatus(db, task.id, status)
+      publish(task.id, attempt.id, 'error', { message })
     }
   }
 
@@ -509,6 +690,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   ): Promise<void> {
     const provider = providers[model.provider]
     if (!provider) throw new Error(`No provider configured for ${model.provider}`)
+    if (!provider.capabilities.codeEdit)
+      throw new Error(`${model.provider} does not support code editing required by single mode`)
     const workspace = resume?.workspace ?? (await executor.prepare(repo, task.id, attempt.id))
     updateAttempt(db, attempt.id, {
       status: 'running',
@@ -615,6 +798,117 @@ function summarizeDiff(diff: WorkspaceDiff): Record<string, unknown> {
   }
 }
 
+async function loadOrCreateApiToken(home: string): Promise<string> {
+  await mkdir(home, { recursive: true, mode: 0o700 })
+  const tokenPath = join(home, 'api-token')
+
+  try {
+    return await readApiToken(tokenPath)
+  } catch (error) {
+    if (!hasErrorCode(error, 'ENOENT')) throw error
+  }
+
+  const token = randomBytes(32).toString('base64url')
+  const temporaryPath = join(home, `.api-token-${randomUUID()}.tmp`)
+  let temporaryCreated = false
+  try {
+    const file = await open(temporaryPath, 'wx', 0o600)
+    temporaryCreated = true
+    try {
+      await file.writeFile(token, 'utf8')
+    } finally {
+      await file.close()
+    }
+
+    try {
+      await link(temporaryPath, tokenPath)
+      return token
+    } catch (error) {
+      if (!hasErrorCode(error, 'EEXIST')) {
+        throw new Error(
+          `Could not atomically create the Joy API token in ${home}; ensure JOY_HOME is writable and its filesystem supports hard links.`,
+          { cause: error },
+        )
+      }
+      try {
+        return await readApiToken(tokenPath)
+      } catch (readError) {
+        if (hasErrorCode(readError, 'ENOENT')) return loadOrCreateApiToken(home)
+        throw readError
+      }
+    }
+  } finally {
+    if (temporaryCreated) {
+      await unlink(temporaryPath).catch((error: unknown) => {
+        if (!hasErrorCode(error, 'ENOENT')) throw error
+      })
+    }
+  }
+}
+
+async function readApiToken(tokenPath: string): Promise<string> {
+  const metadata = await lstat(tokenPath)
+  if (metadata.isSymbolicLink()) throw new Error('API token file must not be a symbolic link')
+  if (!metadata.isFile()) throw new Error('API token path must be a regular file')
+  if (process.platform !== 'win32' && (metadata.mode & 0o077) !== 0) {
+    throw new Error(
+      'API token file permissions must restrict access to its owner; remove it and restart Joy to rotate the token',
+    )
+  }
+
+  const flags = process.platform === 'win32' ? 'r' : fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW
+  const file = await open(tokenPath, flags).catch((error: unknown) => {
+    if (hasErrorCode(error, 'ELOOP'))
+      throw new Error('API token file must not be a symbolic link', { cause: error })
+    throw error
+  })
+  try {
+    const openedMetadata = await file.stat()
+    if (openedMetadata.dev !== metadata.dev || openedMetadata.ino !== metadata.ino) {
+      throw new Error('API token file changed while it was being opened; restart Joy to retry')
+    }
+    if (process.platform !== 'win32' && (openedMetadata.mode & 0o077) !== 0) {
+      throw new Error('API token file permissions must restrict access to its owner')
+    }
+    const token = (await file.readFile('utf8')).trim()
+    if (!token) throw new Error('API token file is empty; remove it and restart Joy to generate a new token')
+    assertApiToken(token)
+    return token
+  } finally {
+    await file.close()
+  }
+}
+
+function assertApiToken(token: string): void {
+  if (!API_TOKEN_PATTERN.test(token)) {
+    throw new Error('API token must contain at least 16 URL-safe characters')
+  }
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return error instanceof Error && 'code' in error && error.code === code
+}
+
+function hasValidBearerToken(req: IncomingMessage, token: string): boolean {
+  const match = /^Bearer +([A-Za-z0-9_-]+)$/i.exec(req.headers.authorization ?? '')
+  return match?.[1] !== undefined && tokensMatch(match[1], token)
+}
+
+function hasValidWebSocketAuth(req: IncomingMessage, token: string): boolean {
+  const protocols = req.headers['sec-websocket-protocol']?.split(',').map((protocol) => protocol.trim()) ?? []
+  const credentials = protocols.filter((protocol) => protocol.startsWith('joy-auth.'))
+  if (!protocols.includes('joy') || credentials.length !== 1) return false
+  return tokensMatch(credentials[0]?.slice('joy-auth.'.length) ?? '', token)
+}
+
+function tokensMatch(candidate: string, token: string): boolean {
+  const expected = Buffer.from(token)
+  const supplied = Buffer.from(candidate)
+  const sameLength = supplied.length === expected.length
+  const comparable = sameLength ? supplied : Buffer.alloc(expected.length)
+  return timingSafeEqual(expected, comparable) && sameLength
+}
+
 function requestUrl(req: IncomingMessage): URL {
   try {
     return new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`)
@@ -623,13 +917,45 @@ function requestUrl(req: IncomingMessage): URL {
   }
 }
 
-function isLocalOrigin(origin: string | undefined): boolean {
-  if (!origin) return true
+function isLoopbackHost(host: string | undefined): boolean {
+  if (!host) return false
+  const match = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::(\d{1,5}))?$/i.exec(host)
+  if (!match) return false
+  if (match[1] === undefined) return true
+  const port = Number(match[1])
+  return port > 0 && port <= 65_535
+}
+
+function createOriginAllowlist(allowPlaywrightOrigin: boolean): Set<string> {
+  return new Set([
+    'tauri://localhost',
+    'http://127.0.0.1:5173',
+    'http://localhost:5173',
+    ...(allowPlaywrightOrigin ? PLAYWRIGHT_E2E_ORIGINS : []),
+  ])
+}
+
+function isAllowedOrigin(
+  req: IncomingMessage,
+  allowedOrigins: ReadonlySet<string>,
+  allowMissing: boolean,
+): boolean {
+  const origin = req.headers.origin
+  if (origin === undefined) return allowMissing
+  return allowedOrigins.has(origin)
+}
+
+function assertJsonContentType(req: IncomingMessage): void {
+  const contentType = req.headers['content-type']
+  const mediaType = contentType?.split(';', 1)[0]?.trim().toLowerCase()
+  if (mediaType !== 'application/json') throw new HttpError(415, 'Content-Type must be application/json')
+}
+
+function decodePathSegment(segment: string): string {
   try {
-    const host = new URL(origin).hostname
-    return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1'
+    return decodeURIComponent(segment)
   } catch {
-    return false
+    throw new HttpError(400, 'Malformed URL path encoding')
   }
 }
 

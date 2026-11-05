@@ -1,3 +1,4 @@
+import { EFFORTS } from '@joy/core'
 import type { RunOptions } from '@joy/core'
 import { describe, expect, it } from 'vitest'
 import { buildClaudeArgs, mcpConfigJson } from './args.js'
@@ -17,11 +18,19 @@ describe('buildClaudeArgs', () => {
     expect(args.slice(-2)).toEqual(['--', 'do it'])
   })
 
-  it('passes the effort level when set', () => {
-    expect(buildClaudeArgs(base, { ...model, effort: 'low' })).toEqual(
-      expect.arrayContaining(['--effort', 'low']),
-    )
+  it('passes every documented effort level for Claude Haiku', () => {
+    for (const effort of EFFORTS) {
+      expect(buildClaudeArgs(base, { ...model, model: 'haiku', effort })).toEqual(
+        expect.arrayContaining(['--effort', effort]),
+      )
+    }
     expect(buildClaudeArgs(base, model)).not.toContain('--effort')
+  })
+
+  it('rejects a Claude effort unsupported by the selected model before building CLI args', () => {
+    expect(() => buildClaudeArgs(base, { ...model, model: 'claude-opus-4-6', effort: 'xhigh' })).toThrow(
+      /effort 'xhigh' is not supported for claude-cli model 'claude-opus-4-6'/,
+    )
   })
 
   it('keeps a prompt that starts with a dash after --', () => {
