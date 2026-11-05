@@ -99,7 +99,7 @@ export interface JoyServerOptions {
   redactor?: Redactor
   providers?: Partial<Record<ProviderKind, AgentProvider>>
   executor?: Executor
-  /** Adds only the fixed Playwright E2E origin; this is never enabled by default. */
+  /** Adds only the fixed Playwright E2E origins; this is never enabled by default. */
   allowPlaywrightOrigin?: boolean
 }
 
@@ -718,7 +718,11 @@ function isLoopbackHost(host: string | undefined): boolean {
 }
 
 function createOriginAllowlist(allowPlaywrightOrigin: boolean): Set<string> {
-  return new Set(['tauri://localhost', ...(allowPlaywrightOrigin ? PLAYWRIGHT_E2E_ORIGINS : [])])
+  return new Set([
+    'tauri://localhost',
+    'http://127.0.0.1:5173',
+    ...(allowPlaywrightOrigin ? PLAYWRIGHT_E2E_ORIGINS : []),
+  ])
 }
 
 function isAllowedOrigin(
@@ -728,20 +732,7 @@ function isAllowedOrigin(
 ): boolean {
   const origin = req.headers.origin
   if (origin === undefined) return allowMissing
-  if (allowedOrigins.has(origin)) return true
-  const host = req.headers.host
-  if (!host) return false
-  try {
-    const parsedOrigin = new URL(origin)
-    const requestOrigin = new URL(`http://${host}`)
-    return (
-      parsedOrigin.protocol === 'http:' &&
-      parsedOrigin.origin === origin &&
-      parsedOrigin.host.toLowerCase() === requestOrigin.host.toLowerCase()
-    )
-  } catch {
-    return false
-  }
+  return allowedOrigins.has(origin)
 }
 
 function assertJsonContentType(req: IncomingMessage): void {
