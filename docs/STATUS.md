@@ -2,10 +2,11 @@
 
 > 開工前先讀本檔、`AGENTS.md`、`docs/PLAN.md`；收工前更新本檔。這裡記錄最新進度、阻塞、下一步與最近決策。
 
-- 最後更新：2026-11-04
-- 目前階段：**P2 進行中**。T2.1 自動 strengths 合成及獨立審查提出的重啟恢復、競爭、prompt 容量、錯誤收尾與 provider capability 缺陷已修正並在本地驗證；PR #10 已 squash-merge 至相依分支 `t1.8-web`，未合併至 `main`。T2.2 draft PR #11（head `29229e8`）與 T3.9 draft PR #12（head `fc0439c`）三平台 CI 全綠。GitHub 上 #2–#5 仍 open、非 draft 且三平台 CI 全綠；#6/#7 merged 到相依分支而非 `main`；#8/#9 三平台 CI 全綠且仍 draft，#9 secrets handling 必須先由 owner human review。本 T4.1 PR 也必須保持 draft、不合併。
-- **T4.1 遠端存取：** `t4.1-remote-auth` 最初基於 `t1.8-web` `3660503`；為解決 PR #21 與最新 base 的衝突，已合入 `t1.8-web` `965ef73`，保留 bearer 驗證、local Host/Origin 防護、loopback-only 與 [Tailscale Serve 指引](remote-access.md)。server 定向測試 25/25 通過；隔離 runner Git identity 的 `pnpm check` 通過（187 tests passed、2 skipped）。一般 `pnpm check` 僅因 runner 注入 Git identity 使既有 fallback-identity test 失敗。PR #21 維持 draft，需 owner human review；不得標 ready 或合併。未部署，真實 tailnet 行為未驗證。T4.1 未編輯 `apps/web`，因此目前 Web UI 尚不會附加 token。
-- T2.1 分支：`t2.1-compete`，基於當時的 `t1.8-web` commit `a852b60`；PR #10 已 squash-merge 至 `t1.8-web`，其 live tip 已前進至 `965ef73`。
+- 最後更新：2026-11-05
+- T1.8／PR #9 follow-up：SecretStore/API 現在拒絕短於 Redactor 最低長度的值與舊短值；provider 切換會更新預設建議模型並保留自訂模型；WebSocket 初始事件改為緩衝後合併，避免逐事件重排，序號計算支援大型回放。
+- PR #9 仍保持 draft，secrets handling 的 owner review 仍待完成。#9 目前仍需等 PR #8 的修補已驗證並發布新 head 後才能對齊 base；此工作尚未對舊 #8 head rebase。該分支本地 `pnpm check`（189 tests passed、2 skipped）、8 個 Playwright E2E specs、web build 與 `git diff --check` 曾通過；新 head 的 GitHub CI 尚未驗證。
+- 目前階段：**P2 進行中**。T2.1 自動 strengths 合成及獨立審查提出的重啟恢復、競爭、prompt 容量、錯誤收尾與 provider capability 缺陷已修正；PR #10 已 squash-merge 至相依分支 `t1.8-web`，未合併至 `main`。T2.2 draft PR #11（head `29229e8`）與 T3.9 draft PR #12（head `fc0439c`）為後續工作。
+- **T4.1 遠端存取：** PR #21（`t4.1-remote-auth`）已整合最新 `t1.8-web` tip `dcb9153` 以解決 base 衝突，保留 loopback-only bearer 驗證、Host/Origin 防護與 [Tailscale Serve 指引](remote-access.md)。PR 必須保持 draft 並等待 owner human review；不得標 ready 或合併。未部署，真實 tailnet 行為未驗證。T4.1 未修改 `apps/web`，目前 Web UI 尚不會附加 token。
 - 本地驗證：`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（181 tests passed、2 skipped）；T2.1 Playwright E2E 通過（3 specs），orchestrator/server 定向測試 44/44 通過。所有互動測試使用 fake providers，沒有呼叫真模型。一般環境的 `pnpm check` 有一項既有 fallback-identity 測試受繼承 Git 身分影響，已另開 issue #13。
 
 ## 分支與 PR

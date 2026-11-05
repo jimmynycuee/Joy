@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import type { FormEvent } from 'react'
 import { EFFORTS, PROVIDER_KINDS, ROLES } from '@joy/core'
 import type { ModelRef, ProviderKind, Role, RoleConfig } from '@joy/core'
+import { maxEventSequence } from './event-sequence.js'
 import type { JoyConfig } from '@joy/config'
 import './styles.css'
 
@@ -320,6 +321,8 @@ function App() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [config, setConfig] = useState<JoyConfig | null>(null)
   const [secretStatus, setSecretStatus] = useState<SecretStatus | null>(null)
+  const [secretStatusLoading, setSecretStatusLoading] = useState(true)
+  const [secretStatusRetry, setSecretStatusRetry] = useState(0)
   const [selectedTaskId, setSelectedTaskId] = useState('')
   const [details, setDetails] = useState<TaskDetails | null>(null)
   const [page, setPage] = useState<'tasks' | 'settings'>('tasks')
@@ -328,6 +331,10 @@ function App() {
   const [taskProviders, setTaskProviders] = useState<Record<'implementer' | 'reviewer', ProviderKind>>({
     implementer: 'claude-cli',
     reviewer: 'codex-cli',
+  })
+  const [taskModels, setTaskModels] = useState<Record<'implementer' | 'reviewer', string>>({
+    implementer: 'opus',
+    reviewer: 'gpt-6.1-sol',
   })
   const [showRepoForm, setShowRepoForm] = useState(false)
   const [error, setError] = useState('')
@@ -340,6 +347,10 @@ function App() {
     setTaskProviders({
       implementer: roleModel(config, 'implementer').provider,
       reviewer: roleModel(config, 'reviewer').provider,
+    })
+    setTaskModels({
+      implementer: roleModel(config, 'implementer').model,
+      reviewer: roleModel(config, 'reviewer').model,
     })
     setShowTaskForm(true)
   }
@@ -371,17 +382,28 @@ function App() {
       .catch((cause: unknown) => {
         if (active) setError(cause instanceof Error ? cause.message : 'Could not connect to Joy server')
       })
-    void request<SecretStatus>('/api/secrets/openai-api-key')
-      .then((status) => {
-        if (active) setSecretStatus(status)
-      })
-      .catch(() => {
-        if (active) setSecretStatus(null)
-      })
     return () => {
       active = false
     }
   }, [])
+
+  useEffect(() => {
+    let active = true
+    void request<SecretStatus>('/api/secrets/openai-api-key')
+      .then((status) => {
+        if (!active) return
+        setSecretStatus(status)
+        setSecretStatusLoading(false)
+      })
+      .catch(() => {
+        if (!active) return
+        setSecretStatus(null)
+        setSecretStatusLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [secretStatusRetry])
 
   useEffect(() => {
     if (!selectedTaskId) {
@@ -393,7 +415,9 @@ function App() {
     let bufferedEvents: TaskEvent[] = []
     let lastAcceptedSequence = 0
     let connectionCount = 0
+    let reconnectAttempts = 0
     let reconnectTimer: number | undefined
+    let stableConnectionTimer: number | undefined
     let socket: WebSocket | undefined
     setDetails(null)
     const socketProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -413,15 +437,16 @@ function App() {
       const newlyAccepted = matching
         .filter((event) => event.seq > lastAcceptedSequence)
         .sort((first, second) => first.seq - second.seq)
-      lastAcceptedSequence = Math.max(lastAcceptedSequence, ...matching.map((event) => event.seq))
+      lastAcceptedSequence = Math.max(lastAcceptedSequence, maxEventSequence(matching))
       if (!detailsLoaded) {
-        bufferedEvents = mergeEvents(bufferedEvents, matching)
+        bufferedEvents.push(...matching)
         return
       }
+      if (newlyAccepted.length === 0) return
       setDetails((current) => {
         if (!current || current.task.id !== selectedTaskId) return current
         const task = newlyAccepted.reduce(taskAfterEvent, current.task)
-        return { ...current, task, events: mergeEvents(current.events, matching) }
+        return { ...current, task, events: mergeEvents(current.events, newlyAccepted) }
       })
       if (
         newlyAccepted.some(
@@ -451,7 +476,11 @@ function App() {
       const nextSocket = new WebSocket(socketUrl)
       socket = nextSocket
       nextSocket.onopen = () => {
-        if (active && shouldReplay) replayEvents()
+        if (!active) return
+        if (shouldReplay) replayEvents()
+        stableConnectionTimer = window.setTimeout(() => {
+          reconnectAttempts = 0
+        }, 10_000)
       }
       nextSocket.onmessage = (message) => {
         const decoded = record(JSON.parse(String(message.data)))
@@ -461,8 +490,11 @@ function App() {
         acceptEvents([event])
       }
       nextSocket.onclose = () => {
+        if (stableConnectionTimer !== undefined) window.clearTimeout(stableConnectionTimer)
         if (!active) return
-        reconnectTimer = window.setTimeout(connect, 500)
+        const delay = Math.min(500 * 2 ** reconnectAttempts, 30_000)
+        reconnectAttempts = Math.min(reconnectAttempts + 1, 6)
+        reconnectTimer = window.setTimeout(connect, delay)
       }
       nextSocket.onerror = () => nextSocket.close()
     }
@@ -471,7 +503,7 @@ function App() {
     void request<TaskDetails>(`/api/tasks/${encodeURIComponent(selectedTaskId)}`)
       .then((next) => {
         if (!active) return
-        const snapshotLastSequence = next.events.reduce((latest, event) => Math.max(latest, event.seq), 0)
+        const snapshotLastSequence = maxEventSequence(next.events)
         const snapshotEvents = mergeEvents(next.events, bufferedEvents)
         const pendingEvents = bufferedEvents.filter((event) => event.seq > snapshotLastSequence)
         const task = pendingEvents
@@ -480,7 +512,7 @@ function App() {
         lastAcceptedSequence = Math.max(
           lastAcceptedSequence,
           snapshotLastSequence,
-          ...bufferedEvents.map((event) => event.seq),
+          maxEventSequence(bufferedEvents),
         )
         bufferedEvents = []
         detailsLoaded = true
@@ -499,6 +531,7 @@ function App() {
     return () => {
       active = false
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer)
+      if (stableConnectionTimer !== undefined) window.clearTimeout(stableConnectionTimer)
       socket?.close()
     }
   }, [selectedTaskId])
@@ -680,6 +713,28 @@ function App() {
     })
   }
 
+  function updateRoleProvider(role: Role, provider: ProviderKind): void {
+    if (!config) return
+    const current = roleModel(config, role)
+    const model = MODEL_SUGGESTIONS[current.provider].includes(current.model)
+      ? (MODEL_SUGGESTIONS[provider][0] ?? current.model)
+      : current.model
+    setConfig({
+      ...config,
+      roles: { ...config.roles, [role]: { ...config.roles[role], provider, model } },
+    })
+  }
+
+  function updateTaskProvider(role: 'implementer' | 'reviewer', provider: ProviderKind): void {
+    const currentProvider = taskProviders[role]
+    const currentModel = taskModels[role]
+    setTaskProviders((current) => ({ ...current, [role]: provider }))
+    if (MODEL_SUGGESTIONS[currentProvider].includes(currentModel)) {
+      const model = MODEL_SUGGESTIONS[provider][0]
+      if (model) setTaskModels((current) => ({ ...current, [role]: model }))
+    }
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -752,9 +807,7 @@ function App() {
                             aria-label={`${ROLE_LABELS[role]} provider`}
                             name={`${role}-provider`}
                             value={roleModel(config, role).provider}
-                            onChange={(event) =>
-                              updateRole(role, 'provider', event.target.value as ProviderKind)
-                            }
+                            onChange={(event) => updateRoleProvider(role, event.target.value as ProviderKind)}
                           >
                             {PROVIDER_KINDS.map((provider) => (
                               <option key={provider} value={provider}>
@@ -817,19 +870,34 @@ function App() {
                     className={secretStatus?.set ? 'status-pill configured' : 'status-pill'}
                     role="status"
                   >
-                    {secretStatus === null
-                      ? 'Unavailable'
-                      : secretStatus.set
-                        ? 'Configured'
-                        : 'Not configured'}
+                    {secretStatusLoading
+                      ? 'Checking…'
+                      : secretStatus === null
+                        ? 'Unavailable'
+                        : secretStatus.set
+                          ? 'Configured'
+                          : 'Not configured'}
                   </span>
                 </div>
                 <p className="muted secret-description">
-                  {secretStatus === null
-                    ? 'OpenAI key status is unavailable. Key management is temporarily disabled.'
-                    : 'Stored in the OS keychain. Joy never returns the key to the browser or writes it to config, events, or the database.'}
+                  {secretStatusLoading
+                    ? 'Checking OpenAI key status…'
+                    : secretStatus === null
+                      ? 'OpenAI key status is unavailable. Key management is temporarily disabled.'
+                      : 'Stored in the OS keychain. Joy never returns the key to the browser or writes it to config, events, or the database.'}
                 </p>
-                {secretStatus === null ? null : secretStatus.source === 'env' ? (
+                {secretStatusLoading ? null : secretStatus === null ? (
+                  <button
+                    className="outline-button"
+                    type="button"
+                    onClick={() => {
+                      setSecretStatusLoading(true)
+                      setSecretStatusRetry((attempt) => attempt + 1)
+                    }}
+                  >
+                    Retry key status
+                  </button>
+                ) : secretStatus.source === 'env' ? (
                   <div className="env-managed" role="status">
                     Managed by the OPENAI_API_KEY environment variable.
                   </div>
@@ -1369,12 +1437,7 @@ function App() {
                           aria-label={`${ROLE_LABELS[role]} provider`}
                           name={`${role}-provider`}
                           value={taskProviders[role]}
-                          onChange={(event) =>
-                            setTaskProviders((current) => ({
-                              ...current,
-                              [role]: event.target.value as ProviderKind,
-                            }))
-                          }
+                          onChange={(event) => updateTaskProvider(role, event.target.value as ProviderKind)}
                         >
                           {PROVIDER_KINDS.map((provider) => (
                             <option
@@ -1396,11 +1459,14 @@ function App() {
                           aria-label={`${ROLE_LABELS[role]} model`}
                           name={`${role}-model`}
                           list={`task-${role}-models`}
-                          defaultValue={model.model}
+                          value={taskModels[role]}
+                          onChange={(event) =>
+                            setTaskModels((current) => ({ ...current, [role]: event.target.value }))
+                          }
                           required
                         />
                         <datalist id={`task-${role}-models`}>
-                          {MODEL_SUGGESTIONS[model.provider].map((option) => (
+                          {MODEL_SUGGESTIONS[taskProviders[role]].map((option) => (
                             <option key={option} value={option} />
                           ))}
                         </datalist>
