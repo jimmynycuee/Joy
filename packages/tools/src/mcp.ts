@@ -4,7 +4,7 @@ import type { McpServerConfig } from '@joy/core'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { ToolHubCall, ToolHubDispatcher, ToolHubToolName, ToolHubValue } from './hub.js'
-import { toolHubInputSchemas } from './hub.js'
+import { TOOL_HUB_SERVER_NAME, toolHubInputSchemas } from './hub.js'
 
 const descriptions = {
   ask_peer:
@@ -15,7 +15,7 @@ const descriptions = {
 } satisfies Record<ToolHubToolName, string>
 
 export function createToolHubMcpServer(dispatch: ToolHubDispatcher): McpServer {
-  const server = new McpServer({ name: 'joy', version: '0.0.0' })
+  const server = new McpServer({ name: TOOL_HUB_SERVER_NAME, version: '0.0.0' })
   server.registerTool(
     'ask_peer',
     { description: descriptions.ask_peer, inputSchema: toolHubInputSchemas.ask_peer },
@@ -41,11 +41,12 @@ export function createToolHubMcpServer(dispatch: ToolHubDispatcher): McpServer {
 
 /** Creates a stdio MCP config that runs the source entrypoint from this checkout. */
 export function createToolHubMcpConfig(endpoint: string, token: string): McpServerConfig {
+  if (endpoint.includes(token)) throw new Error('Tool Hub bearer tokens must not appear in the endpoint URL')
   const require = createRequire(import.meta.url)
   const tsxLoader = require.resolve('tsx')
   const entrypoint = fileURLToPath(new URL('./stdio.ts', import.meta.url))
   return {
-    name: 'joy',
+    name: TOOL_HUB_SERVER_NAME,
     transport: 'stdio',
     command: process.execPath,
     args: ['--import', tsxLoader, entrypoint],

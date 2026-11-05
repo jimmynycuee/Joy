@@ -58,6 +58,8 @@ import {
   createToolHubDispatcher,
   createToolHubMcpConfig,
   isToolHubValue,
+  TOOL_HUB_APPROVAL_TOOL_NAME,
+  TOOL_HUB_SERVER_NAME,
   TOOL_HUB_TOOL_NAMES,
 } from '@joy/tools'
 import type { ToolHubBudget, ToolHubDispatcher } from '@joy/tools'
@@ -99,6 +101,7 @@ const idSchema = z.string().min(1).max(128)
 const openAiSecretInputSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
 const toolHubCallSchema = z.strictObject({ name: z.enum(TOOL_HUB_TOOL_NAMES), arguments: z.unknown() })
 const MAX_BODY_BYTES = 1_000_000
+const TOOL_HUB_PEER_TIMEOUT_MS = 55_000
 const API_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,}$/
 const PLAYWRIGHT_E2E_ORIGINS = ['http://127.0.0.1:4173', 'http://localhost:4173'] as const
 
@@ -201,7 +204,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const executor = options.executor ?? new WorktreeExecutor({ worktreesDir: paths.worktrees })
   const running = new Map<TaskId, ActiveTask>()
   const subscribers = new Map<TaskId, Set<WebSocket>>()
-  const toolHubSessions = new Map<string, ToolHubDispatcher>()
+  const toolHubSessions = new Map<string, { token: string; dispatch: ToolHubDispatcher }>()
   const wsServer = new WebSocketServer({
     noServer: true,
     maxPayload: MAX_BODY_BYTES,
@@ -231,6 +234,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   const httpServer = createHttpServer((req, res) => {
     void handleRequest(req, res).catch((error: unknown) => {
+      if (res.destroyed || res.writableEnded) return
       if (res.headersSent) {
         res.destroy()
         return
@@ -310,18 +314,38 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const url = requestUrl(req)
     const toolHubRoute = /^\/internal\/tool-hub\/([A-Za-z0-9_-]{32,})$/.exec(url.pathname)
     if (toolHubRoute && method === 'POST') {
-      const token = toolHubRoute[1] ?? ''
+      const sessionId = toolHubRoute[1] ?? ''
       if (!isLoopbackAddress(req.socket.remoteAddress)) throw new HttpError(403, 'Tool Hub is local-only')
-      if (!hasValidBearerToken(req, token)) throw new HttpError(403, 'Tool Hub authentication failed')
-      const dispatch = toolHubSessions.get(token)
-      if (!dispatch) throw new HttpError(403, 'Tool Hub session is no longer active')
-      assertJsonContentType(req)
-      const call = toolHubCallSchema.parse(await readJson(req))
+      const session = toolHubSessions.get(sessionId)
+      if (!session || !hasValidBearerToken(req, session.token))
+        throw new HttpError(403, 'Tool Hub authentication failed')
+      const requestController = new AbortController()
+      const abortOnRequest = () => requestController.abort()
+      const abortOnClose = () => {
+        if (!res.writableEnded) requestController.abort()
+      }
+      req.once('aborted', abortOnRequest)
+      res.once('close', abortOnClose)
       try {
-        json(res, 200, { value: redactor.redactValue(await dispatch(call)) })
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Tool Hub request failed'
-        throw new HttpError(422, redactor.redact(message))
+        if (req.aborted || res.destroyed) {
+          requestController.abort()
+          return
+        }
+        assertJsonContentType(req)
+        const call = toolHubCallSchema.parse(await readJson(req))
+        let value
+        try {
+          value = await session.dispatch(call, requestController.signal)
+        } catch (error) {
+          if (requestController.signal.aborted || res.destroyed) return
+          const message = error instanceof Error ? error.message : 'Tool Hub request failed'
+          throw new HttpError(422, redactor.redact(message))
+        }
+        if (!requestController.signal.aborted && !res.destroyed)
+          json(res, 200, { value: redactor.redactValue(value) })
+      } finally {
+        req.off('aborted', abortOnRequest)
+        res.off('close', abortOnClose)
       }
       return
     }
@@ -719,7 +743,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const address = httpServer.address()
     if (!address || typeof address === 'string')
       throw new Error('Joy Tool Hub requires the local server to be listening')
+    const sessionId = randomBytes(32).toString('base64url')
     const token = randomBytes(32).toString('base64url')
+    const sessionController = new AbortController()
     const budget: ToolHubBudget = {
       askPeerCalls: listTaskEvents(db, task.id).filter((event) => event.type === 'tool_hub.ask_peer').length,
     }
@@ -730,9 +756,13 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       cwd: workspace.path,
       maxAskPeerCalls: config.tool_hub.max_ask_peer_calls,
       budget,
+      reserveAskPeer: ({ provider }) => {
+        publish(task.id, attempt.id, 'tool_hub.ask_peer', { provider })
+      },
       approve: async (input) => {
-        const toolName = input.tool_name.startsWith('mcp__joy__')
-          ? input.tool_name.slice('mcp__joy__'.length)
+        const toolPrefix = `mcp__${TOOL_HUB_SERVER_NAME}__`
+        const toolName = input.tool_name.startsWith(toolPrefix)
+          ? input.tool_name.slice(toolPrefix.length)
           : ''
         if (!TOOL_HUB_TOOL_NAMES.some((name) => name === toolName) || !isToolHubValue(input.input)) {
           return {
@@ -757,13 +787,18 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           })),
         }
       },
-      askPeer: async ({ provider: peerKind, question, cwd }) => {
+      askPeer: async ({ provider: peerKind, question, cwd, signal: requestSignal }) => {
         const peer = providers[peerKind]
         if (!peer || peer.kind === 'openai-api') {
           throw new Error(`${peerKind} cannot inspect the shared worktree in read-only mode`)
         }
         const peerModel = resolvePeerModel(peerKind, config.roles as RoleConfig, task.roleOverrides)
-        publish(task.id, attempt.id, 'tool_hub.ask_peer', { provider: peerKind, model: peerModel.model })
+        const peerSignal = AbortSignal.any([
+          signal,
+          sessionController.signal,
+          requestSignal,
+          AbortSignal.timeout(TOOL_HUB_PEER_TIMEOUT_MS),
+        ])
         let finalMessage = ''
         let done: Extract<AgentEvent, { type: 'done' }> | undefined
         try {
@@ -773,7 +808,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
             `Task request:\n${task.prompt}`,
             `Peer question:\n${question}`,
           ].join('\n\n')
-          for await (const event of peer.run({ cwd, prompt, autonomy: 'read-only', signal }, peerModel)) {
+          for await (const event of peer.run(
+            { cwd, prompt, autonomy: 'read-only', signal: peerSignal },
+            peerModel,
+          )) {
             persistUsageEvent(db, peerKind, event)
             if (event.type === 'message') finalMessage += event.text
             if (event.type === 'error' && !event.recoverable) {
@@ -798,9 +836,15 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         }
       },
     })
-    const endpoint = `http://127.0.0.1:${address.port}/internal/tool-hub/${token}`
-    toolHubSessions.set(token, dispatch)
-    return { server: createToolHubMcpConfig(endpoint, token), close: () => toolHubSessions.delete(token) }
+    const endpoint = `http://127.0.0.1:${address.port}/internal/tool-hub/${sessionId}`
+    toolHubSessions.set(sessionId, { token, dispatch })
+    return {
+      server: createToolHubMcpConfig(endpoint, token),
+      close: () => {
+        sessionController.abort()
+        toolHubSessions.delete(sessionId)
+      },
+    }
   }
 
   async function runSingle(
@@ -834,7 +878,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       autonomy: 'workspace-write',
       signal: controller.signal,
       ...(toolHub ? { mcpServers: [toolHub.server] } : {}),
-      ...(toolHub && provider.capabilities.delegatedApproval ? { approvalTool: 'mcp__joy__approve' } : {}),
+      ...(toolHub && provider.capabilities.delegatedApproval
+        ? { approvalTool: TOOL_HUB_APPROVAL_TOOL_NAME }
+        : {}),
       ...(resume ? { resumeSessionId: resume.sessionId } : {}),
     }
     let done: Extract<AgentEvent, { type: 'done' }> | undefined

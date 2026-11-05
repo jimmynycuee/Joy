@@ -11,6 +11,7 @@ function runtime(overrides: Partial<ToolHubRuntime> = {}): ToolHubRuntime {
     cwd: '/tmp/shared-worktree',
     maxAskPeerCalls: 2,
     budget: { askPeerCalls: 0 },
+    reserveAskPeer: vi.fn(),
     askPeer: vi.fn(async ({ provider, cwd, autonomy }) => ({
       provider,
       cwd,
@@ -40,6 +41,7 @@ describe('Tool Hub dispatcher', () => {
       question: 'Review this approach',
       cwd: '/tmp/shared-worktree',
       autonomy: 'read-only',
+      signal: expect.any(AbortSignal),
     })
     expect(deps.budget.askPeerCalls).toBe(1)
   })
@@ -52,6 +54,25 @@ describe('Tool Hub dispatcher', () => {
     await expect(
       dispatch({ name: 'ask_peer', arguments: { provider: 'openai-api', question: 'Review' } }),
     ).rejects.toThrow('not allowed')
+  })
+
+  it('reserves an ask_peer event before invoking the provider, including failed peer attempts', async () => {
+    const order: string[] = []
+    const deps = runtime({
+      reserveAskPeer: async () => {
+        order.push('reserved')
+      },
+      askPeer: async () => {
+        order.push('peer')
+        throw new Error('peer failed')
+      },
+    })
+    const dispatch = createToolHubDispatcher(deps)
+    await expect(
+      dispatch({ name: 'ask_peer', arguments: { provider: 'codex-cli', question: 'Review' } }),
+    ).rejects.toThrow('peer failed')
+    expect(order).toEqual(['reserved', 'peer'])
+    expect(deps.budget.askPeerCalls).toBe(1)
   })
 
   it('caps ask_peer calls for the task and does not silently ignore the excess call', async () => {

@@ -1,4 +1,9 @@
-export { createToolHubDispatcher, TOOL_HUB_TOOL_NAMES } from './hub.js'
+export {
+  createToolHubDispatcher,
+  TOOL_HUB_APPROVAL_TOOL_NAME,
+  TOOL_HUB_SERVER_NAME,
+  TOOL_HUB_TOOL_NAMES,
+} from './hub.js'
 export type {
   ToolHubBudget,
   ToolHubCall,

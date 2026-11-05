@@ -1114,6 +1114,8 @@ describe('Joy local server', () => {
     })
     const { task } = (await taskResponse.json()) as { task: { id: string } }
     const responses: Array<{ status: number; body: unknown }> = []
+    let capturedEndpoint: string | undefined
+    let capturedToken: string | undefined
     implementer.onRun = async (options) => {
       const mcp = options.mcpServers?.[0]
       if (!mcp || mcp.transport !== 'stdio')
@@ -1124,6 +1126,9 @@ describe('Joy local server', () => {
       const token = mcp.env?.JOY_TOOL_HUB_TOKEN
       expect(endpoint).toContain('/internal/tool-hub/')
       expect(token).toBeTruthy()
+      expect(endpoint).not.toContain(token as string)
+      capturedEndpoint = endpoint
+      capturedToken = token
       const call = async (authorization: string, name: string, args: unknown) => {
         const response = await globalThis.fetch(endpoint as string, {
           method: 'POST',
@@ -1168,6 +1173,181 @@ describe('Joy local server', () => {
     expect(
       result.events.filter((event) => (event as { type?: string }).type === 'tool_hub.ask_peer'),
     ).toHaveLength(1)
+    expect(capturedEndpoint).toBeDefined()
+    expect(capturedToken).toBeDefined()
+    const expired = await globalThis.fetch(capturedEndpoint as string, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${capturedToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'task_status', arguments: {} }),
+    })
+    expect(expired.status).toBe(403)
+  })
+
+  it('preserves the task ask_peer budget across a resumed provider session', async () => {
+    const implementer = new FakeProvider('claude-cli')
+    let peerResponse: { status: number; body: unknown } | undefined
+    implementer.onRun = async (options) => {
+      const mcp = options.mcpServers?.[0]
+      if (!mcp || mcp.transport !== 'stdio') throw new Error('CLI provider did not receive stdio Tool Hub')
+      const endpoint = mcp.env?.JOY_TOOL_HUB_ENDPOINT
+      const token = mcp.env?.JOY_TOOL_HUB_TOKEN
+      if (!endpoint || !token) throw new Error('CLI provider did not receive Tool Hub credentials')
+      const response = await globalThis.fetch(endpoint, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'ask_peer',
+          arguments: { provider: 'codex-cli', question: 'Review the resumed worktree' },
+        }),
+      })
+      peerResponse = { status: response.status, body: await response.json() }
+    }
+    const { db, serverPromise, configStore, reviewer } = fixture({ implementer })
+    await configStore.update((config) => ({ ...config, tool_hub: { max_ask_peer_calls: 1 } }))
+    const repo = createRepo(db, {
+      id: rid('tool-hub-resume-repo'),
+      path: join(tmpdir(), 'joy-tool-hub-resume-repo'),
+      defaultBranch: 'main',
+    })
+    const task = createTask(db, {
+      id: tid('tool-hub-resume-task'),
+      repoId: repo.id,
+      title: 'Resume Tool Hub budget',
+      prompt: 'Try one more peer call after resume',
+      mode: 'single',
+    })
+    const attempt = createAttempt(db, {
+      id: aid('tool-hub-resume-attempt'),
+      taskId: task.id,
+      provider: 'claude-cli',
+      model: 'haiku',
+      status: 'cancelled',
+    })
+    updateAttempt(db, attempt.id, {
+      worktreePath: join(tmpdir(), 'joy-tool-hub-resume-worktree'),
+      branch: 'joy/tool-hub-resume-task/tool-hub-resume-attempt',
+      baseCommit: 'base-sha',
+      sessionId: 'saved-tool-hub-session',
+    })
+    setTaskStatus(db, task.id, 'cancelled')
+    appendTaskEvent(db, attempt.id, 'tool_hub.ask_peer', { provider: 'codex-cli' })
+
+    const { origin } = await start(serverPromise)
+    const resumed = await postJson(`${origin}/api/tasks/${task.id}/resume`, {})
+    expect(resumed.status).toBe(202)
+    const result = await waitForStatus(origin, task.id, 'done')
+    expect(peerResponse).toMatchObject({
+      status: 422,
+      body: { error: 'ask_peer limit reached (1 per task)' },
+    })
+    expect(reviewer.calls).toHaveLength(0)
+    expect(
+      result.events.filter((event) => (event as { type?: string }).type === 'tool_hub.ask_peer'),
+    ).toHaveLength(1)
+  })
+
+  it('rejects a Tool Hub bearer token when used with another active session', async () => {
+    const implementer = new FakeProvider('claude-cli')
+    let releaseRuns!: () => void
+    const runGate = new Promise<void>((resolve) => {
+      releaseRuns = resolve
+    })
+    const sessions: Array<{ endpoint: string; token: string }> = []
+    implementer.onRun = async (options) => {
+      const mcp = options.mcpServers?.[0]
+      if (!mcp || mcp.transport !== 'stdio') throw new Error('CLI provider did not receive stdio Tool Hub')
+      const endpoint = mcp.env?.JOY_TOOL_HUB_ENDPOINT
+      const token = mcp.env?.JOY_TOOL_HUB_TOKEN
+      if (!endpoint || !token) throw new Error('CLI provider did not receive Tool Hub credentials')
+      sessions.push({ endpoint, token })
+      await runGate
+    }
+    const { serverPromise } = fixture({ implementer })
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, {
+      path: '/tmp/tool-hub-session-repo',
+      defaultBranch: 'main',
+    })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const taskIds: string[] = []
+    for (const title of ['First Tool Hub task', 'Second Tool Hub task']) {
+      const response = await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title,
+        prompt: 'Hold the task open for the session token check',
+        mode: 'single',
+      })
+      const { task } = (await response.json()) as { task: { id: string } }
+      taskIds.push(task.id)
+    }
+    try {
+      await waitForProviderCalls(implementer, 2)
+      expect(sessions).toHaveLength(2)
+      const first = sessions[0]
+      const second = sessions[1]
+      if (!first || !second) throw new Error('Both Tool Hub sessions must be active')
+      const pairs: Array<[{ endpoint: string; token: string }, { endpoint: string; token: string }]> = [
+        [first, second],
+        [second, first],
+      ]
+      for (const [from, other] of pairs) {
+        const response = await globalThis.fetch(from.endpoint, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${other.token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ name: 'task_status', arguments: {} }),
+        })
+        expect(response.status).toBe(403)
+      }
+    } finally {
+      releaseRuns()
+    }
+    await Promise.all(taskIds.map((id) => waitForStatus(origin, id, 'done')))
+  })
+
+  it('aborts an active peer run when its parent task is cancelled', async () => {
+    const implementer = new FakeProvider('claude-cli')
+    const reviewer = new FakeProvider('codex-cli')
+    reviewer.onRun = async (options) => {
+      if (options.signal.aborted) return
+      await new Promise<void>((resolve) => {
+        options.signal.addEventListener('abort', () => resolve(), { once: true })
+      })
+    }
+    const { serverPromise } = fixture({ implementer, reviewer })
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, {
+      path: '/tmp/tool-hub-cancel-repo',
+      defaultBranch: 'main',
+    })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const taskResponse = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Cancel delegated peer',
+      prompt: 'Start a peer and cancel it',
+      mode: 'single',
+    })
+    const { task } = (await taskResponse.json()) as { task: { id: string } }
+    implementer.onRun = async (options) => {
+      const mcp = options.mcpServers?.[0]
+      if (!mcp || mcp.transport !== 'stdio') throw new Error('CLI provider did not receive stdio Tool Hub')
+      const endpoint = mcp.env?.JOY_TOOL_HUB_ENDPOINT
+      const token = mcp.env?.JOY_TOOL_HUB_TOKEN
+      if (!endpoint || !token) throw new Error('CLI provider did not receive Tool Hub credentials')
+      const peerRequest = globalThis.fetch(endpoint, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'ask_peer',
+          arguments: { provider: 'codex-cli', question: 'Review the worktree' },
+        }),
+      })
+      await waitForProviderCalls(reviewer, 1)
+      const cancelled = await postJson(`${origin}/api/tasks/${task.id}/cancel`, {})
+      expect(cancelled.status).toBe(200)
+      await peerRequest.catch(() => undefined)
+    }
+    await waitForStatus(origin, task.id, 'cancelled')
+    expect(reviewer.calls[0]?.signal.aborted).toBe(true)
   })
 
   it('blocks Tool Hub peers excluded by the repository provider allowlist', async () => {

@@ -3,6 +3,8 @@ import { ACTION_KINDS, PROVIDER_KINDS } from '@joy/core'
 import { z } from 'zod'
 
 export const TOOL_HUB_TOOL_NAMES = ['ask_peer', 'task_status', 'request_approval', 'approve'] as const
+export const TOOL_HUB_SERVER_NAME = 'joy' as const
+export const TOOL_HUB_APPROVAL_TOOL_NAME = `mcp__${TOOL_HUB_SERVER_NAME}__approve` as const
 export type ToolHubToolName = (typeof TOOL_HUB_TOOL_NAMES)[number]
 export type ToolHubValue = null | boolean | number | string | ToolHubValue[] | { [key: string]: ToolHubValue }
 
@@ -27,6 +29,7 @@ export interface AskPeerInput {
   question: string
   cwd: string
   autonomy: 'read-only'
+  signal: AbortSignal
 }
 
 export interface ToolHubBudget {
@@ -40,6 +43,7 @@ export interface ToolHubRuntime {
   cwd: string
   maxAskPeerCalls: number
   budget: ToolHubBudget
+  reserveAskPeer?(input: { provider: ProviderKind }): Promise<void> | void
   askPeer(input: AskPeerInput): Promise<ToolHubValue>
   taskStatus(): Promise<ToolHubValue>
   requestApproval?(action: ProposedAction): Promise<ToolHubValue>
@@ -51,7 +55,7 @@ export interface ToolHubCall {
   arguments: unknown
 }
 
-export type ToolHubDispatcher = (call: ToolHubCall) => Promise<ToolHubValue>
+export type ToolHubDispatcher = (call: ToolHubCall, signal?: AbortSignal) => Promise<ToolHubValue>
 
 const allowedPeerProviders = new Set<ProviderKind>(PROVIDER_KINDS)
 
@@ -60,7 +64,7 @@ export function createToolHubDispatcher(runtime: ToolHubRuntime): ToolHubDispatc
   if (!Number.isInteger(runtime.maxAskPeerCalls) || runtime.maxAskPeerCalls < 1) {
     throw new Error('maxAskPeerCalls must be a positive integer')
   }
-  return async function dispatch(call: ToolHubCall): Promise<ToolHubValue> {
+  return async function dispatch(call: ToolHubCall, signal?: AbortSignal): Promise<ToolHubValue> {
     if (call.name === 'ask_peer') {
       const input = askPeerInput.parse(call.arguments)
       if (input.provider === runtime.currentProvider) {
@@ -72,6 +76,7 @@ export function createToolHubDispatcher(runtime: ToolHubRuntime): ToolHubDispatc
       if (runtime.budget.askPeerCalls >= runtime.maxAskPeerCalls) {
         throw new Error(`ask_peer limit reached (${runtime.maxAskPeerCalls} per task)`)
       }
+      await runtime.reserveAskPeer?.({ provider: input.provider })
       runtime.budget.askPeerCalls += 1
       return runtime.askPeer({
         taskId: runtime.taskId,
@@ -79,6 +84,7 @@ export function createToolHubDispatcher(runtime: ToolHubRuntime): ToolHubDispatc
         question: input.question,
         cwd: runtime.cwd,
         autonomy: 'read-only',
+        signal: signal ?? new AbortController().signal,
       })
     }
     if (call.name === 'task_status') {
