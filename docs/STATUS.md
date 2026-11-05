@@ -3,7 +3,7 @@
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
 - 最後更新：2026-11-05 UTC
-- 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** T1.13 的 doctor 與首頁檢查在現有 PR #62；以最新 main 整合後完成本機驗證及獨立 review，再依 owner review 與驗收狀態推進。T1.13/T1.8 保持未勾選至完成驗收。
+- 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** T1.13 的 doctor 與首頁檢查已在 PR #62 分支以 forward-only merge 整合 live main `c8b8c3a8d4f368ef351108eb3a22e26bccb776cf`；最新合併樹的本機 `pnpm check`（262 passed、2 skipped）及首頁 doctor E2E（1 passed）通過。PR #62 保持 draft；更新後 CI、owner review 與實機驗收仍待完成。T1.13/T1.8 保持未勾選。
 
 ## 驗證結果
 
@@ -17,8 +17,14 @@
 
 - Doctor 涵蓋 Node、Git、GitHub CLI 登入狀態、Claude/Codex CLI 安裝與偵測版本、OS keychain 可用性及 Joy 資料目錄可寫入狀態；首頁顯示檢查結果及修復指引。Windows npm `.cmd`/`.bat` shim 以檔案存在性辨識並標示版本未測；低於 Node 22.13 的版本標示為不支援；缺少資料目錄的指引說明 server 啟動時會自動建立。
 - Keychain probe 只檢查可用性，使用新的隨機帳戶查詢；不讀取已儲存的憑證或訂閱資料。
-- 最新 main 整合後，`pnpm exec vitest run packages/server/src/doctor.test.ts packages/server/src/server.test.ts` 通過（59/59）；`pnpm --filter @joy/web exec playwright test e2e/doctor.spec.ts` 通過（1/1，使用 fake `/api/doctor` 回應）；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 通過（Prettier、ESLint、workspace typechecks；262 passed、2 skipped）。本機 Linux 未在原生 Windows 驗證；Windows shim/Node 情境由注入與假檔測試。未呼叫真實 Claude/Codex CLI、GitHub CLI 認證命令，或讀取 keychain／訂閱憑證。
+- Live main `c8b8c3a8d4f368ef351108eb3a22e26bccb776cf` 的 forward-only merge tree：`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 通過（Prettier、ESLint、workspace typechecks；262 passed、2 skipped）；`pnpm --filter @joy/web exec playwright test e2e/doctor.spec.ts` 通過（1/1，使用 fake `/api/doctor` 回應）。完整 suite 包含 doctor 7 tests 及 server 52 tests。本機 Linux 未在原生 Windows 驗證；Windows shim/Node 情境由注入與假檔測試。未呼叫真實 Claude/Codex CLI、GitHub CLI 認證命令，或讀取 keychain／訂閱憑證。
 - T1.13/T1.8 保持未勾選，直到 owner review 與驗收完成；P2 依 PLAN 順序暫停。
+
+### T1.9 GitHub publisher
+
+- 已把 T1.9 publisher 改動重放至最新 main；程式檢查上游 repo／fork 與 base ancestry，逐一掃描將推送的 commits（敏感檔名、二進位變更、secret-like 新增內容與 commit message），並限制 Git／gh 子程序時間及診斷輸出。
+- 本機 `pnpm exec vitest run --project github packages/github/src/publisher.test.ts` 通過（35/35）；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 通過（格式、lint、typecheck；254 passed、2 skipped）。
+- PLAN 的真實驗收仍未完成：本機 `gh auth status` 顯示未登入，尚未建立 `[test] ` draft PR。已透過存取卡請求 `GITHUB_PAT`；取得後先用 `GH_TOKEN="$GITHUB_PAT" gh auth status` 驗證 CLI 登入，再開測試 PR，驗收後立即關閉並刪除測試分支。
 
 ### T1.14 本機 API 與 WebSocket token 認證
 
@@ -45,9 +51,14 @@
 
 ## 擁有者待審
 
-- [PR #62](https://github.com/jimmynycuee/Joy/pull/62)：審核 T1.13 doctor 與 T1.8 首頁檢查；keychain probe 僅檢查可用性，不讀取已儲存憑證。
+- [PR #58](https://github.com/jimmynycuee/Joy/pull/58)：審核 `packages/core` 公開介面與 `packages/secrets` OS keychain／機密遮罩處理。
+- [PR #62](https://github.com/jimmynycuee/Joy/pull/62)：審核 T1.13 doctor 與 T1.8 首頁檢查；保留 draft。review follow-ups 包含 Windows `.cmd`/`.bat` shim 狀態、Node 低於 22.13 的不支援提示，以及資料目錄自動建立指引；keychain probe 僅檢查可用性、不讀取已儲存憑證。
 - [PR #66](https://github.com/jimmynycuee/Joy/pull/66)：審核 T1.8 的 OpenAI key／SecretStore UI 與機密處理；依 repository 規則需 owner review。
+- [PR #73](https://github.com/jimmynycuee/Joy/pull/73)：審核本機 API／WebSocket token 認證、token 檔案權限與 Windows ACL 邊界。
 - [PR #76](https://github.com/jimmynycuee/Joy/pull/76)：審核 T1.9 publisher 的 Git URL rewrite、Git LFS、PR 身分比對與 body redaction 安全補強。
+- [PR #54](https://github.com/jimmynycuee/Joy/pull/54)：審核 GitHub publisher 對 push target、提交歷史與 secret-like 內容的安全限制。
+- [PR #57](https://github.com/jimmynycuee/Joy/pull/57)：審核 repo provider allowlist 的政策／執行時檢查，以及無 attempt 預檢失敗事件的資料庫與事件格式。
+- T1.12 / PR #53 的 owner-review gate 與 PR #57 的 shared-head 限制維持不變；本分支不修改這兩個 PR 或其共享分支。
 
 ## 需要擁有者處理
 
