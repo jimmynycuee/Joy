@@ -731,6 +731,10 @@ describe('Joy local server', () => {
       origin: 'http://localhost:4173',
     })
     expect(deniedLocalhost.status).toBe(403)
+    const deniedDynamicLoopback = await requestWithHeaders(`${defaultOrigin}/api/health`, 'GET', {
+      origin: 'http://127.0.0.1:49131',
+    })
+    expect(deniedDynamicLoopback.status).toBe(403)
 
     const playwrightServer = fixture({ allowPlaywrightOrigin: true })
     const { origin: playwrightOrigin } = await start(playwrightServer.serverPromise)
@@ -742,6 +746,21 @@ describe('Joy local server', () => {
       origin: 'http://localhost:4173',
     })
     expect(allowedLocalhost.status).toBe(200)
+    const allowedDynamicLoopback = await requestWithHeaders(`${playwrightOrigin}/api/health`, 'GET', {
+      origin: 'http://localhost:49131',
+    })
+    expect(allowedDynamicLoopback.status).toBe(200)
+
+    for (const origin of [
+      'https://localhost:49131',
+      'http://example.test:49131',
+      'http://localhost:0',
+      'http://localhost',
+      'http://localhost:49131/path',
+    ]) {
+      const rejected = await requestWithHeaders(`${playwrightOrigin}/api/health`, 'GET', { origin })
+      expect(rejected.status, `${origin} must remain rejected`).toBe(403)
+    }
   })
 
   it('runs competing providers in isolated worktrees, persists judge rationale, and selects a winner', async () => {

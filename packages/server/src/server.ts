@@ -1153,13 +1153,29 @@ function isLocalHostHeader(host: string | undefined): boolean {
 }
 
 function isAllowedOrigin(origin: string | undefined, allowPlaywrightOrigin = false): boolean {
-  return (
+  if (
     origin === undefined ||
     origin === 'tauri://localhost' ||
     origin === 'http://localhost:5173' ||
-    origin === 'http://127.0.0.1:5173' ||
-    (allowPlaywrightOrigin && (origin === 'http://127.0.0.1:4173' || origin === 'http://localhost:4173'))
+    origin === 'http://127.0.0.1:5173'
   )
+    return true
+  if (!allowPlaywrightOrigin || origin === undefined) return false
+
+  try {
+    const parsed = new URL(origin)
+    const port = Number(parsed.port)
+    return (
+      origin === parsed.origin &&
+      parsed.protocol === 'http:' &&
+      (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') &&
+      parsed.port !== '' &&
+      Number.isInteger(port) &&
+      port > 0
+    )
+  } catch {
+    return false
+  }
 }
 
 function requiresJsonContentType(method: string, pathname: string): boolean {
