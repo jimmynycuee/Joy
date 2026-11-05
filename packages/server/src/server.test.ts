@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import { request as httpRequest } from 'node:http'
@@ -463,6 +464,41 @@ describe('Joy local server', () => {
       if (process.platform !== 'win32' && typeof process.getuid === 'function') {
         expect(tokenInfo.uid).toBe(process.getuid())
         expect(tokenInfo.mode & 0o777).toBe(0o600)
+      }
+      if (process.platform === 'win32') {
+        const aclOutput = execFileSync(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            `
+$ErrorActionPreference = 'Stop'
+$path = $env:JOY_API_TOKEN_FILE
+$acl = Get-Acl -LiteralPath $path
+$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$ownerSid = $acl.Owner.Translate([System.Security.Principal.SecurityIdentifier]).Value
+$allowedSids = @($acl.Access | Where-Object { $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow } | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value })
+$inheritedAllowCount = @($acl.Access | Where-Object { $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and $_.IsInherited }).Count
+[pscustomobject]@{ currentSid = $currentSid; ownerSid = $ownerSid; allowedSids = $allowedSids; inheritedAllowCount = $inheritedAllowCount } | ConvertTo-Json -Compress -Depth 4
+`,
+          ],
+          {
+            encoding: 'utf8',
+            env: { ...process.env, JOY_API_TOKEN_FILE: join(home, 'api-token') },
+            timeout: 10_000,
+            windowsHide: true,
+          },
+        )
+        const acl = JSON.parse(aclOutput.trim()) as {
+          currentSid: string
+          ownerSid: string
+          allowedSids: string[]
+          inheritedAllowCount: number
+        }
+        expect(acl.ownerSid).toBe(acl.currentSid)
+        expect(acl.allowedSids).toEqual([acl.currentSid])
+        expect(acl.inheritedAllowCount).toBe(0)
       }
       await server.close()
       for (const spy of consoleSpies) output.push(...spy.mock.calls.flat().map(String))

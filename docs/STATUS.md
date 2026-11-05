@@ -2,10 +2,10 @@
 
 > 接手前請先讀本檔、`AGENTS.md` 與 `docs/PLAN.md`。本檔記錄目前進度、阻塞與決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。
 
-## 本機 API bearer 信任邊界（2026-11-05 06:15 UTC）
+## 本機 API bearer 信任邊界（2026-11-05 06:27 UTC）
 
-- 第二段實作在新分支，尚未合併：server 每次啟動以 256-bit 隨機值保護所有 HTTP 與 WebSocket API；token 短期存於 `JOY_HOME/api-token`（預設 `~/.joy`），使用者專屬檔案權限，關閉時清除、重啟時輪替。Origin/Host 白名單仍有效，web dev Vite proxy 在 server-side 讀取 token 並只向上游附加，沒有 bootstrap endpoint，瀏覽器不取得 token。
-- 本 checkout 沒有 `apps/desktop` 或 Tauri launcher；原生 UI 的 token 交付路徑尚無實作可驗證，需後續由 native layer 讀取安全檔案並附上授權。
+- 第二段在 [PR #74](https://github.com/jimmynycuee/Joy/pull/74)，draft、等待 owner review，尚未合併：server 每次啟動以 256-bit 隨機值保護所有 HTTP 與 WebSocket API；token 短期存於 `JOY_HOME/api-token`（預設 `~/.joy`），關閉時清除、重啟時輪替。POSIX 驗證 owner 與 `0600`；Windows 在空暫存檔上先移除繼承 ACL、僅授權目前 SID，再寫入 token；Vite 讀取前也驗證 ACL。Origin/Host 白名單仍有效，web dev Vite proxy 在 server-side 讀取 token 並只向上游附加，沒有 bootstrap endpoint，瀏覽器不取得 token。
+- Windows ACL 回歸檢查已加入，等待此 PR 新 head 的 Windows CI 實測。本 checkout 沒有 `apps/desktop` 或 Tauri launcher；原生 UI 的 token 交付路徑尚無實作可驗證，需後續由 native layer 讀取安全檔案並附上授權。
 
 - 最後更新：2026-11-05 04:14 UTC
 - 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** 本 checkout 的 `origin/main` 為 `a0c7627`；PR #64 已合併，該 PR 四項 checks 通過，但未另行確認合併後 `main` CI。T1.12 的 #53 仍 open/draft、base `t1.7-event-log`、四項 checks 通過並等待 owner review；T1.13/T1.8 的 #62 仍 open/draft，但目前與 `main` 衝突且新 head 尚無 checks。相關計畫仍未勾選；T1.9 真實測試 repo 驗收亦未完成。

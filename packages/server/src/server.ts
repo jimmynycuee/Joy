@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { createServer as createHttpServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -789,8 +790,9 @@ async function writeApiToken(path: string): Promise<string> {
   try {
     const handle = await open(temporaryPath, 'wx', 0o600)
     try {
-      await handle.writeFile(token, 'utf8')
       await handle.chmod(0o600)
+      if (process.platform === 'win32') setWindowsApiTokenAcl(temporaryPath)
+      await handle.writeFile(token, 'utf8')
       await handle.sync()
     } finally {
       await handle.close()
@@ -800,6 +802,41 @@ async function writeApiToken(path: string): Promise<string> {
   } catch (error) {
     await unlink(temporaryPath).catch(() => {})
     throw error
+  }
+}
+
+function setWindowsApiTokenAcl(path: string): void {
+  const script = `
+$ErrorActionPreference = 'Stop'
+$path = $env:JOY_API_TOKEN_FILE
+$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = Get-Acl -LiteralPath $path
+$acl.SetAccessRuleProtection($true, $false)
+foreach ($existingRule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($existingRule) }
+$readRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+  $currentSid,
+  [System.Security.AccessControl.FileSystemRights]::Read,
+  [System.Security.AccessControl.AccessControlType]::Allow
+)
+$acl.AddAccessRule($readRule)
+Set-Acl -LiteralPath $path -AclObject $acl
+$verified = Get-Acl -LiteralPath $path
+$allowRules = @($verified.Access | Where-Object { $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow })
+$unexpected = @($allowRules | Where-Object {
+  $_.IsInherited -or $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $currentSid.Value
+})
+if ($allowRules.Count -ne 1 -or $unexpected.Count -ne 0) { throw 'Unexpected API token ACL.' }
+`
+  try {
+    execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      encoding: 'utf8',
+      env: { ...process.env, JOY_API_TOKEN_FILE: path },
+      stdio: ['ignore', 'ignore', 'ignore'],
+      timeout: 10_000,
+      windowsHide: true,
+    })
+  } catch {
+    throw new Error('Unable to restrict API token file access to the current Windows user.')
   }
 }
 
