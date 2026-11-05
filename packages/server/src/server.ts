@@ -1,8 +1,9 @@
+import { constants as fsConstants } from 'node:fs'
 import { createServer as createHttpServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { chmod, mkdir, open, readFile } from 'node:fs/promises'
+import { link, lstat, mkdir, open, unlink } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import { z, ZodError } from 'zod'
@@ -79,6 +80,7 @@ const taskInputSchema = z.strictObject({
 const idSchema = z.string().min(1).max(128)
 const openAiSecretInputSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
 const MAX_BODY_BYTES = 1_000_000
+const API_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,}$/
 const PLAYWRIGHT_E2E_ORIGINS = ['http://127.0.0.1:4173', 'http://localhost:4173'] as const
 
 export interface TaskEvent {
@@ -140,7 +142,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const initialConfig = await configStore.get()
   const paths = resolvePaths(initialConfig, home)
   const apiToken = options.apiToken ?? (await loadOrCreateApiToken(home))
-  if (apiToken.length === 0) throw new Error('API token must not be empty')
+  assertApiToken(apiToken)
   const ownsDatabase = !options.database
   const db = options.database ?? openDatabase(paths.database)
   const redactor = options.redactor ?? new Redactor()
@@ -730,26 +732,78 @@ async function loadOrCreateApiToken(home: string): Promise<string> {
   }
 
   const token = randomBytes(32).toString('base64url')
+  const temporaryPath = join(home, `.api-token-${randomUUID()}.tmp`)
+  let temporaryCreated = false
   try {
-    const file = await open(tokenPath, 'wx', 0o600)
+    const file = await open(temporaryPath, 'wx', 0o600)
+    temporaryCreated = true
     try {
       await file.writeFile(token, 'utf8')
     } finally {
       await file.close()
     }
-    if (process.platform !== 'win32') await chmod(tokenPath, 0o600)
-    return token
-  } catch (error) {
-    if (!hasErrorCode(error, 'EEXIST')) throw error
-    return readApiToken(tokenPath)
+
+    try {
+      await link(temporaryPath, tokenPath)
+      return token
+    } catch (error) {
+      if (!hasErrorCode(error, 'EEXIST')) throw error
+      try {
+        return await readApiToken(tokenPath)
+      } catch (readError) {
+        if (hasErrorCode(readError, 'ENOENT')) return loadOrCreateApiToken(home)
+        throw readError
+      }
+    }
+  } finally {
+    if (temporaryCreated) {
+      await unlink(temporaryPath).catch((error: unknown) => {
+        if (!hasErrorCode(error, 'ENOENT')) throw error
+      })
+    }
   }
 }
 
 async function readApiToken(tokenPath: string): Promise<string> {
-  if (process.platform !== 'win32') await chmod(tokenPath, 0o600)
-  const token = await readFile(tokenPath, 'utf8')
-  if (token.length === 0) throw new Error('API token file is empty')
-  return token
+  const metadata = await lstat(tokenPath)
+  if (metadata.isSymbolicLink()) throw new Error('API token file must not be a symbolic link')
+  if (!metadata.isFile()) throw new Error('API token path must be a regular file')
+  if (process.platform !== 'win32' && (metadata.mode & 0o077) !== 0) {
+    throw new Error(
+      'API token file permissions must restrict access to its owner; remove it and restart Joy to rotate the token',
+    )
+  }
+
+  const flags = process.platform === 'win32' ? 'r' : fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW
+  const file = await open(tokenPath, flags).catch((error: unknown) => {
+    if (hasErrorCode(error, 'ELOOP'))
+      throw new Error('API token file must not be a symbolic link', { cause: error })
+    throw error
+  })
+  try {
+    const openedMetadata = await file.stat()
+    if (
+      process.platform !== 'win32' &&
+      (openedMetadata.dev !== metadata.dev || openedMetadata.ino !== metadata.ino)
+    ) {
+      throw new Error('API token file changed while it was being opened; restart Joy to retry')
+    }
+    if (process.platform !== 'win32' && (openedMetadata.mode & 0o077) !== 0) {
+      throw new Error('API token file permissions must restrict access to its owner')
+    }
+    const token = (await file.readFile('utf8')).trim()
+    if (!token) throw new Error('API token file is empty; remove it and restart Joy to generate a new token')
+    assertApiToken(token)
+    return token
+  } finally {
+    await file.close()
+  }
+}
+
+function assertApiToken(token: string): void {
+  if (!API_TOKEN_PATTERN.test(token)) {
+    throw new Error('API token must contain at least 16 URL-safe characters')
+  }
 }
 
 function hasErrorCode(error: unknown, code: string): boolean {
@@ -757,8 +811,8 @@ function hasErrorCode(error: unknown, code: string): boolean {
 }
 
 function hasValidBearerToken(req: IncomingMessage, token: string): boolean {
-  const authorization = req.headers.authorization
-  return authorization?.startsWith('Bearer ') === true && tokensMatch(authorization.slice(7), token)
+  const match = /^Bearer +([A-Za-z0-9_-]+)$/i.exec(req.headers.authorization ?? '')
+  return match?.[1] !== undefined && tokensMatch(match[1], token)
 }
 
 function hasValidWebSocketAuth(req: IncomingMessage, token: string): boolean {

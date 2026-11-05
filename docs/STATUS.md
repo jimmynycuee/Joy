@@ -2,8 +2,8 @@
 
 > 接手前請先讀本檔、`AGENTS.md` 與 `docs/PLAN.md`。本檔記錄目前進度、阻塞與決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。
 
-- 最後更新：2026-11-05；T1.14 (#72) 本機 API token 安全修補正在 `t1.14-local-api-auth-token` 分支進行，基於 PR #71 合併後 main `4f71deb`；本項需 owner review。
-- 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** PR #71 已合併，這個 ticket 分支由 post-merge `main` (`4f71deb`) 建立。下方 04:14 UTC 的 PR 狀態資料是舊快照，不代表目前 GitHub 狀態；採取後續動作前須重新讀取相關 PR。T1.14 (#72) 正在處理，安全變更需 owner review。
+- 最後更新：2026-11-05；T1.14 (#72) 由 draft PR #73 交付，分支 `t1.14-local-api-auth-token` 基於 PR #71 合併後 main `4f71deb`。獨立安全審查發現的 token 路徑／檔案處理問題已修正，擴增測試且本機驗證通過；owner `jimmynycuee` 已列為 reviewer，修正後 head 的 CI 與 owner review 仍待完成。
+- 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** PR #71 已合併，T1.14 分支由 post-merge `main` (`4f71deb`) 建立。PR #73 仍是 draft；其先前 head `c86d645` 的四項 CI 全通過，修正後 head 的 CI 尚待確認；安全變更需 owner review，未取得 review 前不得標 ready 或 merge。下方 04:14 UTC 的 PR 狀態資料是舊快照，不代表目前 GitHub 狀態；採取其他 PR 的後續動作前須重新讀取相關 PR。
 - 後續階段有部分獨立進度：T4.2 的 #17 為 open/draft、base `t1.8-web`、無衝突；Ubuntu、macOS、Windows 與 web E2E 四項 GitHub checks 全通過。這是本機 PWA 基礎，不是已完成 Web Push 驗收，也不解除 P1/P2 的依賴順序。
 
 ## 歷史狀態快照（截至 2026-11-05 04:14 UTC；非即時）
