@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { E2E_API_TOKEN } from './fakes.js'
 
 const repo = { id: 'race-repo', path: '/tmp/joy-websocket-race', defaultBranch: 'main' }
 const task = {
@@ -79,6 +80,23 @@ test('reconnects from the snapshot cursor and deduplicates replayed and sequence
     }
   })
 
+  await page.addInitScript(() => {
+    const nativeWebSocket = window.WebSocket
+    const captureWindow = window as Window & {
+      __joyWebSocketCaptures?: Array<{ url: string; protocols?: string | string[] | undefined }>
+    }
+    captureWindow.__joyWebSocketCaptures = []
+    window.WebSocket = class extends nativeWebSocket {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        captureWindow.__joyWebSocketCaptures?.push({
+          url: String(url),
+          protocols: Array.isArray(protocols) ? [...protocols] : protocols,
+        })
+        super(url, protocols)
+      }
+    }
+  })
+
   await page.goto('/')
   await expect(page.getByRole('heading', { name: task.title })).toBeVisible()
   await expect(page.getByTestId('event-stream')).toContainText('Unpersisted startup error remains visible')
@@ -110,6 +128,25 @@ test('reconnects from the snapshot cursor and deduplicates replayed and sequence
     .evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-event-seq')))
   expect(sequence).toEqual(['1', '2', '3', '0'])
   expect(new Set(sequence).size).toBe(sequence.length)
+  const socketCaptures = await page.evaluate(
+    () =>
+      (
+        window as Window & {
+          __joyWebSocketCaptures?: Array<{ url: string; protocols?: string | string[] | undefined }>
+        }
+      ).__joyWebSocketCaptures ?? [],
+  )
+  const taskSockets = socketCaptures.filter(({ url }) => url.includes('/ws?taskId='))
+  expect(taskSockets).toHaveLength(2)
+  for (const capture of taskSockets) {
+    expect(
+      Array.isArray(capture.protocols) &&
+        capture.protocols[0] === 'joy' &&
+        capture.protocols[1] === `joy-auth.${E2E_API_TOKEN}`,
+    ).toBe(true)
+    expect(capture.url.includes(E2E_API_TOKEN)).toBe(false)
+    expect(capture.url.includes('/ws?taskId=race-task')).toBe(true)
+  }
   expect(new URL(connectionUrls[1] ?? '').searchParams.get('after')).toBe('2')
   expect(connectionFrames[1]?.map(({ type }) => type)).toEqual(['snapshot', 'ready', 'event', 'event'])
 })

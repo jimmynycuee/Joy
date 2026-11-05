@@ -32,12 +32,13 @@
 - [x] T1.5 `orchestrator/review-loop`
 - [x] T1.10 機密存 OS 鑰匙圈（`packages/secrets`）
 - [x] T1.11 設定（`packages/config`；UI 設定頁併入 T1.8）
-- [ ] T1.6 server（HTTP + WebSocket、任務 CRUD、重啟恢復）
-- [ ] T1.7 事件紀錄（寫入 DB、可回放、經 Redactor 遮罩）
-- [x] T1.12 repo 的 provider 允許清單（本 PR 分支驗收完成；尚未整合至 main，見 `docs/STATUS.md`）
-- [ ] T1.9 GitHub：push 分支、開 draft PR
-- [ ] T1.13 `joy doctor` 與首次啟動檢查
-- [ ] T1.8 Codex 風格 Web UI（含設定頁）
+- [x] T1.6 server（HTTP + WebSocket、任務 CRUD、重啟恢復；已整合至 main，PR #58）
+- [x] T1.7 事件紀錄（寫入 DB、可回放、經 Redactor 遮罩；已整合至 main，PR #58）
+- [x] T1.12 repo 的 provider 允許清單
+- [ ] T1.9 GitHub：push 分支、開 draft PR（實作已整合至 main，PR #58；PR #8 open/draft、三平台 checks 通過；PR #9 open/draft、四項 checks 通過；依驗收條件仍需在安全指定的測試 repo 實際開 PR，此項尚未驗證）
+- [ ] T1.13 `joy doctor` 與首次啟動檢查（實作在 open/draft PR #62；最新 head `348593b` 與 `main` 衝突，尚無該 head checks；等待既定 owner 流程處理與驗收後再標完成）
+- [ ] T1.14 本機 API 與 WebSocket token 認證（Issue #72；修改請求與 WebSocket 驗證、Origin 雙層防護、私密 token 儲存與 UI 注入；需 owner review）
+- [ ] T1.8 Codex 風格 Web UI（含設定頁；UI 主體已整合至 main，PR #58；首頁檢查實作在 open/draft PR #62，但最新 head `348593b` 與 `main` 衝突且尚無 checks；整合及驗收前保持未勾選）
 - [ ] P2（T2.1–T2.8）、P3（T3.1–T3.9）、P4（T4.1–T4.9）、P5（T5.1–T5.7）：見 §6
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
@@ -316,6 +317,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 | T1.11 | 設定：`config.yaml` 讀寫 + UI 設定頁（各角色模型） | 改設定後新任務立即套用 |
 | T1.12 | **repo 的 provider 允許清單**：每個 repo 設定可用哪些 provider（預設全部）；建立任務與 resume 前檢查所選角色；T2.1、T2.2、T3.2 新增對應流程時沿用此清單。更新清單只影響之後的新任務、resume 與 provider dispatch preflight，不會取消或動態改變已在執行中的任務。 | 所選角色用到不允許的 provider 時任務直接拒絕，錯誤訊息說明是哪個角色；provider 允許清單與 `PROVIDER_KINDS` 同步受 DB regression 保護。 |
 | T1.13 | **`joy doctor` 與首次啟動檢查**：Node 版本、git、gh 登入、`claude` / `codex` 安裝與版本、鑰匙圈、資料目錄可寫；提供首頁可呈現的檢查結果 | 每項回報 OK / 缺少 / 版本未測過，並附修復指令；缺 CLI 時只停用該 provider，不阻止啟動 |
+| T1.14 | 本機 API 與 WebSocket 認證：server 首次啟動產生隨機 token，存於 `~/.joy` 私密檔案；Joy UI 對 API 與 WebSocket 連線附帶 token，保留 Origin 白名單並接受 `localhost` 與 `127.0.0.1` | 除 `GET /api/health` 外，沒有或錯誤 token 的 API 請求與 WebSocket 一律 403 且不產生副作用；合法 UI 流程正常；token 不出現在 log、事件或錯誤訊息；`pnpm check` 通過；需 owner review |
 
 **P1 完成後：開始用 Joy 開發 Joy。**
 
@@ -351,7 +353,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 | ticket | 內容 | 驗收條件 |
 |---|---|---|
 | T4.1 | 遠端存取：token 驗證 + Tailscale 文件；server 預設只綁 127.0.0.1，開啟遠端要明確設定 | 沒有 token 的請求一律 401；token 可在 UI 重新產生並讓舊的失效 |
-| T4.2 | PWA + Web Push 通知 | 手機加到主畫面後收得到任務完成與審核通知 |
+| T4.2 | PWA + Web Push 通知（PR #17 提交本機可安裝 PWA 基礎；open/draft、base `t1.8-web`、head `ad4539d`，Ubuntu/macOS/Windows/web E2E 四項 checks 全通過；本機驗證報告與 PR 說明中的測試數字不一致，須核對；Web Push 仍待 T4.1） | 手機加到主畫面後收得到任務完成與審核通知 |
 | T4.3 | Tauri 桌面 app：系統匣、開機啟動、原生通知、自動更新 | macOS 與 Windows 安裝檔可安裝、更新、移除 |
 | T4.4 | Windows 強化：安裝檔、`.cmd` shim 的 spawn、WSL 偵測與 Codex fallback | Windows 實機完成一次交叉審查任務 |
 | T4.5 | `executor/docker`：可選的 container 模式（掛載 CLI 憑證、網路政策） | 不信任的 repo 可在 container 內跑完任務 |
