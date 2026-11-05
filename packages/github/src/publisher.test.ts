@@ -80,7 +80,7 @@ describe('GitHubPublisher', () => {
       '--state',
       'all',
       '--json',
-      'url,state,isDraft,headRefName,headRepositoryOwner,baseRefName,body',
+      'url,state,isDraft,headRefName,headRepository,baseRefName,body',
     ])
     expect(calls[1]?.args).toEqual([
       'pr',
@@ -159,7 +159,7 @@ describe('GitHubPublisher', () => {
     expect(calls.filter((call) => call.args[1] === 'list')).toHaveLength(2)
   }, 20_000)
 
-  it('matches an existing draft only when its head repository owner matches the selected push remote', async () => {
+  it('does not reuse an existing PR from a different repository under the same owner', async () => {
     const fixture = await createFixture()
     await writeFile(
       fixture.ghState,
@@ -169,7 +169,8 @@ describe('GitHubPublisher', () => {
           state: 'OPEN',
           isDraft: true,
           headRefName: fixture.workspace.branch,
-          headRepositoryOwner: { login: 'another-contributor' },
+          headRepositoryOwner: { login: 'example' },
+          headRepository: { nameWithOwner: 'example/other-joy' },
           baseRefName: 'main',
           body: 'another fork body',
         },
@@ -186,7 +187,7 @@ describe('GitHubPublisher', () => {
 
   it('returns the saved body when reusing the matching open draft', async () => {
     const fixture = await createFixture()
-    const existingBody = 'Original PR body and provenance.'
+    const existingBody = 'Original PR body includes test-secret-value.'
     await writeFile(
       fixture.ghState,
       JSON.stringify([
@@ -195,7 +196,7 @@ describe('GitHubPublisher', () => {
           state: 'OPEN',
           isDraft: true,
           headRefName: fixture.workspace.branch,
-          headRepositoryOwner: { login: 'example' },
+          headRepository: { nameWithOwner: 'example/joy' },
           baseRefName: 'main',
           body: existingBody,
         },
@@ -206,7 +207,8 @@ describe('GitHubPublisher', () => {
     const result = await createPublisher(fixture).publish(fixture.workspace, input())
 
     expect(result.pullRequestUrl).toBe('https://github.com/example/joy/pull/41')
-    expect(result.body).toBe(existingBody)
+    expect(result.body).toBe('Original PR body includes [REDACTED].')
+    expect(result.body).not.toContain('test-secret-value')
     expect((await readCalls(fixture)).some((call) => call.args[1] === 'create')).toBe(false)
   })
 
@@ -220,7 +222,7 @@ describe('GitHubPublisher', () => {
           state,
           isDraft: true,
           headRefName: fixture.workspace.branch,
-          headRepositoryOwner: { login: 'example' },
+          headRepository: { nameWithOwner: 'example/joy' },
           baseRefName: 'main',
           body: 'Existing closed PR.',
         },
@@ -428,6 +430,40 @@ describe('GitHubPublisher', () => {
     expect(calls[1]?.args).toContain(`contributor:${fixture.workspace.branch}`)
   }, 20_000)
 
+  it('rejects a rewritten base fetch target even when the push URL points to the validated repository', async () => {
+    const fixture = await createFixture()
+    const attackerBare = join(fixture.root, 'attacker.git')
+    const pushUrl = 'ssh://git@github.com/example/joy.git'
+    await git(fixture.root, ['clone', '--bare', fixture.bareRepo, attackerBare])
+    await git(fixture.workspace.path, [
+      'config',
+      '--unset-all',
+      `url.${pathToFileURL(fixture.bareRepo).href}.insteadOf`,
+    ])
+    await git(fixture.workspace.path, [
+      'config',
+      '--add',
+      `url.${pathToFileURL(attackerBare).href}.insteadOf`,
+      configuredRemote,
+    ])
+    await git(fixture.workspace.path, ['remote', 'set-url', 'origin', pushUrl])
+    await git(fixture.workspace.path, [
+      'config',
+      '--add',
+      `url.${pathToFileURL(fixture.bareRepo).href}.pushInsteadOf`,
+      pushUrl,
+    ])
+    await writeFile(join(fixture.workspace.path, 'change.txt'), 'published change\n')
+
+    await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+      /effective base fetch URL/i,
+    )
+    expect(await readCalls(fixture)).toHaveLength(0)
+    await expect(
+      git(fixture.bareRepo, ['show-ref', '--verify', `refs/heads/${fixture.workspace.branch}`]),
+    ).rejects.toBeDefined()
+  })
+
   it('rejects an unrelated local base commit not contained by the remote base branch', async () => {
     const fixture = await createFixture()
     await git(fixture.workspace.path, ['switch', 'main'])
@@ -551,6 +587,25 @@ describe('GitHubPublisher', () => {
       createPublisher(deletedFixture).publish(deletedFixture.workspace, input()),
     ).resolves.toBeDefined()
   }, 20_000)
+
+  it('blocks Git LFS pointers because their external payload is not scanned', async () => {
+    const fixture = await createFixture()
+    const pointer = [
+      'version https://git-lfs.github.com/spec/v1',
+      `oid sha256:${'a'.repeat(64)}`,
+      'size 12345',
+      '',
+    ].join('\n')
+    await writeFile(join(fixture.workspace.path, 'model.bin'), pointer)
+
+    await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+      /Git LFS pointer changes because their external payload cannot be safely scanned/,
+    )
+    expect(await readCalls(fixture)).toHaveLength(0)
+    await expect(
+      git(fixture.bareRepo, ['show-ref', '--verify', `refs/heads/${fixture.workspace.branch}`]),
+    ).rejects.toBeDefined()
+  })
 
   it('reports an actionable error when a pushed commit patch exceeds the scan limit', async () => {
     const fixture = await createFixture()
@@ -706,7 +761,7 @@ async function createFixture(options: { ghMode?: string } = {}): Promise<Fixture
     baseCommit: await git(repoPath, ['rev-parse', 'main']),
   }
   await writeFakeGh(fakeGh)
-  await writeFakeGit(fakeGit)
+  await writeFakeGit(fakeGit, bareRepo)
   return { root, bareRepo, workspace, fakeGh, fakeGit, ghCapture, ghState, ghMode }
 }
 
@@ -740,7 +795,8 @@ async function writeFakeGh(path: string): Promise<void> {
       "  const target = option('--repo').split('/').slice(-2).join('/')",
       "  const branch = option('--head').split(':').at(-1)",
       "  const head = option('--head')",
-      "  const pr = { url: `https://github.com/${target}/pull/42`, state: 'OPEN', isDraft: true, headRefName: branch, headRepositoryOwner: { login: head.split(':')[0] }, baseRefName: option('--base'), body: await readFile(option('--body-file'), 'utf8') }",
+      "  const headRepository = `${head.split(':')[0]}/${target.split('/').at(-1)}`",
+      "  const pr = { url: `https://github.com/${target}/pull/42`, state: 'OPEN', isDraft: true, headRefName: branch, headRepository: { nameWithOwner: headRepository }, baseRefName: option('--base'), body: await readFile(option('--body-file'), 'utf8') }",
       "  if (mode === 'partial') {",
       '    let previous = false',
       '    try { await access(statePath); previous = true } catch {}',
@@ -765,15 +821,22 @@ async function writeFakeGh(path: string): Promise<void> {
   )
 }
 
-async function writeFakeGit(path: string): Promise<void> {
+async function writeFakeGit(path: string, bareRepo: string): Promise<void> {
   await writeFile(
     path,
     [
       "import { spawnSync } from 'node:child_process'",
       'const args = process.argv.slice(2)',
       "const run = (items) => spawnSync('git', items, { cwd: process.cwd(), encoding: 'utf8', windowsHide: true, maxBuffer: 32 * 1024 * 1024 })",
+      `const expectedMirrorUrl = ${JSON.stringify(pathToFileURL(bareRepo).href)}`,
+      `const canonicalRemote = ${JSON.stringify(configuredRemote)}`,
       'const result = run(args)',
-      "if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === '--push' && args[3] === '--all') {",
+      "if (args[0] === 'ls-remote' && args[1] === '--get-url') {",
+      "  const url = (result.stdout ?? '').trim()",
+      "  process.stdout.write((url === expectedMirrorUrl ? canonicalRemote : url) + '\\n')",
+      '  if (result.stderr) process.stderr.write(result.stderr)',
+      '  process.exitCode = result.status ?? 1',
+      "} else if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === '--push' && args[3] === '--all') {",
       '  const remote = args[4]',
       "  const effectiveUrls = (result.stdout ?? '').trim().split(/\\r?\\n/).filter(Boolean)",
       "  const pushUrls = run(['config', '--get-all', `remote.${remote}.pushurl`])",
