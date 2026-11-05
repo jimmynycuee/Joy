@@ -19,9 +19,17 @@
 - 本機 Linux 相關測試：`pnpm exec vitest run packages/server/src/server.test.ts packages/config/src/config.test.ts apps/web/src/vite-config.test.ts` 通過（63/63）。測試使用假 token／fake runtime，沒有呼叫真實模型或外部 API。
 - Playwright E2E 與 macOS、Windows CI 留待 PR CI 驗證；本機未執行這些平台測試。
 
+### T1.12 Repo provider allowlist
+
+- Repo allowlist 預設涵蓋所有 provider，並在 DB/API 寫入時拒絕空值或重複值；只檢查所選任務模式實際使用的角色。建立任務、resume 前與 provider dispatch 前均檢查；更新 allowlist 不取消或改變已執行中的任務，只影響後續建立、resume 與 dispatch。
+- 本機 Linux：`pnpm exec vitest run packages/server/src/server.test.ts packages/db/src/database.test.ts packages/db/src/repositories.test.ts` 通過（72/72）；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 通過（236 passed、2 skipped）。測試使用 fake providers，沒有呼叫真實模型或外部 API。
+- macOS／Windows 與 web E2E 留待此 PR 的 CI 驗證；本機未執行這些平台測試。
+
 ## 已確認決策
 
 - T1.14 採用 PR #73；PR #74 以留言「改採 #73」關閉。PR #46、#70 已由 #71 取代；已留言說明重複原因並請作者關閉。
+- T1.12 allowlist 變更於新任務建立、resume 及 provider dispatch 前檢查；既有執行中任務不因設定變更而中途取消，避免在執行期間改變 provider 選擇。
+- T1.12 provider 預檢若在建立 attempt 前拒絕，寫成 task-level failure event，不建立假的 provider attempt；此事件共用 task-wide sequence，並用獨立資料表維持無 attempt 時的事件回放。此時沒有 provider session，task 不可 resume；錯誤訊息要求修正 provider 選擇／allowlist 後建立新 task。已有 attempt 的 resume 拒絕則提示原 provider 固定，須納入 allowlist 或改建新 task。
 - T1.9 真實驗收在 Joy repository 開一個標題以 `[test] ` 開頭的測試 draft PR；驗收後立即關閉 PR 並刪除測試分支。
 - T2.4 Telegram 審核：🔴 審核 30 分鐘未回應即拒絕，任務停在 `awaiting_approval`，擁有者可在 UI 重新核准。先以 fake Telegram API 實作與測試；bot token 待擁有者提供。
 - 預算維持設定預設：OpenAI API 每月上限 30 美元、每任務上限 1 美元；不提高預設值。
@@ -33,7 +41,7 @@
 
 - [PR #58](https://github.com/jimmynycuee/Joy/pull/58)：審核 `packages/core` 公開介面與 `packages/secrets` OS keychain／機密遮罩處理。
 - [PR #73](https://github.com/jimmynycuee/Joy/pull/73)：審核本機 API／WebSocket token 認證、token 檔案權限與 Windows ACL 邊界。
-- [PR #57](https://github.com/jimmynycuee/Joy/pull/57)：審核 repo provider allowlist 的政策與執行時檢查。
+- [PR #57](https://github.com/jimmynycuee/Joy/pull/57)：審核 repo provider allowlist 的政策／執行時檢查，以及無 attempt 預檢失敗事件的資料庫與事件格式。
 
 ## 需要擁有者處理
 

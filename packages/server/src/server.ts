@@ -19,6 +19,7 @@ import type {
   RoleConfig,
   RunOptions,
   TaskId,
+  TaskMode,
   TaskStatus,
   Workspace,
 } from '@joy/core'
@@ -27,6 +28,7 @@ import { ConfigStore, configSchema, joyHome, resolvePaths, type JoyConfig } from
 import {
   addUsage,
   appendTaskEvent,
+  appendTaskFailureEvent,
   createAttempt,
   createRepo,
   createReview,
@@ -44,6 +46,7 @@ import {
   openDatabase,
   setTaskStatus,
   updateAttempt,
+  updateRepoAllowedProviders,
 } from '@joy/db'
 import type { AttemptRecord, Database, RepoRecord, StoredTask } from '@joy/db'
 import { WorktreeExecutor } from '@joy/executor'
@@ -51,6 +54,7 @@ import type { Executor, WorkspaceDiff } from '@joy/core'
 import { reviewLoop } from '@joy/orchestrator'
 import { ClaudeCliProvider, CodexCliProvider, OpenAiApiProvider } from '@joy/providers'
 import { Redactor, SecretStore } from '@joy/secrets'
+import { describeDisallowedRoleProvider, findDisallowedRoleProviders } from './provider-allowlist.js'
 
 const modelSchema = z.strictObject({
   provider: z.enum(PROVIDER_KINDS),
@@ -62,12 +66,18 @@ const roleOverridesSchema = z.strictObject(
     [R in Role]: z.ZodOptional<typeof modelSchema>
   },
 )
+const allowedProvidersSchema = z
+  .array(z.enum(PROVIDER_KINDS))
+  .min(1, 'must allow at least one provider')
+  .refine((providers) => new Set(providers).size === providers.length, 'providers must be unique')
 const repoInputSchema = z.strictObject({
   id: z.string().trim().min(1).optional(),
   path: z.string().trim().min(1).refine(isAbsolute, 'must be an absolute path'),
   defaultBranch: z.string().trim().min(1),
   githubRemote: z.string().trim().min(1).optional(),
+  allowedProviders: allowedProvidersSchema.optional(),
 })
+const repoAllowlistInputSchema = z.strictObject({ allowedProviders: allowedProvidersSchema })
 const taskInputSchema = z.strictObject({
   repoId: z.string().trim().min(1),
   title: z.string().trim().min(1).max(500),
@@ -85,7 +95,7 @@ const PLAYWRIGHT_E2E_ORIGINS = ['http://127.0.0.1:4173', 'http://localhost:4173'
 
 export interface TaskEvent {
   taskId: TaskId
-  attemptId: AttemptId
+  attemptId?: AttemptId
   seq: number
   eventId?: string
   type: string
@@ -123,6 +133,8 @@ class HttpError extends Error {
   }
 }
 
+class ProviderAllowlistError extends Error {}
+
 interface ActiveTask {
   controller: AbortController
   promise: Promise<void>
@@ -132,6 +144,19 @@ interface ResumeState {
   attempt: AttemptRecord
   workspace: Workspace
   sessionId: string
+}
+
+function selectActiveRoles(
+  mode: TaskMode,
+  config: RoleConfig,
+  overrides: Partial<RoleConfig>,
+  implementer?: ModelRef,
+): Partial<RoleConfig> {
+  const selected: Partial<RoleConfig> = {
+    implementer: implementer ?? resolveRole('implementer', config, overrides),
+  }
+  if (mode === 'review_loop') selected.reviewer = resolveRole('reviewer', config, overrides)
+  return selected
 }
 
 /** Builds the local HTTP + WebSocket service. It never binds beyond loopback. */
@@ -177,11 +202,21 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const publish = (taskId: TaskId, attemptId: AttemptId, type: string, payload: unknown): TaskEvent => {
     const safe = redactor.redactValue(payload)
     const event = appendTaskEvent(db, attemptId, type, safe)
+    sendEvent(taskId, event)
+    return event
+  }
+
+  const publishTaskFailure = (taskId: TaskId, message: string): TaskEvent => {
+    const event = appendTaskFailureEvent(db, taskId, redactor.redact(message))
+    sendEvent(taskId, event)
+    return event
+  }
+
+  function sendEvent(taskId: TaskId, event: TaskEvent): void {
     const message = JSON.stringify({ type: 'event', event })
     for (const socket of subscribers.get(taskId) ?? []) {
       if (socket.readyState === WebSocket.OPEN) socket.send(message)
     }
-    return event
   }
 
   const httpServer = createHttpServer((req, res) => {
@@ -292,8 +327,19 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         path: input.path,
         defaultBranch: input.defaultBranch,
         ...(input.githubRemote ? { githubRemote: input.githubRemote } : {}),
+        ...(input.allowedProviders ? { allowedProviders: input.allowedProviders } : {}),
       })
       json(res, 201, { repo })
+      return
+    }
+    const repoMatch = /^\/api\/repos\/([^/]+)$/.exec(url.pathname)
+    if (repoMatch && method === 'PATCH') {
+      const repoId = idSchema.parse(decodePathSegment(repoMatch[1] ?? '')) as RepoId
+      assertJsonContentType(req)
+      const input = repoAllowlistInputSchema.parse(await readJson(req))
+      const repo = updateRepoAllowedProviders(db, repoId, input.allowedProviders)
+      if (!repo) throw new HttpError(404, `Repository ${repoId} was not found`)
+      json(res, 200, { repo })
       return
     }
     if (url.pathname === '/api/tasks' && method === 'GET') {
@@ -315,6 +361,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         )
       const repo = getRepo(db, input.repoId as RepoId)
       if (!repo) throw new HttpError(404, `Repository ${input.repoId} was not found`)
+      const configRoles = config.roles as RoleConfig
+      const selectedRoles = selectActiveRoles(input.mode, configRoles, roleOverrides ?? {})
+      const disallowed = findDisallowedRoleProviders(selectedRoles, repo.allowedProviders)[0]
+      if (disallowed) throw new HttpError(422, describeDisallowedRoleProvider(disallowed))
       const task = createTask(db, {
         id: randomUUID() as TaskId,
         repoId: repo.id,
@@ -368,7 +418,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       const task = requireTask(decodePathSegment(resumeMatch[1] ?? ''))
       if (task.status !== 'failed' && task.status !== 'cancelled')
         throw new HttpError(409, `Task cannot be resumed from ${task.status}`)
-      const state = resumeState(task)
+      const state = await resumeState(task)
       if (running.has(task.id)) throw new HttpError(409, 'Task is already running')
       setTaskStatus(db, task.id, 'queued')
       scheduleTask({ ...task, status: 'queued' }, state)
@@ -437,12 +487,25 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     return task
   }
 
-  function resumeState(task: StoredTask): ResumeState {
+  async function resumeState(task: StoredTask): Promise<ResumeState> {
     const attempt = latestAttempt(db, task.id)
-    if (!attempt?.sessionId || !attempt.worktreePath || !attempt.branch || !attempt.baseCommit)
+    if (!attempt)
+      throw new HttpError(
+        409,
+        'This task has no provider attempt or saved session and cannot be resumed; create a new task.',
+      )
+    if (!attempt.sessionId || !attempt.worktreePath || !attempt.branch || !attempt.baseCommit)
       throw new HttpError(409, 'No saved worktree and provider session are available to resume')
     const repo = getRepo(db, task.repoId)
     if (!repo) throw new HttpError(404, `Repository ${task.repoId} was not found`)
+    const config = await configStore.get()
+    const configuredImplementer = resolveRole('implementer', config.roles as RoleConfig, task.roleOverrides)
+    const implementer = { ...configuredImplementer, provider: attempt.provider, model: attempt.model }
+    const disallowed = findDisallowedRoleProviders(
+      selectActiveRoles(task.mode, config.roles as RoleConfig, task.roleOverrides, implementer),
+      repo.allowedProviders,
+    )[0]
+    if (disallowed) throw new HttpError(422, describeDisallowedRoleProvider(disallowed, { resuming: true }))
     const provider = providers[attempt.provider]
     if (!provider?.capabilities.codeEdit)
       throw new HttpError(
@@ -484,7 +547,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       const implementer = resume
         ? { ...configuredImplementer, provider: resume.attempt.provider, model: resume.attempt.model }
         : configuredImplementer
-      const reviewer = resolveRole('reviewer', roles, task.roleOverrides)
+      const selectedRoles = selectActiveRoles(task.mode, roles, task.roleOverrides, implementer)
+      const disallowed = findDisallowedRoleProviders(selectedRoles, repo.allowedProviders)[0]
+      if (disallowed) throw new ProviderAllowlistError(describeDisallowedRoleProvider(disallowed))
       if (!attempt) {
         attempt = createAttempt(db, {
           id: randomUUID() as AttemptId,
@@ -501,6 +566,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (task.mode === 'single') {
         await runSingle(task, repo, attempt, implementer, controller, resume)
       } else if (task.mode === 'review_loop') {
+        const reviewer = resolveRole('reviewer', roles, task.roleOverrides)
         await runReviewLoop(task, repo, attempt, implementer, reviewer, controller, resume)
       } else {
         throw new Error(`Task mode ${task.mode} is not supported`)
@@ -508,6 +574,17 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Task failed'
       const status = controller.signal.aborted ? 'cancelled' : 'failed'
+      if (error instanceof ProviderAllowlistError) {
+        if (attempt) updateAttempt(db, attempt.id, { status })
+        setTaskStatus(db, task.id, status)
+        if (attempt) publish(task.id, attempt.id, 'error', { message })
+        else
+          publishTaskFailure(
+            task.id,
+            `${message} No provider attempt was started; after changing the provider configuration or repository allowlist, create a new task.`,
+          )
+        return
+      }
       if (!attempt) {
         const fallbackImplementer = resolveRole(
           'implementer',

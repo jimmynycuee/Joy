@@ -34,7 +34,7 @@
 - [x] T1.11 設定（`packages/config`；UI 設定頁併入 T1.8）
 - [x] T1.6 server（HTTP + WebSocket、任務 CRUD、重啟恢復；已整合至 main，PR #58）
 - [x] T1.7 事件紀錄（寫入 DB、可回放、經 Redactor 遮罩；已整合至 main，PR #58）
-- [ ] T1.12 repo 的 provider 允許清單
+- [x] T1.12 repo 的 provider 允許清單
 - [ ] T1.9 GitHub：push 分支、開 draft PR（實作已整合至 main，PR #58；PR #8 open/draft、三平台 checks 通過；PR #9 open/draft、四項 checks 通過；依驗收條件仍需在安全指定的測試 repo 實際開 PR，此項尚未驗證）
 - [ ] T1.13 `joy doctor` 與首次啟動檢查（實作在 open/draft PR #62；最新 head `348593b` 與 `main` 衝突，尚無該 head checks；等待既定 owner 流程處理與驗收後再標完成）
 - [ ] T1.14 本機 API 與 WebSocket token 認證（Issue #72；修改請求與 WebSocket 驗證、Origin 雙層防護、私密 token 儲存與 UI 注入；需 owner review）
@@ -315,7 +315,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 | T1.9 | GitHub：commit、push branch、用 `gh` 開 draft PR，PR 描述附 review 摘要 | 在測試 repo 成功開出 PR |
 | T1.10 | 機密：OS keychain 存 OpenAI key（`@napi-rs/keyring` 或同類），log 遮罩 | key 不出現在 DB、log、事件中（測試驗證） |
 | T1.11 | 設定：`config.yaml` 讀寫 + UI 設定頁（各角色模型） | 改設定後新任務立即套用 |
-| T1.12 | **repo 的 provider 允許清單**：每個 repo 設定可用哪些 provider（預設全部）；建立任務時檢查所選角色；T2.1、T2.2、T3.2 新增對應流程時沿用此清單 | 所選角色用到不允許的 provider 時任務直接拒絕，錯誤訊息說明是哪個角色 |
+| T1.12 | **repo 的 provider 允許清單**：每個 repo 設定可用哪些 provider（預設全部）；建立任務與 resume 前檢查所選角色；T2.1、T2.2、T3.2 新增對應流程時沿用此清單。更新清單只影響之後的新任務、resume 與 provider dispatch preflight，不會取消或動態改變已在執行中的任務。 | 所選角色用到不允許的 provider 時任務直接拒絕，錯誤訊息說明是哪個角色；provider 允許清單與 `PROVIDER_KINDS` 同步受 DB regression 保護。 |
 | T1.13 | **`joy doctor` 與首次啟動檢查**：Node 版本、git、gh 登入、`claude` / `codex` 安裝與版本、鑰匙圈、資料目錄可寫；提供首頁可呈現的檢查結果 | 每項回報 OK / 缺少 / 版本未測過，並附修復指令；缺 CLI 時只停用該 provider，不阻止啟動 |
 | T1.14 | 本機 API 與 WebSocket 認證：server 首次啟動產生隨機 token，存於 `~/.joy` 私密檔案；Joy UI 對 API 與 WebSocket 連線附帶 token，保留 Origin 白名單並接受 `localhost` 與 `127.0.0.1` | 除 `GET /api/health` 外，沒有或錯誤 token 的 API 請求與 WebSocket 一律 403 且不產生副作用；合法 UI 流程正常；token 不出現在 log、事件或錯誤訊息；`pnpm check` 通過；需 owner review |
 

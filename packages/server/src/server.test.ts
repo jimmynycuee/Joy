@@ -87,6 +87,7 @@ const diff: WorkspaceDiff = {
 
 class FakeProvider implements AgentProvider {
   readonly calls: RunOptions[] = []
+  waitForAbort = false
   readonly capabilities = {
     codeEdit: true,
     tools: true,
@@ -107,7 +108,7 @@ class FakeProvider implements AgentProvider {
     const sessionId = options.resumeSessionId ?? `session-${this.calls.length}`
     if (!options.resumeSessionId) yield { type: 'session_started', sessionId }
     yield { type: 'message', text: 'working' }
-    if (options.prompt === 'wait') {
+    if (this.waitForAbort || options.prompt === 'wait') {
       await new Promise<void>((resolve) => {
         if (options.signal.aborted) resolve()
         else options.signal.addEventListener('abort', () => resolve(), { once: true })
@@ -212,6 +213,7 @@ function fixture(
     reviewer,
     api,
     secretBackend,
+    configStore,
     serverPromise,
     restart: () => createJoyServer(serverOptions),
   }
@@ -239,6 +241,14 @@ async function waitForStatus(origin: string, id: string, status: string): Promis
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
   throw new Error(`Task did not reach ${status}`)
+}
+
+async function waitForProviderCalls(provider: FakeProvider, count: number): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (provider.calls.length >= count) return
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  throw new Error(`Provider did not receive ${count} calls`)
 }
 
 async function postJson(url: string, body: unknown) {
@@ -313,6 +323,18 @@ function tryWebSocket(
       finish(response.statusCode ?? 0)
     })
     socket.once('error', reject)
+  })
+}
+
+async function patchJson(url: string, body: unknown) {
+  return fetch(url, {
+    method: 'PATCH',
+    headers: {
+      'content-type': 'application/json',
+      origin: VITE_ORIGIN,
+      authorization: `Bearer ${TEST_API_TOKEN}`,
+    },
+    body: JSON.stringify(body),
   })
 }
 
@@ -953,9 +975,16 @@ describe('Joy local server', () => {
       fetch(`${origin}/api/tasks/%E0%A4%A/events`),
       rawRequest(origin, '/api/tasks/%E0%A4%A/cancel', 'POST', { host: new URL(origin).host, origin }),
       rawRequest(origin, '/api/tasks/%E0%A4%A/resume', 'POST', { host: new URL(origin).host, origin }),
+      rawRequest(
+        origin,
+        '/api/repos/%E0%A4%A',
+        'PATCH',
+        { host: new URL(origin).host, origin, 'content-type': 'application/json' },
+        JSON.stringify({ allowedProviders: ['claude-cli'] }),
+      ),
     ])
 
-    expect(responses.map((response) => response.status)).toEqual([400, 400, 400, 400])
+    expect(responses.map((response) => response.status)).toEqual([400, 400, 400, 400, 400])
   })
 
   it('sends a task snapshot before replaying only events after the WebSocket cursor', async () => {
@@ -1145,6 +1174,378 @@ describe('Joy local server', () => {
     expect(deleted.status).toBe(409)
     expect(await deleted.text()).not.toContain(envKey)
     expect(backend.values.has('openai_api_key')).toBe(false)
+  })
+
+  it('defaults repository allowlists to all providers and accepts allowed role selections', async () => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const createdRepo = await postJson(`${origin}/api/repos`, {
+      path: '/default-all-repo',
+      defaultBranch: 'main',
+    })
+    expect(createdRepo.status).toBe(201)
+    const { repo } = (await createdRepo.json()) as {
+      repo: { id: string; allowedProviders: string[] }
+    }
+    expect(repo.allowedProviders).toEqual(['openai-api', 'claude-cli', 'codex-cli'])
+
+    const createdTask = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Use all provider choices',
+      prompt: 'Verify provider selections',
+      mode: 'single',
+      roleOverrides: {
+        implementer: { provider: 'claude-cli', model: 'haiku' },
+        reviewer: { provider: 'openai-api', model: 'test-model' },
+        orchestrator: { provider: 'codex-cli', model: 'test-model' },
+      },
+    })
+    expect(createdTask.status).toBe(201)
+  })
+
+  it('allows configured providers and rejects disallowed task role selections by role', async () => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const createdRepo = await postJson(`${origin}/api/repos`, {
+      path: '/claude-only-repo',
+      defaultBranch: 'main',
+      allowedProviders: ['claude-cli'],
+    })
+    expect(createdRepo.status).toBe(201)
+    const { repo } = (await createdRepo.json()) as {
+      repo: { id: string; allowedProviders: string[] }
+    }
+    expect(repo.allowedProviders).toEqual(['claude-cli'])
+
+    const allowedTask = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Allowed implementer',
+      prompt: 'Use the repository provider',
+      mode: 'single',
+    })
+    expect(allowedTask.status).toBe(201)
+
+    const deniedCases = [
+      {
+        mode: 'single',
+        roleOverrides: { implementer: { provider: 'codex-cli', model: 'test-model' } },
+        role: 'implementer',
+      },
+      { mode: 'review_loop', roleOverrides: undefined, role: 'reviewer' },
+    ] as const
+    for (const denied of deniedCases) {
+      const response = await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: `Reject ${denied.role}`,
+        prompt: 'Reject disallowed provider',
+        mode: denied.mode,
+        ...(denied.roleOverrides ? { roleOverrides: denied.roleOverrides } : {}),
+      })
+      expect(response.status).toBe(422)
+      const body = (await response.json()) as { error: string }
+      expect(body.error).toContain(`Role "${denied.role}"`)
+      expect(body.error).toContain('codex-cli')
+      expect(body.error).toContain('Select an allowed provider')
+      expect(body.error).toContain('PATCH /api/repos/{repoId}')
+    }
+  })
+
+  it('ignores an unused disallowed reviewer override in single mode', async () => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, {
+        path: '/single-with-unused-reviewer',
+        defaultBranch: 'main',
+        allowedProviders: ['claude-cli'],
+      })
+    ).json()) as { repo: { id: string } }
+
+    const response = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Ignore unused reviewer',
+      prompt: 'Do the implementation only',
+      mode: 'single',
+      roleOverrides: { reviewer: { provider: 'codex-cli', model: 'test-model' } },
+    })
+    expect(response.status).toBe(201)
+  })
+
+  it('retains the runtime allowlist guard if the active config changes after task creation', async () => {
+    const { serverPromise, configStore, implementer, reviewer, api } = fixture()
+    const getConfig = configStore.get.bind(configStore)
+    let configReads = 0
+    configStore.get = async () => {
+      const config = await getConfig()
+      configReads++
+      return configReads === 2
+        ? {
+            ...config,
+            roles: { ...config.roles, implementer: { ...config.roles.implementer, provider: 'codex-cli' } },
+          }
+        : config
+    }
+    const { origin } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, {
+        path: '/runtime-allowlist-guard',
+        defaultBranch: 'main',
+        allowedProviders: ['claude-cli'],
+      })
+    ).json()) as { repo: { id: string } }
+    const { task } = (await (
+      await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: 'Revalidate at execution',
+        prompt: 'Run with current configuration',
+        mode: 'single',
+      })
+    ).json()) as { task: { id: string } }
+
+    const failed = await waitForStatus(origin, task.id, 'failed')
+    expect(failed.attempts).toHaveLength(0)
+    expect(failed.events).toEqual([
+      expect.objectContaining({
+        seq: 1,
+        type: 'error',
+        payload: expect.objectContaining({ message: expect.stringContaining('Role "implementer"') }),
+      }),
+    ])
+    expect(failed.events[0]).not.toHaveProperty('attemptId')
+    expect(failed.events[0]).toMatchObject({
+      payload: { message: expect.stringContaining('create a new task') },
+    })
+    const resumeWithoutAttempt = await postJson(`${origin}/api/tasks/${task.id}/resume`, {})
+    expect(resumeWithoutAttempt.status).toBe(409)
+    expect(((await resumeWithoutAttempt.json()) as { error: string }).error).toContain(
+      'cannot be resumed; create a new task',
+    )
+    expect(implementer.calls).toHaveLength(0)
+    expect(reviewer.calls).toHaveLength(0)
+    expect(api.calls).toHaveLength(0)
+  })
+
+  it.each([
+    { role: 'implementer', allowedProviders: ['codex-cli'], reviewerProvider: 'codex-cli' },
+    { role: 'reviewer', allowedProviders: ['claude-cli'], reviewerProvider: 'openai-api' },
+  ] as const)(
+    'rejects a resumed task synchronously when its $role provider is no longer allowed',
+    async ({ role, allowedProviders, reviewerProvider }) => {
+      const { db, serverPromise, implementer, reviewer, api, configStore } = fixture()
+      implementer.waitForAbort = true
+      const { origin } = await start(serverPromise)
+      const createdRepo = await postJson(`${origin}/api/repos`, {
+        path: `/resume-${role}-repo`,
+        defaultBranch: 'main',
+      })
+      expect(createdRepo.status).toBe(201)
+      const { repo } = (await createdRepo.json()) as { repo: { id: string } }
+      const createdTask = await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: `Resume with disallowed ${role}`,
+        prompt: 'wait',
+        mode: 'review_loop',
+      })
+      expect(createdTask.status).toBe(201)
+      const { task } = (await createdTask.json()) as { task: { id: string } }
+      await waitForProviderCalls(implementer, 1)
+
+      const cancelled = await postJson(`${origin}/api/tasks/${task.id}/cancel`, {})
+      expect(cancelled.status).toBe(200)
+      await waitForStatus(origin, task.id, 'cancelled')
+      implementer.calls.length = 0
+      implementer.waitForAbort = false
+      reviewer.calls.length = 0
+      api.calls.length = 0
+
+      db.prepare('UPDATE repos SET allowed_providers = ? WHERE id = ?').run(
+        JSON.stringify(allowedProviders),
+        repo.id,
+      )
+      if (role === 'reviewer') {
+        await configStore.update((config) => ({
+          ...config,
+          roles: { ...config.roles, reviewer: { ...config.roles.reviewer, provider: reviewerProvider } },
+        }))
+      }
+
+      const beforeResume = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
+      const resumed = await postJson(`${origin}/api/tasks/${task.id}/resume`, {})
+      expect(resumed.status).toBe(422)
+      const rejection = (await resumed.json()) as { error: string }
+      expect(rejection.error).toContain(`Role "${role}"`)
+      expect(rejection.error).toContain(
+        `provider "${role === 'implementer' ? 'claude-cli' : reviewerProvider}"`,
+      )
+      expect(rejection.error).toContain('PATCH /api/repos/{repoId}')
+      expect(rejection.error).toContain("saved task's provider is fixed")
+      expect(rejection.error).toContain('create a new task with an allowed provider')
+      const afterResume = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
+      expect(afterResume.task.status).toBe('cancelled')
+      expect(afterResume.attempts).toEqual(beforeResume.attempts)
+      expect(afterResume.events).toEqual(beforeResume.events)
+      expect(implementer.calls).toHaveLength(0)
+      expect(reviewer.calls).toHaveLength(0)
+      expect(api.calls).toHaveLength(0)
+    },
+  )
+
+  it('publishes a runtime allowlist rejection for an existing resumed attempt', async () => {
+    const { db, serverPromise, configStore, implementer, reviewer, api } = fixture()
+    const repo = createRepo(db, {
+      id: rid('resume-race-repo'),
+      path: '/resume-race-repo',
+      defaultBranch: 'main',
+      allowedProviders: ['claude-cli'],
+    })
+    const task = createTask(db, {
+      id: tid('resume-race-task'),
+      repoId: repo.id,
+      title: 'Block a resume after preflight',
+      prompt: 'Do not call a provider',
+      mode: 'review_loop',
+    })
+    const attempt = createAttempt(db, {
+      id: aid('resume-race-attempt'),
+      taskId: task.id,
+      provider: 'claude-cli',
+      model: 'haiku',
+      status: 'cancelled',
+    })
+    updateAttempt(db, attempt.id, {
+      worktreePath: '/saved/worktree',
+      branch: 'joy/resume-race-task/resume-race-attempt',
+      baseCommit: 'base-sha',
+      sessionId: 'saved-session',
+    })
+    setTaskStatus(db, task.id, 'cancelled')
+
+    const { origin } = await start(serverPromise)
+    const getConfig = configStore.get.bind(configStore)
+    let reads = 0
+    configStore.get = async () => {
+      const config = await getConfig()
+      reads++
+      const reviewerProvider = reads === 1 ? 'claude-cli' : 'codex-cli'
+      return {
+        ...config,
+        roles: { ...config.roles, reviewer: { ...config.roles.reviewer, provider: reviewerProvider } },
+      }
+    }
+
+    const resumed = await postJson(`${origin}/api/tasks/${task.id}/resume`, {})
+    expect(resumed.status).toBe(202)
+    const failed = await waitForStatus(origin, task.id, 'failed')
+    expect(failed.attempts).toHaveLength(1)
+    expect(failed.attempts[0]).toMatchObject({ id: attempt.id, provider: 'claude-cli', status: 'failed' })
+    expect(failed.events).toEqual([
+      expect.objectContaining({
+        attemptId: attempt.id,
+        seq: 1,
+        type: 'error',
+        payload: expect.objectContaining({
+          message: expect.stringContaining('Role "reviewer" selects provider "codex-cli"'),
+        }),
+      }),
+    ])
+    expect(implementer.calls).toHaveLength(0)
+    expect(reviewer.calls).toHaveLength(0)
+    expect(api.calls).toHaveLength(0)
+  })
+
+  it('requires JSON and validates repository PATCH ids, body, and existence', async () => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/patch-validation', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    const host = new URL(origin).host
+    const contentType = { host, origin, 'content-type': 'application/json' }
+    const responses = await Promise.all([
+      rawRequest(
+        origin,
+        `/api/repos/${repo.id}`,
+        'PATCH',
+        { host, origin },
+        JSON.stringify({ allowedProviders: ['claude-cli'] }),
+      ),
+      rawRequest(origin, `/api/repos/${repo.id}`, 'PATCH', contentType, '{'),
+      rawRequest(origin, `/api/repos/${repo.id}`, 'PATCH', contentType, JSON.stringify({ unexpected: true })),
+      rawRequest(
+        origin,
+        '/api/repos/not-found',
+        'PATCH',
+        contentType,
+        JSON.stringify({ allowedProviders: ['claude-cli'] }),
+      ),
+    ])
+
+    expect(responses.map((response) => response.status)).toEqual([415, 400, 400, 404])
+  })
+
+  it('updates a repository allowlist through PATCH so a rejected resume can be recovered', async () => {
+    const { serverPromise, implementer } = fixture()
+    implementer.waitForAbort = true
+    const { origin } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/resume-recovery', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    const { task } = (await (
+      await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: 'Recover a rejected resume',
+        prompt: 'wait',
+        mode: 'single',
+      })
+    ).json()) as { task: { id: string } }
+    await waitForProviderCalls(implementer, 1)
+    await postJson(`${origin}/api/tasks/${task.id}/cancel`, {})
+    await waitForStatus(origin, task.id, 'cancelled')
+
+    const narrowed = await patchJson(`${origin}/api/repos/${repo.id}`, {
+      allowedProviders: ['codex-cli'],
+    })
+    expect(narrowed.status).toBe(200)
+    const denied = await postJson(`${origin}/api/tasks/${task.id}/resume`, {})
+    expect(denied.status).toBe(422)
+    expect(((await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails).task.status).toBe(
+      'cancelled',
+    )
+
+    const restored = await patchJson(`${origin}/api/repos/${repo.id}`, { allowedProviders: ['claude-cli'] })
+    expect(restored.status).toBe(200)
+    expect(
+      ((await restored.json()) as { repo: { allowedProviders: string[] } }).repo.allowedProviders,
+    ).toEqual(['claude-cli'])
+    const resumed = await postJson(`${origin}/api/tasks/${task.id}/resume`, {})
+    expect(resumed.status).toBe(202)
+    await waitForProviderCalls(implementer, 2)
+    const cancelled = await postJson(`${origin}/api/tasks/${task.id}/cancel`, {})
+    expect(cancelled.status).toBe(200)
+    await waitForStatus(origin, task.id, 'cancelled')
+
+    const invalidUpdate = await patchJson(`${origin}/api/repos/${repo.id}`, { allowedProviders: [] })
+    expect(invalidUpdate.status).toBe(400)
+  })
+
+  it.each([
+    { allowedProviders: [], issue: 'at least one provider' },
+    { allowedProviders: ['claude-cli', 'claude-cli'], issue: 'unique' },
+  ] as const)('rejects a repository allowlist that is $issue', async ({ allowedProviders, issue }) => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const response = await postJson(`${origin}/api/repos`, {
+      path: `/invalid-allowlist-${issue}`,
+      defaultBranch: 'main',
+      allowedProviders,
+    })
+    expect(response.status).toBe(400)
+    const body = (await response.json()) as { issues: Array<{ path: string[]; message: string }> }
+    expect(body.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: ['allowedProviders'], message: expect.stringContaining(issue) }),
+      ]),
+    )
   })
 
   it('stores redacted events, reviews, and usage and replays persisted events after restart', async () => {
