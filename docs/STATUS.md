@@ -49,7 +49,7 @@
 - [PR #58](https://github.com/jimmynycuee/Joy/pull/58)：審核 `packages/core` 公開介面與 `packages/secrets` OS keychain／機密遮罩處理。
 - [PR #73](https://github.com/jimmynycuee/Joy/pull/73)：審核本機 API／WebSocket token 認證、token 檔案權限與 Windows ACL 邊界。
 - [PR #57](https://github.com/jimmynycuee/Joy/pull/57)：審核 repo provider allowlist 的政策／執行時檢查，以及無 attempt 預檢失敗事件的資料庫與事件格式。
-- [PR #54](https://github.com/jimmynycuee/Joy/pull/54)：審核 GitHub publisher 對 push target、提交歷史與 secret-like 內容的安全限制。
+- [PR #76](https://github.com/jimmynycuee/Joy/pull/76)：審核 T1.9 publisher 安全性後續修正：先驗證 Git URL rewrite 後的有效 fetch destination、阻擋 Git LFS pointer commits、以完整 head repository identity／branch／base 比對可重用 PR，並遮罩既有 PR body。新的獨立審查與 `[test] ` draft PR 真實驗收仍待完成；尚未核准。
 
 ## 需要擁有者處理
 
