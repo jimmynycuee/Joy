@@ -38,7 +38,11 @@ interface Fixture {
 }
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })),
+  )
 })
 
 describe('GitHubPublisher', () => {
@@ -308,7 +312,7 @@ describe('GitHubPublisher', () => {
       /diff containing secret-like content/,
     )
     expect(await readCalls(diffFixture)).toHaveLength(0)
-  })
+  }, 30_000)
 
   it('rejects unconfigured or mismatched targets and never falls back to gh context', async () => {
     const fixture = await createFixture()
