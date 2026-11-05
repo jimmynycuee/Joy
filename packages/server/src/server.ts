@@ -808,35 +808,50 @@ async function writeApiToken(path: string): Promise<string> {
 function setWindowsApiTokenAcl(path: string): void {
   const script = `
 $ErrorActionPreference = 'Stop'
-$path = $env:JOY_API_TOKEN_FILE
-$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-$acl = Get-Acl -LiteralPath $path
-$acl.SetAccessRuleProtection($true, $false)
-foreach ($existingRule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($existingRule) }
-$readRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-  $currentSid,
-  [System.Security.AccessControl.FileSystemRights]::Read,
-  [System.Security.AccessControl.AccessControlType]::Allow
-)
-$acl.AddAccessRule($readRule)
-Set-Acl -LiteralPath $path -AclObject $acl
-$verified = Get-Acl -LiteralPath $path
-$allowRules = @($verified.Access | Where-Object { $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow })
-$unexpected = @($allowRules | Where-Object {
-  $_.IsInherited -or $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $currentSid.Value
-})
-if ($allowRules.Count -ne 1 -or $unexpected.Count -ne 0) { throw 'Unexpected API token ACL.' }
+$stage = 'get-identity'
+try {
+  $path = $env:JOY_API_TOKEN_FILE
+  $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+  $stage = 'read-acl'
+  $acl = Get-Acl -LiteralPath $path
+  $stage = 'set-acl'
+  $acl.SetAccessRuleProtection($true, $false)
+  foreach ($existingRule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($existingRule) }
+  $readRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+    $currentSid,
+    [System.Security.AccessControl.FileSystemRights]::Read,
+    [System.Security.AccessControl.AccessControlType]::Allow
+  )
+  [void]$acl.AddAccessRule($readRule)
+  Set-Acl -LiteralPath $path -AclObject $acl
+  $stage = 'verify-acl'
+  $verified = Get-Acl -LiteralPath $path
+  $allowRules = @($verified.Access | Where-Object { $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow })
+  $unexpected = @($allowRules | Where-Object {
+    $_.IsInherited -or $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $currentSid.Value
+  })
+  if ($allowRules.Count -ne 1 -or $unexpected.Count -ne 0) { throw 'Unexpected API token ACL.' }
+} catch {
+  [Console]::Error.WriteLine('JOY_API_TOKEN_ACL_FAILURE:' + $stage + '/' + $_.Exception.GetType().Name)
+  exit 1
+}
 `
   try {
     execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
       encoding: 'utf8',
       env: { ...process.env, JOY_API_TOKEN_FILE: path },
-      stdio: ['ignore', 'ignore', 'ignore'],
       timeout: 10_000,
       windowsHide: true,
     })
-  } catch {
-    throw new Error('Unable to restrict API token file access to the current Windows user.')
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException & { stderr?: string | Buffer }
+    const safeDiagnostic = String(failure.stderr ?? '').match(
+      /JOY_API_TOKEN_ACL_FAILURE:[a-z-]+\/[A-Za-z0-9]+/,
+    )?.[0]
+    const missingPowerShell = failure.code === 'ENOENT' ? ' (PowerShell unavailable)' : ''
+    throw new Error(
+      `Unable to restrict API token file access to the current Windows user.${safeDiagnostic ? ` ${safeDiagnostic}` : missingPowerShell}`,
+    )
   }
 }
 
