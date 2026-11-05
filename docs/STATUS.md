@@ -2,6 +2,11 @@
 
 > 接手前請先讀本檔、`AGENTS.md` 與 `docs/PLAN.md`。本檔記錄目前進度、阻塞與決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。
 
+## 本機 API bearer 信任邊界（2026-11-05 06:15 UTC）
+
+- 第二段實作在新分支，尚未合併：server 每次啟動以 256-bit 隨機值保護所有 HTTP 與 WebSocket API；token 短期存於 `JOY_HOME/api-token`（預設 `~/.joy`），使用者專屬檔案權限，關閉時清除、重啟時輪替。Origin/Host 白名單仍有效，web dev Vite proxy 在 server-side 讀取 token 並只向上游附加，沒有 bootstrap endpoint，瀏覽器不取得 token。
+- 本 checkout 沒有 `apps/desktop` 或 Tauri launcher；原生 UI 的 token 交付路徑尚無實作可驗證，需後續由 native layer 讀取安全檔案並附上授權。
+
 - 最後更新：2026-11-05 04:14 UTC
 - 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** 本 checkout 的 `origin/main` 為 `a0c7627`；PR #64 已合併，該 PR 四項 checks 通過，但未另行確認合併後 `main` CI。T1.12 的 #53 仍 open/draft、base `t1.7-event-log`、四項 checks 通過並等待 owner review；T1.13/T1.8 的 #62 仍 open/draft，但目前與 `main` 衝突且新 head 尚無 checks。相關計畫仍未勾選；T1.9 真實測試 repo 驗收亦未完成。
 - 後續階段有部分獨立進度：T4.2 的 #17 為 open/draft、base `t1.8-web`、無衝突；Ubuntu、macOS、Windows 與 web E2E 四項 GitHub checks 全通過。這是本機 PWA 基礎，不是已完成 Web Push 驗收，也不解除 P1/P2 的依賴順序。

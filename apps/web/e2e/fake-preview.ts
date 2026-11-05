@@ -5,6 +5,8 @@ import { startFakeJoyRuntime } from './fakes.js'
 
 const appDirectory = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const runtime = await startFakeJoyRuntime()
+const previousJoyHome = process.env.JOY_HOME
+process.env.JOY_HOME = runtime.home
 const vite = await createServer({
   configFile: resolve(appDirectory, 'vite.config.ts'),
   root: appDirectory,
@@ -18,6 +20,8 @@ async function close(): Promise<void> {
   closing = true
   await vite.close()
   await runtime.close()
+  if (previousJoyHome === undefined) delete process.env.JOY_HOME
+  else process.env.JOY_HOME = previousJoyHome
 }
 
 process.once('SIGINT', () => void close())

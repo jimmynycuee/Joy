@@ -1,8 +1,9 @@
 import { createServer as createHttpServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { randomUUID } from 'node:crypto'
-import { isAbsolute, join } from 'node:path'
+import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises'
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
+import { dirname, isAbsolute, join } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import { z, ZodError } from 'zod'
 import type {
@@ -78,6 +79,9 @@ const taskInputSchema = z.strictObject({
 const idSchema = z.string().min(1).max(128)
 const openAiSecretInputSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
 const MAX_BODY_BYTES = 1_000_000
+const API_TOKEN_FILENAME = 'api-token'
+const WS_API_PROTOCOL = 'joy-api-v1'
+const WS_TOKEN_PROTOCOL_PREFIX = 'joy-auth.'
 const PLAYWRIGHT_E2E_ORIGINS = ['http://127.0.0.1:4173', 'http://localhost:4173'] as const
 
 export interface TaskEvent {
@@ -140,6 +144,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const db = options.database ?? openDatabase(paths.database)
   const redactor = options.redactor ?? new Redactor()
   const secretStore = options.secretStore ?? new SecretStore({ onSecret: (secret) => redactor.add(secret) })
+  const apiTokenFile = join(home, API_TOKEN_FILENAME)
   const providers: Partial<Record<ProviderKind, AgentProvider>> = {
     'claude-cli': new ClaudeCliProvider({
       ...(initialConfig.providers.claude.command ? { command: initialConfig.providers.claude.command } : {}),
@@ -159,7 +164,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const executor = options.executor ?? new WorktreeExecutor({ worktreesDir: paths.worktrees })
   const running = new Map<TaskId, ActiveTask>()
   const subscribers = new Map<TaskId, Set<WebSocket>>()
-  const wsServer = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY_BYTES })
+  const wsServer = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_BODY_BYTES,
+    handleProtocols: (protocols) => (protocols.has(WS_API_PROTOCOL) ? WS_API_PROTOCOL : false),
+  })
+  let apiToken = ''
   let closed = false
 
   const publish = (taskId: TaskId, attemptId: AttemptId, type: string, payload: unknown): TaskEvent => {
@@ -197,7 +207,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (
         !isLoopbackHost(req.headers.host) ||
         req.headers['sec-fetch-site']?.toLowerCase() === 'cross-site' ||
-        !isAllowedOrigin(req, allowedOrigins, false)
+        !isAllowedOrigin(req, allowedOrigins, false) ||
+        !hasValidWebSocketToken(req, apiToken)
       ) {
         socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
         socket.destroy()
@@ -248,12 +259,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!isLoopbackHost(req.headers.host)) throw new HttpError(403, 'Host is not allowed')
-    const method = req.method ?? 'GET'
+    const requestMethod = req.method ?? 'GET'
     if (
       req.headers['sec-fetch-site']?.toLowerCase() === 'cross-site' ||
-      !isAllowedOrigin(req, allowedOrigins, method === 'GET' || method === 'HEAD')
+      !isAllowedOrigin(req, allowedOrigins, requestMethod === 'GET' || requestMethod === 'HEAD')
     )
       throw new HttpError(403, 'Origin is not allowed')
+    if (!hasValidBearerToken(req, apiToken)) throw new HttpError(403, 'API authorization failed')
+    const method = requestMethod === 'HEAD' ? 'GET' : requestMethod
     const url = requestUrl(req)
     if (url.pathname === '/api/health' && method === 'GET') {
       json(res, 200, { ok: true })
@@ -639,6 +652,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (attempt) publish(taskId, attempt.id, 'interrupted', { taskId, attemptId: attempt.id })
   }
 
+  apiToken = await writeApiToken(apiTokenFile)
+  redactor.add(apiToken)
   return {
     httpServer,
     listen(port = 0) {
@@ -656,16 +671,23 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     async close() {
       if (closed) return
       closed = true
-      const activeTasks = [...running.values()]
-      for (const active of activeTasks) active.controller.abort()
-      await Promise.all(activeTasks.map((active) => active.promise))
-      for (const socket of wsServer.clients) socket.terminate()
-      await new Promise<void>((resolve) => wsServer.close(() => resolve()))
-      if (httpServer.listening)
-        await new Promise<void>((resolve, reject) =>
-          httpServer.close((error) => (error ? reject(error) : resolve())),
-        )
-      if (ownsDatabase && db.isOpen) db.close()
+      try {
+        const activeTasks = [...running.values()]
+        for (const active of activeTasks) active.controller.abort()
+        await Promise.all(activeTasks.map((active) => active.promise))
+        for (const socket of wsServer.clients) socket.terminate()
+        await new Promise<void>((resolve) => wsServer.close(() => resolve()))
+        if (httpServer.listening)
+          await new Promise<void>((resolve, reject) =>
+            httpServer.close((error) => (error ? reject(error) : resolve())),
+          )
+      } finally {
+        try {
+          await removeApiToken(apiTokenFile, apiToken)
+        } finally {
+          if (ownsDatabase && db.isOpen) db.close()
+        }
+      }
     },
   }
 }
@@ -721,6 +743,7 @@ function createOriginAllowlist(allowPlaywrightOrigin: boolean): Set<string> {
   return new Set([
     'tauri://localhost',
     'http://127.0.0.1:5173',
+    'http://localhost:5173',
     ...(allowPlaywrightOrigin ? PLAYWRIGHT_E2E_ORIGINS : []),
   ])
 }
@@ -733,6 +756,62 @@ function isAllowedOrigin(
   const origin = req.headers.origin
   if (origin === undefined) return allowMissing
   return allowedOrigins.has(origin)
+}
+
+function hasValidBearerToken(req: IncomingMessage, token: string): boolean {
+  const authorization = req.headers.authorization
+  if (!authorization?.startsWith('Bearer ')) return false
+  return tokensMatch(authorization.slice('Bearer '.length), token)
+}
+
+function hasValidWebSocketToken(req: IncomingMessage, token: string): boolean {
+  const raw = req.headers['sec-websocket-protocol']
+  const protocols = (Array.isArray(raw) ? raw.join(',') : (raw ?? '')).split(',').map((value) => value.trim())
+  const tokenProtocols = protocols.filter((protocol) => protocol.startsWith(WS_TOKEN_PROTOCOL_PREFIX))
+  return (
+    protocols.includes(WS_API_PROTOCOL) &&
+    tokenProtocols.length === 1 &&
+    tokensMatch(tokenProtocols[0]?.slice(WS_TOKEN_PROTOCOL_PREFIX.length) ?? '', token)
+  )
+}
+
+function tokensMatch(candidate: string, token: string): boolean {
+  const candidateBytes = Buffer.from(candidate, 'utf8')
+  const tokenBytes = Buffer.from(token, 'utf8')
+  return candidateBytes.byteLength === tokenBytes.byteLength && timingSafeEqual(candidateBytes, tokenBytes)
+}
+
+async function writeApiToken(path: string): Promise<string> {
+  const token = randomBytes(32).toString('base64url')
+  const directory = dirname(path)
+  await mkdir(directory, { recursive: true, mode: 0o700 })
+  const temporaryPath = join(directory, `.${API_TOKEN_FILENAME}-${randomUUID()}.tmp`)
+  try {
+    const handle = await open(temporaryPath, 'wx', 0o600)
+    try {
+      await handle.writeFile(token, 'utf8')
+      await handle.chmod(0o600)
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+    await rename(temporaryPath, path)
+    return token
+  } catch (error) {
+    await unlink(temporaryPath).catch(() => {})
+    throw error
+  }
+}
+
+async function removeApiToken(path: string, token: string): Promise<void> {
+  let current: string
+  try {
+    current = await readFile(path, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw error
+  }
+  if (tokensMatch(current, token)) await unlink(path)
 }
 
 function assertJsonContentType(req: IncomingMessage): void {

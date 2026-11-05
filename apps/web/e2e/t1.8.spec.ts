@@ -2,6 +2,11 @@ import { test, expect } from '@playwright/test'
 import type { ModelRef } from '@joy/core'
 
 test('settings, secure key status, and a complete fake-provider task flow', async ({ page, request }) => {
+  const clientAuthorizationHeaders: Array<string | undefined> = []
+  page.on('request', (browserRequest) => {
+    if (browserRequest.url().includes('/api/'))
+      clientAuthorizationHeaders.push(browserRequest.headers().authorization)
+  })
   await page.route('**/api/config', async (route) => {
     if (route.request().method() !== 'GET') {
       await route.continue()
@@ -94,6 +99,7 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   })
   expect(details.attempts[0]).toMatchObject({ provider: 'claude-cli', model: 'claude-opus-4-6' })
   expect(JSON.stringify(details.events)).not.toContain(secret)
+  expect(clientAuthorizationHeaders.every((header) => header === undefined)).toBe(true)
   await page.waitForTimeout(4100)
   await page.screenshot({ path: 'test-results/t1.8-workspace.png', fullPage: true })
 })

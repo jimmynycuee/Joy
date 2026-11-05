@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs'
+import { readFile, stat } from 'node:fs/promises'
 import { request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -14,13 +15,14 @@ import type {
   Workspace,
   WorkspaceDiff,
 } from '@joy/core'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfigStore } from '@joy/config'
 import {
   appendTaskEvent,
   createAttempt,
   createRepo,
   createTask,
+  listRepos,
   openDatabase,
   setTaskStatus,
   updateAttempt,
@@ -35,9 +37,22 @@ const dirs: string[] = []
 const servers: JoyServer[] = []
 const databases: Database[] = []
 const VITE_ORIGIN = 'http://127.0.0.1:5173'
+const WS_API_PROTOCOL = 'joy-api-v1'
+const WS_TOKEN_PROTOCOL_PREFIX = 'joy-auth.'
+const fixtureHomes = new WeakMap<Promise<JoyServer>, string>()
+const tokensByOrigin = new Map<string, string>()
+const nativeFetch = globalThis.fetch.bind(globalThis)
+function fetch(input: string | URL, init?: RequestInit): Promise<Response> {
+  const target = typeof input === 'string' ? input : input.href
+  const token = tokensByOrigin.get(new URL(target).origin)
+  const headers = new Headers(init?.headers)
+  if (token) headers.set('authorization', `Bearer ${token}`)
+  return nativeFetch(input, { ...init, headers })
+}
 afterEach(async () => {
   for (const server of servers.splice(0)) await server.close()
   for (const db of databases.splice(0)) if (db.isOpen) db.close()
+  tokensByOrigin.clear()
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
@@ -174,6 +189,7 @@ function fixture(
     ...(options.redactor ? { redactor: options.redactor } : {}),
   }
   const serverPromise = createJoyServer(serverOptions)
+  fixtureHomes.set(serverPromise, dir)
   return {
     dir,
     db,
@@ -190,8 +206,13 @@ function fixture(
 async function start(serverPromise: Promise<JoyServer>) {
   const server = await serverPromise
   servers.push(server)
+  const home = fixtureHomes.get(serverPromise)
+  if (!home) throw new Error('Missing test server home')
+  const token = await readFile(join(home, 'api-token'), 'utf8')
   const address = await server.listen()
-  return { server, origin: `http://127.0.0.1:${address.port}`, websocket: `ws://127.0.0.1:${address.port}` }
+  const origin = `http://127.0.0.1:${address.port}`
+  tokensByOrigin.set(origin, token)
+  return { server, origin, websocket: `ws://127.0.0.1:${address.port}`, token, home }
 }
 
 interface TaskDetails {
@@ -201,9 +222,16 @@ interface TaskDetails {
   events: unknown[]
 }
 
+async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers)
+  const token = tokensByOrigin.get(new URL(url).origin)
+  if (token) headers.set('authorization', `Bearer ${token}`)
+  return nativeFetch(url, { ...init, headers })
+}
+
 async function waitForStatus(origin: string, id: string, status: string): Promise<TaskDetails> {
   for (let attempt = 0; attempt < 100; attempt++) {
-    const response = await fetch(`${origin}/api/tasks/${id}`)
+    const response = await apiFetch(`${origin}/api/tasks/${id}`)
     const body = (await response.json()) as TaskDetails
     if (body.task.status === status) return body
     await new Promise((resolve) => setTimeout(resolve, 5))
@@ -212,7 +240,7 @@ async function waitForStatus(origin: string, id: string, status: string): Promis
 }
 
 async function postJson(url: string, body: unknown) {
-  return fetch(url, {
+  return apiFetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', origin: VITE_ORIGIN },
     body: JSON.stringify(body),
@@ -225,10 +253,13 @@ function rawRequest(
   method: string,
   headers: Record<string, string>,
   body = '',
+  authenticate = true,
 ): Promise<{ status: number; body: string }> {
   const { port } = new URL(origin)
-  const requestHeaders =
-    headers.origin === new URL(origin).origin ? { ...headers, origin: VITE_ORIGIN } : headers
+  const requestHeaders: Record<string, string> = { ...headers }
+  if (headers.origin === new URL(origin).origin) requestHeaders.origin = VITE_ORIGIN
+  const token = authenticate ? tokensByOrigin.get(new URL(origin).origin) : undefined
+  if (token && requestHeaders.authorization === undefined) requestHeaders.authorization = `Bearer ${token}`
   return new Promise((resolve, reject) => {
     const request = httpRequest(
       { host: '127.0.0.1', port: Number(port), path, method, headers: requestHeaders },
@@ -250,9 +281,17 @@ function tryWebSocket(
   url: string,
   origin?: string,
   headers?: Record<string, string>,
-): Promise<{ status: number; messages: unknown[] }> {
+  credential: 'auto' | 'none' | string = 'auto',
+): Promise<{ status: number; messages: unknown[]; protocol: string }> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(url, {
+    const token =
+      credential === 'auto'
+        ? tokensByOrigin.get(new URL(url).origin.replace(/^ws/, 'http'))
+        : credential === 'none'
+          ? undefined
+          : credential
+    const protocols = [WS_API_PROTOCOL, ...(token ? [`${WS_TOKEN_PROTOCOL_PREFIX}${token}`] : [])]
+    const socket = new WebSocket(url, protocols, {
       ...(origin ? { origin } : {}),
       ...(headers ? { headers } : {}),
     })
@@ -261,7 +300,7 @@ function tryWebSocket(
     const finish = (status: number) => {
       if (settled) return
       settled = true
-      resolve({ status, messages })
+      resolve({ status, messages, protocol: socket.protocol })
       socket.terminate()
     }
     socket.on('message', (data: RawData) => {
@@ -277,6 +316,167 @@ function tryWebSocket(
 }
 
 describe('Joy local server', () => {
+  it('rejects missing bearer auth for same-origin HTTP mutations and WebSocket upgrades', async () => {
+    const { db, serverPromise } = fixture()
+    const { origin, websocket } = await start(serverPromise)
+    const repo = createRepo(db, {
+      id: rid('auth-boundary-repo'),
+      path: '/tmp/auth-boundary-repo',
+      defaultBranch: 'main',
+    })
+    const task = createTask(db, {
+      id: tid('auth-boundary-task'),
+      repoId: repo.id,
+      title: 'Auth boundary fixture',
+      prompt: 'Do not expose this task without the token.',
+      mode: 'single',
+    })
+
+    const mutation = await rawRequest(
+      origin,
+      '/api/repos',
+      'POST',
+      { host: new URL(origin).host, origin: VITE_ORIGIN, 'content-type': 'application/json' },
+      JSON.stringify({ path: '/tmp/unauthorized-repo', defaultBranch: 'main' }),
+      false,
+    )
+    const socket = await tryWebSocket(`${websocket}/ws?taskId=${task.id}`, VITE_ORIGIN, undefined, 'none')
+
+    expect([mutation.status, socket.status]).toEqual([403, 403])
+    expect(listRepos(db).some(({ path }) => path === '/tmp/unauthorized-repo')).toBe(false)
+    expect(socket.messages).toEqual([])
+  })
+
+  it('authenticates HTTP and WebSocket access and keeps the token private', async () => {
+    const { db, serverPromise } = fixture()
+    const { origin, websocket, token, home, server } = await start(serverPromise)
+    const host = new URL(origin).host
+    const output: string[] = []
+    const consoleSpies = (['debug', 'info', 'log', 'warn', 'error'] as const).map((method) =>
+      vi.spyOn(console, method).mockImplementation(() => undefined),
+    )
+    try {
+      const missing = await rawRequest(
+        origin,
+        '/api/repos',
+        'POST',
+        { host, origin: VITE_ORIGIN, 'content-type': 'application/json' },
+        JSON.stringify({ path: '/tmp/missing-token', defaultBranch: 'main' }),
+        false,
+      )
+      const missingRead = await rawRequest(
+        origin,
+        '/api/repos',
+        'GET',
+        { host, origin: VITE_ORIGIN },
+        '',
+        false,
+      )
+      const wrong = await rawRequest(
+        origin,
+        '/api/repos',
+        'POST',
+        {
+          host,
+          origin: VITE_ORIGIN,
+          authorization: 'Bearer invalid-token',
+          'content-type': 'application/json',
+        },
+        JSON.stringify({ path: '/tmp/wrong-token', defaultBranch: 'main' }),
+        false,
+      )
+      expect([missing.status, missingRead.status, wrong.status]).toEqual([403, 403, 403])
+      expect(missing.body.includes(token)).toBe(false)
+      expect(missingRead.body.includes(token)).toBe(false)
+      expect(wrong.body.includes(token)).toBe(false)
+      expect(listRepos(db)).toHaveLength(0)
+
+      const accepted = await rawRequest(
+        origin,
+        '/api/repos',
+        'POST',
+        { host, origin: VITE_ORIGIN, 'content-type': 'application/json' },
+        JSON.stringify({ path: '/tmp/authorized-repo', defaultBranch: 'main' }),
+      )
+      expect(accepted.status).toBe(201)
+      expect(accepted.body.includes(token)).toBe(false)
+      const repo = (JSON.parse(accepted.body) as { repo: { id: string } }).repo
+      const read = await rawRequest(origin, '/api/repos', 'GET', { host, origin: VITE_ORIGIN })
+      const head = await rawRequest(origin, '/api/repos', 'HEAD', { host, origin: VITE_ORIGIN })
+      const missingHead = await rawRequest(
+        origin,
+        '/api/repos',
+        'HEAD',
+        { host, origin: VITE_ORIGIN },
+        '',
+        false,
+      )
+      const localhost = await rawRequest(origin, '/api/health', 'GET', {
+        host,
+        origin: 'http://localhost:5173',
+      })
+      const unapprovedOrigin = await rawRequest(origin, '/api/health', 'GET', {
+        host,
+        origin: 'http://127.0.0.1:5174',
+      })
+      expect(read.status).toBe(200)
+      expect(head.status).toBe(200)
+      expect(head.body).toBe('')
+      expect(missingHead.status).toBe(403)
+      expect(localhost.status).toBe(200)
+      expect(unapprovedOrigin.status).toBe(403)
+      expect(listRepos(db)).toHaveLength(1)
+
+      const taskResponse = await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: 'Verify authenticated UI flow',
+        prompt: 'Emit safe events and complete.',
+        mode: 'single',
+      })
+      const { task } = (await taskResponse.json()) as { task: { id: string } }
+      const details = await waitForStatus(origin, task.id, 'done')
+      const detailsBody = await (await fetch(`${origin}/api/tasks/${task.id}`)).text()
+      const missingSocket = await tryWebSocket(
+        `${websocket}/ws?taskId=${task.id}`,
+        VITE_ORIGIN,
+        undefined,
+        'none',
+      )
+      const wrongSocket = await tryWebSocket(
+        `${websocket}/ws?taskId=${task.id}`,
+        VITE_ORIGIN,
+        undefined,
+        'invalid-token',
+      )
+      const acceptedSocket = await tryWebSocket(`${websocket}/ws?taskId=${task.id}`, VITE_ORIGIN)
+      expect([missingSocket.status, wrongSocket.status, acceptedSocket.status]).toEqual([403, 403, 101])
+      expect(acceptedSocket.protocol).toBe(WS_API_PROTOCOL)
+      expect(missingSocket.messages).toEqual([])
+      expect(wrongSocket.messages).toEqual([])
+      expect(JSON.stringify(details.events).includes(token)).toBe(false)
+      expect(detailsBody.includes(token)).toBe(false)
+      expect(JSON.stringify(acceptedSocket.messages).includes(token)).toBe(false)
+      expect(acceptedSocket.protocol.includes(token)).toBe(false)
+
+      const tokenInfo = await stat(join(home, 'api-token'))
+      expect(/^[A-Za-z0-9_-]{43}$/.test(token)).toBe(true)
+      if (process.platform !== 'win32' && typeof process.getuid === 'function') {
+        expect(tokenInfo.uid).toBe(process.getuid())
+        expect(tokenInfo.mode & 0o777).toBe(0o600)
+      }
+      await server.close()
+      for (const spy of consoleSpies) output.push(...spy.mock.calls.flat().map(String))
+      const tokenFileRemains = await stat(join(home, 'api-token')).then(
+        () => true,
+        () => false,
+      )
+      expect(tokenFileRemains).toBe(false)
+    } finally {
+      for (const spy of consoleSpies) spy.mockRestore()
+    }
+    expect(output.join(' ').includes(token)).toBe(false)
+  })
+
   it('rejects non-loopback Host headers before processing API requests', async () => {
     const { serverPromise } = fixture()
     const { origin } = await start(serverPromise)
@@ -512,7 +712,7 @@ describe('Joy local server', () => {
       host: new URL(origin).host,
       origin: 'http://localhost:5173',
     })
-    expect(localhostVite.status).toBe(403)
+    expect(localhostVite.status).toBe(200)
 
     const tauri = await rawRequest(
       origin,
@@ -627,7 +827,12 @@ describe('Joy local server', () => {
     appendTaskEvent(db, attempt.id, 'phase', { index: 3 })
     const { events } = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
 
-    const socket = new WebSocket(`${websocket}/ws?taskId=${task.id}&after=1`, { origin: VITE_ORIGIN })
+    const socketToken = tokensByOrigin.get(new URL(origin).origin)
+    const socket = new WebSocket(
+      `${websocket}/ws?taskId=${task.id}&after=1`,
+      [WS_API_PROTOCOL, `${WS_TOKEN_PROTOCOL_PREFIX}${socketToken}`],
+      { origin: VITE_ORIGIN },
+    )
     const messages = await receiveMessages(socket, 4)
     expect(messages[0]).toMatchObject({
       type: 'snapshot',
@@ -668,7 +873,12 @@ describe('Joy local server', () => {
     const { task } = (await taskResponse.json()) as { task: { id: string } }
 
     const result = await waitForStatus(origin, task.id, 'done')
-    const socket = new WebSocket(`${websocket}/ws?taskId=${task.id}&after=0`, { origin: VITE_ORIGIN })
+    const socketToken = tokensByOrigin.get(new URL(origin).origin)
+    const socket = new WebSocket(
+      `${websocket}/ws?taskId=${task.id}&after=0`,
+      [WS_API_PROTOCOL, `${WS_TOKEN_PROTOCOL_PREFIX}${socketToken}`],
+      { origin: VITE_ORIGIN },
+    )
     const messages = await receiveMessages(socket, result.events.length + 2)
     expect(messages[0]).toMatchObject({ type: 'snapshot', task: { id: task.id } })
     expect(messages[1]).toMatchObject({ type: 'ready', taskId: task.id })
@@ -795,7 +1005,7 @@ describe('Joy local server', () => {
       },
     ])
     const { db, restart, serverPromise } = fixture({ implementer, reviewer, redactor })
-    const { origin, server } = await start(serverPromise)
+    const { origin, server, home, token } = await start(serverPromise)
     const { repo } = (await (
       await postJson(`${origin}/api/repos`, { path: '/logged-repo', defaultBranch: 'main' })
     ).json()) as { repo: { id: string } }
@@ -834,11 +1044,29 @@ describe('Joy local server', () => {
     servers.push(restarted)
     const address = await restarted.listen()
     const restartedOrigin = `http://127.0.0.1:${address.port}`
+    const restartedToken = await readFile(join(home, 'api-token'), 'utf8')
+    tokensByOrigin.set(restartedOrigin, restartedToken)
+    const staleCredential = await rawRequest(
+      restartedOrigin,
+      '/api/tasks',
+      'GET',
+      {
+        host: new URL(restartedOrigin).host,
+        origin: VITE_ORIGIN,
+        authorization: `Bearer ${token}`,
+      },
+      '',
+      false,
+    )
+    expect(staleCredential.status).toBe(403)
+    expect(restartedToken === token).toBe(false)
     const replayed = (await (await fetch(`${restartedOrigin}/api/tasks/${task.id}`)).json()) as TaskDetails
     expect(replayed.events).toEqual(result.events)
-    const socket = new WebSocket(`ws://127.0.0.1:${address.port}/ws?taskId=${task.id}`, {
-      origin: VITE_ORIGIN,
-    })
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${address.port}/ws?taskId=${task.id}`,
+      [WS_API_PROTOCOL, `${WS_TOKEN_PROTOCOL_PREFIX}${restartedToken}`],
+      { origin: VITE_ORIGIN },
+    )
     const messages = await receiveMessages(socket, replayed.events.length + 2)
     expect(messages[0]).toMatchObject({ type: 'snapshot', task: { id: task.id } })
     expect(messages[1]).toMatchObject({ type: 'ready', taskId: task.id })

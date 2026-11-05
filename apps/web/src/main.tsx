@@ -30,6 +30,8 @@ type TaskDetails = {
 type SecretStatus = { set: boolean; source?: 'env' | 'keychain' }
 type ApiError = { error?: string }
 
+const WS_API_PROTOCOL = 'joy-api-v1'
+
 const ROLE_LABELS: Record<Role, string> = {
   assistant_brain: 'Assistant brain',
   background: 'Background',
@@ -306,7 +308,7 @@ function App() {
 
     function connect(): void {
       if (!active) return
-      const nextSocket = new WebSocket(socketUrl())
+      const nextSocket = new WebSocket(socketUrl(), [WS_API_PROTOCOL])
       socket = nextSocket
       nextSocket.onopen = () => {
         if (!active) return
