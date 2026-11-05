@@ -15,8 +15,9 @@ afterEach(() => {
 })
 
 function fixtureFor(cwd: string) {
+  const escapedCwd = JSON.stringify(cwd).slice(1, -1)
   return JSON.parse(
-    JSON.stringify(syntheticCodexAppServerFixture).replaceAll('/tmp/joy-worktree', cwd),
+    JSON.stringify(syntheticCodexAppServerFixture).replaceAll('/tmp/joy-worktree', escapedCwd),
   ) as typeof syntheticCodexAppServerFixture
 }
 
@@ -61,6 +62,11 @@ async function collect(stream: AsyncIterable<AgentEvent>) {
 }
 
 describe('Codex app-server', () => {
+  it('escapes Windows worktree paths when substituting synthetic fixtures', () => {
+    const cwd = 'C:\\Users\\runneradmin\\AppData\\Local\\Temp\\joy-codex-test'
+    expect(fixtureFor(cwd).commandApproval.params.cwd).toBe(cwd)
+  })
+
   it('uses the persistent JSON-RPC lifecycle, maps events and answers policy approvals', async () => {
     const { dir, rpcPath, approvalsPath, readLines } = setup()
     const fixture = fixtureFor(dir)
