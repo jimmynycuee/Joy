@@ -71,5 +71,4 @@
 
 - T1.9 仍需依 PLAN 的安全測試 repo 流程完成實際驗收；fake `gh`／local bare remote 不足以勾選。
 - PR #46、#70 的關閉待作者處理：本 Session 的 GitHub 權限拒絕關閉非 Reason Session 開啟的 PR；已留言請作者關閉。
-- T1.13 的本機樹及測試已驗證，但既有 PR 的已發布分支仍需以 forward-only merge 將最新 main 納入 ancestry；目前衝突阻止 current-head CI 啟動，PR 保持 draft，T1.13/T1.8 不標完成。
 - 目前沒有新增的產品功能阻塞。P1 及明列的擁有者處理項目完成前，P2 保持暫停。
