@@ -14,6 +14,12 @@
 - 本機 Linux：`pnpm exec vitest run --project github packages/github/src/publisher.test.ts` 通過（17/17）；清除 runner 注入的 Git 身分後 `pnpm check` 通過（197 passed、2 skipped）。`git diff --check` 通過。
 - Windows 實際行為需以 GitHub Actions 驗證；本機沒有 Windows 執行環境。
 
+### T1.9 GitHub publisher
+
+- 已把 T1.9 publisher 改動重放至最新 main；程式檢查上游 repo／fork 與 base ancestry，逐一掃描將推送的 commits（敏感檔名、二進位變更、secret-like 新增內容與 commit message），並限制 Git／gh 子程序時間及診斷輸出。
+- 本機 `pnpm exec vitest run --project github packages/github/src/publisher.test.ts` 通過（35/35）；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 通過（格式、lint、typecheck；254 passed、2 skipped）。
+- PLAN 的真實驗收仍未完成：本機 `gh auth status` 顯示未登入，尚未建立 `[test] ` draft PR。已透過存取卡請求 `GITHUB_PAT`；取得後先用 `GH_TOKEN="$GITHUB_PAT" gh auth status` 驗證 CLI 登入，再開測試 PR，驗收後立即關閉並刪除測試分支。
+
 ### T1.14 本機 API 與 WebSocket token 認證
 
 - 本機 Linux 相關測試：`pnpm exec vitest run packages/server/src/server.test.ts packages/config/src/config.test.ts apps/web/src/vite-config.test.ts` 通過（63/63）。測試使用假 token／fake runtime，沒有呼叫真實模型或外部 API。
@@ -42,10 +48,12 @@
 - [PR #58](https://github.com/jimmynycuee/Joy/pull/58)：審核 `packages/core` 公開介面與 `packages/secrets` OS keychain／機密遮罩處理。
 - [PR #73](https://github.com/jimmynycuee/Joy/pull/73)：審核本機 API／WebSocket token 認證、token 檔案權限與 Windows ACL 邊界。
 - [PR #57](https://github.com/jimmynycuee/Joy/pull/57)：審核 repo provider allowlist 的政策／執行時檢查，以及無 attempt 預檢失敗事件的資料庫與事件格式。
+- [PR #54](https://github.com/jimmynycuee/Joy/pull/54)：審核 GitHub publisher 對 push target、提交歷史與 secret-like 內容的安全限制。
 
 ## 需要擁有者處理
 
 - T0.4 Codex 真實 fixture：在已登入且允許執行 Codex CLI 的電腦錄製；指令 `node scripts/record-fixtures.mjs codex`。不要在一般測試或 CI 呼叫真實模型。
+- T1.9 真實驗收：透過存取卡提供 `GITHUB_PAT`；先執行 `GH_TOKEN="$GITHUB_PAT" gh auth status` 確認 GitHub CLI 認證，再由此工作階段建立並清理 `[test] ` draft PR。
 - T2.4 Telegram：日後透過支援的 Secret 入口提供 `JOY_TELEGRAM_BOT_TOKEN`；不要把 token 貼在對話、文件或程式碼中。
 - T3.8 Google：完成所選 MCP server 所需的 Google 登入；登入前保持唯讀功能未連線，登入指令依該 server 文件記錄於此。
 - Windows 實機驗收（P4）：在 Windows 電腦執行 `pnpm install --frozen-lockfile` 與 `pnpm check`，並依 T4.4 完成一次跨模型任務；不以 CI 取代實機驗收。

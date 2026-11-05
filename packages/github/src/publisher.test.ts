@@ -23,6 +23,7 @@ interface GhCall {
   terminalPrompt: string | undefined
   ghPromptDisabled: string | undefined
   gitCredentialManagerInteractive: string | undefined
+  gitSsh: string | undefined
   sshCommand: string | undefined
   sshAskpassRequire: string | undefined
 }
@@ -32,6 +33,7 @@ interface Fixture {
   bareRepo: string
   workspace: Workspace
   fakeGh: string
+  fakeGit: string
   ghCapture: string
   ghState: string
   ghMode: string
@@ -72,13 +74,13 @@ describe('GitHubPublisher', () => {
       '--repo',
       'github.com/example/joy',
       '--head',
-      `example:${fixture.workspace.branch}`,
+      fixture.workspace.branch,
       '--limit',
       '100',
       '--state',
       'all',
       '--json',
-      'url,state,isDraft,headRefName,baseRefName',
+      'url,state,isDraft,headRefName,headRepositoryOwner,baseRefName,body',
     ])
     expect(calls[1]?.args).toEqual([
       'pr',
@@ -106,7 +108,7 @@ describe('GitHubPublisher', () => {
     expect(calls[0]?.stdinIsTTY).toBe(false)
     expect(calls[0]?.stdinBytes).toBe(0)
     expect(calls[0]?.gitCredentialManagerInteractive).toBe('never')
-    expect(calls[0]?.sshCommand).toContain('BatchMode=yes')
+    expect(calls[0]?.gitSsh).toBe(process.env.GIT_SSH)
     expect(calls[0]?.sshAskpassRequire).toBe('never')
     expect(
       await git(fixture.workspace.path, ['for-each-ref', '--format=%(refname)', 'refs/joy/github-publisher']),
@@ -151,9 +153,130 @@ describe('GitHubPublisher', () => {
     const retry = await publisher.publish(fixture.workspace, input())
 
     expect(retry.pullRequestUrl).toBe('https://github.com/example/joy/pull/42')
+    expect(retry.body).toContain('## Summary\n\nAdds the task changes.')
     const calls = await readCalls(fixture)
     expect(calls.filter((call) => call.args[1] === 'create')).toHaveLength(1)
     expect(calls.filter((call) => call.args[1] === 'list')).toHaveLength(2)
+  }, 20_000)
+
+  it('matches an existing draft only when its head repository owner matches the selected push remote', async () => {
+    const fixture = await createFixture()
+    await writeFile(
+      fixture.ghState,
+      JSON.stringify([
+        {
+          url: 'https://github.com/example/joy/pull/41',
+          state: 'OPEN',
+          isDraft: true,
+          headRefName: fixture.workspace.branch,
+          headRepositoryOwner: { login: 'another-contributor' },
+          baseRefName: 'main',
+          body: 'another fork body',
+        },
+      ]),
+    )
+    await writeFile(join(fixture.workspace.path, 'change.txt'), 'published change\n')
+
+    await createPublisher(fixture).publish(fixture.workspace, input())
+
+    const calls = await readCalls(fixture)
+    expect(calls[0]?.args).toContain(fixture.workspace.branch)
+    expect(calls.some((call) => call.args[1] === 'create')).toBe(true)
+  })
+
+  it('returns the saved body when reusing the matching open draft', async () => {
+    const fixture = await createFixture()
+    const existingBody = 'Original PR body and provenance.'
+    await writeFile(
+      fixture.ghState,
+      JSON.stringify([
+        {
+          url: 'https://github.com/example/joy/pull/41',
+          state: 'OPEN',
+          isDraft: true,
+          headRefName: fixture.workspace.branch,
+          headRepositoryOwner: { login: 'example' },
+          baseRefName: 'main',
+          body: existingBody,
+        },
+      ]),
+    )
+    await writeFile(join(fixture.workspace.path, 'change.txt'), 'published change\n')
+
+    const result = await createPublisher(fixture).publish(fixture.workspace, input())
+
+    expect(result.pullRequestUrl).toBe('https://github.com/example/joy/pull/41')
+    expect(result.body).toBe(existingBody)
+    expect((await readCalls(fixture)).some((call) => call.args[1] === 'create')).toBe(false)
+  })
+
+  it.each(['CLOSED', 'MERGED'])('does not create a duplicate for a matching %s PR', async (state) => {
+    const fixture = await createFixture()
+    await writeFile(
+      fixture.ghState,
+      JSON.stringify([
+        {
+          url: 'https://github.com/example/joy/pull/41',
+          state,
+          isDraft: true,
+          headRefName: fixture.workspace.branch,
+          headRepositoryOwner: { login: 'example' },
+          baseRefName: 'main',
+          body: 'Existing closed PR.',
+        },
+      ]),
+    )
+    await writeFile(join(fixture.workspace.path, 'change.txt'), 'published change\n')
+
+    await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+      new RegExp(`pull/41 in ${state.toLowerCase()} state; refusing to create a duplicate`),
+    )
+    expect((await readCalls(fixture)).some((call) => call.args[1] === 'create')).toBe(false)
+  })
+
+  it('preserves configured SSH commands and accepts the common ssh://git@github.com URL form', async () => {
+    const fixture = await createFixture()
+    const previousGitSsh = process.env.GIT_SSH
+    const previousGitSshCommand = process.env.GIT_SSH_COMMAND
+    const configuredCommand = 'ssh -F /tmp/joy-test-ssh-config -o ControlMaster=no'
+    process.env.GIT_SSH = 'joy-test-ssh-wrapper'
+    process.env.GIT_SSH_COMMAND = configuredCommand
+    const sshRemote = 'ssh://git@github.com/example/joy.git'
+    await git(fixture.workspace.path, [
+      'config',
+      '--add',
+      `url.${pathToFileURL(fixture.bareRepo).href}.insteadOf`,
+      sshRemote,
+    ])
+    await git(fixture.workspace.path, ['config', 'core.sshCommand', 'ssh -F /tmp/joy-core-ssh-config'])
+    fixture.workspace.repo.githubRemote = sshRemote
+    await writeFile(join(fixture.workspace.path, 'change.txt'), 'published change\n')
+
+    try {
+      await createPublisher(fixture).publish(fixture.workspace, input())
+    } finally {
+      if (previousGitSsh === undefined) delete process.env.GIT_SSH
+      else process.env.GIT_SSH = previousGitSsh
+      if (previousGitSshCommand === undefined) delete process.env.GIT_SSH_COMMAND
+      else process.env.GIT_SSH_COMMAND = previousGitSshCommand
+    }
+
+    const call = (await readCalls(fixture))[0]
+    expect(call?.gitSsh).toBe('joy-test-ssh-wrapper')
+    expect(call?.sshCommand).toBe(configuredCommand)
+    expect(await git(fixture.workspace.path, ['config', '--get', 'core.sshCommand'])).toBe(
+      'ssh -F /tmp/joy-core-ssh-config',
+    )
+  })
+
+  it('rejects SSH remotes that embed credentials', async () => {
+    const fixture = await createFixture()
+    fixture.workspace.repo.githubRemote = 'ssh://git:password@github.com/example/joy.git'
+
+    await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+      /must not embed credentials/,
+    )
+    expect(await readCalls(fixture)).toHaveLength(0)
   })
 
   it('does not push or query gh when neither commits nor worktree changes exist', async () => {
@@ -259,6 +382,32 @@ describe('GitHubPublisher', () => {
     expect((await readCalls(fixture))[1]?.body).toBe(result.body)
   })
 
+  it.each(['insteadOf', 'pushInsteadOf'])(
+    'rejects a rewritten effective push URL from %s instead of trusting raw remote config',
+    async (rewrite) => {
+      const fixture = await createFixture()
+      if (rewrite === 'insteadOf') {
+        await git(fixture.workspace.path, [
+          'config',
+          '--unset-all',
+          `url.${pathToFileURL(fixture.bareRepo).href}.insteadOf`,
+        ])
+      }
+      await git(fixture.workspace.path, [
+        'config',
+        '--add',
+        `url.https://github.com/example/redirected.git.${rewrite}`,
+        configuredRemote,
+      ])
+      await writeFile(join(fixture.workspace.path, 'change.txt'), 'published change\n')
+
+      await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+        /not the configured repository or an explicitly configured fork/,
+      )
+      expect(await readCalls(fixture)).toHaveLength(0)
+    },
+  )
+
   it('targets an explicitly selected fork remote while keeping the configured repository as the PR base', async () => {
     const fixture = await createFixture()
     await git(fixture.workspace.path, ['remote', 'add', 'fork', 'https://github.com/contributor/joy.git'])
@@ -274,10 +423,10 @@ describe('GitHubPublisher', () => {
 
     const calls = await readCalls(fixture)
     expect(calls[0]?.args).toContain('github.com/example/joy')
-    expect(calls[0]?.args).toContain(`contributor:${fixture.workspace.branch}`)
+    expect(calls[0]?.args).toContain(fixture.workspace.branch)
     expect(calls[1]?.args).toContain('github.com/example/joy')
     expect(calls[1]?.args).toContain(`contributor:${fixture.workspace.branch}`)
-  })
+  }, 20_000)
 
   it('rejects an unrelated local base commit not contained by the remote base branch', async () => {
     const fixture = await createFixture()
@@ -309,10 +458,109 @@ describe('GitHubPublisher', () => {
     const diffFixture = await createFixture()
     await writeFile(join(diffFixture.workspace.path, 'config.txt'), 'test-secret-value\n')
     await expect(createPublisher(diffFixture).publish(diffFixture.workspace, input())).rejects.toThrow(
-      /diff containing secret-like content/,
+      /secret-like added content/,
     )
     expect(await readCalls(diffFixture)).toHaveLength(0)
+    const prefixedFixture = await createFixture()
+    await writeFile(join(prefixedFixture.workspace.path, 'config.txt'), '++test-secret-value\n')
+    await expect(
+      createPublisher(prefixedFixture).publish(prefixedFixture.workspace, input()),
+    ).rejects.toThrow(/secret-like added content/)
+    expect(await readCalls(prefixedFixture)).toHaveLength(0)
   }, 30_000)
+
+  it('scans earlier pushed commits even when their sensitive path and secret content were later deleted', async () => {
+    const pathFixture = await createFixture()
+    await writeFile(join(pathFixture.workspace.path, '.netrc'), 'machine github.com login user\n')
+    await commitAll(pathFixture.workspace.path, 'Add credential file')
+    await rm(join(pathFixture.workspace.path, '.netrc'))
+    await commitAll(pathFixture.workspace.path, 'Delete credential file')
+    await writeFile(join(pathFixture.workspace.path, 'safe-change.txt'), 'safe change\n')
+
+    await expect(createPublisher(pathFixture).publish(pathFixture.workspace, input())).rejects.toThrow(
+      /likely secret or credential files/,
+    )
+    expect(await readCalls(pathFixture)).toHaveLength(0)
+
+    const contentFixture = await createFixture()
+    await writeFile(join(contentFixture.workspace.path, 'config.txt'), 'test-secret-value\n')
+    await commitAll(contentFixture.workspace.path, 'Add unsafe content')
+    await rm(join(contentFixture.workspace.path, 'config.txt'))
+    await commitAll(contentFixture.workspace.path, 'Delete unsafe content')
+    await writeFile(join(contentFixture.workspace.path, 'safe-change.txt'), 'safe change\n')
+
+    await expect(createPublisher(contentFixture).publish(contentFixture.workspace, input())).rejects.toThrow(
+      /secret-like added content/,
+    )
+    expect(await readCalls(contentFixture)).toHaveLength(0)
+  }, 20_000)
+
+  it('blocks secret-like text in a prior pushed commit message', async () => {
+    const fixture = await createFixture()
+    await writeFile(join(fixture.workspace.path, 'message-content.txt'), 'safe content\n')
+    await commitAll(fixture.workspace.path, 'test-secret-value')
+    await writeFile(join(fixture.workspace.path, 'final-change.txt'), 'another safe change\n')
+
+    await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+      /secret-like text in its message/,
+    )
+    expect(await readCalls(fixture)).toHaveLength(0)
+  })
+
+  it.each(['.netrc', '.git-credentials', 'id_ecdsa', 'id_dsa', 'wallet.kdbx'])(
+    'blocks sensitive credential path %s',
+    async (path) => {
+      const fixture = await createFixture()
+      await writeFile(join(fixture.workspace.path, path), 'credential material\n')
+
+      await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+        /likely secret or credential files/,
+      )
+      expect(await readCalls(fixture)).toHaveLength(0)
+    },
+  )
+
+  it('allows deleting a credential file that was already present at the base', async () => {
+    const fixture = await createFixture()
+    await addBaseFile(fixture, '.netrc', 'machine github.com login user\n')
+    await rm(join(fixture.workspace.path, '.netrc'))
+    await writeFile(join(fixture.workspace.path, 'safe-change.txt'), 'safe change\n')
+
+    await expect(createPublisher(fixture).publish(fixture.workspace, input())).resolves.toBeDefined()
+  })
+
+  it('rejects binary additions in pushed history but allows deleting a binary already in the base', async () => {
+    const addedFixture = await createFixture()
+    await writeFile(join(addedFixture.workspace.path, 'image.bin'), Buffer.from([0, 255, 1, 2]))
+    await commitAll(addedFixture.workspace.path, 'Add binary')
+    await rm(join(addedFixture.workspace.path, 'image.bin'))
+    await commitAll(addedFixture.workspace.path, 'Delete binary')
+    await writeFile(join(addedFixture.workspace.path, 'safe-change.txt'), 'safe change\n')
+
+    await expect(createPublisher(addedFixture).publish(addedFixture.workspace, input())).rejects.toThrow(
+      /binary changes that cannot be safely scanned/,
+    )
+    expect(await readCalls(addedFixture)).toHaveLength(0)
+
+    const deletedFixture = await createFixture()
+    await addBaseFile(deletedFixture, 'image.bin', Buffer.from([0, 255, 1, 2]))
+    await rm(join(deletedFixture.workspace.path, 'image.bin'))
+    await writeFile(join(deletedFixture.workspace.path, 'safe-change.txt'), 'safe change\n')
+
+    await expect(
+      createPublisher(deletedFixture).publish(deletedFixture.workspace, input()),
+    ).resolves.toBeDefined()
+  }, 20_000)
+
+  it('reports an actionable error when a pushed commit patch exceeds the scan limit', async () => {
+    const fixture = await createFixture()
+    await writeFile(join(fixture.workspace.path, 'large.txt'), Buffer.alloc(10 * 1024 * 1024 + 1024, 97))
+
+    await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+      /exceeded the 10 MiB output limit; split the change into smaller commits/,
+    )
+    expect(await readCalls(fixture)).toHaveLength(0)
+  })
 
   it('rejects unconfigured or mismatched targets and never falls back to gh context', async () => {
     const fixture = await createFixture()
@@ -349,7 +597,7 @@ describe('GitHubPublisher', () => {
     ])
 
     await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
-      /must have exactly one configured push URL/,
+      /must have exactly one effective push URL/,
     )
     expect(await readCalls(fixture)).toHaveLength(0)
   })
@@ -412,6 +660,8 @@ function createPublisher(
     ...(overrides.remote === undefined ? {} : { remote: overrides.remote }),
     ...(overrides.commandTimeoutMs === undefined ? {} : { commandTimeoutMs: overrides.commandTimeoutMs }),
     redact: (value) => value.replaceAll('test-secret-value', '[REDACTED]'),
+    gitExecutable: process.execPath,
+    gitPrefixArgs: [fixture.fakeGit],
     ghExecutable: process.execPath,
     ghPrefixArgs: [fixture.fakeGh, fixture.ghCapture, fixture.ghState, fixture.ghMode],
   })
@@ -423,6 +673,7 @@ async function createFixture(options: { ghMode?: string } = {}): Promise<Fixture
   const bareRepo = join(root, 'origin.git')
   const repoPath = join(root, 'repo')
   const fakeGh = join(root, 'fake-gh.mjs')
+  const fakeGit = join(root, 'fake-git.mjs')
   const ghCapture = join(root, 'gh-calls.json')
   const ghState = join(root, 'gh-state.json')
   const ghMode = options.ghMode ?? 'ok'
@@ -455,7 +706,8 @@ async function createFixture(options: { ghMode?: string } = {}): Promise<Fixture
     baseCommit: await git(repoPath, ['rev-parse', 'main']),
   }
   await writeFakeGh(fakeGh)
-  return { root, bareRepo, workspace, fakeGh, ghCapture, ghState, ghMode }
+  await writeFakeGit(fakeGit)
+  return { root, bareRepo, workspace, fakeGh, fakeGit, ghCapture, ghState, ghMode }
 }
 
 async function writeFakeGh(path: string): Promise<void> {
@@ -472,19 +724,23 @@ async function writeFakeGh(path: string): Promise<void> {
       'const bodyPath = bodyIndex >= 0 ? args[bodyIndex + 1] : undefined',
       "const body = bodyPath ? await readFile(bodyPath, 'utf8') : undefined",
       'const bodyMode = bodyPath ? (await stat(bodyPath)).mode & 0o777 : undefined',
-      'calls.push({ args, cwd: process.cwd(), body, bodyMode, bodyPath, stdinIsTTY: process.stdin.isTTY === true, stdinBytes, terminalPrompt: process.env.GIT_TERMINAL_PROMPT, ghPromptDisabled: process.env.GH_PROMPT_DISABLED, gitCredentialManagerInteractive: process.env.GCM_INTERACTIVE, sshCommand: process.env.GIT_SSH_COMMAND, sshAskpassRequire: process.env.SSH_ASKPASS_REQUIRE })',
+      'calls.push({ args, cwd: process.cwd(), body, bodyMode, bodyPath, stdinIsTTY: process.stdin.isTTY === true, stdinBytes, terminalPrompt: process.env.GIT_TERMINAL_PROMPT, ghPromptDisabled: process.env.GH_PROMPT_DISABLED, gitCredentialManagerInteractive: process.env.GCM_INTERACTIVE, gitSsh: process.env.GIT_SSH, sshCommand: process.env.GIT_SSH_COMMAND, sshAskpassRequire: process.env.SSH_ASKPASS_REQUIRE })',
       'await writeFile(capturePath, JSON.stringify(calls))',
       'const operation = args[1]',
       "if (operation === 'list') {",
       "  if (mode === 'hang') setInterval(() => {}, 1000)",
+      "  const headIndex = args.indexOf('--head')",
+      "  if (headIndex >= 0 && args[headIndex + 1]?.includes(':')) { process.stderr.write('--head accepts a branch name, not owner:branch\\n'); process.exitCode = 2 } else {",
       '  let prs = []',
       "  try { prs = JSON.parse(await readFile(statePath, 'utf8')) } catch {}",
       '  process.stdout.write(JSON.stringify(prs))',
+      '  }',
       "} else if (operation === 'create') {",
       '  const option = (name) => args[args.indexOf(name) + 1]',
       "  const target = option('--repo').split('/').slice(-2).join('/')",
       "  const branch = option('--head').split(':').at(-1)",
-      "  const pr = { url: `https://github.com/${target}/pull/42`, state: 'OPEN', isDraft: true, headRefName: branch, baseRefName: option('--base') }",
+      "  const head = option('--head')",
+      "  const pr = { url: `https://github.com/${target}/pull/42`, state: 'OPEN', isDraft: true, headRefName: branch, headRepositoryOwner: { login: head.split(':')[0] }, baseRefName: option('--base'), body: await readFile(option('--body-file'), 'utf8') }",
       "  if (mode === 'partial') {",
       '    let previous = false',
       '    try { await access(statePath); previous = true } catch {}',
@@ -504,6 +760,34 @@ async function writeFakeGh(path: string): Promise<void> {
       "    process.stdout.write(pr.url + '\\n')",
       '  }',
       '} else { process.exitCode = 2 }',
+      '',
+    ].join('\n'),
+  )
+}
+
+async function writeFakeGit(path: string): Promise<void> {
+  await writeFile(
+    path,
+    [
+      "import { spawnSync } from 'node:child_process'",
+      'const args = process.argv.slice(2)',
+      "const run = (items) => spawnSync('git', items, { cwd: process.cwd(), encoding: 'utf8', windowsHide: true, maxBuffer: 32 * 1024 * 1024 })",
+      'const result = run(args)',
+      "if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === '--push' && args[3] === '--all') {",
+      '  const remote = args[4]',
+      "  const effectiveUrls = (result.stdout ?? '').trim().split(/\\r?\\n/).filter(Boolean)",
+      "  const pushUrls = run(['config', '--get-all', `remote.${remote}.pushurl`])",
+      "  const sourceUrls = pushUrls.status === 0 ? pushUrls.stdout : run(['config', '--get-all', `remote.${remote}.url`]).stdout",
+      "  const sources = (sourceUrls ?? '').trim().split(/\\r?\\n/).filter(Boolean)",
+      "  process.stdout.write(effectiveUrls.map((url, index) => url.startsWith('file:') ? (sources[index] ?? url) : url).join('\\n') + '\\n')",
+      '  if (result.stderr) process.stderr.write(result.stderr)',
+      '  process.exitCode = result.status ?? 1',
+      '} else {',
+      '  if (result.stdout) process.stdout.write(result.stdout)',
+      '  if (result.stderr) process.stderr.write(result.stderr)',
+      '  if (result.error) process.stderr.write(result.error.message)',
+      '  process.exitCode = result.status ?? 1',
+      '}',
       '',
     ].join('\n'),
   )
@@ -531,6 +815,21 @@ async function makeCompetingRemoteCommit(fixture: Fixture): Promise<void> {
     'origin',
     `refs/heads/${fixture.workspace.branch}:refs/heads/${fixture.workspace.branch}`,
   ])
+}
+
+async function addBaseFile(fixture: Fixture, path: string, contents: string | Uint8Array): Promise<void> {
+  const cwd = fixture.workspace.path
+  await git(cwd, ['switch', 'main'])
+  await writeFile(join(cwd, path), contents)
+  await commitAll(cwd, 'Add file to the base branch')
+  await git(cwd, ['push', 'origin', 'main'])
+  await git(cwd, ['switch', '-C', fixture.workspace.branch])
+  fixture.workspace.baseCommit = await git(cwd, ['rev-parse', 'main'])
+}
+
+async function commitAll(cwd: string, message: string): Promise<void> {
+  await git(cwd, ['add', '--all'])
+  await git(cwd, ['commit', '-q', '-m', message])
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {

@@ -20,6 +20,8 @@ export interface GitHubPublisherOptions {
   remote?: string
   /** Executable used for git commands. Defaults to `git`. */
   gitExecutable?: string
+  /** Arguments prepended to git commands; useful for wrappers and tests. */
+  gitPrefixArgs?: string[]
   /** Executable used for GitHub CLI commands. Defaults to `gh`. */
   ghExecutable?: string
   /** Arguments prepended to the GitHub CLI command; useful for wrappers and tests. */
@@ -59,7 +61,9 @@ interface ExistingPullRequest {
   state: string
   isDraft: boolean
   headRefName: string
+  headRepositoryOwner: { login: string } | null
   baseRefName: string
+  body: string
 }
 
 /** Commits a task worktree, pushes its feature branch and opens or reuses a draft PR. */
@@ -67,6 +71,7 @@ export class GitHubPublisher {
   private readonly committer: Committer
   private readonly remote: string
   private readonly gitExecutable: string
+  private readonly gitPrefixArgs: string[]
   private readonly ghExecutable: string
   private readonly ghPrefixArgs: string[]
   private readonly redact: Redactor
@@ -76,6 +81,7 @@ export class GitHubPublisher {
     this.committer = options.committer
     this.remote = options.remote ?? 'origin'
     this.gitExecutable = options.gitExecutable ?? 'git'
+    this.gitPrefixArgs = options.gitPrefixArgs ?? []
     this.ghExecutable = options.ghExecutable ?? 'gh'
     this.ghPrefixArgs = options.ghPrefixArgs ?? []
     this.redact = options.redact
@@ -168,24 +174,7 @@ export class GitHubPublisher {
       .split('\0')
       .filter(Boolean)
     if (changedPaths.length === 0) throw new Error('There are no changes to publish.')
-    const sensitivePaths = changedPaths.filter(isSensitivePath)
-    if (sensitivePaths.length) {
-      const safePaths = sensitivePaths.map((path) => JSON.stringify(this.redact(path))).join(', ')
-      throw new Error(
-        `Refusing to publish likely secret or credential files: ${safePaths}. Remove them from the branch before publishing.`,
-      )
-    }
-    const diff = await this.runGit(
-      ['diff', '--no-ext-diff', '--no-color', workspace.baseCommit, currentHead, '--'],
-      workspace.path,
-      'Git diff',
-      MAX_COMMAND_OUTPUT_BYTES,
-    )
-    if (this.redact(diff) !== diff) {
-      throw new Error(
-        'Refusing to publish a branch diff containing secret-like content; remove or redact it before publishing.',
-      )
-    }
+    await this.scanPushedCommits(workspace, currentHead)
 
     await this.fetchAndVerifyBase(workspace, baseBranch, target)
     try {
@@ -212,6 +201,7 @@ export class GitHubPublisher {
       existing = await this.findExistingPullRequest(
         target,
         head,
+        pushTarget.owner,
         workspace.branch,
         baseBranch,
         workspace.path,
@@ -227,7 +217,7 @@ export class GitHubPublisher {
       return {
         commitSha: currentHead,
         pullRequestUrl: validatePullRequestUrl(existing.url, target),
-        body,
+        body: existing.body,
       }
     }
 
@@ -264,15 +254,102 @@ export class GitHubPublisher {
     if (!remotes.includes(this.remote))
       throw new Error(`Configured push remote "${this.remote}" does not exist.`)
 
-    const prefix = `remote.${this.remote}`
-    const pushUrls = await this.optionalGitConfig(`${prefix}.pushurl`, cwd)
-    const urls = pushUrls.length ? pushUrls : await this.optionalGitConfig(`${prefix}.url`, cwd)
+    const urls = (
+      await this.runGit(['remote', 'get-url', '--push', '--all', this.remote], cwd, 'Git effective push URL')
+    )
+      .split(/\r?\n/)
+      .filter(Boolean)
     if (urls.length !== 1) {
-      throw new Error(
-        `Push remote "${this.remote}" must have exactly one configured ${pushUrls.length ? 'push URL' : 'URL'}.`,
-      )
+      throw new Error(`Push remote "${this.remote}" must have exactly one effective push URL.`)
     }
     return parseGitHubRepository(urls[0])
+  }
+
+  private async scanPushedCommits(workspace: Workspace, currentHead: string): Promise<void> {
+    const commits = (
+      await this.runGit(
+        ['rev-list', '--reverse', `${workspace.baseCommit}..${currentHead}`],
+        workspace.path,
+        'Git pushed-commit list',
+      )
+    )
+      .split(/\r?\n/)
+      .filter(Boolean)
+
+    for (const commit of commits) {
+      const parent = (
+        await this.runGit(
+          ['rev-parse', '--verify', '--end-of-options', `${commit}^1`],
+          workspace.path,
+          'Git commit parent',
+        )
+      ).trim()
+      const changedFiles = parseNameStatus(
+        await this.runGit(
+          ['diff-tree', '--no-commit-id', '--no-renames', '-r', '--name-status', '-z', parent, commit, '--'],
+          workspace.path,
+          'Git commit path scan',
+        ),
+      )
+      const sensitivePaths = changedFiles
+        .filter(({ status, path }) => status !== 'D' && isSensitivePath(path))
+        .map(({ path }) => path)
+      if (sensitivePaths.length) {
+        const safePaths = sensitivePaths.map((path) => JSON.stringify(this.redact(path))).join(', ')
+        throw new Error(
+          `Refusing to publish likely secret or credential files: ${safePaths}. Remove them from the branch before publishing.`,
+        )
+      }
+
+      const numstat = await this.runGit(
+        ['diff-tree', '--no-commit-id', '--no-renames', '-r', '--numstat', '-z', parent, commit, '--'],
+        workspace.path,
+        'Git commit binary scan',
+      )
+      const binaryPaths = parseBinaryPaths(numstat).filter(
+        (path) => !changedFiles.some((file) => file.path === path && file.status === 'D'),
+      )
+      if (binaryPaths.length) {
+        const safePaths = binaryPaths.map((path) => JSON.stringify(this.redact(path))).join(', ')
+        throw new Error(
+          `Refusing to publish binary changes that cannot be safely scanned: ${safePaths}. Remove or replace them with text files before publishing.`,
+        )
+      }
+
+      const commitMessage = await this.runGit(
+        ['show', '-s', '--format=%B', commit],
+        workspace.path,
+        'Git commit message scan',
+      )
+      if (this.redact(commitMessage) !== commitMessage) {
+        throw new Error(
+          'Refusing to publish a pushed commit with secret-like text in its message; amend or redact it before publishing.',
+        )
+      }
+
+      const patch = await this.runGit(
+        [
+          'diff',
+          '--no-ext-diff',
+          '--no-textconv',
+          '--no-color',
+          '--no-renames',
+          '--unified=0',
+          parent,
+          commit,
+          '--',
+        ],
+        workspace.path,
+        'Git commit patch scan',
+        MAX_COMMAND_OUTPUT_BYTES,
+      )
+      const additions = addedPatchContent(patch)
+      if (this.redact(additions) !== additions) {
+        throw new Error(
+          'Refusing to publish a pushed commit containing secret-like added content; remove or redact it before publishing.',
+        )
+      }
+    }
   }
 
   private async fetchAndVerifyBase(
@@ -321,6 +398,7 @@ export class GitHubPublisher {
   private async findExistingPullRequest(
     target: GitHubRepository,
     head: string,
+    headOwner: string,
     branch: string,
     baseBranch: string,
     cwd: string,
@@ -332,13 +410,13 @@ export class GitHubPublisher {
         '--repo',
         `${target.host}/${target.owner}/${target.name}`,
         '--head',
-        head,
+        branch,
         '--limit',
         '100',
         '--state',
         'all',
         '--json',
-        'url,state,isDraft,headRefName,baseRefName',
+        'url,state,isDraft,headRefName,headRepositoryOwner,baseRefName,body',
       ],
       cwd,
       'GitHub CLI PR lookup',
@@ -352,7 +430,10 @@ export class GitHubPublisher {
     if (!Array.isArray(found) || !found.every(isExistingPullRequest)) {
       throw new Error('GitHub CLI returned an invalid pull request list.')
     }
-    const branchPullRequests = (found as ExistingPullRequest[]).filter((pr) => pr.headRefName === branch)
+    const branchPullRequests = (found as ExistingPullRequest[]).filter(
+      (pr) =>
+        pr.headRefName === branch && pr.headRepositoryOwner?.login.toLowerCase() === headOwner.toLowerCase(),
+    )
     if (!branchPullRequests.length) return undefined
     const matchingBase = branchPullRequests.filter((pr) => pr.baseRefName === baseBranch)
     if (!matchingBase.length) {
@@ -372,7 +453,7 @@ export class GitHubPublisher {
   private assertDraft(existing: ExistingPullRequest): void {
     if (existing.state.toUpperCase() !== 'OPEN') {
       throw new Error(
-        `A pull request already exists for this branch in ${existing.state.toLowerCase()} state; refusing to create a duplicate.`,
+        `A matching pull request already exists at ${existing.url} in ${existing.state.toLowerCase()} state; refusing to create a duplicate.`,
       )
     }
     if (!existing.isDraft) {
@@ -424,16 +505,6 @@ export class GitHubPublisher {
     }
   }
 
-  private optionalGitConfig(key: string, cwd: string): Promise<string[]> {
-    return this.runGit(
-      ['config', '--get-all', key],
-      cwd,
-      'Git configuration',
-      MAX_COMMAND_OUTPUT_BYTES,
-      true,
-    ).then((output) => output.split(/\r?\n/).filter(Boolean))
-  }
-
   private runGit(
     args: string[],
     cwd: string,
@@ -443,7 +514,7 @@ export class GitHubPublisher {
   ): Promise<string> {
     return runCommand(
       this.gitExecutable,
-      args,
+      [...this.gitPrefixArgs, ...args],
       cwd,
       description,
       this.commandTimeoutMs,
@@ -476,8 +547,8 @@ function parseGitHubRepository(value: string | undefined): GitHubRepository {
   const remote = value.trim()
   let host: string
   let path: string
-  if (/^[^/@]+@[^/:]+:.+/.test(remote)) {
-    const match = /^(?:[^@]+@)?([^:]+):(.+)$/.exec(remote)
+  if (/^git@[^/:]+:.+/.test(remote)) {
+    const match = /^git@([^/:]+):(.+)$/.exec(remote)
     if (!match?.[1] || !match[2])
       throw new Error('The configured GitHub remote must be a GitHub repository URL.')
     host = match[1]
@@ -492,7 +563,13 @@ function parseGitHubRepository(value: string | undefined): GitHubRepository {
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'ssh:') {
       throw new Error('The configured GitHub remote must use HTTPS or SSH.')
     }
-    if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    const hasUnsupportedCredentials = parsed.password || (parsed.username && parsed.username !== 'git')
+    if (
+      hasUnsupportedCredentials ||
+      (parsed.username && parsed.protocol !== 'ssh:') ||
+      parsed.search ||
+      parsed.hash
+    ) {
       throw new Error('The configured GitHub remote must not embed credentials or URL parameters.')
     }
     host = parsed.host
@@ -524,12 +601,17 @@ function sameRepository(left: GitHubRepository, right: GitHubRepository): boolea
 function isExistingPullRequest(value: unknown): value is ExistingPullRequest {
   if (!value || typeof value !== 'object') return false
   const pr = value as Record<string, unknown>
+  const owner = pr.headRepositoryOwner
+  const validOwner =
+    owner === null || (typeof owner === 'object' && 'login' in owner && typeof owner.login === 'string')
   return (
     typeof pr.url === 'string' &&
     typeof pr.state === 'string' &&
     typeof pr.isDraft === 'boolean' &&
     typeof pr.headRefName === 'string' &&
-    typeof pr.baseRefName === 'string'
+    validOwner &&
+    typeof pr.baseRefName === 'string' &&
+    typeof pr.body === 'string'
   )
 }
 
@@ -565,8 +647,59 @@ function escapeRegExp(value: string): string {
 function isSensitivePath(path: string): boolean {
   const name = path.split('/').at(-1)?.toLowerCase() ?? ''
   if (/^\.env(?:\..*)?$/.test(name) && !/\.(?:example|sample|template)$/.test(name)) return true
-  if (['.npmrc', '.pypirc', 'id_rsa', 'id_ed25519', 'credentials.json'].includes(name)) return true
-  return /\.(?:pem|key|p12|pfx|p7b|p7c|jks|keystore)$/.test(name)
+  if (
+    [
+      '.git-credentials',
+      '.netrc',
+      '.npmrc',
+      '.pypirc',
+      'credentials.json',
+      'id_dsa',
+      'id_ecdsa',
+      'id_ed25519',
+      'id_rsa',
+    ].includes(name)
+  ) {
+    return true
+  }
+  return /\.(?:kdbx|pem|key|p12|pfx|p7b|p7c|jks|keystore)$/.test(name)
+}
+
+function parseNameStatus(output: string): Array<{ status: string; path: string }> {
+  const fields = output.split('\0').filter(Boolean)
+  if (fields.length % 2 !== 0) throw new Error('Git returned an invalid commit path listing.')
+  const changedFiles: Array<{ status: string; path: string }> = []
+  for (let index = 0; index < fields.length; index += 2) {
+    const status = fields[index]
+    const path = fields[index + 1]
+    if (!status || path === undefined) throw new Error('Git returned an invalid commit path listing.')
+    changedFiles.push({ status, path })
+  }
+  return changedFiles
+}
+
+function parseBinaryPaths(output: string): string[] {
+  const paths: string[] = []
+  for (const record of output.split('\0').filter(Boolean)) {
+    const firstTab = record.indexOf('\t')
+    const secondTab = record.indexOf('\t', firstTab + 1)
+    if (firstTab < 0 || secondTab < 0) throw new Error('Git returned an invalid commit size listing.')
+    if (record.slice(0, firstTab) === '-' && record.slice(firstTab + 1, secondTab) === '-') {
+      paths.push(record.slice(secondTab + 1))
+    }
+  }
+  return paths
+}
+
+function addedPatchContent(patch: string): string {
+  const additions: string[] = []
+  let inHunk = false
+  for (const line of patch.split(/\r?\n/)) {
+    if (line.startsWith('diff --git ')) inHunk = false
+    else if (line.startsWith('@@ ')) inHunk = true
+    else if (inHunk && line.startsWith('+')) additions.push(line.slice(1))
+  }
+  return additions.join('\n')
 }
 
 async function isAncestor(
@@ -595,16 +728,11 @@ async function runCommand(
   allowMissing: boolean,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    const sshTimeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000))
-    const configuredSsh = process.env.GIT_SSH_COMMAND?.trim()
     const env = {
       ...process.env,
       GIT_TERMINAL_PROMPT: '0',
       GCM_INTERACTIVE: 'never',
       GH_PROMPT_DISABLED: '1',
-      GIT_SSH_COMMAND: configuredSsh
-        ? `${configuredSsh} -oBatchMode=yes -oConnectTimeout=${sshTimeoutSeconds}`
-        : `ssh -oBatchMode=yes -oConnectTimeout=${sshTimeoutSeconds}`,
       SSH_ASKPASS_REQUIRE: 'never',
       LC_ALL: 'C',
       LANG: 'C',
@@ -632,9 +760,11 @@ async function runCommand(
           const reason =
             code === 'ENOENT'
               ? 'not found on PATH'
-              : timedOut
-                ? `timed out after ${timeoutMs} ms`
-                : `failed (${String(code ?? 'unknown error')})`
+              : code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+                ? `exceeded the ${Math.floor(maxBuffer / (1024 * 1024))} MiB output limit; split the change into smaller commits`
+                : timedOut
+                  ? `timed out after ${timeoutMs} ms`
+                  : `failed (${String(code ?? 'unknown error')})`
           const detail = sanitizeDiagnostic(stderr, redact)
           if (allowMissing && code === 1 && !detail) {
             resolve('')
