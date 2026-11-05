@@ -80,7 +80,7 @@ describe('GitHubPublisher', () => {
       '--state',
       'all',
       '--json',
-      'url,state,isDraft,headRefName,headRepository,baseRefName,body',
+      'url,state,isDraft,headRefName,headRepositoryOwner,headRepository,baseRefName,body',
     ])
     expect(calls[1]?.args).toEqual([
       'pr',
@@ -170,7 +170,7 @@ describe('GitHubPublisher', () => {
           isDraft: true,
           headRefName: fixture.workspace.branch,
           headRepositoryOwner: { login: 'example' },
-          headRepository: { nameWithOwner: 'example/other-joy' },
+          headRepository: { name: 'other-joy' },
           baseRefName: 'main',
           body: 'another fork body',
         },
@@ -185,6 +185,31 @@ describe('GitHubPublisher', () => {
     expect(calls.some((call) => call.args[1] === 'create')).toBe(true)
   })
 
+  it('reuses a matching PR using fields returned by older gh versions', async () => {
+    const fixture = await createFixture()
+    await writeFile(
+      fixture.ghState,
+      JSON.stringify([
+        {
+          url: 'https://github.com/example/joy/pull/41',
+          state: 'OPEN',
+          isDraft: true,
+          headRefName: fixture.workspace.branch,
+          headRepositoryOwner: { login: 'example' },
+          headRepository: { name: 'joy' },
+          baseRefName: 'main',
+          body: 'Existing draft.',
+        },
+      ]),
+    )
+    await writeFile(join(fixture.workspace.path, 'change.txt'), 'published change\n')
+
+    const result = await createPublisher(fixture).publish(fixture.workspace, input())
+
+    expect(result.pullRequestUrl).toBe('https://github.com/example/joy/pull/41')
+    expect((await readCalls(fixture)).some((call) => call.args[1] === 'create')).toBe(false)
+  })
+
   it('returns the saved body when reusing the matching open draft', async () => {
     const fixture = await createFixture()
     const existingBody = 'Original PR body includes test-secret-value.'
@@ -196,7 +221,8 @@ describe('GitHubPublisher', () => {
           state: 'OPEN',
           isDraft: true,
           headRefName: fixture.workspace.branch,
-          headRepository: { nameWithOwner: 'example/joy' },
+          headRepositoryOwner: { login: 'example' },
+          headRepository: { name: 'joy' },
           baseRefName: 'main',
           body: existingBody,
         },
@@ -222,7 +248,8 @@ describe('GitHubPublisher', () => {
           state,
           isDraft: true,
           headRefName: fixture.workspace.branch,
-          headRepository: { nameWithOwner: 'example/joy' },
+          headRepositoryOwner: { login: 'example' },
+          headRepository: { name: 'joy' },
           baseRefName: 'main',
           body: 'Existing closed PR.',
         },
@@ -607,6 +634,41 @@ describe('GitHubPublisher', () => {
     ).rejects.toBeDefined()
   })
 
+  it('blocks edited Git LFS pointers when only the oid and size lines change', async () => {
+    const fixture = await createFixture()
+    const pointer = [
+      'version https://git-lfs.github.com/spec/v1',
+      `oid sha256:${'a'.repeat(64)}`,
+      'size 12345',
+      '',
+    ].join('\n')
+    await addBaseFile(fixture, 'model.bin', pointer)
+    await writeFile(
+      join(fixture.workspace.path, 'model.bin'),
+      pointer.replace('a'.repeat(64), 'b'.repeat(64)).replace('size 12345', 'size 54321'),
+    )
+    await commitAll(fixture.workspace.path, 'Update LFS object')
+
+    await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+      /Git LFS pointer changes because their external payload cannot be safely scanned/,
+    )
+    expect(await readCalls(fixture)).toHaveLength(0)
+  })
+
+  it.each(['https://hawser.github.com/spec/v1', 'http://git-media.io/v/2'])(
+    'blocks accepted Git LFS pointer version %s with surrounding whitespace',
+    async (version) => {
+      const fixture = await createFixture()
+      const pointer = [`  version ${version}`, `oid sha256:${'c'.repeat(64)}`, 'size 23456', ''].join('\n')
+      await writeFile(join(fixture.workspace.path, 'model.bin'), pointer)
+
+      await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+        /Git LFS pointer changes because their external payload cannot be safely scanned/,
+      )
+      expect(await readCalls(fixture)).toHaveLength(0)
+    },
+  )
+
   it('reports an actionable error when a pushed commit patch exceeds the scan limit', async () => {
     const fixture = await createFixture()
     await writeFile(join(fixture.workspace.path, 'large.txt'), Buffer.alloc(10 * 1024 * 1024 + 1024, 97))
@@ -795,8 +857,9 @@ async function writeFakeGh(path: string): Promise<void> {
       "  const target = option('--repo').split('/').slice(-2).join('/')",
       "  const branch = option('--head').split(':').at(-1)",
       "  const head = option('--head')",
-      "  const headRepository = `${head.split(':')[0]}/${target.split('/').at(-1)}`",
-      "  const pr = { url: `https://github.com/${target}/pull/42`, state: 'OPEN', isDraft: true, headRefName: branch, headRepository: { nameWithOwner: headRepository }, baseRefName: option('--base'), body: await readFile(option('--body-file'), 'utf8') }",
+      "  const headRepositoryOwner = { login: head.split(':')[0] }",
+      "  const headRepository = { name: target.split('/').at(-1) }",
+      "  const pr = { url: `https://github.com/${target}/pull/42`, state: 'OPEN', isDraft: true, headRefName: branch, headRepositoryOwner, headRepository, baseRefName: option('--base'), body: await readFile(option('--body-file'), 'utf8') }",
       "  if (mode === 'partial') {",
       '    let previous = false',
       '    try { await access(statePath); previous = true } catch {}',

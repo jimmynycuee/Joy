@@ -61,7 +61,8 @@ interface ExistingPullRequest {
   state: string
   isDraft: boolean
   headRefName: string
-  headRepository: { nameWithOwner: string } | null
+  headRepositoryOwner: { login: string } | null
+  headRepository: { name: string } | null
   baseRefName: string
   body: string
 }
@@ -327,6 +328,27 @@ export class GitHubPublisher {
         )
       }
 
+      const changedBlobIds = parseChangedBlobIds(
+        await this.runGit(
+          ['diff-tree', '--no-commit-id', '--no-renames', '-r', '--raw', '-z', parent, commit, '--'],
+          workspace.path,
+          'Git changed blob list',
+        ),
+      )
+      for (const blobId of changedBlobIds) {
+        const content = await this.runGit(
+          ['cat-file', 'blob', blobId],
+          workspace.path,
+          'Git LFS pointer blob scan',
+          MAX_COMMAND_OUTPUT_BYTES,
+        )
+        if (containsGitLfsPointer(content)) {
+          throw new Error(
+            'Refusing to publish Git LFS pointer changes because their external payload cannot be safely scanned.',
+          )
+        }
+      }
+
       const patch = await this.runGit(
         [
           'diff',
@@ -344,11 +366,6 @@ export class GitHubPublisher {
         MAX_COMMAND_OUTPUT_BYTES,
       )
       const additions = addedPatchContent(patch)
-      if (containsGitLfsPointer(additions)) {
-        throw new Error(
-          'Refusing to publish Git LFS pointer changes because their external payload cannot be safely scanned.',
-        )
-      }
       if (this.redact(additions) !== additions) {
         throw new Error(
           'Refusing to publish a pushed commit containing secret-like added content; remove or redact it before publishing.',
@@ -452,7 +469,7 @@ export class GitHubPublisher {
         '--state',
         'all',
         '--json',
-        'url,state,isDraft,headRefName,headRepository,baseRefName,body',
+        'url,state,isDraft,headRefName,headRepositoryOwner,headRepository,baseRefName,body',
       ],
       cwd,
       'GitHub CLI PR lookup',
@@ -466,11 +483,13 @@ export class GitHubPublisher {
     if (!Array.isArray(found) || !found.every(isExistingPullRequest)) {
       throw new Error('GitHub CLI returned an invalid pull request list.')
     }
-    const expectedHeadRepository = `${headOwner}/${target.name}`.toLowerCase()
+    const expectedHeadOwner = headOwner.toLowerCase()
+    const expectedHeadRepository = target.name.toLowerCase()
     const branchPullRequests = (found as ExistingPullRequest[]).filter(
       (pr) =>
         pr.headRefName === branch &&
-        pr.headRepository?.nameWithOwner.toLowerCase() === expectedHeadRepository,
+        pr.headRepositoryOwner?.login.toLowerCase() === expectedHeadOwner &&
+        pr.headRepository?.name.toLowerCase() === expectedHeadRepository,
     )
     if (!branchPullRequests.length) return undefined
     const matchingBase = branchPullRequests.filter((pr) => pr.baseRefName === baseBranch)
@@ -639,17 +658,19 @@ function sameRepository(left: GitHubRepository, right: GitHubRepository): boolea
 function isExistingPullRequest(value: unknown): value is ExistingPullRequest {
   if (!value || typeof value !== 'object') return false
   const pr = value as Record<string, unknown>
+  const owner = pr.headRepositoryOwner
   const repository = pr.headRepository
+  const validOwner =
+    owner === null || (typeof owner === 'object' && 'login' in owner && typeof owner.login === 'string')
   const validRepository =
     repository === null ||
-    (typeof repository === 'object' &&
-      'nameWithOwner' in repository &&
-      typeof repository.nameWithOwner === 'string')
+    (typeof repository === 'object' && 'name' in repository && typeof repository.name === 'string')
   return (
     typeof pr.url === 'string' &&
     typeof pr.state === 'string' &&
     typeof pr.isDraft === 'boolean' &&
     typeof pr.headRefName === 'string' &&
+    validOwner &&
     validRepository &&
     typeof pr.baseRefName === 'string' &&
     typeof pr.body === 'string'
@@ -733,9 +754,45 @@ function parseBinaryPaths(output: string): string[] {
 }
 
 function containsGitLfsPointer(content: string): boolean {
-  return /(?:^|\n)version https:\/\/git-lfs\.github\.com\/spec\/v1\r?\n(?:ext-[^\r\n]+\r?\n)*oid sha256:[a-f0-9]{64}\r?\nsize \d+(?:\r?\n|$)/i.test(
-    content,
+  const lines = content.trim().split(/\r?\n/)
+  const version = lines[0]?.trim()
+  if (
+    ![
+      'version https://git-lfs.github.com/spec/v1',
+      'version https://hawser.github.com/spec/v1',
+      'version http://git-media.io/v/2',
+    ].includes(version ?? '')
+  ) {
+    return false
+  }
+  const pointerFields = lines.slice(1)
+  return (
+    pointerFields.some((line) => /^oid sha256:[a-f0-9]{64}$/i.test(line)) &&
+    pointerFields.some((line) => /^size \d+$/.test(line))
   )
+}
+
+function parseChangedBlobIds(output: string): string[] {
+  const records = output.split('\0')
+  const blobIds: string[] = []
+  for (let index = 0; index < records.length;) {
+    const header = records[index]
+    if (!header) {
+      index++
+      continue
+    }
+    if (records[index + 1] === undefined) {
+      throw new Error('Git returned an invalid changed blob listing.')
+    }
+    const match = /^:(\d{6}) (\d{6}) ([a-f0-9]{40}|[a-f0-9]{64}) ([a-f0-9]{40}|[a-f0-9]{64}) ([A-Z])$/i.exec(
+      header,
+    )
+    if (!match) throw new Error('Git returned an invalid changed blob listing.')
+    const [, , mode, , objectId, status] = match
+    if (status !== 'D' && mode !== '000000' && mode !== '160000' && objectId) blobIds.push(objectId)
+    index += 2
+  }
+  return blobIds
 }
 
 function addedPatchContent(patch: string): string {
