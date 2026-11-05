@@ -10,6 +10,7 @@ type Redactor = (text: string) => string
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000
 const MAX_COMMAND_OUTPUT_BYTES = 10 * 1024 * 1024
+const MAX_GIT_LFS_POINTER_BYTES = 1024
 const MAX_PULL_REQUEST_BODY_BYTES = 65_536
 const DIAGNOSTIC_LIMIT = 1_500
 
@@ -335,17 +336,31 @@ export class GitHubPublisher {
           'Git changed blob list',
         ),
       )
-      for (const blobId of changedBlobIds) {
-        const content = await this.runGit(
-          ['cat-file', 'blob', blobId],
-          workspace.path,
-          'Git LFS pointer blob scan',
-          MAX_COMMAND_OUTPUT_BYTES,
+      if (changedBlobIds.length) {
+        const blobSizes = parseChangedBlobSizes(
+          await this.runGit(
+            ['cat-file', '--batch-check=%(objectname) %(objectsize)'],
+            workspace.path,
+            'Git changed blob size list',
+            MAX_COMMAND_OUTPUT_BYTES,
+            false,
+            `${changedBlobIds.join('\n')}\n`,
+          ),
+          changedBlobIds,
         )
-        if (containsGitLfsPointer(content)) {
-          throw new Error(
-            'Refusing to publish Git LFS pointer changes because their external payload cannot be safely scanned.',
+        for (const { objectId, size } of blobSizes) {
+          if (size > MAX_GIT_LFS_POINTER_BYTES) continue
+          const content = await this.runGit(
+            ['cat-file', 'blob', objectId],
+            workspace.path,
+            'Git LFS pointer blob scan',
+            MAX_GIT_LFS_POINTER_BYTES + 1,
           )
+          if (containsGitLfsPointer(content)) {
+            throw new Error(
+              'Refusing to publish Git LFS pointer changes because their external payload cannot be safely scanned.',
+            )
+          }
         }
       }
 
@@ -568,6 +583,7 @@ export class GitHubPublisher {
     description: string,
     maxBuffer = MAX_COMMAND_OUTPUT_BYTES,
     allowMissing = false,
+    input?: string,
   ): Promise<string> {
     return runCommand(
       this.gitExecutable,
@@ -578,6 +594,7 @@ export class GitHubPublisher {
       this.redact,
       maxBuffer,
       allowMissing,
+      input,
     )
   }
 
@@ -775,6 +792,25 @@ function containsGitLfsPointer(content: string): boolean {
   return oidIndex >= 0 && sizeIndex > oidIndex
 }
 
+function parseChangedBlobSizes(
+  output: string,
+  expectedObjectIds: string[],
+): Array<{ objectId: string; size: number }> {
+  const records = output.split(/\r?\n/).filter(Boolean)
+  if (records.length !== expectedObjectIds.length) {
+    throw new Error('Git returned an invalid changed blob size listing.')
+  }
+  return records.map((record, index) => {
+    const match = /^([a-f0-9]{40}|[a-f0-9]{64}) (\d+)$/i.exec(record)
+    const objectId = match?.[1]
+    const size = Number(match?.[2])
+    if (!objectId || objectId !== expectedObjectIds[index] || !Number.isSafeInteger(size) || size < 0) {
+      throw new Error('Git returned an invalid changed blob size listing.')
+    }
+    return { objectId, size }
+  })
+}
+
 function parseChangedBlobIds(output: string): string[] {
   const records = output.split('\0')
   const blobIds: string[] = []
@@ -833,6 +869,7 @@ async function runCommand(
   redact: Redactor,
   maxBuffer: number,
   allowMissing: boolean,
+  input?: string,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const env = {
@@ -883,7 +920,7 @@ async function runCommand(
         }
       },
     )
-    child.stdin?.end()
+    child.stdin?.end(input)
   })
 }
 

@@ -696,6 +696,16 @@ describe('GitHubPublisher', () => {
     expect(await readCalls(fixture)).toHaveLength(0)
   })
 
+  it('publishes a small edit to an existing text blob larger than the LFS pointer limit', async () => {
+    const fixture = await createFixture()
+    const baseText = 'a\n'.repeat(5_600_000)
+    await addBaseFile(fixture, 'large.txt', baseText)
+    await writeFile(join(fixture.workspace.path, 'large.txt'), baseText.replace('a\n', 'b\n'))
+    await commitAll(fixture.workspace.path, 'Edit one line in a large text file')
+
+    await expect(createPublisher(fixture).publish(fixture.workspace, input())).resolves.toBeDefined()
+  }, 30_000)
+
   it('reports an actionable error when a pushed commit patch exceeds the scan limit', async () => {
     const fixture = await createFixture()
     await writeFile(join(fixture.workspace.path, 'large.txt'), Buffer.alloc(10 * 1024 * 1024 + 1024, 97))
@@ -916,11 +926,13 @@ async function writeFakeGit(path: string, bareRepo: string): Promise<void> {
     path,
     [
       "import { spawnSync } from 'node:child_process'",
+      "import { readFileSync } from 'node:fs'",
       'const args = process.argv.slice(2)',
-      "const run = (items) => spawnSync('git', items, { cwd: process.cwd(), encoding: 'utf8', windowsHide: true, maxBuffer: 32 * 1024 * 1024 })",
+      "const run = (items, input = undefined) => spawnSync('git', items, { cwd: process.cwd(), encoding: 'utf8', windowsHide: true, maxBuffer: 32 * 1024 * 1024, input })",
       `const expectedMirrorUrl = ${JSON.stringify(pathToFileURL(bareRepo).href)}`,
       `const canonicalRemote = ${JSON.stringify(configuredRemote)}`,
-      'const result = run(args)',
+      "const batchInput = args[0] === 'cat-file' && args[1]?.startsWith('--batch-check=') ? readFileSync(0, 'utf8') : undefined",
+      'const result = run(args, batchInput)',
       "if (args[0] === 'ls-remote' && args[1] === '--get-url') {",
       "  const url = (result.stdout ?? '').trim()",
       "  process.stdout.write((url === expectedMirrorUrl ? canonicalRemote : url) + '\\n')",
