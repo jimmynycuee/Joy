@@ -1,99 +1,85 @@
 # Joy 目前狀態
 
-> 給接手的人或 agent：**開工前先讀這份、`AGENTS.md`、`docs/PLAN.md`。收工前更新這份。**
-> 這裡只寫 PLAN 沒有的東西：現在做到哪、卡在哪、下一步、最近的決策。進度打勾在 PLAN 的「進度」。
+> 接手前請先讀本檔、`AGENTS.md` 與 `docs/PLAN.md`。本檔記錄目前進度、阻塞與決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。
 
 - 最後更新：2026-11-05
-- 目前階段：**P1 進行中**（T1.1–T1.7、T1.10、T1.11、T1.12 已完成實作；T1.12 draft PR #53 的本機與三平台 checks 已通過，等待擁有者審核；PR base 仍為 `t1.7-event-log`，改為 `main` 尚未確認；剩 T1.9、T1.8）
-- 最新分支：`t1.12-repo-provider-allowlist`，從 `t1.7-event-log` 切出；PR #53 為 draft，PR #57 共用此 head 並維持 open。
+- 目前階段：**P1 尚未完成；P2 暫停，不開始或擴大。** 最新已抓取的 `main` 為 `f78453731340de2276001fc1c978f7e758166177`，包含 PR #58 的 P1 堆疊及其後續狀態更新；T1.12 僅在本 PR 分支完成，尚未整合至 `main`。T1.13 `joy doctor` 仍待完成。
+- 本分支 `t1.12-repo-provider-allowlist` 已將 `origin/main` SHA `f78453731340de2276001fc1c978f7e758166177` 合併；衝突已解決於 merge commit `a42054d872db414de6f177f4ceb8bc451a508646`。該樹通過 `pnpm check`（211 tests passed、2 skipped）及 57 個 focused server/DB tests；目前仍未發布，需等待新 head 的 GitHub checks。最新 live PR 快照仍是合併前 head `034524e98c0680f769b4f830c033b7762691a5e2`（三平台 checks 全通過）；本分支文件中的 T1.12 勾選只代表分支內實作與驗收，不代表已進 `main`。
+- 計畫與決策：依 `docs/PLAN.md` v0.2；P1 順序為 T1.12 → T1.13。T1.12 對齊、owner review 與更新 head checks 完成並整合前維持 P2 hold；不開始或擴大 P2。
 
-## 分支與 PR（一條直線，每個疊在前一個上）
+## P1 狀態與 owner follow-ups（live PR snapshot：2026-11-05；main SHA 如上）
 
-```
-main ← t0-foundation (#2) ← t1.1-claude-cli (#3) ← t1.4-worktree (#4) ← t1.11-config (#5)
-     ← t1.10-secrets ← t1.2-codex ← t1.3-openai-api ← t1.5-review-loop ← t1.6-server（#6 draft，三平台 CI 通過）
-                                                                      ← t1.7-event-log（#7 draft） ← t1.12-repo-provider-allowlist（#53 draft；base 仍為 t1.7-event-log）
-```
+1. **目前 main：** main 已包含 PR #58 整合的主要 P1 堆疊與其後續 STATUS 更新，最新抓取 SHA 為 `f78453731340de2276001fc1c978f7e758166177`。本次尚未對該 main SHA 執行 CI，故不據此宣稱其檢查通過；沿用 main 中的歷史 CI 記錄時，僅代表那些記錄的舊 SHA。
+2. **T1.12 / PR #53：** [#53](https://github.com/jimmynycuee/Joy/pull/53) live 狀態為 open/draft，base 仍是 `t1.7-event-log`，owner review/approval 尚未記錄。最新 live head `034524e98c0680f769b4f830c033b7762691a5e2` 的 Ubuntu、macOS、Windows checks 全成功；本機 merge commit `a42054d872db414de6f177f4ceb8bc451a508646` 已通過 `pnpm check` 與 focused tests，但尚未發布，故不能沿用舊 head checks。尚未確認 #53 已改 base；發布整合 head 後僅透過支援工具嘗試一次 `base=main`，並以 fresh PR readback 判定。
+3. **T1.12 驗收範圍（僅本 PR 分支）：** repo allowlist 非空且唯一，DB 邊界拒絕無效持久化值、舊 repo migration 設預設值；只驗證模式會使用的角色；resume 在狀態更新／排程前同步 preflight，拒絕不會新增 attempt/event，仍保留 runtime pre-provider guard；PATCH repo allowlist 提供可行修復路徑。整合 `main` 後本機 focused server/DB tests 57/57 通過；提交後仍須等新 PR head checks。
+4. **#57 必須保持 open：** [#57](https://github.com/jimmynycuee/Joy/pull/57) live 狀態為 open、base `main`，與 #53 共用來源分支／head；更新共享分支會更新其 head，但本工作不修改 #57 的 body、metadata 或 state，絕不關閉它。發布後重新確認其仍 open。
+5. **T1.13 尚未完成：** `joy doctor`／首次啟動檢查依 P1 順序在 T1.12 owner review 與整合後處理。P2 維持暫停；其他 owner-review follow-ups（包括 #44、core interface、keychain/secret handling）沿用 main 狀態追蹤，非本次修改範圍。
 
-- #2–#5 已開 PR，CI 三平台通過，**等擁有者審核**（含 `packages/core` 變更）。
-- `t1.10-secrets` 之後的分支已推上 GitHub，**還沒開 PR**。
-- 合併方式：依序用 merge commit（不要 squash），每合併一個就把下一個 PR 的 base 改成 `main`。
-- agent 沒有合併 PR 的權限（會被權限檢查擋下），合併由擁有者做。
+## 下一步（P1 依賴順序）
 
-## 現在的樣子
+1. 將已驗證的 merge-resolution commit 與這份狀態更新發布至既有 #53；不建立替代 PR。
+2. 對已發布 head 讀取新 CI；只做一次支援工具 `base=main` 更新並 fresh-readback 驗證。#53 維持 draft，等待 owner review 與所有 checks 通過；#57 維持 open。
+3. T1.12 審核與整合完成後再做 T1.13；所有 P1 程式碼進 `main` 並驗證前維持 P2 hold。
 
-| 部分                    | 狀態                                                                                                                                                 |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| monorepo / CI           | 完成。pnpm、TypeScript 6 strict、ESLint、Prettier、Vitest；CI 在 Ubuntu、macOS、Windows 跑 `pnpm check`（只在 PR 與推到 main 時觸發）                |
-| `packages/core`         | 介面（T0.5），說明在 `packages/core/README.md`                                                                                                       |
-| `packages/db`           | T0.6 schema + T1.6 CRUD；T1.7 增加 task 序號事件、reviews 與每日 usage 持久化                                                                        |
-| `packages/providers`    | Claude（T1.1，真實 CLI 端到端測過）、Codex（T1.2，只有 SDK 型別與合成 fixture）、OpenAI API（T1.3，假伺服器測過）。共用 `runCli` / `runJsonlProcess` |
-| `packages/executor`     | T1.4：每個 attempt 一個 worktree + branch，diff、commit、cleanup                                                                                     |
-| `packages/config`       | T1.11 後端：`~/.joy/config.yaml`（`JOY_HOME` 可改），zod 驗證，檔案改了下次讀取就生效                                                                |
-| `packages/secrets`      | T1.10：OS 鑰匙圈（`@napi-rs/keyring`）、環境變數覆寫、`Redactor` 遮罩                                                                                |
-| `packages/orchestrator` | T1.5：`reviewLoop()`：可選規劃 + 規劃審查 → 實作 → 結構化審查 → 同 session 修正，最多 N 輪                                                           |
-| server / UI / GitHub    | T1.6–T1.7 server 完成；T1.12 增加 repo provider allowlist、resume preflight、PATCH 更新與 DB 驗證（PR #53 draft）；UI T1.8、GitHub T1.9 尚未完成     |
+## 歷史 P1 狀態快照（PR 狀態截至 2026-11-04 18:49 UTC；main 更新至 18:52 UTC）
 
-## 卡住 / 需要人做的事
+下列依賴 PR 的 head、checks 與 reviews 取自 18:49 UTC 的 live `pr_get` 快照；PR #55 隨後合併，使 `main` 前進至 `686b4f942962bc02dd5d615fa4d32421188b488c`。因此以下依賴 PR 狀態不是 #55 合併後重新讀取的 live 狀態；檢查結果只代表指定 head.
 
-- **T1.12 draft PR #53**：本機 `pnpm check` 與 head `f52a664ec8f40aa112709c214cc82e4f54bf22f3` 的 Ubuntu/macOS/Windows checks 均已通過；等待擁有者審核。base 仍為 `t1.7-event-log`，因為透過支援工具更新為 `main` 尚未確認。
+1. **主要 P1 堆疊已進 `main`：** [PR #58](https://github.com/jimmynycuee/Joy/pull/58) 已合併；其 head `8383dd80f5a5168d1db59728810e5bb91730e4da` 的 Ubuntu、macOS、Windows 與 web E2E 四項 checks 全通過（run `41887998301`）。整合內容涵蓋 T1.6/T1.7、T1.8、T1.9 及相關驗證修補；T2.1/compete 明確排除。PR #55 的 STATUS 更新亦已合併到最新 `main`；新 main 的 CI run `41891442701` 四項 jobs 全成功，先前 `59eb6b9` 的 run `41889004890` 亦四項全成功.
+2. **T1.12 尚未合入：** [#53](https://github.com/jimmynycuee/Joy/pull/53) open/draft、base `t1.7-event-log`、head `3fd90219695c34bb38d37539158c765853208c21`、無衝突；Ubuntu、macOS、Windows checks 全成功，但沒有 owner review/approval。PR 說明列出 resume 前重新驗證 provider、allowlist 非空且唯一及錯誤指引等修正。18:49 UTC 快照亦記錄 [#57](https://github.com/jimmynycuee/Joy/pull/57) open、非 draft，與 #53 共用 head、base `main`，三平台 checks 成功且無正式 review；討論將其描述為重複 PR。須在合併後 `main` 上重新核對／驗證並取得 owner review，否則 T1.12 尚未完成.
+3. **T1.13 尚未完成：** `joy doctor`／首次啟動檢查仍待實作與驗收；依序在 T1.12 後推進。
+4. **已被 #58 整合的來源 PR：** #6、#7 本身只合入依賴分支，不是直接合入 `main`；其功能已隨 #58 進入 `main`。18:49 UTC 快照記錄 #8/#54 open 且共用 head `604c3b2a`；#8 為 draft、base `t1.7-event-log`，#54 為非 draft、base `main`，Ubuntu/Windows 成功、macOS cancelled。#8 的 T1.9 範圍已由 #58 整合。#9 仍 open/draft，head `27c3de79514fe16e187f77ca9d04ddd7ec817e5c`，四項 checks 成功但與 `t1.9-github-pr` 衝突，無 owner review；其 P1 UI 範圍由 #58 整合。此狀態更新不修改 #8/#9/#54 或其共用分支.
+5. **基礎與重複修補 PR：** 18:49 UTC 快照記錄 #2 open、非 draft，base `main`、head `8de3b7abf944a474e1881af1c3a8c7de5ea67dab`；當時與 `main` 衝突，沒有 owner approval 或該 head 的 checks；基礎內容已透過 #58 整合，core 介面 owner review 仍是後續事項。#28/#46 當時皆 open、同 branch/head `fix/t1.6-origin-host-validation` / `0cd9f58a4f36649121d7872fbd1cbd782fe5f820`，分別與 `t1.6-server`／`main` 衝突；其 Origin/Host 修補已由 #58 整合。**#46 仍 open 時不要發布 #28。**
+6. **其他 owner gate：** [#44](https://github.com/jimmynycuee/Joy/pull/44) 仍 open、非 draft、base `t0-foundation`、clean；Ubuntu、macOS、Windows checks 成功，但沒有 owner review。memory FTS／敏感記憶處理的 owner review 仍待完成。
+7. [#21](https://github.com/jimmynycuee/Joy/pull/21) 的較後階段 E2E 失敗仍屬 out of scope；不調查、不修復。
 
-1. **T1.6 draft PR #6**：Ubuntu、macOS、Windows 三平台 CI 已通過，等待擁有者審核/合併；依擁有者指示，agent 不合併。
-2. **T1.7 draft PR #7**（[PR](https://github.com/jimmynycuee/Joy/pull/7)）：本機 `pnpm check` 通過；最新提交的 CI workflow run 為 `pending`，Ubuntu、macOS、Windows jobs 尚無結果。
-3. **Codex 真實 fixture**：擁有者的 Codex 額度暫時不夠。額度恢復後在已登入的電腦上執行
-   `node scripts/record-fixtures.mjs codex`（預設用 gpt-6-luna + low effort），commit 結果，
-   重跑 `pnpm vitest run --project providers codex`，修正不符的地方，然後刪掉 `synthetic-edit.*`。
-4. **審核並合併 PR #2–#5**，再依序處理 `t1.10-secrets` 之後的分支 PR。
-5. **確認模型名稱**：預設值（`packages/config/src/schema.ts`）取自 Codex 0.166 的內建清單，擁有者要確認自己帳號可用。
-6. Windows 實機尚未手動測過，只靠 CI.
+## 歷史下一步（P1 依賴順序；截至 18:49 UTC）
 
-## 下一步（照順序）
+1. 將 #53 T1.12 對齊目前 `main`，取得必要 owner review，對新 head 重跑 checks 後再整合。
+2. 完成 T1.13 `joy doctor`／首次啟動檢查，依其驗收條件測試並整合。
+3. T1.12 與 T1.13 完成後，在最新 `main` 重跑 `pnpm check` 與三平台 CI；只有全數通過才可標示 P1 完成並解除 P2 hold。#44、core interface 與 keychain/secret handling 的 owner review 仍須追蹤；#21 維持 out of scope。
 
-1. **T1.7 已完成**：事件/reviews/usage repositories；所有 `LoopEvent` / `AgentEvent` 先經 `Redactor` 再寫入 events，測試確認 key 不進 DB；usage 累加、quota 限額事件留存；重啟後 HTTP 與 WebSocket 可回放。
-2. **T1.9 GitHub**：commit、push 分支、`gh pr create --draft`，PR 描述附審查摘要（`formatFindings`）。用本機 bare repo 當 remote、假的 `gh` 腳本測。push 屬於 🟡 等級，MVP 由 UI 按鈕觸發。
-3. **T1.8 Web UI**（`apps/web`，React + Vite）：三欄式（任務清單／即時事件／diff），角色與模型選單，設定頁（含 T1.11 的 UI 與 OpenAI key 輸入），Playwright e2e 用假 provider。
-4. P1 完成後：開始用 Joy 開發 Joy。
+## 歷史整合 PR #58（2026-11-04 18:30 UTC；合併前快照）
 
-## 最近的決策（新的放最上面）
+- [PR #58 — Integrate the P1 stack into main](https://github.com/jimmynycuee/Joy/pull/58)：draft、base `main` (`2c3fdb4`)、head branch `integrate-p1`；head `398d8f14472df8644e3d3ae56938f93d2a420efc`。最新讀取時 Ubuntu、macOS、web E2E 成功，Windows 仍執行中；獨立 review 尚待完成。
+- 整合範圍包括 T1.6/T1.7、T1.8、T1.9、Origin/Host 驗證、provider capability/model-effort guard、keychain 不可用時 UI 可啟動、snapshot/cursor replay 與事件去重、implementer/fixer 不提供 `openai-api`，以及 web build/Playwright CI。Vite proxy 保留瀏覽器 Origin/Host 並關閉廣泛 CORS，`review_loop` 亦拒絕不具 code-edit 能力的 implementer。T2.1/compete 實作不在 #58；T0.4 Codex fixture、Windows 真機、登入、MCP 選擇與產品／成本選擇仍是外部或使用者項目，保留於下方追蹤。
+- 本機驗證在本機 commit `2382074a11b21a2524a0a81e83e6ef293da39061`、tree `f2cb48c6fd0953608fbd39499d229536d267e6bf` 通過；已確認發布 head `398d8f14472df8644e3d3ae56938f93d2a420efc` 有完全相同的 tree。`pnpm install --frozen-lockfile` 成功；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 成功（196 tests passed、2 skipped）；`pnpm --filter @joy/web build` 成功；`pnpm test:e2e` 成功（4 個 Playwright 測試，含 HTTP/WebSocket proxy Origin regression）。E2E 使用 fake provider，沒有真實模型/API 呼叫或支出。
+- **Owner review（合併後 follow-up）**：`packages/core` provider/model interface 與 `packages/secrets` keychain/secret handling 均列入 owner review。依使用者明確授權，owner review 可在 #58 合併後持續追蹤，不是額外的合併 gate；仍須遵守 GitHub 實際 required approvals/checks。
+- **阻塞**：config-save guard 已推送至 #58，新增 regression 已在未修正的 `4114d9b` 重現回應 200，修正後確認回應 422、沒有 provider call 且舊設定不變。新 head `398d8f1` 的 CI 最新讀取為 Ubuntu/macOS/web E2E 成功、Windows 執行中；仍需 Windows 通過及對此 head 的獨立無 blocker review。#58 維持 draft；T1.12 與 T1.13 是 #58 後的 P1 工作，不是 #58 合併 gate，完成後才開始 P2。#57 保持 owner action（`close:false`）；來源 PR 未關閉。此 Session 的 draft-only PR policy 不允許標 ready 或 merge。
+- **下一步**：等待 #58 的 Windows CI 及對 head `398d8f1` 的獨立 review；若兩者通過，交由有權限者按 merge-commit 要求處理 ready/merge。之後按使用者順序完成 T1.12、T1.13，再解除 P2 hold；保持 #57 為 owner action（`close:false`），且不要把 owner review follow-up 變成合併 gate。
 
-| 日期       | 決策                                                                                                                                                                    | 原因 / 出處                                                                                                   |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| 2026-11-05 | T1.12 resume 在更新 task 狀態前同步檢查 repo allowlist；repo allowlist 以 PATCH 更新並在 SQLite trigger 與 mapper 驗證；只檢查該 mode 會使用的 roles                    | 避免拒絕時留下錯誤 task/attempt/event，並提供可行復原方式、防止無效持久化資料繞過 validator                   |
-| 2026-11-03 | T1.7 事件採 task-wide 單調序號並在 Redactor 遮罩後才寫入 DB；同 attempt/round 的重播 review 更新既有列；usage 按 UTC 日與 provider 累加                                 | 讓多次 attempt 可連續回放、secret 不落盤，且 server resume 不因 review 唯一鍵衝突失敗                         |
-| 2026-11-03 | T1.6 server 固定只綁 `127.0.0.1`；P1 尚不支援的 compete 模式回 422；重啟中斷以 `failed` 狀態加 `interrupted` 事件表示，恢復沿用原 worktree 與 implementer session/model | loopback 維持本機邊界；避免靜默降級；現有 `TaskStatus` 沒有 interrupted 值，仍保留接續原 CLI session 的檢查點 |
-| 2026-11-03 | 審查結果用 JSON Schema 強制結構化；所有欄位必填、可為 null（OpenAI strict 模式要求）；列出 blocker 卻 approve 視為不通過                                                | `packages/orchestrator/src/prompts.ts`                                                                        |
-| 2026-11-03 | 輪數用完仍未通過時結果是 `succeeded` + `approved: false`，交給人決定                                                                                                    | 改動可能已經夠好，不該直接丟掉                                                                                |
-| 2026-11-03 | reviewLoop 不清理 worktree                                                                                                                                              | 人看完結果、決定開 PR 或丟棄後，由 server 清理                                                                |
-| 2026-11-03 | OpenAI provider 用 fetch + 自寫 SSE，不用官方 SDK                                                                                                                       | 少一個相依、測試用本機假伺服器即可；價格由設定提供，不寫死                                                    |
-| 2026-11-03 | Codex adapter 依 SDK 型別先寫，用合成 fixture 測                                                                                                                        | 擁有者 Codex 額度不足；錄到真實 fixture 後必須重新驗證                                                        |
-| 2026-11-03 | 鑰匙圈不可用時錯誤訊息要說明怎麼修，並允許用環境變數                                                                                                                    | 雲端 / 無桌面的 Linux 沒有 Secret Service                                                                     |
-| 2026-11-03 | 呼叫真實模型的測試一律用最便宜的模型 + low effort（Claude haiku、Codex gpt-6-luna）                                                                                     | 擁有者要求節省訂閱額度；這些測試只驗證串接                                                                    |
-| 2026-11-03 | `ModelRef` 加 `effort`，每個角色可設推理強度                                                                                                                            | 背景工作用 low 省額度，主模型用 high                                                                          |
-| 2026-11-03 | 設定檔未知的鍵直接報錯                                                                                                                                                  | 通常是打錯字，默默忽略會讓人以為設定生效了                                                                    |
-| 2026-11-03 | 預設模型名稱取自 Codex 0.166 內建清單（`codex debug models`）                                                                                                           | 只是預設值，擁有者應自行確認                                                                                  |
-| 2026-11-03 | worktree 放在 `<worktreesDir>/<repoId>/<taskId>-<attemptId>`，分支 `joy/<taskId>/<attemptId>`；id 只允許安全字元                                                        | id 會進路徑與分支名，擋掉 `..` 與分隔符                                                                       |
-| 2026-11-03 | diff 一律對 `baseCommit`，先 `git add --all`                                                                                                                            | agent 可能自己 commit，也可能留下未追蹤檔；兩種都要算進去                                                     |
-| 2026-11-03 | `session_started` 一定是第一個事件：Claude 在 init 前送的事件先暫存                                                                                                     | 真實 fixture 裡 `active_goal`、`autocompact_state` 在 init 之前                                               |
-| 2026-11-03 | Claude 不傳 `--include-partial-messages`，`stream_event` 一律丟棄                                                                                                       | 一次任務 170+ 個逐字事件，存進 DB 沒有價值；UI 串流之後再評估                                                 |
-| 2026-11-03 | 沒有 approvalTool 時一律加 `--permission-prompts none`                                                                                                                  | headless 沒人回答，寧可拒絕也不要卡住                                                                         |
-| 2026-11-03 | SQLite 用 Node 內建的 `node:sqlite`，Node 需 ≥ 22.13                                                                                                                    | 不用編譯原生模組，Windows 安裝最省事；介面集中在 `packages/db`，必要時可換 better-sqlite3                     |
-| 2026-11-03 | Codex 在 P1 用 `codex exec --json`；P2 評估改 `app-server`                                                                                                              | 只有 app-server 有互動式審核與額度資訊。`docs/spikes/codex.md`                                                |
-| 2026-11-03 | Claude 用 `--permission-prompt-tool` 把審核交給 Joy 的 MCP 工具                                                                                                         | 實測可行，`rm` 被成功攔下。`docs/spikes/claude-code.md`                                                       |
-| 2026-11-03 | Claude 用 `--session-id` 由 Joy 指定 id                                                                                                                                 | 第一次呼叫就知道 id，當機後也能恢復                                                                           |
-| 2026-11-03 | 認不得的 CLI 事件轉成 `raw`，不丟錯                                                                                                                                     | 實測就看到文件沒寫的事件種類                                                                                  |
-| 2026-11-03 | 授權 BSL 1.1，4 年後轉 Apache-2.0                                                                                                                                       | 保留商業化空間；接受外部 PR 前需 CLA                                                                          |
-| 2026-11-03 | TypeScript 鎖 6.0                                                                                                                                                       | typescript-eslint 尚未支援 7                                                                                  |
-| 2026-11-03 | 狀態放 repo 的 `docs/STATUS.md`，不放 Obsidian                                                                                                                          | agent 只讀得到 repo；Obsidian 可直接開 `docs/` 當 vault                                                       |
+## PR 鏈快照（2026-11-04 14:20 UTC；歷史狀態）
 
-## 已知的坑
+以下僅保留 14:20 UTC 的歷史 PR/CI 快照；其狀態與 checks 不代表目前 `main` 或任何 PR 的即時狀態。解衝突、rebase 或推送後，舊 head 的 CI 不代表新 head。
 
-- `claude -p` 要關閉 stdin，否則會等 3 秒。
-- prompt 一定放在 `--` 之後，不然以 `-` 開頭的 prompt 會被當成旗標。
-- 真實 CLI 的端到端測試：`JOY_E2E_CLAUDE=1 pnpm vitest run --project providers provider.e2e`（會用掉一點額度）。
-- Codex 沒網路時會無限重試，不會自己結束：adapter 一定要有逾時。
-- Codex 的 `error` 事件常常只是「重新連線中」，不能一律當失敗。
-- Claude 的 MCP 工具呼叫也會送去審核：Joy 自己的工具要預設放行。
-- `node:sqlite` 在 Node 22 會印 ExperimentalWarning，無害。
-- 這個專案的雲端 session 曾出現 `cd <repo> && git ...` 回報「not a git repository」；改用 `git -C <repo>` 可避開。
-- Windows 的 git 預設 `core.autocrlf=true`：測試裡比對檔案內容前要在測試 repo 關掉它。
-- 新套件要跑 `pnpm install` 才會出現在 workspace；`vitest.config.ts` 的 project 名稱用套件名。
+1. [PR #2 — P0 foundation](https://github.com/jimmynycuee/Joy/pull/2)：open、非 draft，base `main`，head `56895e83`，與 base 衝突（dirty）。該 head 的 Ubuntu、macOS、Windows CI 成功；沒有 review，討論中要求 owner review。包含 `packages/core` 介面，owner review gate 未解除；不可繞過或合併。
+2. [PR #3 — Claude Code provider](https://github.com/jimmynycuee/Joy/pull/3)：open、非 draft，base `t0-foundation`，head `33b1b69c`，有衝突；該 head 三平台 CI 成功。變更 `packages/core` provider interface，沒有 review，需 owner review。
+3. [PR #4 — Git worktree executor](https://github.com/jimmynycuee/Joy/pull/4)：open、非 draft，base `t1.1-claude-cli`，head `3e6cd927`，有衝突；該 head 三平台 CI 成功。
+4. [PR #5 — config](https://github.com/jimmynycuee/Joy/pull/5)：open、非 draft，base `t1.4-worktree`，head `d13197c0`，目前 clean；該 head 三平台 CI 成功。變更 `packages/core` 的 `ModelRef` provider 介面（加入 optional `effort`），需 owner review；目前沒有 review。
+5. [PR #19](https://github.com/jimmynycuee/Joy/pull/19)：open draft，base `main`，head 與 #3 相同（`33b1b69c`），目前與 base 衝突；該 head 三平台 CI 成功。它是 #3 的重複 PR，不能用來繞過 #2 的 owner gate；在保留 #3 的依賴鏈後應關閉重複 PR。
+6. [PR #6](https://github.com/jimmynycuee/Joy/pull/6)、[#7](https://github.com/jimmynycuee/Joy/pull/7) 與 [#31](https://github.com/jimmynycuee/Joy/pull/31)：均已合併到功能分支（#6/#31 合入 `t1.5-review-loop`，#7 合入 `t1.6-server`），尚未進 `main`。各自記錄的三平台 CI 成功，不代表其程式碼已整合至 `main`。
+7. [PR #33](https://github.com/jimmynycuee/Joy/pull/33)：open draft，base `t1.1-claude-cli`，head `6e9efcf4`，目前 clean；該 head 三平台 CI 成功。需待基礎鏈重整後再 rebase、review 與驗證。
+8. [PR #45](https://github.com/jimmynycuee/Joy/pull/45)：open draft，base `t1.11-config`，head `141e5e87`，目前 clean；該 head 三平台 CI 成功。依賴分支重整後仍須重驗。
+9. [PR #28](https://github.com/jimmynycuee/Joy/pull/28) 與 [PR #46](https://github.com/jimmynycuee/Joy/pull/46)：同一分支、同一 head `0cd9f58a` 的 T1.6 Origin 驗證修補。#28 base `t1.6-server`、#46 base `main`，兩者目前都與 base 衝突；舊 head 三平台 CI 成功。應合成一份修補、更新 base、只保留一個 PR，並在新 head 重跑檢查。
+10. [PR #37](https://github.com/jimmynycuee/Joy/pull/37)：open draft，base `fix/t1.6-origin-host-validation`，head `a4310d4a`，目前 clean；該 head 三平台 CI 成功。依賴 #28/#46 的修補分支，待其整理後更新 base 並重驗。
+11. [PR #8](https://github.com/jimmynycuee/Joy/pull/8)：open draft，base `t1.7-event-log`，head `38c66421`，目前 clean；該 head 三平台 CI 成功。
+12. [PR #9 — Web UI](https://github.com/jimmynycuee/Joy/pull/9)：截至 14:20 UTC 為 open draft，base `t1.9-github-pr`，head `965ef7341fb9c3b1f7072d6c55514f4fcda12d90`。Ubuntu、macOS、Windows CI 成功；[web E2E run 41846319550](https://github.com/jimmynycuee/Joy/actions/runs/41846319550) 失敗（6 tests passed、1 failed：建立 repo 後找不到 `Your tasks will appear here.`）。沒有正式 review、inline comment 或 discussion。PR 必須維持 draft；keychain／機密處理仍需 owner review。
+13. [PR #44 — memory FTS row keys](https://github.com/jimmynycuee/Joy/pull/44)：open、非 draft，base `t0-foundation`，head `e10f3518`，目前 clean；該 head 三平台 CI 成功，沒有 review。修補 memory FTS row key 並排除敏感 memories；依記憶／敏感資料規則需 owner review。
+14. [PR #47 — Plan v0.2](https://github.com/jimmynycuee/Joy/pull/47)：已合併至 `main`；合併 commit `ef9338c`，包含 v0.2 計畫與決策。
+15. [PR #48 — STATUS refresh](https://github.com/jimmynycuee/Joy/pull/48)：已合併至 `main`；目前 main 為 `c311fe6`。該 PR 的舊 head CI 成功；最新 `main` 的 CI 請以上方 run 41840639086 為準。
+
+## 歷史 owner review 待處理事項（2026-11-04 18:49 UTC 快照）
+
+- 審核 [PR #53](https://github.com/jimmynycuee/Joy/pull/53) 的 T1.12 provider allowlist；目前沒有 owner review/approval。保持 draft，且在更新後的 head checks 通過前不視為完成。
+- `packages/core` provider/model interface 與 `packages/secrets` keychain/secret handling 已由 #58 整合；依 #58 合併後 follow-up 仍需 owner review。#2 本身仍 open、與 `main` 衝突且無 owner approval，但其基礎內容已由 #58 整合。
+- 審核 [PR #44](https://github.com/jimmynycuee/Joy/pull/44) 的 memory FTS／敏感記憶處理變更；目前無 owner review。
+- [PR #9](https://github.com/jimmynycuee/Joy/pull/9) 的 P1 UI 範圍已由 #58 整合；其 keychain／機密處理仍列為 owner review follow-up，不在本次 STATUS PR 中修改來源 PR。
+- T0.4 仍依 `docs/PLAN.md` 保持未勾選；Codex 真實執行 fixture 尚缺，需在已登入電腦上錄製。Windows 原生行為、rate-limit 輸出與實際可用模型名稱也尚不可視為完成驗收；確認預設模型名稱前不要猜測或改寫 PLAN §3.3。
+
+## 歷史下一步（截至 14:20 UTC；目前進度以上方「P1 狀態與依賴 PR 快照」為準）
+
+1. 等待 #2 owner review；再依 #2 → #3 → #4 → #5 整理衝突與 base、完成必要 review，並以各新 head 的三平台 CI 驗證。不得繞過 #2 的 owner gate。
+2. 合併整理 #28/#46 的重複修補為一個更新到最新 base 的 PR，跑完整 `pnpm check` 與 server regression；新 head 三平台 CI 通過後再處理 #37。
+3. 等另一個 Session 更新 #9 的 head，重新核對修補與 PR 狀態；依序整合 #8/#9，涉及 keychain／機密的工作保持 draft 並等待 owner review。
+4. 處理 #44 的 owner review gate；完成仍未完成的 P1 工作，包括 T1.12 repo provider allowlist 與 T1.13 `joy doctor`，依 PLAN 次序推進。
+5. 只有所有 P1 程式碼都整合進 `main`，且 `main` 的 `pnpm check` 與三平台 CI 通過後，才解除 P2 hold。P2 決策已記錄在 PLAN（包括 T2.7 Codex `app-server`）；本次狀態更新不啟動任何 ticket。

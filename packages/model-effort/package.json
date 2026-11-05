@@ -1,0 +1,17 @@
+{
+  "name": "@joy/model-effort",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Documented model/provider effort capabilities.",
+  "license": "BUSL-1.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@joy/core": "workspace:*"
+  }
+}

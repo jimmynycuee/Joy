@@ -30,7 +30,6 @@ import {
   createRepo,
   createReview,
   createTask,
-  getAttempt,
   getRepo,
   getTask,
   interruptRunningWork,
@@ -86,12 +85,15 @@ const taskInputSchema = z.strictObject({
   maxRounds: z.number().int().min(1).max(20).optional(),
 })
 const idSchema = z.string().min(1).max(128)
+const openAiSecretInputSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
 const MAX_BODY_BYTES = 1_000_000
+const PLAYWRIGHT_E2E_ORIGINS = ['http://127.0.0.1:4173', 'http://localhost:4173'] as const
 
 export interface TaskEvent {
   taskId: TaskId
   attemptId: AttemptId
   seq: number
+  eventId?: string
   type: string
   payload: unknown
   ts: string
@@ -106,6 +108,8 @@ export interface JoyServerOptions {
   redactor?: Redactor
   providers?: Partial<Record<ProviderKind, AgentProvider>>
   executor?: Executor
+  /** Adds only the fixed Playwright E2E origin; this is never enabled by default. */
+  allowPlaywrightOrigin?: boolean
 }
 
 export interface JoyServer {
@@ -122,6 +126,8 @@ class HttpError extends Error {
     super(message)
   }
 }
+
+class ProviderAllowlistError extends Error {}
 
 interface ActiveTask {
   controller: AbortController
@@ -149,6 +155,7 @@ function selectActiveRoles(
 
 /** Builds the local HTTP + WebSocket service. It never binds beyond loopback. */
 export async function createJoyServer(options: JoyServerOptions = {}): Promise<JoyServer> {
+  const allowedOrigins = createOriginAllowlist(options.allowPlaywrightOrigin ?? false)
   const home = options.home ?? joyHome()
   const configStore = options.configStore ?? new ConfigStore(join(home, 'config.yaml'))
   const initialConfig = await configStore.get()
@@ -181,17 +188,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   const publish = (taskId: TaskId, attemptId: AttemptId, type: string, payload: unknown): TaskEvent => {
     const safe = redactor.redactValue(payload)
-    const storedAttempt = getAttempt(db, attemptId)
-    const event = storedAttempt
-      ? appendTaskEvent(db, attemptId, type, safe)
-      : {
-          taskId,
-          attemptId,
-          seq: listTaskEvents(db, taskId).at(-1)?.seq ?? 0,
-          type,
-          payload: safe,
-          ts: new Date().toISOString(),
-        }
+    const event = appendTaskEvent(db, attemptId, type, safe)
     const message = JSON.stringify({ type: 'event', event })
     for (const socket of subscribers.get(taskId) ?? []) {
       if (socket.readyState === WebSocket.OPEN) socket.send(message)
@@ -211,23 +208,39 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           issues: error.issues.map(({ path, message }) => ({ path, message })),
         })
       } else if (error instanceof HttpError) {
-        json(res, error.status, { error: error.message })
+        json(res, error.status, { error: redactor.redact(error.message) })
       } else {
         const message = error instanceof Error ? error.message : 'Unexpected server error'
-        json(res, 500, { error: message })
+        json(res, 500, { error: redactor.redact(message) })
       }
     })
   })
 
   httpServer.on('upgrade', (req, socket, head) => {
     try {
-      const url = requestUrl(req)
-      if (url.pathname !== '/ws' || !isLocalOrigin(req.headers.origin)) {
+      if (
+        !isLoopbackHost(req.headers.host) ||
+        req.headers['sec-fetch-site']?.toLowerCase() === 'cross-site' ||
+        !isAllowedOrigin(req, allowedOrigins, false)
+      ) {
         socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
         socket.destroy()
         return
       }
+      const url = requestUrl(req)
+      if (url.pathname !== '/ws') {
+        socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n')
+        socket.destroy()
+        return
+      }
       const taskId = idSchema.parse(url.searchParams.get('taskId')) as TaskId
+      const afterText = url.searchParams.get('after')
+      const requestedAfter = afterText === null ? 0 : Number(afterText)
+      if (!Number.isSafeInteger(requestedAfter) || requestedAfter < 0) {
+        socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n')
+        socket.destroy()
+        return
+      }
       if (!getTask(db, taskId)) {
         socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n')
         socket.destroy()
@@ -237,8 +250,15 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         const current = subscribers.get(taskId) ?? new Set<WebSocket>()
         current.add(ws)
         subscribers.set(taskId, current)
+        const task = getTask(db, taskId)
+        const events = listTaskEvents(db, taskId)
+        const lastSequence = events.at(-1)?.seq ?? 0
+        const replayAfter = requestedAfter > lastSequence ? 0 : requestedAfter
+        ws.send(JSON.stringify({ type: 'snapshot', task, lastSequence }))
         ws.send(JSON.stringify({ type: 'ready', taskId }))
-        for (const event of listTaskEvents(db, taskId)) ws.send(JSON.stringify({ type: 'event', event }))
+        for (const event of events) {
+          if (event.seq > replayAfter) ws.send(JSON.stringify({ type: 'event', event }))
+        }
         ws.once('close', () => {
           current.delete(ws)
           if (current.size === 0) subscribers.delete(taskId)
@@ -251,8 +271,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   })
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const url = requestUrl(req)
+    if (!isLoopbackHost(req.headers.host)) throw new HttpError(403, 'Host is not allowed')
     const method = req.method ?? 'GET'
+    if (
+      req.headers['sec-fetch-site']?.toLowerCase() === 'cross-site' ||
+      !isAllowedOrigin(req, allowedOrigins, method === 'GET' || method === 'HEAD')
+    )
+      throw new HttpError(403, 'Origin is not allowed')
+    const url = requestUrl(req)
     if (url.pathname === '/api/health' && method === 'GET') {
       json(res, 200, { ok: true })
       return
@@ -262,6 +288,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       return
     }
     if (url.pathname === '/api/repos' && method === 'POST') {
+      assertJsonContentType(req)
       const input = repoInputSchema.parse(await readJson(req))
       const repo = createRepo(db, {
         id: (input.id ?? randomUUID()) as RepoId,
@@ -287,14 +314,22 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       return
     }
     if (url.pathname === '/api/tasks' && method === 'POST') {
+      assertJsonContentType(req)
       const input = taskInputSchema.parse(await readJson(req))
       if (input.mode === 'compete') throw new HttpError(422, 'Compete mode is not available in P1 yet')
-      const repo = getRepo(db, input.repoId as RepoId)
-      if (!repo) throw new HttpError(404, `Repository ${input.repoId} was not found`)
+      const roleOverrides = input.roleOverrides as Partial<RoleConfig> | undefined
       const config = await configStore.get()
       const configRoles = config.roles as RoleConfig
-      const roleOverrides = (input.roleOverrides ?? {}) as Partial<RoleConfig>
-      const selectedRoles = selectActiveRoles(input.mode, configRoles, roleOverrides)
+      const implementer = resolveRole('implementer', configRoles, roleOverrides)
+      const provider = providers[implementer.provider]
+      if (provider && !provider.capabilities.codeEdit)
+        throw new HttpError(
+          422,
+          `${implementer.provider} does not support code editing required by ${input.mode} mode`,
+        )
+      const repo = getRepo(db, input.repoId as RepoId)
+      if (!repo) throw new HttpError(404, `Repository ${input.repoId} was not found`)
+      const selectedRoles = selectActiveRoles(input.mode, configRoles, roleOverrides ?? {})
       const disallowed = findDisallowedRoleProviders(selectedRoles, repo.allowedProviders)[0]
       if (disallowed) throw new HttpError(422, describeDisallowedRoleProvider(disallowed))
       const task = createTask(db, {
@@ -314,7 +349,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
     const taskMatch = /^\/api\/tasks\/([^/]+)$/.exec(url.pathname)
     if (taskMatch && method === 'GET') {
-      const task = requireTask(decodeURIComponent(taskMatch[1] ?? ''))
+      const task = requireTask(decodePathSegment(taskMatch[1] ?? ''))
       const repo = getRepo(db, task.repoId)
       json(res, 200, {
         task,
@@ -327,7 +362,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     const eventsMatch = /^\/api\/tasks\/([^/]+)\/events$/.exec(url.pathname)
     if (eventsMatch && method === 'GET') {
-      const task = requireTask(decodeURIComponent(eventsMatch[1] ?? ''))
+      const task = requireTask(decodePathSegment(eventsMatch[1] ?? ''))
       const after = Number(url.searchParams.get('after') ?? '0')
       if (!Number.isSafeInteger(after) || after < 0)
         throw new HttpError(400, 'after must be a non-negative integer')
@@ -336,7 +371,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     const cancelMatch = /^\/api\/tasks\/([^/]+)\/cancel$/.exec(url.pathname)
     if (cancelMatch && method === 'POST') {
-      const task = requireTask(decodeURIComponent(cancelMatch[1] ?? ''))
+      const task = requireTask(decodePathSegment(cancelMatch[1] ?? ''))
       const active = running.get(task.id)
       if (active) active.controller.abort()
       else if (task.status === 'queued') setTaskStatus(db, task.id, 'cancelled')
@@ -347,7 +382,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     const resumeMatch = /^\/api\/tasks\/([^/]+)\/resume$/.exec(url.pathname)
     if (resumeMatch && method === 'POST') {
-      const task = requireTask(decodeURIComponent(resumeMatch[1] ?? ''))
+      const task = requireTask(decodePathSegment(resumeMatch[1] ?? ''))
       if (task.status !== 'failed' && task.status !== 'cancelled')
         throw new HttpError(409, `Task cannot be resumed from ${task.status}`)
       const state = await resumeState(task)
@@ -366,8 +401,35 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       return
     }
     if (url.pathname === '/api/config' && method === 'PUT') {
+      assertJsonContentType(req)
       const config = configSchema.parse(await readJson(req)) as JoyConfig
+      if (!providers[config.roles.implementer.provider]?.capabilities.codeEdit)
+        throw new HttpError(
+          422,
+          `${config.roles.implementer.provider} does not support code editing required by the implementer role`,
+        )
       json(res, 200, { config: await configStore.save(config) })
+      return
+    }
+    if (url.pathname === '/api/secrets/openai-api-key' && method === 'GET') {
+      json(res, 200, await secretStore.status('openai_api_key'))
+      return
+    }
+    if (url.pathname === '/api/secrets/openai-api-key' && method === 'PUT') {
+      const { value } = openAiSecretInputSchema.parse(await readJson(req))
+      const status = await secretStore.status('openai_api_key')
+      if (status.source === 'env')
+        throw new HttpError(409, 'OPENAI_API_KEY is supplied by the environment; manage it there instead.')
+      await secretStore.set('openai_api_key', value)
+      json(res, 200, await secretStore.status('openai_api_key'))
+      return
+    }
+    if (url.pathname === '/api/secrets/openai-api-key' && method === 'DELETE') {
+      const status = await secretStore.status('openai_api_key')
+      if (status.source === 'env')
+        throw new HttpError(409, 'OPENAI_API_KEY is supplied by the environment; manage it there instead.')
+      await secretStore.delete('openai_api_key')
+      json(res, 200, await secretStore.status('openai_api_key'))
       return
     }
     if (url.pathname === '/api/providers' && method === 'GET') {
@@ -407,7 +469,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     )[0]
     if (disallowed) throw new HttpError(422, describeDisallowedRoleProvider(disallowed))
     const provider = providers[attempt.provider]
-    if (!provider?.capabilities.resume)
+    if (!provider?.capabilities.codeEdit)
+      throw new HttpError(
+        409,
+        `${attempt.provider} does not support code editing required to resume as implementer`,
+      )
+    if (!provider.capabilities.resume)
       throw new HttpError(409, `${attempt.provider} does not support session resume`)
     const workspace: Workspace = {
       repo,
@@ -431,10 +498,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   async function runTask(task: StoredTask, controller: AbortController, resume?: ResumeState): Promise<void> {
     let attempt = resume?.attempt
+    let failureConfig = initialConfig
     try {
       const repo = getRepo(db, task.repoId)
       if (!repo) throw new Error(`Repository ${task.repoId} was not found`)
       const config = await configStore.get()
+      failureConfig = config
       const roles = config.roles as RoleConfig
       const configuredImplementer = resolveRole('implementer', roles, task.roleOverrides)
       const implementer = resume
@@ -442,7 +511,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         : configuredImplementer
       const selectedRoles = selectActiveRoles(task.mode, roles, task.roleOverrides, implementer)
       const disallowed = findDisallowedRoleProviders(selectedRoles, repo.allowedProviders)[0]
-      if (disallowed) throw new Error(describeDisallowedRoleProvider(disallowed))
+      if (disallowed) throw new ProviderAllowlistError(describeDisallowedRoleProvider(disallowed))
       if (!attempt) {
         attempt = createAttempt(db, {
           id: randomUUID() as AttemptId,
@@ -466,10 +535,28 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Task failed'
-      if (attempt)
-        updateAttempt(db, attempt.id, { status: controller.signal.aborted ? 'cancelled' : 'failed' })
-      setTaskStatus(db, task.id, controller.signal.aborted ? 'cancelled' : 'failed')
-      publish(task.id, attempt?.id ?? ('unknown' as AttemptId), 'error', { message })
+      const status = controller.signal.aborted ? 'cancelled' : 'failed'
+      if (error instanceof ProviderAllowlistError) {
+        setTaskStatus(db, task.id, status)
+        return
+      }
+      if (!attempt) {
+        const fallbackImplementer = resolveRole(
+          'implementer',
+          failureConfig.roles as RoleConfig,
+          task.roleOverrides,
+        )
+        attempt = createAttempt(db, {
+          id: randomUUID() as AttemptId,
+          taskId: task.id,
+          provider: fallbackImplementer.provider,
+          model: fallbackImplementer.model,
+          status,
+        })
+      }
+      updateAttempt(db, attempt.id, { status })
+      setTaskStatus(db, task.id, status)
+      publish(task.id, attempt.id, 'error', { message })
     }
   }
 
@@ -558,6 +645,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   ): Promise<void> {
     const provider = providers[model.provider]
     if (!provider) throw new Error(`No provider configured for ${model.provider}`)
+    if (!provider.capabilities.codeEdit)
+      throw new Error(`${model.provider} does not support code editing required by single mode`)
     const workspace = resume?.workspace ?? (await executor.prepare(repo, task.id, attempt.id))
     updateAttempt(db, attempt.id, {
       status: 'running',
@@ -672,13 +761,53 @@ function requestUrl(req: IncomingMessage): URL {
   }
 }
 
-function isLocalOrigin(origin: string | undefined): boolean {
-  if (!origin) return true
+function isLoopbackHost(host: string | undefined): boolean {
+  if (!host) return false
+  const match = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::(\d{1,5}))?$/i.exec(host)
+  if (!match) return false
+  if (match[1] === undefined) return true
+  const port = Number(match[1])
+  return port > 0 && port <= 65_535
+}
+
+function createOriginAllowlist(allowPlaywrightOrigin: boolean): Set<string> {
+  return new Set(['tauri://localhost', ...(allowPlaywrightOrigin ? PLAYWRIGHT_E2E_ORIGINS : [])])
+}
+
+function isAllowedOrigin(
+  req: IncomingMessage,
+  allowedOrigins: ReadonlySet<string>,
+  allowMissing: boolean,
+): boolean {
+  const origin = req.headers.origin
+  if (origin === undefined) return allowMissing
+  if (allowedOrigins.has(origin)) return true
+  const host = req.headers.host
+  if (!host) return false
   try {
-    const host = new URL(origin).hostname
-    return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1'
+    const parsedOrigin = new URL(origin)
+    const requestOrigin = new URL(`http://${host}`)
+    return (
+      parsedOrigin.protocol === 'http:' &&
+      parsedOrigin.origin === origin &&
+      parsedOrigin.host.toLowerCase() === requestOrigin.host.toLowerCase()
+    )
   } catch {
     return false
+  }
+}
+
+function assertJsonContentType(req: IncomingMessage): void {
+  const contentType = req.headers['content-type']
+  const mediaType = contentType?.split(';', 1)[0]?.trim().toLowerCase()
+  if (mediaType !== 'application/json') throw new HttpError(415, 'Content-Type must be application/json')
+}
+
+function decodePathSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    throw new HttpError(400, 'Malformed URL path encoding')
   }
 }
 

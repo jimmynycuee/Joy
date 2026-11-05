@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { EFFORTS } from '@joy/core'
 import { DEFAULT_ROLES, defaultConfig } from './schema.js'
 import { ConfigError, ConfigStore, joyHome, parseConfig, resolvePaths } from './store.js'
 
@@ -31,6 +32,41 @@ roles:
 `)
     expect(config.roles.reviewer).toEqual({ provider: 'claude-cli', model: 'sonnet', effort: 'low' })
     expect(config.roles.implementer).toEqual(DEFAULT_ROLES.implementer)
+  })
+
+  it('accepts every supported effort for documented Claude and API models', () => {
+    for (const [provider, model, efforts] of [
+      ['claude-cli', 'haiku', EFFORTS],
+      ['openai-api', 'gpt-6-luna', EFFORTS],
+      ['codex-cli', 'gpt-6.1-sol', EFFORTS.filter((effort) => effort !== 'max')],
+    ] as const) {
+      for (const effort of efforts) {
+        const config = parseConfig(
+          `roles: { reviewer: { provider: ${provider}, model: ${model}, effort: ${effort} } }`,
+        )
+        expect(config.roles.reviewer.effort).toBe(effort)
+      }
+    }
+  })
+
+  it('rejects effort values unsupported by the selected provider/model with an actionable path', () => {
+    expect(() =>
+      parseConfig('roles: { reviewer: { provider: codex-cli, model: gpt-6.1-sol, effort: max } }'),
+    ).toThrow(
+      /roles\.reviewer\.effort: effort 'max' is not supported for codex-cli model 'gpt-6\.1-sol'.*low, medium, high, xhigh/,
+    )
+
+    expect(() =>
+      parseConfig('roles: { reviewer: { provider: claude-cli, model: claude-opus-4-6, effort: xhigh } }'),
+    ).toThrow(
+      /roles\.reviewer\.effort: effort 'xhigh' is not supported for claude-cli model 'claude-opus-4-6'.*low, medium, high, max/,
+    )
+
+    expect(() =>
+      parseConfig('roles: { reviewer: { provider: openai-api, model: gpt-5-mini, effort: max } }'),
+    ).toThrow(
+      /roles\.reviewer\.effort: effort 'max' is not validated for openai-api model 'gpt-5-mini'.*omit effort/,
+    )
   })
 
   it('reports every problem with its path', () => {

@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@joy/core": "workspace:*"
+    "@joy/core": "workspace:*",
+    "@joy/model-effort": "workspace:*"
   }
 }

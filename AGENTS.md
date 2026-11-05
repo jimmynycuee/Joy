@@ -53,6 +53,7 @@ packages/db          SQLite (node:sqlite) connection, schema, migrations
 packages/providers   Claude CLI, Codex CLI, OpenAI API → AgentEvent (the only place that spawns CLIs)
 packages/executor    git worktree per attempt
 packages/orchestrator review loop (and later compete mode)
+packages/github     commit/push task branches and open draft pull requests
 packages/config      ~/.joy/config.yaml
 packages/secrets     OS keychain + Redactor
 scripts/             dev scripts (fixture recording)
@@ -62,7 +63,7 @@ apps/desktop         Tauri shell (T4.3)
 tests/fixtures       recorded CLI event streams for contract tests
 ```
 
-Planned packages and their tickets: `server` (T1.6, T1.7), `tools` (T2.2), `policy` (T2.3), `channels` (T2.4), `memory` (T3.3–T3.6).
+Planned packages and their tickets: `server` (T1.6, T1.7), `github` (T1.9), `tools` (T2.2), `policy` (T2.3), `channels` (T2.4), `memory` (T3.3–T3.6).
 Create a package only when its ticket asks for it.
 
 ## Adding a package
