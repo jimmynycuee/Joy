@@ -65,6 +65,9 @@ export const configSchema = z.strictObject({
       per_task: { max_rounds: 3, max_minutes: 60, max_api_usd: 1 },
     }),
   autonomy_mode: z.enum(['careful', 'normal', 'hands-off']).default('normal'),
+  tool_hub: z
+    .strictObject({ max_ask_peer_calls: z.number().int().min(1).max(100).default(5) })
+    .default({ max_ask_peer_calls: 5 }),
   providers: z
     .strictObject({
       claude: cliPath.default({}),
