@@ -50,7 +50,7 @@ import type { Executor, WorkspaceDiff } from '@joy/core'
 import { compete, reviewLoop, synthesizeStrengths } from '@joy/orchestrator'
 import type { SynthesisSourceCandidate } from '@joy/orchestrator'
 import { ClaudeCliProvider, CodexCliProvider, OpenAiApiProvider } from '@joy/providers'
-import { Redactor, SecretStore } from '@joy/secrets'
+import { MIN_SECRET_VALUE_LENGTH, Redactor, SecretStore } from '@joy/secrets'
 
 const modelSchema = z.strictObject({
   provider: z.enum(PROVIDER_KINDS),
@@ -96,7 +96,9 @@ const synthesisSourceCandidateSchema = z.object({
   status: z.literal('succeeded'),
   diff: workspaceDiffSchema,
 })
-const openAiSecretInputSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
+const openAiSecretInputSchema = z.strictObject({
+  value: z.string().trim().min(MIN_SECRET_VALUE_LENGTH).max(4096),
+})
 const MAX_BODY_BYTES = 1_000_000
 
 export interface TaskEvent {

@@ -1,4 +1,4 @@
-const MIN_LENGTH = 8
+export const MIN_SECRET_VALUE_LENGTH = 8
 export const REDACTED = '[REDACTED]'
 
 /** Well-known token shapes, scrubbed even if Joy never saw the value (e.g. an agent printed one). */
@@ -18,7 +18,7 @@ export class Redactor {
   private readonly known = new Set<string>()
 
   add(value: string): void {
-    if (value.length >= MIN_LENGTH) this.known.add(value)
+    if (value.length >= MIN_SECRET_VALUE_LENGTH) this.known.add(value)
   }
 
   redact(text: string): string {

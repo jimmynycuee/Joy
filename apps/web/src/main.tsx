@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import type { FormEvent } from 'react'
 import { EFFORTS, PROVIDER_KINDS, ROLES } from '@joy/core'
 import type { ModelRef, ProviderKind, Role, RoleConfig } from '@joy/core'
+import { maxEventSequence } from './event-sequence.js'
 import type { JoyConfig } from '@joy/config'
 import './styles.css'
 
@@ -331,6 +332,10 @@ function App() {
     implementer: 'claude-cli',
     reviewer: 'codex-cli',
   })
+  const [taskModels, setTaskModels] = useState<Record<'implementer' | 'reviewer', string>>({
+    implementer: 'opus',
+    reviewer: 'gpt-6.1-sol',
+  })
   const [showRepoForm, setShowRepoForm] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -342,6 +347,10 @@ function App() {
     setTaskProviders({
       implementer: roleModel(config, 'implementer').provider,
       reviewer: roleModel(config, 'reviewer').provider,
+    })
+    setTaskModels({
+      implementer: roleModel(config, 'implementer').model,
+      reviewer: roleModel(config, 'reviewer').model,
     })
     setShowTaskForm(true)
   }
@@ -428,15 +437,16 @@ function App() {
       const newlyAccepted = matching
         .filter((event) => event.seq > lastAcceptedSequence)
         .sort((first, second) => first.seq - second.seq)
-      lastAcceptedSequence = Math.max(lastAcceptedSequence, ...matching.map((event) => event.seq))
+      lastAcceptedSequence = Math.max(lastAcceptedSequence, maxEventSequence(matching))
       if (!detailsLoaded) {
-        bufferedEvents = mergeEvents(bufferedEvents, matching)
+        bufferedEvents.push(...matching)
         return
       }
+      if (newlyAccepted.length === 0) return
       setDetails((current) => {
         if (!current || current.task.id !== selectedTaskId) return current
         const task = newlyAccepted.reduce(taskAfterEvent, current.task)
-        return { ...current, task, events: mergeEvents(current.events, matching) }
+        return { ...current, task, events: mergeEvents(current.events, newlyAccepted) }
       })
       if (
         newlyAccepted.some(
@@ -493,7 +503,7 @@ function App() {
     void request<TaskDetails>(`/api/tasks/${encodeURIComponent(selectedTaskId)}`)
       .then((next) => {
         if (!active) return
-        const snapshotLastSequence = next.events.reduce((latest, event) => Math.max(latest, event.seq), 0)
+        const snapshotLastSequence = maxEventSequence(next.events)
         const snapshotEvents = mergeEvents(next.events, bufferedEvents)
         const pendingEvents = bufferedEvents.filter((event) => event.seq > snapshotLastSequence)
         const task = pendingEvents
@@ -502,7 +512,7 @@ function App() {
         lastAcceptedSequence = Math.max(
           lastAcceptedSequence,
           snapshotLastSequence,
-          ...bufferedEvents.map((event) => event.seq),
+          maxEventSequence(bufferedEvents),
         )
         bufferedEvents = []
         detailsLoaded = true
@@ -703,6 +713,28 @@ function App() {
     })
   }
 
+  function updateRoleProvider(role: Role, provider: ProviderKind): void {
+    if (!config) return
+    const current = roleModel(config, role)
+    const model = MODEL_SUGGESTIONS[current.provider].includes(current.model)
+      ? (MODEL_SUGGESTIONS[provider][0] ?? current.model)
+      : current.model
+    setConfig({
+      ...config,
+      roles: { ...config.roles, [role]: { ...config.roles[role], provider, model } },
+    })
+  }
+
+  function updateTaskProvider(role: 'implementer' | 'reviewer', provider: ProviderKind): void {
+    const currentProvider = taskProviders[role]
+    const currentModel = taskModels[role]
+    setTaskProviders((current) => ({ ...current, [role]: provider }))
+    if (MODEL_SUGGESTIONS[currentProvider].includes(currentModel)) {
+      const model = MODEL_SUGGESTIONS[provider][0]
+      if (model) setTaskModels((current) => ({ ...current, [role]: model }))
+    }
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -775,9 +807,7 @@ function App() {
                             aria-label={`${ROLE_LABELS[role]} provider`}
                             name={`${role}-provider`}
                             value={roleModel(config, role).provider}
-                            onChange={(event) =>
-                              updateRole(role, 'provider', event.target.value as ProviderKind)
-                            }
+                            onChange={(event) => updateRoleProvider(role, event.target.value as ProviderKind)}
                           >
                             {PROVIDER_KINDS.map((provider) => (
                               <option key={provider} value={provider}>
@@ -1407,12 +1437,7 @@ function App() {
                           aria-label={`${ROLE_LABELS[role]} provider`}
                           name={`${role}-provider`}
                           value={taskProviders[role]}
-                          onChange={(event) =>
-                            setTaskProviders((current) => ({
-                              ...current,
-                              [role]: event.target.value as ProviderKind,
-                            }))
-                          }
+                          onChange={(event) => updateTaskProvider(role, event.target.value as ProviderKind)}
                         >
                           {PROVIDER_KINDS.map((provider) => (
                             <option
@@ -1434,11 +1459,14 @@ function App() {
                           aria-label={`${ROLE_LABELS[role]} model`}
                           name={`${role}-model`}
                           list={`task-${role}-models`}
-                          defaultValue={model.model}
+                          value={taskModels[role]}
+                          onChange={(event) =>
+                            setTaskModels((current) => ({ ...current, [role]: event.target.value }))
+                          }
                           required
                         />
                         <datalist id={`task-${role}-models`}>
-                          {MODEL_SUGGESTIONS[model.provider].map((option) => (
+                          {MODEL_SUGGESTIONS[taskProviders[role]].map((option) => (
                             <option key={option} value={option} />
                           ))}
                         </datalist>

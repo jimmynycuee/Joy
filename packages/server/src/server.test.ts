@@ -1194,6 +1194,14 @@ describe('Joy local server', () => {
 
     const emptyStatus = await fetch(`${origin}/api/secrets/openai-api-key`)
     expect(await emptyStatus.json()).toEqual({ set: false })
+    const rejected = await fetch(`${origin}/api/secrets/openai-api-key`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ value: 'short' }),
+    })
+    expect(rejected.status).toBe(400)
+    expect(secretBackend.values.has('openai_api_key')).toBe(false)
+
     const saved = await fetch(`${origin}/api/secrets/openai-api-key`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },

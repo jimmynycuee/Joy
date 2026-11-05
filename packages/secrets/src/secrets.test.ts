@@ -39,6 +39,23 @@ describe('SecretStore', () => {
     expect(seen).toEqual(['token-value-1', 'token-value-1', 'token-value-1'])
   })
 
+  it('rejects secrets too short for the redactor, including legacy and environment values', async () => {
+    const backend = new MemoryBackend()
+    const seen: string[] = []
+    const store = new SecretStore({ backend, env: {}, onSecret: (value) => seen.push(value) })
+    await expect(store.set('openai_api_key', 'short')).rejects.toThrow(/at least 8 characters/)
+    expect(backend.values.has('openai_api_key')).toBe(false)
+
+    await backend.set('openai_api_key', 'short')
+    await expect(store.get('openai_api_key')).rejects.toThrow(/at least 8 characters/)
+    await expect(store.status('openai_api_key')).rejects.toThrow(/at least 8 characters/)
+
+    const envStore = new SecretStore({ backend, env: { OPENAI_API_KEY: 'short' } })
+    await expect(envStore.get('openai_api_key')).rejects.toThrow(/at least 8 characters/)
+    await expect(envStore.status('openai_api_key')).rejects.toThrow(/at least 8 characters/)
+    expect(seen).toEqual([])
+  })
+
   it('rejects empty values and unknown names', async () => {
     const store = new SecretStore({ backend: new MemoryBackend(), env: {} })
     await expect(store.set('openai_api_key', '   ')).rejects.toThrow(/empty/)
