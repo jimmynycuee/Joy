@@ -2,15 +2,15 @@
 
 > 接手前請先讀本檔、`AGENTS.md` 與 `docs/PLAN.md`。本檔記錄目前進度、阻塞與決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。
 
-- 最後更新：2026-11-05 02:19 UTC
+- 最後更新：2026-11-05 02:29 UTC
 - 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** 最新 `main` 為 `f78453731340de2276001fc1c978f7e758166177`；PR #58 已整合主要 P1 程式碼。T1.9 的真實測試 repo 驗收、T1.12、T1.13 `joy doctor`，以及依賴 T1.13 首頁檢查結果的 T1.8 驗收仍未完成。
-- 最新 `main` 驗證：本機 `env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 通過（格式、lint、typecheck、196 tests passed、2 skipped）；最新 main [CI run 41897323588](https://github.com/jimmynycuee/Joy/actions/runs/41897323588) 成功。未清除 runner 注入的 Git 身分時，fallback-identity 測試會失敗；清除後通過。
+- 本機驗證：以 `main` `f78453731340de2276001fc1c978f7e758166177` 為基底、含本 PR 文件變更的工作樹，`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 通過（格式、lint、typecheck、196 tests passed、2 skipped）。此 runner 未清除 Git 身分時，fallback-identity 測試失敗；清除後通過。最新 main [CI run 41897323588](https://github.com/jimmynycuee/Joy/actions/runs/41897323588) 成功。
 - 計畫與決策：依 `docs/PLAN.md` v0.2；T1.6、T1.7 已整合並完成。PR #58 已包含 T1.9 publisher 與 T1.8 UI 主體，但其明定的真實測試 repo 與首頁 T1.13 檢查驗收尚未證明；相關清單維持未勾選。
 
-## P1 狀態與阻塞（live snapshot：2026-11-05 02:19 UTC）
+## P1 狀態與阻塞（live snapshot：2026-11-05 02:29 UTC）
 
 1. **主要 P1 程式碼已進 main：** [PR #58](https://github.com/jimmynycuee/Joy/pull/58) 已合併，包含 T1.6、T1.7、T1.9 publisher、T1.8 UI 主體及相關驗證修補；其四項 checks 均成功。最新 main 是 `f78453731340de2276001fc1c978f7e758166177`，該 SHA 的 CI run `41897323588` 成功。
-2. **T1.12 / PR #53：** [#53](https://github.com/jimmynycuee/Joy/pull/53) 仍 open/draft，base `t1.7-event-log`，head `3fd90219695c34bb38d37539158c765853208c21`；該舊 head 的 Ubuntu、macOS、Windows checks 成功。owner `jimmynycuee` 已列為 requested reviewer，尚無 review/approval。對 #53 的獨立 review 指出 resume 拒絕應在改變狀態前同步回報、allowlist 修復建議目前不可行、資料庫值需要結構驗證，且需避免對非活動 role 或未建立的 attempt 留下誤導狀態；這些是待修復／驗證事項，不代表舊 head 可合併。支援的 base 更新操作尚未生效，讀回仍為 `t1.7-event-log`。
+2. **T1.12 / PR #53：** [#53](https://github.com/jimmynycuee/Joy/pull/53) 仍 open/draft，base `t1.7-event-log`，head `3fd90219695c34bb38d37539158c765853208c21`；該舊 head 的 Ubuntu、macOS、Windows checks 成功。owner `jimmynycuee` 已列為 requested reviewer，尚無 review/approval。對 #53 的 Session 內獨立 review（未記錄於 PR comments）指出：resume 的 allowlist 拒絕應在狀態變更前同步回報；錯誤建議以相同 repo path 重新註冊，但路徑唯一且目前沒有更新 allowlist 的 API；資料庫值需要結構驗證；另需避免對非活動 role 或未建立的 attempt 留下誤導狀態。這些是待修復／驗證事項，不代表舊 head 可合併。支援的 base 更新操作尚未生效，讀回仍為 `t1.7-event-log`。
 3. **#57 必須保持 open：** [#57](https://github.com/jimmynycuee/Joy/pull/57) 仍 open，與 #53 共用 head `3fd90219695c34bb38d37539158c765853208c21`，base `main`，目前與 main 衝突（dirty）；舊三平台 checks 不涵蓋更新後的 main。使用者明確要求保留 #57 開啟；任何發布到共享 head 都會同時更新它，不能關閉 #57。
 4. **T1.9 尚未通過完整驗收：** publisher 已由 PR #58 整合；目前可核對的測試使用 fake `gh`／local bare remote，未證明在真實測試 repo 成功建立 draft PR，故 PLAN 保持未勾選。
 5. **T1.13 與 T1.8 尚未通過完整驗收：** `joy doctor`／首次啟動檢查尚未實作。T1.8 UI 主體已進 main，但其首頁顯示 T1.13 檢查結果的驗收條件未完成，因此 T1.8 仍未勾選。
