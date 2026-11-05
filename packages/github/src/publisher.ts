@@ -873,6 +873,7 @@ async function runCommand(
   input?: string,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
+    let stdinError: NodeJS.ErrnoException | undefined
     const env = {
       ...process.env,
       GIT_TERMINAL_PROMPT: '0',
@@ -916,14 +917,19 @@ async function runCommand(
             return
           }
           reject(new CommandFailure(`${description} ${reason}.${detail ? ` ${detail}` : ''}`, code))
+        } else if (stdinError) {
+          const code = stdinError.code
+          reject(
+            new CommandFailure(`${description} input failed (${String(code ?? 'unknown error')}).`, code),
+          )
         } else {
           resolve(stdout)
         }
       },
     )
     child.stdin?.on('error', (error: NodeJS.ErrnoException) => {
-      // A child may exit before consuming a large batch; its exit callback reports that failure.
-      if (error.code !== 'EPIPE') reject(error)
+      // Prefer the child's exit status; if it succeeded, report the failed input write explicitly.
+      stdinError = error
     })
     child.stdin?.end(input)
   })
