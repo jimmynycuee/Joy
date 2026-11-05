@@ -198,19 +198,17 @@ async function waitForProviderCalls(provider: FakeProvider, count: number): Prom
   throw new Error(`Provider did not receive ${count} calls`)
 }
 
-async function waitForSettledTask(origin: string, id: string): Promise<TaskDetails> {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const response = await fetch(`${origin}/api/tasks/${id}`)
-    const body = (await response.json()) as TaskDetails
-    if (body.task.status !== 'queued' && body.task.status !== 'running') return body
-    await new Promise((resolve) => setTimeout(resolve, 5))
-  }
-  throw new Error('Task did not settle')
-}
-
 async function postJson(url: string, body: unknown) {
   return fetch(url, {
     method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+async function patchJson(url: string, body: unknown) {
+  return fetch(url, {
+    method: 'PATCH',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   })
@@ -321,11 +319,6 @@ describe('Joy local server', () => {
         roleOverrides: { implementer: { provider: 'codex-cli', model: 'test-model' } },
         role: 'implementer',
       },
-      {
-        mode: 'single',
-        roleOverrides: { reviewer: { provider: 'codex-cli', model: 'test-model' } },
-        role: 'reviewer',
-      },
       { mode: 'review_loop', roleOverrides: undefined, role: 'reviewer' },
     ] as const
     for (const denied of deniedCases) {
@@ -340,16 +333,74 @@ describe('Joy local server', () => {
       const body = (await response.json()) as { error: string }
       expect(body.error).toContain(`Role "${denied.role}"`)
       expect(body.error).toContain('codex-cli')
-      expect(body.error).toContain('Select an allowed provider for this repository')
-      expect(body.error).toContain('register a new repository with a different allowlist')
+      expect(body.error).toContain('Select an allowed provider')
+      expect(body.error).toContain('PATCH /api/repos/{repoId}')
     }
+  })
+
+  it('ignores an unused disallowed reviewer override in single mode', async () => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, {
+        path: '/single-with-unused-reviewer',
+        defaultBranch: 'main',
+        allowedProviders: ['claude-cli'],
+      })
+    ).json()) as { repo: { id: string } }
+
+    const response = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Ignore unused reviewer',
+      prompt: 'Do the implementation only',
+      mode: 'single',
+      roleOverrides: { reviewer: { provider: 'codex-cli', model: 'test-model' } },
+    })
+    expect(response.status).toBe(201)
+  })
+
+  it('retains the runtime allowlist guard if the active config changes after task creation', async () => {
+    const { serverPromise, configStore, implementer, reviewer, api } = fixture()
+    const getConfig = configStore.get.bind(configStore)
+    let configReads = 0
+    configStore.get = async () => {
+      const config = await getConfig()
+      configReads++
+      return configReads === 2
+        ? {
+            ...config,
+            roles: { ...config.roles, implementer: { ...config.roles.implementer, provider: 'codex-cli' } },
+          }
+        : config
+    }
+    const { origin } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, {
+        path: '/runtime-allowlist-guard',
+        defaultBranch: 'main',
+        allowedProviders: ['claude-cli'],
+      })
+    ).json()) as { repo: { id: string } }
+    const { task } = (await (
+      await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: 'Revalidate at execution',
+        prompt: 'Run with current configuration',
+        mode: 'single',
+      })
+    ).json()) as { task: { id: string } }
+
+    expect((await waitForStatus(origin, task.id, 'failed')).attempts).toHaveLength(0)
+    expect(implementer.calls).toHaveLength(0)
+    expect(reviewer.calls).toHaveLength(0)
+    expect(api.calls).toHaveLength(0)
   })
 
   it.each([
     { role: 'implementer', allowedProviders: ['codex-cli'], reviewerProvider: 'codex-cli' },
     { role: 'reviewer', allowedProviders: ['claude-cli'], reviewerProvider: 'openai-api' },
   ] as const)(
-    'rejects a resumed task when its $role provider is no longer allowed',
+    'rejects a resumed task synchronously when its $role provider is no longer allowed',
     async ({ role, allowedProviders, reviewerProvider }) => {
       const { db, serverPromise, implementer, reviewer, api, configStore } = fixture()
       implementer.waitForAbort = true
@@ -389,20 +440,69 @@ describe('Joy local server', () => {
         }))
       }
 
+      const beforeResume = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
       const resumed = await postJson(`${origin}/api/tasks/${task.id}/resume`, {})
-      expect(resumed.status).toBe(202)
-      const failed = await waitForSettledTask(origin, task.id)
-      const rejection = failed.events.find((event) => (event as { type: string }).type === 'error') as
-        { payload: { message: string } } | undefined
-      expect(rejection?.payload.message).toContain(`Role "${role}"`)
-      expect(rejection?.payload.message).toContain(
+      expect(resumed.status).toBe(422)
+      const rejection = (await resumed.json()) as { error: string }
+      expect(rejection.error).toContain(`Role "${role}"`)
+      expect(rejection.error).toContain(
         `provider "${role === 'implementer' ? 'claude-cli' : reviewerProvider}"`,
       )
+      expect(rejection.error).toContain('PATCH /api/repos/{repoId}')
+      const afterResume = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
+      expect(afterResume.task.status).toBe('cancelled')
+      expect(afterResume.attempts).toEqual(beforeResume.attempts)
+      expect(afterResume.events).toEqual(beforeResume.events)
       expect(implementer.calls).toHaveLength(0)
       expect(reviewer.calls).toHaveLength(0)
       expect(api.calls).toHaveLength(0)
     },
   )
+
+  it('updates a repository allowlist through PATCH so a rejected resume can be recovered', async () => {
+    const { serverPromise, implementer } = fixture()
+    implementer.waitForAbort = true
+    const { origin } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/resume-recovery', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    const { task } = (await (
+      await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: 'Recover a rejected resume',
+        prompt: 'wait',
+        mode: 'single',
+      })
+    ).json()) as { task: { id: string } }
+    await waitForProviderCalls(implementer, 1)
+    await postJson(`${origin}/api/tasks/${task.id}/cancel`, {})
+    await waitForStatus(origin, task.id, 'cancelled')
+
+    const narrowed = await patchJson(`${origin}/api/repos/${repo.id}`, {
+      allowedProviders: ['codex-cli'],
+    })
+    expect(narrowed.status).toBe(200)
+    const denied = await postJson(`${origin}/api/tasks/${task.id}/resume`, {})
+    expect(denied.status).toBe(422)
+    expect(((await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails).task.status).toBe(
+      'cancelled',
+    )
+
+    const restored = await patchJson(`${origin}/api/repos/${repo.id}`, { allowedProviders: ['claude-cli'] })
+    expect(restored.status).toBe(200)
+    expect(
+      ((await restored.json()) as { repo: { allowedProviders: string[] } }).repo.allowedProviders,
+    ).toEqual(['claude-cli'])
+    const resumed = await postJson(`${origin}/api/tasks/${task.id}/resume`, {})
+    expect(resumed.status).toBe(202)
+    await waitForProviderCalls(implementer, 2)
+    const cancelled = await postJson(`${origin}/api/tasks/${task.id}/cancel`, {})
+    expect(cancelled.status).toBe(200)
+    await waitForStatus(origin, task.id, 'cancelled')
+
+    const invalidUpdate = await patchJson(`${origin}/api/repos/${repo.id}`, { allowedProviders: [] })
+    expect(invalidUpdate.status).toBe(400)
+  })
 
   it.each([
     { allowedProviders: [], issue: 'at least one provider' },

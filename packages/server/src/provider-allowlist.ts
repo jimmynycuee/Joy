@@ -20,5 +20,5 @@ export function findDisallowedRoleProviders(
 }
 
 export function describeDisallowedRoleProvider({ role, provider }: DisallowedRoleProvider): string {
-  return `Role "${role}" selects provider "${provider}", which is not allowed for this repository. Select an allowed provider for this repository, or register a new repository with a different allowlist.`
+  return `Role "${role}" selects provider "${provider}", which is not allowed for this repository. Select an allowed provider, or update the repository allowlist with PATCH /api/repos/{repoId} and a JSON body shaped like {"allowedProviders":["openai-api","claude-cli"]}, replacing the list with providers permitted for this repository.`
 }

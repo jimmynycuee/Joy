@@ -75,6 +75,21 @@ describe('openDatabase', () => {
     expect(db.prepare('SELECT allowed_providers FROM repos WHERE id = ?').get('r1')).toEqual({
       allowed_providers: '["openai-api","claude-cli","codex-cli"]',
     })
+    for (const [index, invalid] of [
+      '[]',
+      '["claude-cli","claude-cli"]',
+      '["unknown"]',
+      '{"provider":"claude-cli"}',
+    ].entries()) {
+      expect(() =>
+        db.prepare('UPDATE repos SET allowed_providers = ? WHERE id = ?').run(invalid, 'r1'),
+      ).toThrow(/allowed providers/)
+      expect(() =>
+        db
+          .prepare('INSERT INTO repos (id, path, default_branch, allowed_providers) VALUES (?, ?, ?, ?)')
+          .run(`bad-${index}`, `/bad-${index}`, 'main', invalid),
+      ).toThrow(/allowed providers/)
+    }
   })
 
   it('refuses a database from a newer Joy', () => {

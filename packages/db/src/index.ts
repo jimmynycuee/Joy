@@ -22,6 +22,7 @@ export {
   listUsage,
   setTaskStatus,
   updateAttempt,
+  updateRepoAllowedProviders,
 } from './repositories.js'
 export type {
   AttemptRecord,

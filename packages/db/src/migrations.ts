@@ -164,6 +164,47 @@ export const MIGRATIONS: readonly Migration[] = [
         CHECK (json_valid(allowed_providers));
     `,
   },
+  {
+    version: 3,
+    name: 'validate repository provider allowlists',
+    sql: /* sql */ `
+      CREATE TRIGGER repos_allowed_providers_insert
+      BEFORE INSERT ON repos
+      BEGIN
+        SELECT CASE
+          WHEN json_type(NEW.allowed_providers) IS NOT 'array'
+            THEN RAISE(ABORT, 'repository allowed providers must be an array')
+          WHEN json_array_length(NEW.allowed_providers) = 0
+            THEN RAISE(ABORT, 'repository allowed providers must contain at least one provider')
+          WHEN EXISTS (
+            SELECT 1 FROM json_each(NEW.allowed_providers)
+            WHERE type != 'text' OR value NOT IN ('openai-api', 'claude-cli', 'codex-cli')
+          ) THEN RAISE(ABORT, 'repository allowed providers contain an unknown provider')
+          WHEN (SELECT count(*) FROM json_each(NEW.allowed_providers))
+            != (SELECT count(DISTINCT value) FROM json_each(NEW.allowed_providers))
+            THEN RAISE(ABORT, 'repository allowed providers must be unique')
+        END;
+      END;
+
+      CREATE TRIGGER repos_allowed_providers_update
+      BEFORE UPDATE OF allowed_providers ON repos
+      BEGIN
+        SELECT CASE
+          WHEN json_type(NEW.allowed_providers) IS NOT 'array'
+            THEN RAISE(ABORT, 'repository allowed providers must be an array')
+          WHEN json_array_length(NEW.allowed_providers) = 0
+            THEN RAISE(ABORT, 'repository allowed providers must contain at least one provider')
+          WHEN EXISTS (
+            SELECT 1 FROM json_each(NEW.allowed_providers)
+            WHERE type != 'text' OR value NOT IN ('openai-api', 'claude-cli', 'codex-cli')
+          ) THEN RAISE(ABORT, 'repository allowed providers contain an unknown provider')
+          WHEN (SELECT count(*) FROM json_each(NEW.allowed_providers))
+            != (SELECT count(DISTINCT value) FROM json_each(NEW.allowed_providers))
+            THEN RAISE(ABORT, 'repository allowed providers must be unique')
+        END;
+      END;
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

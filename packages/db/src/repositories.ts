@@ -11,7 +11,7 @@ import type {
   TaskMode,
   TaskStatus,
 } from '@joy/core'
-import { PROVIDER_KINDS } from '@joy/core'
+import { isProviderKind, PROVIDER_KINDS } from '@joy/core'
 import type { Database } from './database.js'
 
 export interface RepoRecord extends RepoRef {
@@ -144,15 +144,10 @@ interface AttemptRow {
 }
 
 export function createRepo(db: Database, repo: NewRepo): RepoRecord {
+  const allowedProviders = validateAllowedProviders(repo.allowedProviders ?? PROVIDER_KINDS)
   db.prepare(
     'INSERT INTO repos (id, path, github_remote, default_branch, allowed_providers) VALUES (?, ?, ?, ?, ?)',
-  ).run(
-    repo.id,
-    repo.path,
-    repo.githubRemote ?? null,
-    repo.defaultBranch,
-    JSON.stringify(repo.allowedProviders ?? PROVIDER_KINDS),
-  )
+  ).run(repo.id, repo.path, repo.githubRemote ?? null, repo.defaultBranch, JSON.stringify(allowedProviders))
   const stored = getRepo(db, repo.id)
   if (!stored) throw new Error(`Repository ${repo.id} was not found after insert`)
   return stored
@@ -167,6 +162,16 @@ export function listRepos(db: Database): RepoRecord[] {
   return (db.prepare('SELECT * FROM repos ORDER BY created_at, id').all() as unknown as RepoRow[]).map(
     mapRepo,
   )
+}
+
+export function updateRepoAllowedProviders(
+  db: Database,
+  id: RepoId,
+  allowedProviders: ProviderKind[],
+): RepoRecord | undefined {
+  const validated = validateAllowedProviders(allowedProviders)
+  db.prepare('UPDATE repos SET allowed_providers = ? WHERE id = ?').run(JSON.stringify(validated), id)
+  return getRepo(db, id)
 }
 
 export interface NewTask {
@@ -468,9 +473,27 @@ function mapRepo(row: RepoRow): RepoRecord {
     path: row.path,
     defaultBranch: row.default_branch,
     ...(row.github_remote ? { githubRemote: row.github_remote } : {}),
-    allowedProviders: JSON.parse(row.allowed_providers) as ProviderKind[],
+    allowedProviders: parseStoredAllowedProviders(row.allowed_providers),
     createdAt: row.created_at,
   }
+}
+
+function parseStoredAllowedProviders(value: string): ProviderKind[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value) as unknown
+  } catch (error) {
+    throw new Error('Invalid repository provider allowlist JSON', { cause: error })
+  }
+  return validateAllowedProviders(parsed)
+}
+
+function validateAllowedProviders(value: unknown): ProviderKind[] {
+  if (!Array.isArray(value) || value.length === 0 || !value.every(isProviderKind))
+    throw new Error('Invalid repository provider allowlist: expected a non-empty array of known providers')
+  if (new Set(value).size !== value.length)
+    throw new Error('Invalid repository provider allowlist: providers must be unique')
+  return value
 }
 
 function mapTask(row: TaskRow): StoredTask {

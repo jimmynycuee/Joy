@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AttemptId, RepoId, TaskId } from '@joy/core'
 import { openDatabase } from './database.js'
+import { MIGRATIONS } from './migrations.js'
 import type { Database } from './database.js'
 import {
   addUsage,
@@ -82,6 +83,24 @@ describe('repositories', () => {
     })
     expect(repo.allowedProviders).toEqual(['claude-cli'])
     expect(getRepo(db, repo.id)).toEqual(repo)
+  })
+
+  it.each([
+    { stored: {}, reason: 'array' },
+    { stored: [], reason: 'at least one' },
+    { stored: ['unknown'], reason: 'provider' },
+    { stored: ['claude-cli', 'claude-cli'], reason: 'unique' },
+  ])('rejects invalid legacy persisted allowlist values ($reason)', ({ stored }) => {
+    const db = openDatabase(':memory:', { migrations: MIGRATIONS.slice(0, 2) })
+    databases.push(db)
+    db.prepare('INSERT INTO repos (id, path, default_branch, allowed_providers) VALUES (?, ?, ?, ?)').run(
+      'legacy-invalid',
+      '/legacy-invalid',
+      'main',
+      JSON.stringify(stored),
+    )
+
+    expect(() => getRepo(db, rid('legacy-invalid'))).toThrow(/allowlist/i)
   })
 
   it('persists attempt workspaces, sessions and status updates', () => {

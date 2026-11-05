@@ -3,16 +3,16 @@
 > 給接手的人或 agent：**開工前先讀這份、`AGENTS.md`、`docs/PLAN.md`。收工前更新這份。**
 > 這裡只寫 PLAN 沒有的東西：現在做到哪、卡在哪、下一步、最近的決策。進度打勾在 PLAN 的「進度」。
 
-- 最後更新：2026-11-03
-- 目前階段：**P1 進行中**（T1.1–T1.7、T1.10、T1.11 已完成實作；T1.6 draft PR #6 三平台 CI 通過、等擁有者審核/合併；剩 T1.9、T1.8）
-- 最新分支：`t1.7-event-log`，從 `t1.6-server` 切出；T1.7 已完成，draft PR #7 已開，三平台 CI pending。
+- 最後更新：2026-11-05
+- 目前階段：**P1 進行中**（T1.1–T1.7、T1.10、T1.11、T1.12 已完成實作；T1.12 draft PR #53 等擁有者審核與新 head checks；PR base 仍為 `t1.7-event-log`，改為 `main` 尚未確認；剩 T1.9、T1.8）
+- 最新分支：`t1.12-repo-provider-allowlist`，從 `t1.7-event-log` 切出；PR #53 為 draft，PR #57 共用此 head 並維持 open。
 
 ## 分支與 PR（一條直線，每個疊在前一個上）
 
 ```
 main ← t0-foundation (#2) ← t1.1-claude-cli (#3) ← t1.4-worktree (#4) ← t1.11-config (#5)
      ← t1.10-secrets ← t1.2-codex ← t1.3-openai-api ← t1.5-review-loop ← t1.6-server（#6 draft，三平台 CI 通過）
-                                                                      ← t1.7-event-log（#7 draft，Ubuntu/macOS/Windows CI pending）
+                                                                      ← t1.7-event-log（#7 draft） ← t1.12-repo-provider-allowlist（#53 draft；base 仍為 t1.7-event-log）
 ```
 
 - #2–#5 已開 PR，CI 三平台通過，**等擁有者審核**（含 `packages/core` 變更）。
@@ -32,7 +32,7 @@ main ← t0-foundation (#2) ← t1.1-claude-cli (#3) ← t1.4-worktree (#4) ← 
 | `packages/config`       | T1.11 後端：`~/.joy/config.yaml`（`JOY_HOME` 可改），zod 驗證，檔案改了下次讀取就生效                                                                |
 | `packages/secrets`      | T1.10：OS 鑰匙圈（`@napi-rs/keyring`）、環境變數覆寫、`Redactor` 遮罩                                                                                |
 | `packages/orchestrator` | T1.5：`reviewLoop()`：可選規劃 + 規劃審查 → 實作 → 結構化審查 → 同 session 修正，最多 N 輪                                                           |
-| server / UI / GitHub    | T1.6–T1.7 server 完成：loopback HTTP + WebSocket、任務執行/取消/恢復、Redactor 遮罩事件寫入與重啟回放；UI T1.8、GitHub T1.9 尚未完成                 |
+| server / UI / GitHub    | T1.6–T1.7 server 完成；T1.12 增加 repo provider allowlist、resume preflight、PATCH 更新與 DB 驗證（PR #53 draft）；UI T1.8、GitHub T1.9 尚未完成     |
 
 ## 卡住 / 需要人做的事
 
@@ -56,6 +56,7 @@ main ← t0-foundation (#2) ← t1.1-claude-cli (#3) ← t1.4-worktree (#4) ← 
 
 | 日期       | 決策                                                                                                                                                                    | 原因 / 出處                                                                                                   |
 | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| 2026-11-05 | T1.12 resume 在更新 task 狀態前同步檢查 repo allowlist；repo allowlist 以 PATCH 更新並在 SQLite trigger 與 mapper 驗證；只檢查該 mode 會使用的 roles                    | 避免拒絕時留下錯誤 task/attempt/event，並提供可行復原方式、防止無效持久化資料繞過 validator                   |
 | 2026-11-03 | T1.7 事件採 task-wide 單調序號並在 Redactor 遮罩後才寫入 DB；同 attempt/round 的重播 review 更新既有列；usage 按 UTC 日與 provider 累加                                 | 讓多次 attempt 可連續回放、secret 不落盤，且 server resume 不因 review 唯一鍵衝突失敗                         |
 | 2026-11-03 | T1.6 server 固定只綁 `127.0.0.1`；P1 尚不支援的 compete 模式回 422；重啟中斷以 `failed` 狀態加 `interrupted` 事件表示，恢復沿用原 worktree 與 implementer session/model | loopback 維持本機邊界；避免靜默降級；現有 `TaskStatus` 沒有 interrupted 值，仍保留接續原 CLI session 的檢查點 |
 | 2026-11-03 | 審查結果用 JSON Schema 強制結構化；所有欄位必填、可為 null（OpenAI strict 模式要求）；列出 blocker 卻 approve 視為不通過                                                | `packages/orchestrator/src/prompts.ts`                                                                        |
