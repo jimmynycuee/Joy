@@ -87,6 +87,7 @@ const diff: WorkspaceDiff = {
 
 class FakeProvider implements AgentProvider {
   readonly calls: RunOptions[] = []
+  onRun?: (options: RunOptions) => Promise<void>
   waitForAbort = false
   readonly capabilities = {
     codeEdit: true,
@@ -105,6 +106,7 @@ class FakeProvider implements AgentProvider {
 
   async *run(options: RunOptions): AsyncGenerator<AgentEvent> {
     this.calls.push(options)
+    await this.onRun?.(options)
     const sessionId = options.resumeSessionId ?? `session-${this.calls.length}`
     if (!options.resumeSessionId) yield { type: 'session_started', sessionId }
     yield { type: 'message', text: 'working' }
@@ -1091,6 +1093,123 @@ describe('Joy local server', () => {
       mode: 'compete',
     })
     expect(compete.status).toBe(422)
+  })
+
+  it('exposes a task-scoped Tool Hub to CLI runs with authentication, shared read-only peers, and limits', async () => {
+    const implementer = new FakeProvider('claude-cli')
+    implementer.capabilities.delegatedApproval = true
+    const { reviewer, configStore, serverPromise } = fixture({ implementer })
+    await configStore.update((config) => ({ ...config, tool_hub: { max_ask_peer_calls: 1 } }))
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, {
+      path: '/tmp/tool-hub-repo',
+      defaultBranch: 'main',
+    })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const taskResponse = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Use the Tool Hub',
+      prompt: 'Implement the requested change',
+      mode: 'single',
+    })
+    const { task } = (await taskResponse.json()) as { task: { id: string } }
+    const responses: Array<{ status: number; body: unknown }> = []
+    implementer.onRun = async (options) => {
+      const mcp = options.mcpServers?.[0]
+      if (!mcp || mcp.transport !== 'stdio')
+        throw new Error('CLI provider did not receive the stdio Tool Hub')
+      expect(mcp).toMatchObject({ name: 'joy', command: process.execPath })
+      expect(options.approvalTool).toBe('mcp__joy__approve')
+      const endpoint = mcp.env?.JOY_TOOL_HUB_ENDPOINT
+      const token = mcp.env?.JOY_TOOL_HUB_TOKEN
+      expect(endpoint).toContain('/internal/tool-hub/')
+      expect(token).toBeTruthy()
+      const call = async (authorization: string, name: string, args: unknown) => {
+        const response = await globalThis.fetch(endpoint as string, {
+          method: 'POST',
+          headers: { authorization, 'content-type': 'application/json' },
+          body: JSON.stringify({ name, arguments: args }),
+        })
+        responses.push({ status: response.status, body: await response.json() })
+      }
+      await call(`Bearer ${token}-wrong`, 'task_status', {})
+      await call(`Bearer ${token}`, 'task_status', {})
+      await call(`Bearer ${token}`, 'approve', {
+        tool_name: 'mcp__joy__ask_peer',
+        input: { provider: 'codex-cli', question: 'Review' },
+        tool_use_id: 'joy-tool-1',
+      })
+      await call(`Bearer ${token}`, 'approve', {
+        tool_name: 'Bash',
+        input: { command: 'anything' },
+        tool_use_id: 'shell-1',
+      })
+      await call(`Bearer ${token}`, 'ask_peer', {
+        provider: 'codex-cli',
+        question: 'Review the current change',
+      })
+      await call(`Bearer ${token}`, 'ask_peer', {
+        provider: 'codex-cli',
+        question: 'Review the current change again',
+      })
+    }
+    const result = await waitForStatus(origin, task.id, 'done')
+    expect(responses.map(({ status }) => status)).toEqual([403, 200, 200, 200, 200, 422])
+    expect(responses[1]?.body).toMatchObject({ value: { id: task.id, status: 'running' } })
+    expect(responses[2]?.body).toMatchObject({
+      value: { behavior: 'allow', updatedInput: { provider: 'codex-cli', question: 'Review' } },
+    })
+    expect(responses[3]?.body).toMatchObject({ value: { behavior: 'deny' } })
+    expect(responses[4]?.body).toMatchObject({ value: { provider: 'codex-cli', answer: 'working' } })
+    expect(responses[5]?.body).toMatchObject({ error: 'ask_peer limit reached (1 per task)' })
+    expect(reviewer.calls).toHaveLength(1)
+    expect(reviewer.calls[0]).toMatchObject({ cwd: '/fake/worktree', autonomy: 'read-only' })
+    expect(reviewer.calls[0]?.mcpServers).toBeUndefined()
+    expect(
+      result.events.filter((event) => (event as { type?: string }).type === 'tool_hub.ask_peer'),
+    ).toHaveLength(1)
+  })
+
+  it('blocks Tool Hub peers excluded by the repository provider allowlist', async () => {
+    const implementer = new FakeProvider('claude-cli')
+    const { reviewer, serverPromise } = fixture({ implementer })
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, {
+      path: '/tmp/tool-hub-allowlist-repo',
+      defaultBranch: 'main',
+      allowedProviders: ['claude-cli'],
+    })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const taskResponse = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Respect peer allowlist',
+      prompt: 'Do not delegate to a disallowed provider',
+      mode: 'single',
+    })
+    const { task } = (await taskResponse.json()) as { task: { id: string } }
+    let response: { status: number; body: unknown } | undefined
+    implementer.onRun = async (options) => {
+      const mcp = options.mcpServers?.[0]
+      if (!mcp || mcp.transport !== 'stdio')
+        throw new Error('CLI provider did not receive the stdio Tool Hub')
+      const endpoint = mcp.env?.JOY_TOOL_HUB_ENDPOINT
+      const token = mcp.env?.JOY_TOOL_HUB_TOKEN
+      const result = await globalThis.fetch(endpoint as string, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'ask_peer',
+          arguments: { provider: 'codex-cli', question: 'Review this worktree' },
+        }),
+      })
+      response = { status: result.status, body: await result.json() }
+    }
+    await waitForStatus(origin, task.id, 'done')
+    expect(response).toMatchObject({
+      status: 422,
+      body: { error: 'ask_peer provider codex-cli is not allowed for this repository' },
+    })
+    expect(reviewer.calls).toHaveLength(0)
   })
 
   it('manages OpenAI keys without exposing them and redacts subsequent fake-provider events', async () => {
