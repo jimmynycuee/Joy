@@ -19,6 +19,14 @@ export function findDisallowedRoleProviders(
   })
 }
 
-export function describeDisallowedRoleProvider({ role, provider }: DisallowedRoleProvider): string {
-  return `Role "${role}" selects provider "${provider}", which is not allowed for this repository. Select an allowed provider, or update the repository allowlist with PATCH /api/repos/{repoId} and a JSON body shaped like {"allowedProviders":["openai-api","claude-cli"]}, replacing the list with providers permitted for this repository.`
+export function describeDisallowedRoleProvider(
+  { role, provider }: DisallowedRoleProvider,
+  options: { resuming?: boolean } = {},
+): string {
+  const updateAllowlist =
+    'update the repository allowlist with PATCH /api/repos/{repoId} and a JSON body shaped like {"allowedProviders":["openai-api","claude-cli"]}, replacing the list with providers permitted for this repository'
+  const nextStep = options.resuming
+    ? `The saved task's provider is fixed; ${updateAllowlist} to include this provider, or create a new task with an allowed provider.`
+    : `Select an allowed provider, or ${updateAllowlist}.`
+  return `Role "${role}" selects provider "${provider}", which is not allowed for this repository. ${nextStep}`
 }

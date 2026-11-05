@@ -489,7 +489,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   async function resumeState(task: StoredTask): Promise<ResumeState> {
     const attempt = latestAttempt(db, task.id)
-    if (!attempt?.sessionId || !attempt.worktreePath || !attempt.branch || !attempt.baseCommit)
+    if (!attempt)
+      throw new HttpError(
+        409,
+        'This task has no provider attempt or saved session and cannot be resumed; create a new task.',
+      )
+    if (!attempt.sessionId || !attempt.worktreePath || !attempt.branch || !attempt.baseCommit)
       throw new HttpError(409, 'No saved worktree and provider session are available to resume')
     const repo = getRepo(db, task.repoId)
     if (!repo) throw new HttpError(404, `Repository ${task.repoId} was not found`)
@@ -500,7 +505,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       selectActiveRoles(task.mode, config.roles as RoleConfig, task.roleOverrides, implementer),
       repo.allowedProviders,
     )[0]
-    if (disallowed) throw new HttpError(422, describeDisallowedRoleProvider(disallowed))
+    if (disallowed) throw new HttpError(422, describeDisallowedRoleProvider(disallowed, { resuming: true }))
     const provider = providers[attempt.provider]
     if (!provider?.capabilities.codeEdit)
       throw new HttpError(
@@ -573,7 +578,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         if (attempt) updateAttempt(db, attempt.id, { status })
         setTaskStatus(db, task.id, status)
         if (attempt) publish(task.id, attempt.id, 'error', { message })
-        else publishTaskFailure(task.id, message)
+        else
+          publishTaskFailure(
+            task.id,
+            `${message} No provider attempt was started; after changing the provider configuration or repository allowlist, create a new task.`,
+          )
         return
       }
       if (!attempt) {

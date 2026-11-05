@@ -1312,6 +1312,14 @@ describe('Joy local server', () => {
       }),
     ])
     expect(failed.events[0]).not.toHaveProperty('attemptId')
+    expect(failed.events[0]).toMatchObject({
+      payload: { message: expect.stringContaining('create a new task') },
+    })
+    const resumeWithoutAttempt = await postJson(`${origin}/api/tasks/${task.id}/resume`, {})
+    expect(resumeWithoutAttempt.status).toBe(409)
+    expect(((await resumeWithoutAttempt.json()) as { error: string }).error).toContain(
+      'cannot be resumed; create a new task',
+    )
     expect(implementer.calls).toHaveLength(0)
     expect(reviewer.calls).toHaveLength(0)
     expect(api.calls).toHaveLength(0)
@@ -1370,6 +1378,8 @@ describe('Joy local server', () => {
         `provider "${role === 'implementer' ? 'claude-cli' : reviewerProvider}"`,
       )
       expect(rejection.error).toContain('PATCH /api/repos/{repoId}')
+      expect(rejection.error).toContain("saved task's provider is fixed")
+      expect(rejection.error).toContain('create a new task with an allowed provider')
       const afterResume = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
       expect(afterResume.task.status).toBe('cancelled')
       expect(afterResume.attempts).toEqual(beforeResume.attempts)
