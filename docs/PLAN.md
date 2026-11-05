@@ -351,7 +351,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 | ticket | 內容 | 驗收條件 |
 |---|---|---|
 | T4.1 | 遠端存取：token 驗證 + Tailscale 文件；server 預設只綁 127.0.0.1，開啟遠端要明確設定 | 沒有 token 的請求一律 401；token 可在 UI 重新產生並讓舊的失效 |
-| T4.2 | PWA + Web Push 通知（PR #17 提交本機可安裝 PWA 基礎；open/draft、base `t1.8-web`、head `ad4539d`，Ubuntu/macOS/Windows/web E2E 四項 checks 全通過；本機驗證報告與 PR 說明中的測試數字不一致，須核對；Web Push 仍待 T4.1） | 手機加到主畫面後收得到任務完成與審核通知 |
+| T4.2 | PWA + Web Push 通知（PR #17 closed、未合併；head `60a148a` 的 Ubuntu/macOS/Windows/web E2E 四項 checks 全通過，但本機 PWA 變更不在 base；Web Push 仍待 T4.1） | 手機加到主畫面後收得到任務完成與審核通知 |
 | T4.3 | Tauri 桌面 app：系統匣、開機啟動、原生通知、自動更新 | macOS 與 Windows 安裝檔可安裝、更新、移除 |
 | T4.4 | Windows 強化：安裝檔、`.cmd` shim 的 spawn、WSL 偵測與 Codex fallback | Windows 實機完成一次交叉審查任務 |
 | T4.5 | `executor/docker`：可選的 container 模式（掛載 CLI 憑證、網路政策） | 不信任的 repo 可在 container 內跑完任務 |
