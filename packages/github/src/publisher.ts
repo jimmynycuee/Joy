@@ -754,8 +754,13 @@ function parseBinaryPaths(output: string): string[] {
 }
 
 function containsGitLfsPointer(content: string): boolean {
-  const lines = content.trim().split(/\r?\n/)
-  const version = lines[0]?.trim()
+  const pointerFields = content
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^ext-\d+-\w+/.test(line))
+  const [version, ...fields] = pointerFields
   if (
     ![
       'version https://git-lfs.github.com/spec/v1',
@@ -765,11 +770,9 @@ function containsGitLfsPointer(content: string): boolean {
   ) {
     return false
   }
-  const pointerFields = lines.slice(1)
-  return (
-    pointerFields.some((line) => /^oid sha256:[a-f0-9]{64}$/i.test(line)) &&
-    pointerFields.some((line) => /^size \d+$/.test(line))
-  )
+  const oidIndex = fields.findIndex((line) => /^oid sha256:[a-f0-9]{64}$/i.test(line))
+  const sizeIndex = fields.findIndex((line, index) => index > oidIndex && /^size [+-]?\d+$/.test(line))
+  return oidIndex >= 0 && sizeIndex > oidIndex
 }
 
 function parseChangedBlobIds(output: string): string[] {

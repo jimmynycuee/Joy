@@ -669,6 +669,33 @@ describe('GitHubPublisher', () => {
     },
   )
 
+  it.each([
+    [
+      'a signed size',
+      [`version https://git-lfs.github.com/spec/v1`, `oid sha256:${'d'.repeat(64)}`, 'size +12345', ''].join(
+        '\n',
+      ),
+    ],
+    [
+      'an extension before the version',
+      [
+        `ext-0-foo sha256:${'e'.repeat(64)}`,
+        'version https://git-lfs.github.com/spec/v1',
+        `oid sha256:${'f'.repeat(64)}`,
+        'size 12345',
+        '',
+      ].join('\n'),
+    ],
+  ])('blocks Git LFS pointers with %s', async (_description, pointer) => {
+    const fixture = await createFixture()
+    await writeFile(join(fixture.workspace.path, 'model.bin'), pointer)
+
+    await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+      /Git LFS pointer changes because their external payload cannot be safely scanned/,
+    )
+    expect(await readCalls(fixture)).toHaveLength(0)
+  })
+
   it('reports an actionable error when a pushed commit patch exceeds the scan limit', async () => {
     const fixture = await createFixture()
     await writeFile(join(fixture.workspace.path, 'large.txt'), Buffer.alloc(10 * 1024 * 1024 + 1024, 97))
