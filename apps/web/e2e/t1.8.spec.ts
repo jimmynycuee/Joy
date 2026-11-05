@@ -4,7 +4,10 @@ import { join } from 'node:path'
 import { test, expect } from '@playwright/test'
 import type { ModelRef } from '@joy/core'
 
-test('settings, secure key status, and a complete fake-provider task flow', async ({ page, request }) => {
+test('settings, secure key status, and a complete fake-provider task flow', async ({
+  page,
+  request,
+}, testInfo) => {
   const runId = randomUUID()
   const repositoryPath = join(tmpdir(), `joy-e2e-project-${runId}`)
   const taskTitle = `Show the fake diff ${runId}`
@@ -21,7 +24,7 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   }
   await page.getByLabel('Implementer provider').selectOption('openai-api')
   await expect(page.getByLabel('Implementer model')).toHaveValue('gpt-6-luna')
-  await page.screenshot({ path: 'test-results/t1.8-provider-switch.png', fullPage: true })
+  await page.screenshot({ path: testInfo.outputPath('t1.8-provider-switch.png'), fullPage: true })
   await page.getByLabel('Implementer model').fill('fake-ui-model')
   await page.getByRole('button', { name: 'Save role settings' }).click()
   await expect(page.getByRole('status').filter({ hasText: 'Role and model settings saved' })).toBeVisible()
@@ -42,7 +45,7 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   const configResponse = await request.get('/api/config')
   expect(await configResponse.text()).not.toContain(secret)
   await page.waitForTimeout(4100)
-  await page.screenshot({ path: 'test-results/t1.8-settings.png', fullPage: true })
+  await page.screenshot({ path: testInfo.outputPath('t1.8-settings.png'), fullPage: true })
 
   await page.getByRole('button', { name: 'Workspace', exact: true }).click()
   const manageRepositories = page.getByRole('button', { name: 'Manage repositories' })
@@ -98,7 +101,7 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   expect(details.attempts[0]).toMatchObject({ provider: 'openai-api', model: 'fake-ui-model' })
   expect(JSON.stringify(details.events)).not.toContain(secret)
   await page.waitForTimeout(4100)
-  await page.screenshot({ path: 'test-results/t1.8-workspace.png', fullPage: true })
+  await page.screenshot({ path: testInfo.outputPath('t1.8-workspace.png'), fullPage: true })
 })
 
 test('backs off repeated WebSocket reconnects', async ({ page }) => {

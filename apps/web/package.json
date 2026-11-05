@@ -9,7 +9,7 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test:e2e": "playwright test"
+    "test:e2e": "node e2e/run-playwright.mjs"
   },
   "dependencies": {
     "@joy/config": "workspace:*",

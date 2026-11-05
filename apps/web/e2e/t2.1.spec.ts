@@ -3,7 +3,7 @@ import { expect, test } from '@playwright/test'
 test('compete synthesizes candidate strengths and persists the selected winner', async ({
   page,
   request,
-}) => {
+}, testInfo) => {
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
 
@@ -50,7 +50,7 @@ test('compete synthesizes candidate strengths and persists the selected winner',
   await expect(page.getByText('SYNTHESIZED CANDIDATE', { exact: true })).toBeVisible()
   await expect(page.getByTestId('candidate-diff')).toHaveCount(3)
   if (process.env.JOY_CAPTURE_T2_1 === '1') {
-    await page.screenshot({ path: 'test-results/t2.1-synthesis.png' })
+    await page.screenshot({ path: testInfo.outputPath('t2.1-synthesis.png') })
   }
 
   const tasksResponse = await request.get('/api/tasks')
@@ -92,7 +92,7 @@ test('compete synthesizes candidate strengths and persists the selected winner',
   expect(selection?.payload).toMatchObject({ attemptId: winner?.attemptId })
 })
 
-test('resume compares only candidates from the latest compete run', async ({ page, request }) => {
+test('resume compares only candidates from the latest compete run', async ({ page, request }, testInfo) => {
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
 
@@ -154,7 +154,7 @@ test('resume compares only candidates from the latest compete run', async ({ pag
   await expect(page.getByRole('heading', { name: 'Resume latest compete candidates' })).toBeVisible()
   await expect(page.getByTestId('candidate-diff')).toHaveCount(2)
   if (process.env.JOY_CAPTURE_T2_1 === '1') {
-    await page.screenshot({ path: 'test-results/t2.1-resume.png' })
+    await page.screenshot({ path: testInfo.outputPath('t2.1-resume.png') })
   }
 })
 
@@ -254,7 +254,7 @@ test('buffers socket events during the task snapshot and replays after reconnect
   await expect(page.getByText('Phase: between snapshot and apply', { exact: true })).toHaveCount(1)
 })
 
-test('compete mode blocks providers without code-edit capability', async ({ page }) => {
+test('compete mode blocks providers without code-edit capability', async ({ page }, testInfo) => {
   const repo = { id: 'capability-repo', path: '/tmp/joy-p1-code-edit-capability', defaultBranch: 'main' }
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url())
@@ -286,10 +286,12 @@ test('compete mode blocks providers without code-edit capability', async ({ page
     taskDialog.getByLabel('Implementer provider').locator('option[value="openai-api"]'),
   ).toHaveAttribute('disabled', '')
   await expect(taskDialog.getByRole('button', { name: 'Start task' })).toBeDisabled()
-  await page.screenshot({ path: 'test-results/compete-code-edit-disabled.png', fullPage: true })
+  await page.screenshot({ path: testInfo.outputPath('compete-code-edit-disabled.png'), fullPage: true })
 })
 
-test('judge failure remains visible while successful candidates can be reviewed', async ({ page }) => {
+test('judge failure remains visible while successful candidates can be reviewed', async ({
+  page,
+}, testInfo) => {
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
 
@@ -330,6 +332,6 @@ test('judge failure remains visible while successful candidates can be reviewed'
   )
   await expect(page.getByTestId('candidate-diff')).toHaveCount(2)
   if (process.env.JOY_CAPTURE_T2_1 === '1') {
-    await page.screenshot({ path: 'test-results/t2.1-judge-failure.png' })
+    await page.screenshot({ path: testInfo.outputPath('t2.1-judge-failure.png') })
   }
 })

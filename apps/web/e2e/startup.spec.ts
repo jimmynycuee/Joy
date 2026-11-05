@@ -19,7 +19,9 @@ const config = {
   ),
 }
 
-test('loads workspace when OpenAI key status is unavailable and retries the lookup', async ({ page }) => {
+test('loads workspace when OpenAI key status is unavailable and retries the lookup', async ({
+  page,
+}, testInfo) => {
   let keyStatusRequests = 0
   await page.route('**/api/**', async (route) => {
     const path = new URL(route.request().url()).pathname
@@ -51,7 +53,7 @@ test('loads workspace when OpenAI key status is unavailable and retries the look
   await expect(page.getByRole('heading', { name: 'OpenAI API key' })).toBeVisible()
   await expect(page.getByText('Unavailable', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Retry key status' })).toBeVisible()
-  await page.screenshot({ path: 'test-results/key-status-unavailable.png', fullPage: true })
+  await page.screenshot({ path: testInfo.outputPath('key-status-unavailable.png'), fullPage: true })
   await page.getByRole('button', { name: 'Retry key status' }).click()
   await expect(page.getByText('Not configured', { exact: true })).toBeVisible()
   expect(keyStatusRequests).toBe(2)
