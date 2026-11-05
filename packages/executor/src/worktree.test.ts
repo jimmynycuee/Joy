@@ -8,6 +8,7 @@ import {
   unlinkSync,
   writeFileSync,
   renameSync,
+  symlinkSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -186,6 +187,18 @@ describe('WorktreeExecutor', () => {
     expect(worktrees[0]?.headCommit).toBe(ws.baseCommit)
     expect(worktrees[0]?.lastActivityAt).toBeInstanceOf(Date)
     expect(worktrees[0]?.diskUsageBytes).toBeGreaterThanOrEqual(1024)
+  })
+
+  it('lists worktrees when the managed worktree directory resolves through a junction', async () => {
+    const { repo, root } = await setup()
+    const actualDir = join(root, 'actual-worktrees')
+    const linkedDir = join(root, 'worktrees')
+    mkdirSync(actualDir)
+    symlinkSync(actualDir, linkedDir, 'junction')
+    const executor = new WorktreeExecutor({ worktreesDir: linkedDir })
+    await executor.prepare(repo, tid('t1'), aid('a1'))
+
+    await expect(executor.listWorktrees(repo)).resolves.toHaveLength(1)
   })
 
   it('rejects ids that could escape the worktrees directory', async () => {

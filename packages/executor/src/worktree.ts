@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { lstat, mkdir, readdir, rm } from 'node:fs/promises'
+import { lstat, mkdir, readdir, realpath, rm } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { AttemptId, DiffFile, Executor, RepoRef, TaskId, Workspace, WorkspaceDiff } from '@joy/core'
 import { KeyedMutex, git } from './git.js'
@@ -114,12 +114,25 @@ export class WorktreeExecutor implements Executor {
     assertSafeId('repo id', repo.id)
     const managedDir = join(this.dir, repo.id)
     return this.locks.run(repo.path, async () => {
+      let canonicalManagedDir: string
+      try {
+        canonicalManagedDir = await realpath(managedDir)
+      } catch (error) {
+        if (isMissing(error)) return []
+        throw error
+      }
       const records = parseWorktreeList(await git(repo.path, ['worktree', 'list', '--porcelain', '-z']))
       const now = Date.now()
       const worktrees: WorktreeInfo[] = []
       for (const record of records) {
-        const path = resolve(record.path)
-        if (!isWithin(managedDir, path) || !existsSync(path)) continue
+        let path: string
+        try {
+          path = await realpath(record.path)
+        } catch (error) {
+          if (isMissing(error)) continue
+          throw error
+        }
+        if (!isWithin(canonicalManagedDir, path)) continue
         const metrics = await measureWorktree(path)
         const defaultCommit = (
           await git(repo.path, [
