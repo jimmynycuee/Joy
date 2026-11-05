@@ -1235,10 +1235,10 @@ describe('Joy local server', () => {
       sessionId: 'saved-tool-hub-session',
     })
     setTaskStatus(db, task.id, 'cancelled')
+    appendTaskEvent(db, attempt.id, 'tool_hub.ask_peer', { provider: 'codex-cli' })
     for (let index = 0; index < 128; index++) {
       appendTaskEvent(db, attempt.id, 'tool_hub.peer_budget_fixture', { index })
     }
-    appendTaskEvent(db, attempt.id, 'tool_hub.ask_peer', { provider: 'codex-cli' })
 
     const { origin } = await start(serverPromise)
     const resumed = await postJson(`${origin}/api/tasks/${task.id}/resume`, {})
@@ -1355,6 +1355,53 @@ describe('Joy local server', () => {
       await peerRequest.catch(() => undefined)
     }
     await waitForStatus(origin, task.id, 'cancelled')
+    expect(reviewer.calls[0]?.signal.aborted).toBe(true)
+  })
+
+  it('aborts an in-flight peer when the Tool Hub HTTP client disconnects', async () => {
+    const implementer = new FakeProvider('claude-cli')
+    const reviewer = new FakeProvider('codex-cli')
+    reviewer.onRun = async (options) => {
+      if (options.signal.aborted) return
+      await new Promise<void>((resolve) => {
+        options.signal.addEventListener('abort', () => resolve(), { once: true })
+      })
+    }
+    const { serverPromise } = fixture({ implementer, reviewer })
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, {
+      path: '/tmp/tool-hub-disconnect-repo',
+      defaultBranch: 'main',
+    })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const taskResponse = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Disconnect a delegated peer request',
+      prompt: 'Start a peer and disconnect its caller',
+      mode: 'single',
+    })
+    const { task } = (await taskResponse.json()) as { task: { id: string } }
+    implementer.onRun = async (options) => {
+      const mcp = options.mcpServers?.[0]
+      if (!mcp || mcp.transport !== 'stdio') throw new Error('CLI provider did not receive stdio Tool Hub')
+      const endpoint = mcp.env?.JOY_TOOL_HUB_ENDPOINT
+      const token = mcp.env?.JOY_TOOL_HUB_TOKEN
+      if (!endpoint || !token) throw new Error('CLI provider did not receive Tool Hub credentials')
+      const controller = new AbortController()
+      const peerRequest = globalThis.fetch(endpoint, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'ask_peer',
+          arguments: { provider: 'codex-cli', question: 'Review before disconnect' },
+        }),
+        signal: controller.signal,
+      })
+      await waitForProviderCalls(reviewer, 1)
+      controller.abort()
+      await peerRequest.catch(() => undefined)
+    }
+    await waitForStatus(origin, task.id, 'done')
     expect(reviewer.calls[0]?.signal.aborted).toBe(true)
   })
 
