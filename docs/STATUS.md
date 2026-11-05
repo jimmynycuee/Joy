@@ -2,12 +2,16 @@
 
 > 接手前請先讀本檔、`AGENTS.md` 與 `docs/PLAN.md`。本檔記錄目前進度、阻塞與決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。
 
-- 最後更新：2026-11-05 02:29 UTC
-- 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** 最新 `main` 為 `f78453731340de2276001fc1c978f7e758166177`；PR #58 已整合主要 P1 程式碼。T1.9 的真實測試 repo 驗收、T1.12、T1.13 `joy doctor`，以及依賴 T1.13 首頁檢查結果的 T1.8 驗收仍未完成。
-- 本機驗證：以 `main` `f78453731340de2276001fc1c978f7e758166177` 為基底、含本 PR 文件變更的工作樹，`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 通過（格式、lint、typecheck、196 tests passed、2 skipped）。此 runner 未清除 Git 身分時，fallback-identity 測試失敗；清除後通過。最新 main [CI run 41897323588](https://github.com/jimmynycuee/Joy/actions/runs/41897323588) 成功。
+- 最後更新：2026-11-05 03:31 UTC
+- 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** 最新 `main` 為 `ceebdc5c0117ed4b9bb2f25e126ed045651eb9d1`。PR #62 已實作 T1.13 `joy doctor` 與 T1.8 首頁檢查，open/draft、base `main`、head `f5602ffa02b85c23c470b421668d6c0b8fedc6fb`，無衝突；Ubuntu、macOS、Windows、web E2E 四項 checks 全過，尚無正式 review 或留言。PR 尚未合併，因此未整合至 `main`；T1.13、T1.8 清單維持未勾選。T1.9 真實測試 repo 驗收與 T1.12 仍未完成。
+- 最近主線驗證（較早快照）：以 `main` `f78453731340de2276001fc1c978f7e758166177` 為基底、含本 PR 文件變更的工作樹，`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 通過（格式、lint、typecheck、196 tests passed、2 skipped）。此 runner 未清除 Git 身分時，fallback-identity 測試失敗；清除後通過。該次 main [CI run 41897323588](https://github.com/jimmynycuee/Joy/actions/runs/41897323588) 成功。
 - 計畫與決策：依 `docs/PLAN.md` v0.2；T1.6、T1.7 已整合並完成。PR #58 已包含 T1.9 publisher 與 T1.8 UI 主體，但其明定的真實測試 repo 與首頁 T1.13 檢查驗收尚未證明；相關清單維持未勾選。
 
-## P1 狀態與阻塞（live snapshot：2026-11-05 02:29 UTC）
+## P1 狀態與阻塞（先前 live snapshot：2026-11-05 02:29 UTC）
+
+**後續更新（2026-11-05 03:31 UTC）：** [PR #62](https://github.com/jimmynycuee/Joy/pull/62) 的 T1.13 `joy doctor` 與 T1.8 首頁首次啟動檢查實作已完成；head `f5602ffa02b85c23c470b421668d6c0b8fedc6fb` 的 Ubuntu、macOS、Windows、web E2E 四項 checks 全過。PR 仍 open/draft、base `main`、無衝突，尚無正式 review 或留言。因尚未合併，T1.13/T1.8 仍未整合到 main，`docs/PLAN.md` 進度維持未勾選；本次不修改 PR #62。
+
+[PR #8](https://github.com/jimmynycuee/Joy/pull/8) 即時快照為 open/draft、base `t1.7-event-log`、head `fbdb1a4e453653739d377426d003c77d021bf5f1`、clean；Ubuntu、macOS、Windows 三項 checks 均通過，沒有 review 或留言。[PR #9](https://github.com/jimmynycuee/Joy/pull/9) 仍 open/draft、base `t1.9-github-pr`、遠端 head `dcb91534f565b513c3b080de826c55a0dd0d561f`、與 base 衝突；目前沒有 checks、review 或留言。另一工作階段回報 #9 有已提交但未發布的本地 E2E 修補；該修補不在此遠端 head 中，本次未驗證或發布。不要把 #9 對齊到舊的 #8 head，也不要將未發布修補記作已交付。
 
 1. **主要 P1 程式碼已進 main：** [PR #58](https://github.com/jimmynycuee/Joy/pull/58) 已合併，包含 T1.6、T1.7、T1.9 publisher、T1.8 UI 主體及相關驗證修補；其四項 checks 均成功。最新 main 是 `f78453731340de2276001fc1c978f7e758166177`，該 SHA 的 CI run `41897323588` 成功。
 2. **T1.12 / PR #53：** [#53](https://github.com/jimmynycuee/Joy/pull/53) 仍 open/draft，base `t1.7-event-log`，head `3fd90219695c34bb38d37539158c765853208c21`；該舊 head 的 Ubuntu、macOS、Windows checks 成功。owner `jimmynycuee` 已列為 requested reviewer，尚無 review/approval。對 #53 的 Session 內獨立 review（未記錄於 PR comments）指出：resume 的 allowlist 拒絕應在狀態變更前同步回報；錯誤建議以相同 repo path 重新註冊，但路徑唯一且目前沒有更新 allowlist 的 API；資料庫值需要結構驗證；另需避免對非活動 role 或未建立的 attempt 留下誤導狀態。這些是待修復／驗證事項，不代表舊 head 可合併。支援的 base 更新操作尚未生效，讀回仍為 `t1.7-event-log`。
@@ -21,7 +25,7 @@
 
 1. 修復並驗證 #53 的 T1.12 review findings；在能使用支援操作安全對齊 base 後，對新 head 重跑檢查並取得必要 owner review。保持 #53 草稿；#57 維持 open。
 2. 按 PLAN 驗收，在安全指定的測試 repo 實際驗證 T1.9 的 draft PR 建立；目前只有 fake `gh` 測試證據。
-3. 完成 T1.13 `joy doctor` 與首次啟動測試，再完成 T1.8 首頁顯示檢查結果的驗收。
+3. PR #62 的 T1.13／T1.8 實作與 CI 已完成；等待 owner review 與整合，不更改其 draft 狀態。整合至 `main` 後，確認最新主線包含這些變更，再解除對應的未完成項。
 4. T0.4 真實 Codex fixture 待已登入 Mac 可用時錄製；其餘必要 owner reviews 持續追蹤。完成 P1 並驗證最新 `main` 後，才按 PLAN 順序推進 P2、P3、P4、P5。
 
 ## 歷史 P1 狀態快照（PR 狀態截至 2026-11-04 18:49 UTC；main 更新至 18:52 UTC）

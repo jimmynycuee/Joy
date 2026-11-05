@@ -35,9 +35,9 @@
 - [x] T1.6 server（HTTP + WebSocket、任務 CRUD、重啟恢復；已整合至 main，PR #58）
 - [x] T1.7 事件紀錄（寫入 DB、可回放、經 Redactor 遮罩；已整合至 main，PR #58）
 - [ ] T1.12 repo 的 provider 允許清單
-- [ ] T1.9 GitHub：push 分支、開 draft PR（實作已整合至 main，PR #58；依驗收條件需在測試 repo 實際開 PR，此項尚未驗證）
-- [ ] T1.13 `joy doctor` 與首次啟動檢查
-- [ ] T1.8 Codex 風格 Web UI（含設定頁；UI 主體已整合至 main，PR #58；首頁顯示 T1.13 檢查結果尚待完成）
+- [ ] T1.9 GitHub：push 分支、開 draft PR（實作已整合至 main，PR #58；PR #8 仍 open/draft，三平台 CI 通過；依驗收條件需在測試 repo 實際開 PR，此項尚未驗證）
+- [ ] T1.13 `joy doctor` 與首次啟動檢查（實作在 open/draft PR #62，四項 CI 已通過；等待 owner review/合併後再標完成）
+- [ ] T1.8 Codex 風格 Web UI（含設定頁；UI 主體已整合至 main，PR #58；首頁檢查實作在 open/draft PR #62，四項 CI 已通過，待合併）
 - [ ] P2（T2.1–T2.8）、P3（T3.1–T3.9）、P4（T4.1–T4.9）、P5（T5.1–T5.7）：見 §6
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
