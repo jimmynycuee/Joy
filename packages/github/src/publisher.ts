@@ -788,7 +788,7 @@ function containsGitLfsPointer(content: string): boolean {
   ) {
     return false
   }
-  const oidIndex = fields.findIndex((line) => /^oid sha256:[a-f0-9]{64}$/i.test(line))
+  const oidIndex = fields.findIndex((line) => /^oid sha256:[a-z0-9]{64}/i.test(line))
   const sizeIndex = fields.findIndex((line, index) => index > oidIndex && /^size [+-]?\d+$/.test(line))
   return oidIndex >= 0 && sizeIndex > oidIndex
 }
@@ -921,6 +921,10 @@ async function runCommand(
         }
       },
     )
+    child.stdin?.on('error', (error: NodeJS.ErrnoException) => {
+      // A child may exit before consuming a large batch; its exit callback reports that failure.
+      if (error.code !== 'EPIPE') reject(error)
+    })
     child.stdin?.end(input)
   })
 }

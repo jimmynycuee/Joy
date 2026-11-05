@@ -717,6 +717,20 @@ describe('GitHubPublisher', () => {
     expect(await readCalls(fixture)).toHaveLength(0)
   })
 
+  it.each([
+    ['an alphanumeric oid accepted by older git-lfs', `oid sha256:${'g'.repeat(64)}`],
+    ['an oid followed by trailing text accepted by older git-lfs', `oid sha256:${'a'.repeat(64)}suffix`],
+  ])('blocks Git LFS pointers with %s', async (_description, oidLine) => {
+    const fixture = await createFixture()
+    const pointer = ['version https://git-lfs.github.com/spec/v1', oidLine, 'size 12345', ''].join('\n')
+    await writeFile(join(fixture.workspace.path, 'model.bin'), pointer)
+
+    await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+      /Git LFS pointer changes because their external payload cannot be safely scanned/,
+    )
+    expect(await readCalls(fixture)).toHaveLength(0)
+  })
+
   it('publishes a small edit to an existing text blob larger than the LFS pointer limit', async () => {
     const fixture = await createFixture()
     const baseText = 'a\n'.repeat(5_600_000)
@@ -726,6 +740,20 @@ describe('GitHubPublisher', () => {
 
     await expect(createPublisher(fixture).publish(fixture.workspace, input())).resolves.toBeDefined()
   }, 30_000)
+
+  it('reports a failed batch-size query without crashing when git closes stdin early', async () => {
+    const fixture = await createFixture({ fakeGitMode: 'exit-batch-check' })
+    await Promise.all(
+      Array.from({ length: 2_000 }, (_, index) =>
+        writeFile(join(fixture.workspace.path, `changed-${index}.txt`), `change ${index}\n`),
+      ),
+    )
+    await commitAll(fixture.workspace.path, 'Add many small files')
+
+    await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+      /Git changed blob size list failed/,
+    )
+  })
 
   it('reports an actionable error when a pushed commit patch exceeds the scan limit', async () => {
     const fixture = await createFixture()
@@ -842,7 +870,7 @@ function createPublisher(
   })
 }
 
-async function createFixture(options: { ghMode?: string } = {}): Promise<Fixture> {
+async function createFixture(options: { ghMode?: string; fakeGitMode?: string } = {}): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), 'joy-github-publisher-'))
   roots.push(root)
   const bareRepo = join(root, 'origin.git')
@@ -881,7 +909,7 @@ async function createFixture(options: { ghMode?: string } = {}): Promise<Fixture
     baseCommit: await git(repoPath, ['rev-parse', 'main']),
   }
   await writeFakeGh(fakeGh)
-  await writeFakeGit(fakeGit, bareRepo)
+  await writeFakeGit(fakeGit, bareRepo, options.fakeGitMode)
   return { root, bareRepo, workspace, fakeGh, fakeGit, ghCapture, ghState, ghMode }
 }
 
@@ -942,13 +970,15 @@ async function writeFakeGh(path: string): Promise<void> {
   )
 }
 
-async function writeFakeGit(path: string, bareRepo: string): Promise<void> {
+async function writeFakeGit(path: string, bareRepo: string, mode = ''): Promise<void> {
   await writeFile(
     path,
     [
       "import { spawnSync } from 'node:child_process'",
       "import { readFileSync } from 'node:fs'",
       'const args = process.argv.slice(2)',
+      `const mode = ${JSON.stringify(mode)}`,
+      "if (mode === 'exit-batch-check' && args[0] === 'cat-file' && args[1]?.startsWith('--batch-check=')) process.exit(1)",
       "const run = (items, input = undefined) => spawnSync('git', items, { cwd: process.cwd(), encoding: 'utf8', windowsHide: true, maxBuffer: 32 * 1024 * 1024, input })",
       `const expectedMirrorUrl = ${JSON.stringify(pathToFileURL(bareRepo).href)}`,
       `const canonicalRemote = ${JSON.stringify(configuredRemote)}`,
