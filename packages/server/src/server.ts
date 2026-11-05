@@ -812,18 +812,13 @@ $stage = 'get-identity'
 try {
   $path = $env:JOY_API_TOKEN_FILE
   $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-  $stage = 'read-acl'
-  $acl = [System.IO.File]::GetAccessControl($path)
-  $stage = 'set-acl'
-  $acl.SetAccessRuleProtection($true, $false)
-  foreach ($existingRule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($existingRule) }
-  $readAndDeleteRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-    $currentSid,
-    [System.Security.AccessControl.FileSystemRights]::ReadAndDelete,
-    [System.Security.AccessControl.AccessControlType]::Allow
-  )
-  [void]$acl.AddAccessRule($readAndDeleteRule)
-  [System.IO.File]::SetAccessControl($path, $acl)
+  $icacls = "$env:SystemRoot\\System32\\icacls.exe"
+  $stage = 'disable-acl-inheritance'
+  & $icacls $path /inheritance:r > $null
+  if ($LASTEXITCODE -ne 0) { throw 'Unable to disable inherited API token ACLs.' }
+  $stage = 'grant-current-user'
+  & $icacls $path /grant:r "*$($currentSid.Value):(R,D)" > $null
+  if ($LASTEXITCODE -ne 0) { throw 'Unable to grant current-user API token access.' }
   $stage = 'verify-acl'
   $verified = [System.IO.File]::GetAccessControl($path)
   $allowRules = @($verified.Access | Where-Object { $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow })
