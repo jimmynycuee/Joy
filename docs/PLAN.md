@@ -35,7 +35,7 @@
 - [x] T1.6 server（HTTP + WebSocket、任務 CRUD、重啟恢復；已整合至 main，PR #58）
 - [x] T1.7 事件紀錄（寫入 DB、可回放、經 Redactor 遮罩；已整合至 main，PR #58）
 - [x] T1.12 repo 的 provider 允許清單
-- [ ] T1.9 GitHub：push 分支、開 draft PR（publisher 實作已整合至 main 並完成安全與歷史掃描補強；本機 publisher 測試 44/44、完整 `pnpm check` 通過（263 passed、2 skipped）；依驗收條件仍待在 Joy 測試 repo 實際開啟並清理 `[test] ` draft PR）
+- [ ] T1.9 GitHub：push 分支、開 draft PR（publisher 實作已整合至 main 並完成安全與歷史掃描補強；本機 publisher 測試 47/47、完整 `pnpm check` 通過（266 passed、2 skipped）；依驗收條件仍待在 Joy 測試 repo 實際開啟並清理 `[test] ` draft PR）
 - [ ] T1.13 `joy doctor` 與首次啟動檢查（實作在 open/draft PR #62；最新 head `348593b` 與 `main` 衝突，尚無該 head checks；等待既定 owner 流程處理與驗收後再標完成）
 - [ ] T1.14 本機 API 與 WebSocket token 認證（Issue #72；修改請求與 WebSocket 驗證、Origin 雙層防護、私密 token 儲存與 UI 注入；需 owner review）
 - [ ] T1.8 Codex 風格 Web UI（含設定頁；UI 主體已整合至 main，PR #58；首頁檢查實作在 open/draft PR #62，但最新 head `348593b` 與 `main` 衝突且尚無 checks；整合及驗收前保持未勾選）

@@ -771,10 +771,11 @@ function parseBinaryPaths(output: string): string[] {
 }
 
 function containsGitLfsPointer(content: string): boolean {
+  const trimGitLfsWhitespace = (value: string): string => value.replace(/^[\s\u0085]+|[\s\u0085]+$/g, '')
   const pointerFields = content
-    .trim()
+    .replace(/^[\s\u0085]+|[\s\u0085]+$/g, '')
     .split(/\r?\n/)
-    .map((line) => line.trim())
+    .map(trimGitLfsWhitespace)
     .filter(Boolean)
     .filter((line) => !/^ext-\d+-\w+/.test(line))
   const [version, ...fields] = pointerFields

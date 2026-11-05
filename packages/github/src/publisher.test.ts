@@ -677,6 +677,27 @@ describe('GitHubPublisher', () => {
       ),
     ],
     [
+      'a negative zero size',
+      [`version https://git-lfs.github.com/spec/v1`, `oid sha256:${'d'.repeat(64)}`, 'size -0', ''].join(
+        '\n',
+      ),
+    ],
+    [
+      'leading U+0085 whitespace',
+      `\u0085${[
+        'version https://git-lfs.github.com/spec/v1',
+        `oid sha256:${'d'.repeat(64)}`,
+        'size 12345',
+        '',
+      ].join('\n')}`,
+    ],
+    [
+      'trailing U+0085 whitespace',
+      `${['version https://git-lfs.github.com/spec/v1', `oid sha256:${'d'.repeat(64)}`, 'size 12345'].join(
+        '\n',
+      )}\u0085`,
+    ],
+    [
       'an extension before the version',
       [
         `ext-0-foo sha256:${'e'.repeat(64)}`,
