@@ -54,6 +54,16 @@ import type { Executor, WorkspaceDiff } from '@joy/core'
 import { reviewLoop } from '@joy/orchestrator'
 import { ClaudeCliProvider, CodexCliProvider, OpenAiApiProvider } from '@joy/providers'
 import { Redactor, SecretStore } from '@joy/secrets'
+import {
+  createToolHubDispatcher,
+  createToolHubMcpConfig,
+  isToolHubValue,
+  TOOL_HUB_APPROVAL_TOOL_NAME,
+  TOOL_HUB_SERVER_NAME,
+  TOOL_HUB_TOOL_NAMES,
+} from '@joy/tools'
+import type { ToolHubBudget, ToolHubDispatcher } from '@joy/tools'
+import { effortCompatibilityError } from '@joy/model-effort'
 import { runDoctor } from './doctor.js'
 import type { DoctorOptions } from './doctor.js'
 import { describeDisallowedRoleProvider, findDisallowedRoleProviders } from './provider-allowlist.js'
@@ -91,7 +101,9 @@ const taskInputSchema = z.strictObject({
 })
 const idSchema = z.string().min(1).max(128)
 const openAiSecretInputSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
+const toolHubCallSchema = z.strictObject({ name: z.enum(TOOL_HUB_TOOL_NAMES), arguments: z.unknown() })
 const MAX_BODY_BYTES = 1_000_000
+const TOOL_HUB_PEER_TIMEOUT_MS = 55_000
 const API_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,}$/
 const PLAYWRIGHT_E2E_ORIGINS = ['http://127.0.0.1:4173', 'http://localhost:4173'] as const
 
@@ -197,6 +209,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const executor = options.executor ?? new WorktreeExecutor({ worktreesDir: paths.worktrees })
   const running = new Map<TaskId, ActiveTask>()
   const subscribers = new Map<TaskId, Set<WebSocket>>()
+  const toolHubSessions = new Map<string, { token: string; dispatch: ToolHubDispatcher }>()
   const wsServer = new WebSocketServer({
     noServer: true,
     maxPayload: MAX_BODY_BYTES,
@@ -226,6 +239,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   const httpServer = createHttpServer((req, res) => {
     void handleRequest(req, res).catch((error: unknown) => {
+      if (res.destroyed || res.writableEnded) return
       if (res.headersSent) {
         res.destroy()
         return
@@ -302,12 +316,49 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!isLoopbackHost(req.headers.host)) throw new HttpError(403, 'Host is not allowed')
     const method = req.method ?? 'GET'
+    const url = requestUrl(req)
+    const toolHubRoute = /^\/internal\/tool-hub\/([A-Za-z0-9_-]{32,})$/.exec(url.pathname)
+    if (toolHubRoute && method === 'POST') {
+      const sessionId = toolHubRoute[1] ?? ''
+      if (!isLoopbackAddress(req.socket.remoteAddress)) throw new HttpError(403, 'Tool Hub is local-only')
+      const session = toolHubSessions.get(sessionId)
+      if (!session || !hasValidBearerToken(req, session.token))
+        throw new HttpError(403, 'Tool Hub authentication failed')
+      const requestController = new AbortController()
+      const abortOnRequest = () => requestController.abort()
+      const abortOnClose = () => {
+        if (!res.writableEnded) requestController.abort()
+      }
+      req.once('aborted', abortOnRequest)
+      res.once('close', abortOnClose)
+      try {
+        if (req.aborted || res.destroyed) {
+          requestController.abort()
+          return
+        }
+        assertJsonContentType(req)
+        const call = toolHubCallSchema.parse(await readJson(req))
+        let value
+        try {
+          value = await session.dispatch(call, requestController.signal)
+        } catch (error) {
+          if (requestController.signal.aborted || res.destroyed) return
+          const message = error instanceof Error ? error.message : 'Tool Hub request failed'
+          throw new HttpError(422, redactor.redact(message))
+        }
+        if (!requestController.signal.aborted && !res.destroyed)
+          json(res, 200, { value: redactor.redactValue(value) })
+      } finally {
+        req.off('aborted', abortOnRequest)
+        res.off('close', abortOnClose)
+      }
+      return
+    }
     if (
       req.headers['sec-fetch-site']?.toLowerCase() === 'cross-site' ||
       !isAllowedOrigin(req, allowedOrigins, method === 'GET' || method === 'HEAD')
     )
       throw new HttpError(403, 'Origin is not allowed')
-    const url = requestUrl(req)
     const isPublicHealth = url.pathname === '/api/health' && method === 'GET'
     const isApiRoute = url.pathname === '/api' || url.pathname.startsWith('/api/')
     if (
@@ -698,6 +749,122 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (!finished) throw new Error('Review loop stopped without a result')
   }
 
+  function createRunToolHub(
+    task: StoredTask,
+    repo: RepoRecord,
+    attempt: AttemptRecord,
+    model: ModelRef,
+    workspace: Workspace,
+    config: JoyConfig,
+    signal: AbortSignal,
+  ): { server: NonNullable<RunOptions['mcpServers']>[number]; close: () => void } {
+    const address = httpServer.address()
+    if (!address || typeof address === 'string')
+      throw new Error('Joy Tool Hub requires the local server to be listening')
+    const sessionId = randomBytes(32).toString('base64url')
+    const token = randomBytes(32).toString('base64url')
+    const sessionController = new AbortController()
+    const budget: ToolHubBudget = {
+      askPeerCalls: listTaskEvents(db, task.id).filter((event) => event.type === 'tool_hub.ask_peer').length,
+    }
+    const dispatch = createToolHubDispatcher({
+      taskId: task.id,
+      currentProvider: model.provider,
+      allowedProviders: repo.allowedProviders,
+      cwd: workspace.path,
+      maxAskPeerCalls: config.tool_hub.max_ask_peer_calls,
+      budget,
+      reserveAskPeer: ({ provider }) => {
+        publish(task.id, attempt.id, 'tool_hub.ask_peer', { provider })
+      },
+      approve: async (input) => {
+        const toolPrefix = `mcp__${TOOL_HUB_SERVER_NAME}__`
+        const toolName = input.tool_name.startsWith(toolPrefix)
+          ? input.tool_name.slice(toolPrefix.length)
+          : ''
+        if (!TOOL_HUB_TOOL_NAMES.some((name) => name === toolName) || !isToolHubValue(input.input)) {
+          return {
+            behavior: 'deny' as const,
+            message: 'Only registered Joy Tool Hub tools are allowed by default.',
+          }
+        }
+        return { behavior: 'allow' as const, updatedInput: input.input }
+      },
+      taskStatus: async () => {
+        const current = getTask(db, task.id)
+        if (!current) throw new Error('Task no longer exists')
+        return {
+          id: current.id,
+          title: current.title,
+          status: current.status,
+          attempts: listAttempts(db, task.id).map(({ provider, model: attemptModel, status, createdAt }) => ({
+            provider,
+            model: attemptModel,
+            status,
+            createdAt,
+          })),
+        }
+      },
+      askPeer: async ({ provider: peerKind, question, cwd, signal: requestSignal }) => {
+        const peer = providers[peerKind]
+        if (!peer || peer.kind === 'openai-api') {
+          throw new Error(`${peerKind} cannot inspect the shared worktree in read-only mode`)
+        }
+        const peerModel = resolvePeerModel(peerKind, config.roles as RoleConfig, task.roleOverrides)
+        const peerSignal = AbortSignal.any([
+          signal,
+          sessionController.signal,
+          requestSignal,
+          AbortSignal.timeout(TOOL_HUB_PEER_TIMEOUT_MS),
+        ])
+        let finalMessage = ''
+        let done: Extract<AgentEvent, { type: 'done' }> | undefined
+        try {
+          const prompt = [
+            'You are a read-only peer for a Joy coding task. Inspect the shared worktree if useful, answer the question, and do not modify files or run commands with side effects.',
+            `Task: ${task.title}`,
+            `Task request:\n${task.prompt}`,
+            `Peer question:\n${question}`,
+          ].join('\n\n')
+          for await (const event of peer.run(
+            { cwd, prompt, autonomy: 'read-only', signal: peerSignal },
+            peerModel,
+          )) {
+            persistUsageEvent(db, peerKind, event)
+            if (event.type === 'message') finalMessage += event.text
+            if (event.type === 'error' && !event.recoverable) {
+              throw new Error(redactor.redact(event.message))
+            }
+            if (event.type === 'done') done = event
+          }
+          if (!done || done.isError) throw new Error(done?.finalMessage || `${peerKind} peer run failed`)
+          finalMessage = done.finalMessage ?? finalMessage
+          publish(task.id, attempt.id, 'tool_hub.ask_peer_result', {
+            provider: peerKind,
+            status: 'completed',
+          })
+          return {
+            provider: peerKind,
+            model: peerModel.model,
+            answer: redactor.redact(finalMessage).slice(0, 20_000),
+          }
+        } catch (error) {
+          publish(task.id, attempt.id, 'tool_hub.ask_peer_result', { provider: peerKind, status: 'failed' })
+          throw error
+        }
+      },
+    })
+    const endpoint = `http://127.0.0.1:${address.port}/internal/tool-hub/${sessionId}`
+    toolHubSessions.set(sessionId, { token, dispatch })
+    return {
+      server: createToolHubMcpConfig(endpoint, token),
+      close: () => {
+        sessionController.abort()
+        toolHubSessions.delete(sessionId)
+      },
+    }
+  }
+
   async function runSingle(
     task: StoredTask,
     repo: RepoRecord,
@@ -718,21 +885,34 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       baseCommit: workspace.baseCommit,
     })
     publish(task.id, attempt.id, 'workspace', workspace)
+    const config = await configStore.get()
+    const toolHub =
+      provider.kind === 'claude-cli' || provider.kind === 'codex-cli'
+        ? createRunToolHub(task, repo, attempt, model, workspace, config, controller.signal)
+        : undefined
     const options: RunOptions = {
       cwd: workspace.path,
       prompt: task.prompt,
       autonomy: 'workspace-write',
       signal: controller.signal,
+      ...(toolHub ? { mcpServers: [toolHub.server] } : {}),
+      ...(toolHub && provider.capabilities.delegatedApproval
+        ? { approvalTool: TOOL_HUB_APPROVAL_TOOL_NAME }
+        : {}),
       ...(resume ? { resumeSessionId: resume.sessionId } : {}),
     }
     let done: Extract<AgentEvent, { type: 'done' }> | undefined
     let failure: string | undefined
-    for await (const event of provider.run(options, model)) {
-      persistUsageEvent(db, model.provider, event)
-      if (event.type === 'session_started') updateAttempt(db, attempt.id, { sessionId: event.sessionId })
-      if (event.type === 'error' && !event.recoverable) failure = event.message
-      if (event.type === 'done') done = event
-      publish(task.id, attempt.id, 'agent', { role: 'implementer', round: 1, event })
+    try {
+      for await (const event of provider.run(options, model)) {
+        persistUsageEvent(db, model.provider, event)
+        if (event.type === 'session_started') updateAttempt(db, attempt.id, { sessionId: event.sessionId })
+        if (event.type === 'error' && !event.recoverable) failure = event.message
+        if (event.type === 'done') done = event
+        publish(task.id, attempt.id, 'agent', { role: 'implementer', round: 1, event })
+      }
+    } finally {
+      toolHub?.close()
     }
     const diff = await executor.diff(workspace)
     const succeeded = !controller.signal.aborted && !!done && !done.isError && !failure
@@ -942,6 +1122,32 @@ function isLoopbackHost(host: string | undefined): boolean {
   if (match[1] === undefined) return true
   const port = Number(match[1])
   return port > 0 && port <= 65_535
+}
+
+function isLoopbackAddress(address: string | undefined): boolean {
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
+}
+
+function resolvePeerModel(
+  provider: ProviderKind,
+  roles: RoleConfig,
+  overrides: Partial<RoleConfig>,
+): ModelRef {
+  const preferredRoles: Role[] = [
+    'reviewer',
+    'judge',
+    'assistant_brain',
+    'background',
+    'orchestrator',
+    'implementer',
+  ]
+  for (const role of preferredRoles) {
+    const candidate = resolveRole(role, roles, overrides)
+    if (candidate.provider !== provider) continue
+    const effort = effortCompatibilityError(provider, candidate.model, 'low') ? undefined : 'low'
+    return { provider, model: candidate.model, ...(effort ? { effort } : {}) }
+  }
+  throw new Error(`No model is configured for the allowed peer provider ${provider}`)
 }
 
 function createOriginAllowlist(allowPlaywrightOrigin: boolean): Set<string> {

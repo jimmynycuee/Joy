@@ -228,6 +228,8 @@ budget:
   openai_api_usd_monthly_cap: 30
   per_task: { max_rounds: 3, max_minutes: 60, max_api_usd: 1 }
 autonomy_mode: normal            # careful | normal | hands-off
+tool_hub:
+  max_ask_peer_calls: 5           # per task; configurable from 1 to 100
 ```
 > 模型名稱須以 P0 spike 實測並由擁有者確認；此處名稱在確認前不代表已驗證可用。設定以 `provider + model` 識別模型，角色推理強度另以 `effort` 設定；預設值放在設定檔，不寫死在程式裡。
 > 每個任務可在建立時覆寫任一角色。

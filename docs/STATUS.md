@@ -3,9 +3,22 @@
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
 - 最後更新：2026-11-05 UTC
-- 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** T1.13 的 doctor 與首頁檢查已在 PR #62 分支以 forward-only merge 整合 live main `c8b8c3a8d4f368ef351108eb3a22e26bccb776cf`；最新合併樹的本機 `pnpm check`（262 passed、2 skipped）及首頁 doctor E2E（1 passed）通過。PR #62 保持 draft；更新後 CI、owner review 與實機驗收仍待完成。T1.13/T1.8 保持未勾選。
+- 目前階段：P1 的驗收／owner gate 受阻時推進不相依的 P2；P3 僅在 T2.2、T2.3、T2.4 合併後開始。T1.13 doctor 與首頁檢查仍在既有 draft PR #62；已整合最新 `main`（`16108d8`），清除 runner 注入的 Git 身分後 `pnpm check` 通過（294 passed、2 skipped）。新 PR head 的 CI、owner review 與實機驗收仍待完成。T1.13/T1.8 在 owner review 與實機驗收完成前保持未勾選。
 
 ## 驗證結果
+
+### main Windows CI publisher 測試
+
+- main 的 Windows CI 重現 publisher 測試在 Vitest 預設 5 秒 timeout 中超時，隨後暫存 repo 清理回報 `EBUSY`。失敗測試建立兩個 fixture repo，需執行多個序列 Git 子程序。
+- 對該測試設定 30 秒 timeout；遞迴刪除暫存目錄加入 10 次、每次 100 ms 的 busy/permission retry。
+- 本機 Linux：`pnpm exec vitest run --project github packages/github/src/publisher.test.ts` 通過（17/17）；清除 runner 注入的 Git 身分後 `pnpm check` 通過（197 passed、2 skipped）。`git diff --check` 通過。
+- Windows 實際行為需以 GitHub Actions 驗證；本機沒有 Windows 執行環境。
+
+### T2.2 Tool Hub
+
+- 新增 `packages/tools` 的 stdio MCP server，註冊 `ask_peer`、`task_status`、`request_approval`、`approve`；Claude／Codex single task 收到每次執行獨立的 loopback bearer endpoint，peer 以 read-only autonomy 在同一 worktree 執行，並遵守 repo provider allowlist。
+- `tool_hub.max_ask_peer_calls` 預設 5、可設 1–100；ask_peer 呼叫寫入 task events，讓同一 task 的額度在 resume 後保留。Claude 的 delegated `approve` 僅自動放行精確匹配的已註冊 `mcp__joy__*` 工具；其他 CLI 權限提示一律拒絕。`request_approval` 的 ActionKind 分級與審核流程留待 T2.3 接線。
+- Linux `env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 通過（格式、lint、workspace typecheck、266 passed、2 skipped）；stdio child、allowlist、read-only peer 與額度以 synthetic fixture 測試，尚未用登入中的真實 Claude/Codex CLI 驗收。
 
 ### T1.9 GitHub publisher
 
@@ -71,4 +84,4 @@
 
 - T1.9 仍需依 PLAN 的安全測試 repo 流程完成實際驗收；fake `gh`／local bare remote 不足以勾選。
 - PR #46、#70 的關閉待作者處理：本 Session 的 GitHub 權限拒絕關閉非 Reason Session 開啟的 PR；已留言請作者關閉。
-- 目前沒有新增的產品功能阻塞。P1 及明列的擁有者處理項目完成前，P2 保持暫停。
+- P1 的 owner gate 與列出的實機驗收仍待完成；依計畫繼續推進不相依的 P2，P3 仍待 T2.2、T2.3、T2.4 合併後開始。
