@@ -30,7 +30,7 @@
 3. #62 目前與 main 衝突、沒有最新 head checks；等待既定 owner 流程處理，保持 draft 且不修改該 PR。T1.13/T1.8 只有在整合到 main 並完成驗收後才可勾選。
 4. 完成仍待處理的 T0.4 真實 Codex fixture 和必要 owner reviews；驗證 P1 前維持 P2 hold。P4 的 #17 僅代表部分進度，不能代替 P1 完成或 Web Push 驗收。
 
-**待重做（從最新 main 重實作；已核對舊分支內容與 main，只列仍有價值且未在 main 的工作）：** T0.4/T0.6 — `t0.6-stable-memory-fts-key`; T2.2 — `t2.2-tools`; T3.1 — `reason/t3-1-add-selectable-assi-7a20bfa9`; T3.2 — `t3.2-dispatch-tools`; T3.3 — `t3.3-memory`, `fix/github-pat-memory-filter`; T3.4 — `reason/t3-4-add-memory-manageme-5e3fdbbf`; T3.5 — `t3.5-project-memory`; T3.6 — `t3.6-event-memory`; T3.7 — `t3.7-scheduler`; T3.8 — `t3.8-google-workspace`; T3.9 — `t3.9-model-stats`; T4.1 — `t4.1-remote-auth`; T4.2 — `t4.2-local-pwa`; T4.3 — `reason/t4-3-add-tauri-desktop-s-29500001`; T4.4 — `t4.4-windows-codex`。Memory writes, credentials/auth, and other sensitive changes still require owner review.
+**待重做：** 從最新 `main` 重做尚未整合項目：T0.4/T0.6、T2.2、T3.1–T3.9（含 GitHub PAT memory filter）、T4.1–T4.4；涉及 memory 寫入或憑證／驗證的變更仍需 owner review。
 
 ## 歷史 P1 狀態快照（PR 狀態截至 2026-11-04 18:49 UTC；main 更新至 18:52 UTC）
 
