@@ -331,14 +331,14 @@ export async function hasWindowsBatchShim(
   if (platform !== 'win32') return false
 
   const isBatchCommand = /\.(?:cmd|bat)$/i.test(command)
-  const candidates = isBatchCommand
-    ? [command]
-    : /^(claude|codex)$/i.test(command)
-      ? [`${command}.cmd`, `${command}.bat`]
-      : []
-  if (candidates.length === 0) return false
+  const candidates = isBatchCommand ? [command] : [`${command}.cmd`, `${command}.bat`]
+  if (/[\\/]/.test(command)) {
+    for (const candidate of candidates) {
+      if (await isFile(candidate)) return true
+    }
+    return false
+  }
 
-  if (isBatchCommand && /[\\/]/.test(command)) return isFile(command)
   for (const directory of searchPath.split(';').filter(Boolean)) {
     for (const candidate of candidates) {
       if (await isFile(join(directory, candidate))) return true

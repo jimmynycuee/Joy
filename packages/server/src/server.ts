@@ -169,7 +169,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const home = options.home ?? joyHome()
   const configStore = options.configStore ?? new ConfigStore(join(home, 'config.yaml'))
   const initialConfig = await configStore.get()
-  await mkdir(home, { recursive: true })
+  await mkdir(home, { recursive: true, mode: 0o700 })
   const paths = resolvePaths(initialConfig, home)
   const apiToken = options.apiToken ?? (await loadOrCreateApiToken(home))
   assertApiToken(apiToken)

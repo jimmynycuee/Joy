@@ -35,9 +35,11 @@ describe('Windows CLI shim detection', () => {
     const directory = tempHome()
     writeFileSync(join(directory, 'claude.cmd'), '@echo off\r\n')
     writeFileSync(join(directory, 'codex.cmd'), '@echo off\r\n')
+    writeFileSync(join(directory, 'custom-claude.cmd'), '@echo off\r\n')
 
     expect(await hasWindowsBatchShim('claude', directory, 'win32')).toBe(true)
     expect(await hasWindowsBatchShim('codex', directory, 'win32')).toBe(true)
+    expect(await hasWindowsBatchShim('custom-claude', directory, 'win32')).toBe(true)
     expect(await hasWindowsBatchShim(join(directory, 'claude.cmd'), '', 'win32')).toBe(true)
     expect(await hasWindowsBatchShim('claude', directory, 'linux')).toBe(false)
     expect(await hasWindowsBatchShim('unrelated', directory, 'win32')).toBe(false)

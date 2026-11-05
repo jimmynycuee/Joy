@@ -363,6 +363,7 @@ describe('Joy local server', () => {
     })
     const { origin } = await start(serverPromise)
     expect(existsSync(home)).toBe(true)
+    if (process.platform !== 'win32') expect(statSync(home).mode & 0o777).toBe(0o700)
     expect((await fetch(`${origin}/api/health`)).status).toBe(200)
     const response = await fetch(`${origin}/api/doctor`)
     const body = (await response.json()) as {
@@ -402,6 +403,14 @@ describe('Joy local server', () => {
       null,
     )
     const wrongToken = `${TEST_API_TOKEN}-wrong`
+    const unauthenticatedDoctor = await rawRequest(
+      origin,
+      '/api/doctor',
+      'GET',
+      { host: new URL(origin).host, origin: VITE_ORIGIN },
+      '',
+      null,
+    )
     const unauthenticatedRead = await rawRequest(
       origin,
       '/api/repos',
@@ -419,6 +428,7 @@ describe('Joy local server', () => {
       wrongToken,
     )
     expect(missing.status).toBe(403)
+    expect(unauthenticatedDoctor.status).toBe(403)
     expect(unauthenticatedRead.status).toBe(403)
     expect(wrong.status).toBe(403)
     const publicHealth = await rawRequest(
