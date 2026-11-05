@@ -26,6 +26,7 @@ import { ConfigStore, configSchema, joyHome, resolvePaths, type JoyConfig } from
 import {
   addUsage,
   appendTaskEvent,
+  appendTaskFailureEvent,
   createAttempt,
   createRepo,
   createReview,
@@ -91,7 +92,7 @@ const PLAYWRIGHT_E2E_ORIGINS = ['http://127.0.0.1:4173', 'http://localhost:4173'
 
 export interface TaskEvent {
   taskId: TaskId
-  attemptId: AttemptId
+  attemptId?: AttemptId
   seq: number
   eventId?: string
   type: string
@@ -189,11 +190,21 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const publish = (taskId: TaskId, attemptId: AttemptId, type: string, payload: unknown): TaskEvent => {
     const safe = redactor.redactValue(payload)
     const event = appendTaskEvent(db, attemptId, type, safe)
+    sendEvent(taskId, event)
+    return event
+  }
+
+  const publishTaskFailure = (taskId: TaskId, message: string): TaskEvent => {
+    const event = appendTaskFailureEvent(db, taskId, redactor.redact(message))
+    sendEvent(taskId, event)
+    return event
+  }
+
+  function sendEvent(taskId: TaskId, event: TaskEvent): void {
     const message = JSON.stringify({ type: 'event', event })
     for (const socket of subscribers.get(taskId) ?? []) {
       if (socket.readyState === WebSocket.OPEN) socket.send(message)
     }
-    return event
   }
 
   const httpServer = createHttpServer((req, res) => {
@@ -302,7 +313,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     const repoMatch = /^\/api\/repos\/([^/]+)$/.exec(url.pathname)
     if (repoMatch && method === 'PATCH') {
-      const repoId = idSchema.parse(decodeURIComponent(repoMatch[1] ?? '')) as RepoId
+      const repoId = idSchema.parse(decodePathSegment(repoMatch[1] ?? '')) as RepoId
+      assertJsonContentType(req)
       const input = repoAllowlistInputSchema.parse(await readJson(req))
       const repo = updateRepoAllowedProviders(db, repoId, input.allowedProviders)
       if (!repo) throw new HttpError(404, `Repository ${repoId} was not found`)
@@ -537,7 +549,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       const message = error instanceof Error ? error.message : 'Task failed'
       const status = controller.signal.aborted ? 'cancelled' : 'failed'
       if (error instanceof ProviderAllowlistError) {
+        if (attempt) updateAttempt(db, attempt.id, { status })
         setTaskStatus(db, task.id, status)
+        if (attempt) publish(task.id, attempt.id, 'error', { message })
+        else publishTaskFailure(task.id, message)
         return
       }
       if (!attempt) {

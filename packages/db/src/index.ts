@@ -5,6 +5,7 @@ export type { Migration } from './migrations.js'
 export {
   addUsage,
   appendTaskEvent,
+  appendTaskFailureEvent,
   createAttempt,
   createRepo,
   createReview,

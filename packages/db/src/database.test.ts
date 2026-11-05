@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PROVIDER_KINDS } from '@joy/core'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { Database } from './database.js'
 import { migrate, openDatabase, schemaVersion } from './database.js'
@@ -72,9 +73,22 @@ describe('openDatabase', () => {
     open.push(db)
     db.prepare("INSERT INTO repos (id, path, default_branch) VALUES ('r1', '/repo', 'main')").run()
     migrate(db, MIGRATIONS)
-    expect(db.prepare('SELECT allowed_providers FROM repos WHERE id = ?').get('r1')).toEqual({
-      allowed_providers: '["openai-api","claude-cli","codex-cli"]',
-    })
+    const row = db.prepare('SELECT allowed_providers FROM repos WHERE id = ?').get('r1') as {
+      allowed_providers: string
+    }
+    expect(JSON.parse(row.allowed_providers) as string[]).toEqual([...PROVIDER_KINDS])
+    for (const [index, provider] of PROVIDER_KINDS.entries()) {
+      expect(() =>
+        db
+          .prepare('INSERT INTO repos (id, path, default_branch, allowed_providers) VALUES (?, ?, ?, ?)')
+          .run(`provider-${index}`, `/provider-${index}`, 'main', JSON.stringify([provider])),
+      ).not.toThrow()
+      expect(() =>
+        db
+          .prepare('UPDATE repos SET allowed_providers = ? WHERE id = ?')
+          .run(JSON.stringify([provider]), 'r1'),
+      ).not.toThrow()
+    }
     for (const [index, invalid] of [
       '[]',
       '["claude-cli","claude-cli"]',

@@ -205,6 +205,22 @@ export const MIGRATIONS: readonly Migration[] = [
       END;
     `,
   },
+  {
+    version: 4,
+    name: 'record task-level failures without attempts',
+    sql: /* sql */ `
+      CREATE TABLE task_events (
+        id              INTEGER PRIMARY KEY,
+        task_id         TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        seq             INTEGER NOT NULL,
+        type            TEXT NOT NULL,
+        payload         TEXT NOT NULL CHECK (json_valid(payload)),
+        ts              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        UNIQUE (task_id, seq)
+      ) STRICT;
+      CREATE INDEX task_events_task ON task_events(task_id, seq);
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

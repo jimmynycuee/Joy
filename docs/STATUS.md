@@ -4,21 +4,21 @@
 
 - 最後更新：2026-11-05
 - 目前階段：**P1 尚未完成；P2 暫停，不開始或擴大。** 最新已抓取的 `main` 為 `f78453731340de2276001fc1c978f7e758166177`，包含 PR #58 的 P1 堆疊及其後續狀態更新；T1.12 僅在本 PR 分支完成，尚未整合至 `main`。T1.13 `joy doctor` 仍待完成。
-- 本分支 `t1.12-repo-provider-allowlist` 已將 `origin/main` SHA `f78453731340de2276001fc1c978f7e758166177` 合併；衝突已解決於 merge commit `a42054d872db414de6f177f4ceb8bc451a508646`。該樹通過 `pnpm check`（211 tests passed、2 skipped）及 57 個 focused server/DB tests；目前仍未發布，需等待新 head 的 GitHub checks。最新 live PR 快照仍是合併前 head `034524e98c0680f769b4f830c033b7762691a5e2`（三平台 checks 全通過）；本分支文件中的 T1.12 勾選只代表分支內實作與驗收，不代表已進 `main`。
+- 本分支 `t1.12-repo-provider-allowlist` 已 merge `origin/main` SHA `f78453731340de2276001fc1c978f7e758166177`（merge `a42054d`），並納入先前已發布的 PR 頭 `68a0bd87bd5634ebcc4967f37316f244748a74de`（merge `a97b6bc`）。合併後程式碼樹通過 `pnpm check`（215 tests passed、2 skipped）、61 個 focused server/DB tests 與 `git diff --check`。最新 live PR 快照仍為 #53 head `68a0bd87bd5634ebcc4967f37316f244748a74de`，四項 checks 全通過；本地最新 commit `a97b6bc` 及其驗證後的 T1.12 修補尚待發布，發布後需對新 head 重新驗證。T1.12 勾選只代表本 PR 分支實作與驗收，不代表已整合至 `main`。
 - 計畫與決策：依 `docs/PLAN.md` v0.2；P1 順序為 T1.12 → T1.13。T1.12 對齊、owner review 與更新 head checks 完成並整合前維持 P2 hold；不開始或擴大 P2。
 
 ## P1 狀態與 owner follow-ups（live PR snapshot：2026-11-05；main SHA 如上）
 
 1. **目前 main：** main 已包含 PR #58 整合的主要 P1 堆疊與其後續 STATUS 更新，最新抓取 SHA 為 `f78453731340de2276001fc1c978f7e758166177`。本次尚未對該 main SHA 執行 CI，故不據此宣稱其檢查通過；沿用 main 中的歷史 CI 記錄時，僅代表那些記錄的舊 SHA。
-2. **T1.12 / PR #53：** [#53](https://github.com/jimmynycuee/Joy/pull/53) live 狀態為 open/draft，base 仍是 `t1.7-event-log`，owner review/approval 尚未記錄。最新 live head `034524e98c0680f769b4f830c033b7762691a5e2` 的 Ubuntu、macOS、Windows checks 全成功；本機 merge commit `a42054d872db414de6f177f4ceb8bc451a508646` 已通過 `pnpm check` 與 focused tests，但尚未發布，故不能沿用舊 head checks。尚未確認 #53 已改 base；發布整合 head 後僅透過支援工具嘗試一次 `base=main`，並以 fresh PR readback 判定。
+2. **T1.12 / PR #53：** [#53](https://github.com/jimmynycuee/Joy/pull/53) live 狀態為 open/draft，base 仍是 `t1.7-event-log`，owner review/approval 尚未記錄。最新 live head `68a0bd87bd5634ebcc4967f37316f244748a74de` 的 Ubuntu、macOS、Windows 與 web E2E checks 全成功；分支已 merge 最新抓取的 `main` 與該已發布 head；本機 `pnpm check`、focused tests 與 `git diff --check` 均通過，較新的 merge/status commits 尚待發布及新 head CI。此前一次受支援的 `base=main` 更新結果未確認，fresh readback 仍為 `t1.7-event-log`；本次不以其他路徑重試。
 3. **T1.12 驗收範圍（僅本 PR 分支）：** repo allowlist 非空且唯一，DB 邊界拒絕無效持久化值、舊 repo migration 設預設值；只驗證模式會使用的角色；resume 在狀態更新／排程前同步 preflight，拒絕不會新增 attempt/event，仍保留 runtime pre-provider guard；PATCH repo allowlist 提供可行修復路徑。整合 `main` 後本機 focused server/DB tests 57/57 通過；提交後仍須等新 PR head checks。
 4. **#57 必須保持 open：** [#57](https://github.com/jimmynycuee/Joy/pull/57) live 狀態為 open、base `main`，與 #53 共用來源分支／head；更新共享分支會更新其 head，但本工作不修改 #57 的 body、metadata 或 state，絕不關閉它。發布後重新確認其仍 open。
 5. **T1.13 尚未完成：** `joy doctor`／首次啟動檢查依 P1 順序在 T1.12 owner review 與整合後處理。P2 維持暫停；其他 owner-review follow-ups（包括 #44、core interface、keychain/secret handling）沿用 main 狀態追蹤，非本次修改範圍。
 
 ## 下一步（P1 依賴順序）
 
-1. 將已驗證的 merge-resolution commit 與這份狀態更新發布至既有 #53；不建立替代 PR。
-2. 對已發布 head 讀取新 CI；只做一次支援工具 `base=main` 更新並 fresh-readback 驗證。#53 維持 draft，等待 owner review 與所有 checks 通過；#57 維持 open。
+1. 將已驗證的分支更新發布至既有 #53；不建立替代 PR。
+2. 對新 head 讀取 GitHub checks；不再重試未確認的 base 更新，也不使用其他路徑。#53 維持 draft，等待 owner review 與所有 checks 通過；#57 維持 open。
 3. T1.12 審核與整合完成後再做 T1.13；所有 P1 程式碼進 `main` 並驗證前維持 P2 hold。
 
 ## 歷史 P1 狀態快照（PR 狀態截至 2026-11-04 18:49 UTC；main 更新至 18:52 UTC）

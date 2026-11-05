@@ -6,6 +6,7 @@ import type { Database } from './database.js'
 import {
   addUsage,
   appendTaskEvent,
+  appendTaskFailureEvent,
   createAttempt,
   createRepo,
   createReview,
@@ -85,6 +86,20 @@ describe('repositories', () => {
     expect(getRepo(db, repo.id)).toEqual(repo)
   })
 
+  it('fails closed when a legacy corrupt repository appears in a repository list', () => {
+    const db = openDatabase(':memory:', { migrations: MIGRATIONS.slice(0, 2) })
+    databases.push(db)
+    db.prepare("INSERT INTO repos (id, path, default_branch) VALUES ('valid', '/valid', 'main')").run()
+    db.prepare('INSERT INTO repos (id, path, default_branch, allowed_providers) VALUES (?, ?, ?, ?)').run(
+      'corrupt',
+      '/corrupt',
+      'main',
+      '{"provider":"claude-cli"}',
+    )
+
+    expect(() => listRepos(db)).toThrow(/allowlist/i)
+  })
+
   it.each([
     { stored: {}, reason: 'array' },
     { stored: [], reason: 'at least one' },
@@ -137,6 +152,30 @@ describe('repositories', () => {
     expect(latestAttempt(db, task.id)?.id).toBe(attempt.id)
     setTaskStatus(db, task.id, 'running')
     expect(getTask(db, task.id)?.status).toBe('running')
+  })
+
+  it('persists task-level failure events without inventing an attempt', () => {
+    const db = fresh()
+    const { task } = seed(db)
+    const blocked = appendTaskFailureEvent(db, task.id, 'Provider is not allowed')
+    const attempt = createAttempt(db, {
+      id: aid('after-blocked'),
+      taskId: task.id,
+      provider: 'claude-cli',
+      model: 'haiku',
+      status: 'running',
+    })
+    const started = appendTaskEvent(db, attempt.id, 'started', { attemptId: attempt.id })
+
+    expect(blocked).toMatchObject({
+      taskId: task.id,
+      seq: 1,
+      type: 'error',
+      payload: { message: 'Provider is not allowed' },
+    })
+    expect(blocked).not.toHaveProperty('attemptId')
+    expect(started.seq).toBe(2)
+    expect(listTaskEvents(db, task.id)).toEqual([blocked, started])
   })
 
   it('persists task-ordered events, reviews, and additive daily usage', () => {

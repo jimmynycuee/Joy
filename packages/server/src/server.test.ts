@@ -576,9 +576,16 @@ describe('Joy local server', () => {
       fetch(`${origin}/api/tasks/%E0%A4%A/events`),
       rawRequest(origin, '/api/tasks/%E0%A4%A/cancel', 'POST', { host: new URL(origin).host, origin }),
       rawRequest(origin, '/api/tasks/%E0%A4%A/resume', 'POST', { host: new URL(origin).host, origin }),
+      rawRequest(
+        origin,
+        '/api/repos/%E0%A4%A',
+        'PATCH',
+        { host: new URL(origin).host, origin, 'content-type': 'application/json' },
+        JSON.stringify({ allowedProviders: ['claude-cli'] }),
+      ),
     ])
 
-    expect(responses.map((response) => response.status)).toEqual([400, 400, 400, 400])
+    expect(responses.map((response) => response.status)).toEqual([400, 400, 400, 400, 400])
   })
 
   it('sends a task snapshot before replaying only events after the WebSocket cursor', async () => {
@@ -800,7 +807,16 @@ describe('Joy local server', () => {
       })
     ).json()) as { task: { id: string } }
 
-    expect((await waitForStatus(origin, task.id, 'failed')).attempts).toHaveLength(0)
+    const failed = await waitForStatus(origin, task.id, 'failed')
+    expect(failed.attempts).toHaveLength(0)
+    expect(failed.events).toEqual([
+      expect.objectContaining({
+        seq: 1,
+        type: 'error',
+        payload: expect.objectContaining({ message: expect.stringContaining('Role "implementer"') }),
+      }),
+    ])
+    expect(failed.events[0]).not.toHaveProperty('attemptId')
     expect(implementer.calls).toHaveLength(0)
     expect(reviewer.calls).toHaveLength(0)
     expect(api.calls).toHaveLength(0)
@@ -876,6 +892,99 @@ describe('Joy local server', () => {
       expect(api.calls).toHaveLength(0)
     },
   )
+
+  it('publishes a runtime allowlist rejection for an existing resumed attempt', async () => {
+    const { db, serverPromise, configStore, implementer, reviewer, api } = fixture()
+    const repo = createRepo(db, {
+      id: rid('resume-race-repo'),
+      path: '/resume-race-repo',
+      defaultBranch: 'main',
+      allowedProviders: ['claude-cli'],
+    })
+    const task = createTask(db, {
+      id: tid('resume-race-task'),
+      repoId: repo.id,
+      title: 'Block a resume after preflight',
+      prompt: 'Do not call a provider',
+      mode: 'review_loop',
+    })
+    const attempt = createAttempt(db, {
+      id: aid('resume-race-attempt'),
+      taskId: task.id,
+      provider: 'claude-cli',
+      model: 'haiku',
+      status: 'cancelled',
+    })
+    updateAttempt(db, attempt.id, {
+      worktreePath: '/saved/worktree',
+      branch: 'joy/resume-race-task/resume-race-attempt',
+      baseCommit: 'base-sha',
+      sessionId: 'saved-session',
+    })
+    setTaskStatus(db, task.id, 'cancelled')
+
+    const { origin } = await start(serverPromise)
+    const getConfig = configStore.get.bind(configStore)
+    let reads = 0
+    configStore.get = async () => {
+      const config = await getConfig()
+      reads++
+      const reviewerProvider = reads === 1 ? 'claude-cli' : 'codex-cli'
+      return {
+        ...config,
+        roles: { ...config.roles, reviewer: { ...config.roles.reviewer, provider: reviewerProvider } },
+      }
+    }
+
+    const resumed = await postJson(`${origin}/api/tasks/${task.id}/resume`, {})
+    expect(resumed.status).toBe(202)
+    const failed = await waitForStatus(origin, task.id, 'failed')
+    expect(failed.attempts).toHaveLength(1)
+    expect(failed.attempts[0]).toMatchObject({ id: attempt.id, provider: 'claude-cli', status: 'failed' })
+    expect(failed.events).toEqual([
+      expect.objectContaining({
+        attemptId: attempt.id,
+        seq: 1,
+        type: 'error',
+        payload: expect.objectContaining({
+          message: expect.stringContaining('Role "reviewer" selects provider "codex-cli"'),
+        }),
+      }),
+    ])
+    expect(implementer.calls).toHaveLength(0)
+    expect(reviewer.calls).toHaveLength(0)
+    expect(api.calls).toHaveLength(0)
+  })
+
+  it('requires JSON and validates repository PATCH ids, body, and existence', async () => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/patch-validation', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    const host = new URL(origin).host
+    const contentType = { host, origin, 'content-type': 'application/json' }
+    const responses = await Promise.all([
+      rawRequest(
+        origin,
+        `/api/repos/${repo.id}`,
+        'PATCH',
+        { host, origin },
+        JSON.stringify({ allowedProviders: ['claude-cli'] }),
+      ),
+      rawRequest(origin, `/api/repos/${repo.id}`, 'PATCH', contentType, '{'),
+      rawRequest(origin, `/api/repos/${repo.id}`, 'PATCH', contentType, JSON.stringify({ unexpected: true })),
+      rawRequest(
+        origin,
+        '/api/repos/not-found',
+        'PATCH',
+        contentType,
+        JSON.stringify({ allowedProviders: ['claude-cli'] }),
+      ),
+    ])
+
+    expect(responses.map((response) => response.status)).toEqual([415, 400, 400, 404])
+  })
 
   it('updates a repository allowlist through PATCH so a rejected resume can be recovered', async () => {
     const { serverPromise, implementer } = fixture()

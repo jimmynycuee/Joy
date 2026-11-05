@@ -29,7 +29,7 @@ export interface StoredTask extends Task {
 
 export interface TaskEventRecord {
   taskId: TaskId
-  attemptId: AttemptId
+  attemptId?: AttemptId
   seq: number
   type: string
   payload: unknown
@@ -238,12 +238,7 @@ export function appendTaskEvent(
   const attempt = db.prepare('SELECT task_id FROM attempts WHERE id = ?').get(attemptId) as
     { task_id: string } | undefined
   if (!attempt) throw new Error(`Attempt ${attemptId} was not found`)
-  const row = db
-    .prepare(
-      'SELECT COALESCE(MAX(e.seq), 0) AS seq FROM events e JOIN attempts a ON a.id = e.attempt_id WHERE a.task_id = ?',
-    )
-    .get(attempt.task_id) as { seq: number }
-  const seq = row.seq + 1
+  const seq = nextTaskEventSequence(db, attempt.task_id as TaskId)
   const result = db
     .prepare('INSERT INTO events (attempt_id, seq, type, payload) VALUES (?, ?, ?, ?)')
     .run(attemptId, seq, type, JSON.stringify(payload))
@@ -260,15 +255,38 @@ export function appendTaskEvent(
   }
 }
 
+export function appendTaskFailureEvent(db: Database, taskId: TaskId, message: string): TaskEventRecord {
+  const seq = nextTaskEventSequence(db, taskId)
+  const result = db
+    .prepare('INSERT INTO task_events (task_id, seq, type, payload) VALUES (?, ?, ?, ?)')
+    .run(taskId, seq, 'error', JSON.stringify({ message }))
+  const row = db
+    .prepare('SELECT seq, type, payload, ts FROM task_events WHERE id = ?')
+    .get(result.lastInsertRowid) as { seq: number; type: string; payload: string; ts: string } | undefined
+  if (!row) throw new Error(`Task error event for ${taskId} was not found after insert`)
+  return {
+    taskId,
+    seq: row.seq,
+    type: row.type,
+    payload: JSON.parse(row.payload) as unknown,
+    ts: row.ts,
+  }
+}
+
 export function listTaskEvents(db: Database, taskId: TaskId, after = 0): TaskEventRecord[] {
   const rows = db
     .prepare(
-      `SELECT e.attempt_id, e.seq, e.type, e.payload, e.ts
-       FROM events e JOIN attempts a ON a.id = e.attempt_id
-       WHERE a.task_id = ? AND e.seq > ? ORDER BY e.seq, e.id`,
+      `SELECT attempt_id, seq, type, payload, ts FROM (
+         SELECT e.attempt_id, e.seq, e.type, e.payload, e.ts, e.id AS event_row_id
+         FROM events e JOIN attempts a ON a.id = e.attempt_id
+         WHERE a.task_id = ?
+         UNION ALL
+         SELECT NULL AS attempt_id, e.seq, e.type, e.payload, e.ts, e.id AS event_row_id
+         FROM task_events e WHERE e.task_id = ?
+       ) WHERE seq > ? ORDER BY seq, event_row_id`,
     )
-    .all(taskId, after) as unknown as {
-    attempt_id: string
+    .all(taskId, taskId, after) as unknown as {
+    attempt_id: string | null
     seq: number
     type: string
     payload: string
@@ -276,12 +294,25 @@ export function listTaskEvents(db: Database, taskId: TaskId, after = 0): TaskEve
   }[]
   return rows.map((row) => ({
     taskId,
-    attemptId: row.attempt_id as AttemptId,
+    ...(row.attempt_id ? { attemptId: row.attempt_id as AttemptId } : {}),
     seq: row.seq,
     type: row.type,
     payload: JSON.parse(row.payload) as unknown,
     ts: row.ts,
   }))
+}
+
+function nextTaskEventSequence(db: Database, taskId: TaskId): number {
+  const row = db
+    .prepare(
+      `SELECT COALESCE(MAX(seq), 0) AS seq FROM (
+         SELECT e.seq FROM events e JOIN attempts a ON a.id = e.attempt_id WHERE a.task_id = ?
+         UNION ALL
+         SELECT seq FROM task_events WHERE task_id = ?
+       )`,
+    )
+    .get(taskId, taskId) as { seq: number }
+  return row.seq + 1
 }
 
 export function createReview(db: Database, input: NewReview): ReviewRecord {

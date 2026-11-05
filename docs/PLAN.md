@@ -314,7 +314,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 | T1.9 | GitHub：commit、push branch、用 `gh` 開 draft PR，PR 描述附 review 摘要 | 在測試 repo 成功開出 PR |
 | T1.10 | 機密：OS keychain 存 OpenAI key（`@napi-rs/keyring` 或同類），log 遮罩 | key 不出現在 DB、log、事件中（測試驗證） |
 | T1.11 | 設定：`config.yaml` 讀寫 + UI 設定頁（各角色模型） | 改設定後新任務立即套用 |
-| T1.12 | **repo 的 provider 允許清單**：每個 repo 設定可用哪些 provider（預設全部）；建立任務時檢查所選角色；T2.1、T2.2、T3.2 新增對應流程時沿用此清單 | 所選角色用到不允許的 provider 時任務直接拒絕，錯誤訊息說明是哪個角色 |
+| T1.12 | **repo 的 provider 允許清單**：每個 repo 設定可用哪些 provider（預設全部）；建立任務與 resume 前檢查所選角色；T2.1、T2.2、T3.2 新增對應流程時沿用此清單。更新清單只影響之後的新任務、resume 與 provider dispatch preflight，不會取消或動態改變已在執行中的任務。 | 所選角色用到不允許的 provider 時任務直接拒絕，錯誤訊息說明是哪個角色；provider 允許清單與 `PROVIDER_KINDS` 同步受 DB regression 保護。 |
 | T1.13 | **`joy doctor` 與首次啟動檢查**：Node 版本、git、gh 登入、`claude` / `codex` 安裝與版本、鑰匙圈、資料目錄可寫；提供首頁可呈現的檢查結果 | 每項回報 OK / 缺少 / 版本未測過，並附修復指令；缺 CLI 時只停用該 provider，不阻止啟動 |
 
 **P1 完成後：開始用 Joy 開發 Joy。**
