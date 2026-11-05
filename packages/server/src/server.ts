@@ -851,6 +851,7 @@ try {
     const missingPowerShell = failure.code === 'ENOENT' ? ' (PowerShell unavailable)' : ''
     throw new Error(
       `Unable to restrict API token file access to the current Windows user.${safeDiagnostic ? ` ${safeDiagnostic}` : missingPowerShell}`,
+      { cause: error },
     )
   }
 }
