@@ -21,24 +21,6 @@ type Task = {
 type TaskEvent = { taskId: string; seq: number; type: string; payload: unknown; ts: string }
 type DiffFile = { path: string; status: string; additions: number; deletions: number }
 type WorkspaceDiff = { files: DiffFile[]; patch: string }
-type Competitor = {
-  attemptId: string
-  model?: ModelRef
-  status: string
-  diff?: WorkspaceDiff
-  reason?: string
-  synthesized?: boolean
-}
-type CompeteJudgment = { winnerAttemptId: string; summary: string; rationale: string }
-type CompeteView = {
-  candidates: Competitor[]
-  judgment: CompeteJudgment | null
-  judgeFailure: string | null
-  selectedAttemptId: string
-  synthesisRunning: boolean
-  synthesisSucceeded: boolean
-  synthesisError: string | null
-}
 type TaskDetails = {
   task: Task
   repo: Repo | null
@@ -67,8 +49,6 @@ const MODEL_SUGGESTIONS: Record<ProviderKind, string[]> = {
   'claude-cli': ['opus', 'sonnet', 'haiku'],
   'codex-cli': ['gpt-6.1-sol', 'gpt-6-luna'],
 }
-const CODE_EDIT_PROVIDERS = new Set<ProviderKind>(['claude-cli', 'codex-cli'])
-
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -107,28 +87,16 @@ function mergeEvents(first: TaskEvent[], second: TaskEvent[]): TaskEvent[] {
 
 function taskAfterEvent(task: Task, event: TaskEvent): Task {
   const payload = record(event.payload)
-  const hasSelectableCandidate =
-    event.type === 'result' &&
-    Array.isArray(payload?.candidates) &&
-    payload.candidates.some((value) => {
-      const candidate = record(value)
-      const diff = record(candidate?.diff)
-      return candidate?.status === 'succeeded' && Array.isArray(diff?.files) && typeof diff.patch === 'string'
-    })
   const resultStatus =
     event.type === 'error'
       ? 'failed'
-      : event.type === 'winner_selected'
-        ? 'done'
-        : event.type === 'result'
-          ? payload?.status === 'succeeded'
-            ? task.mode === 'compete' || payload.approved === false
-              ? 'review_ready'
-              : 'done'
-            : task.mode === 'compete' && hasSelectableCandidate
-              ? 'review_ready'
-              : payload?.status
-          : undefined
+      : event.type === 'result'
+        ? payload?.status === 'succeeded'
+          ? payload.approved === false
+            ? 'review_ready'
+            : 'done'
+          : payload?.status
+        : undefined
   return typeof resultStatus === 'string' ? { ...task, status: resultStatus } : task
 }
 
@@ -143,20 +111,6 @@ function diffFrom(events: TaskEvent[]): WorkspaceDiff | null {
 
 function eventTitle(event: TaskEvent): string {
   const payload = record(event.payload)
-  if (event.type === 'attempt') {
-    const model = record(payload?.model)
-    const identity = typeof model?.model === 'string' ? model.model : 'candidate'
-    return `${identity}: ${String(payload?.status ?? 'updated')}`
-  }
-  if (event.type === 'judgment') {
-    const judgment = record(payload?.judgment)
-    return typeof judgment?.summary === 'string' ? `Judge: ${judgment.summary}` : 'Judge selected a candidate'
-  }
-  if (event.type === 'result' && typeof payload?.reason === 'string') {
-    return `${String(payload.status ?? 'result')}: ${payload.reason}`
-  }
-  if (event.type === 'compete_run_started') return 'A new competition run started'
-  if (event.type === 'winner_selected') return 'A candidate was selected as the winner'
   if (event.type === 'agent') {
     const agentEvent = record(payload?.event)
     if (agentEvent?.type === 'message' && typeof agentEvent.text === 'string') return agentEvent.text
@@ -186,126 +140,6 @@ function eventKind(event: TaskEvent): string {
   return typeof role === 'string' ? role : 'agent'
 }
 
-function competeView(events: TaskEvent[]): CompeteView {
-  const candidates = new Map<string, Competitor>()
-  let judgment: CompeteJudgment | null = null
-  let judgeFailure: string | null = null
-  let selectedAttemptId = ''
-  let synthesisRunning = false
-  let synthesisSucceeded = false
-  let synthesisError: string | null = null
-  const addCandidate = (value: unknown) => {
-    const candidate = record(value)
-    if (typeof candidate?.attemptId !== 'string') return
-    const existing = candidates.get(candidate.attemptId)
-    const model = record(candidate.model)
-    const diff = record(candidate.diff)
-    candidates.set(candidate.attemptId, {
-      attemptId: candidate.attemptId,
-      ...(model && typeof model.provider === 'string' && typeof model.model === 'string'
-        ? { model: model as unknown as ModelRef }
-        : existing?.model
-          ? { model: existing.model }
-          : {}),
-      status: typeof candidate.status === 'string' ? candidate.status : (existing?.status ?? 'unknown'),
-      ...(diff && Array.isArray(diff.files) && typeof diff.patch === 'string'
-        ? { diff: diff as unknown as WorkspaceDiff }
-        : existing?.diff
-          ? { diff: existing.diff }
-          : {}),
-      ...(typeof candidate.reason === 'string' ? { reason: candidate.reason } : {}),
-      ...(candidate.synthesized === true || existing?.synthesized ? { synthesized: true } : {}),
-    })
-  }
-  for (const event of events) {
-    const payload = record(event.payload)
-    if (event.type === 'compete_run_started') {
-      candidates.clear()
-      judgment = null
-      judgeFailure = null
-      selectedAttemptId = ''
-      synthesisRunning = false
-      synthesisSucceeded = false
-      synthesisError = null
-    }
-    if (event.type === 'synthesis_started') {
-      synthesisRunning = true
-      synthesisSucceeded = false
-      synthesisError = null
-    }
-    if (event.type === 'attempt') addCandidate(payload)
-    if (event.type === 'result') {
-      if (Array.isArray(payload?.candidates)) payload.candidates.forEach(addCandidate)
-      const hasSuccessfulCandidate = [...candidates.values()].some(
-        (candidate) => candidate.status === 'succeeded' && candidate.diff !== undefined,
-      )
-      judgeFailure =
-        payload?.status === 'failed' && hasSuccessfulCandidate && typeof payload.reason === 'string'
-          ? payload.reason
-          : null
-      const value = record(payload?.judgment)
-      if (
-        typeof value?.winnerAttemptId === 'string' &&
-        typeof value.summary === 'string' &&
-        typeof value.rationale === 'string'
-      ) {
-        judgment = {
-          winnerAttemptId: value.winnerAttemptId,
-          summary: value.summary,
-          rationale: value.rationale,
-        }
-        judgeFailure = null
-      }
-    }
-    if (event.type === 'judgment') {
-      const value = record(payload?.judgment)
-      if (
-        typeof value?.winnerAttemptId === 'string' &&
-        typeof value.summary === 'string' &&
-        typeof value.rationale === 'string'
-      ) {
-        judgment = {
-          winnerAttemptId: value.winnerAttemptId,
-          summary: value.summary,
-          rationale: value.rationale,
-        }
-        judgeFailure = null
-      }
-    }
-    if (event.type === 'synthesis_result') {
-      synthesisRunning = false
-      synthesisSucceeded = payload?.status === 'succeeded'
-      synthesisError =
-        payload?.status === 'succeeded'
-          ? null
-          : typeof payload?.reason === 'string'
-            ? payload.reason
-            : 'Synthesis did not produce a candidate.'
-    }
-    if (event.type === 'synthesis_error') {
-      synthesisRunning = false
-      synthesisError = typeof payload?.message === 'string' ? payload.message : 'Synthesis failed.'
-    }
-    if (event.type === 'winner_selected' && typeof payload?.attemptId === 'string') {
-      selectedAttemptId = payload.attemptId
-    }
-  }
-  return {
-    candidates: [...candidates.values()],
-    judgment,
-    judgeFailure,
-    selectedAttemptId,
-    synthesisRunning,
-    synthesisSucceeded,
-    synthesisError,
-  }
-}
-
-function modelIdentity(model?: ModelRef): string {
-  if (!model) return 'Candidate model unavailable'
-  return `${PROVIDER_LABELS[model.provider]} · ${model.model}`
-}
-
 function splitDiff(patch: string): Map<string, string> {
   const chunks = patch.split(/(?=^diff --git )/m).filter((chunk) => chunk.trim())
   return new Map(
@@ -327,7 +161,6 @@ function App() {
   const [details, setDetails] = useState<TaskDetails | null>(null)
   const [page, setPage] = useState<'tasks' | 'settings'>('tasks')
   const [showTaskForm, setShowTaskForm] = useState(false)
-  const [taskMode, setTaskMode] = useState('review_loop')
   const [taskProviders, setTaskProviders] = useState<Record<'implementer' | 'reviewer', ProviderKind>>({
     implementer: 'claude-cli',
     reviewer: 'codex-cli',
@@ -340,10 +173,8 @@ function App() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [activeDiffFile, setActiveDiffFile] = useState('')
-  const [selectingWinner, setSelectingWinner] = useState('')
 
   function openTaskForm(): void {
-    setTaskMode('review_loop')
     setTaskProviders({
       implementer: roleModel(config, 'implementer').provider,
       reviewer: roleModel(config, 'reviewer').provider,
@@ -448,13 +279,7 @@ function App() {
         const task = newlyAccepted.reduce(taskAfterEvent, current.task)
         return { ...current, task, events: mergeEvents(current.events, newlyAccepted) }
       })
-      if (
-        newlyAccepted.some(
-          (event) => event.type === 'result' || event.type === 'error' || event.type === 'winner_selected',
-        )
-      ) {
-        refreshTaskList()
-      }
+      if (newlyAccepted.some((event) => event.type === 'result' || event.type === 'error')) refreshTaskList()
     }
 
     function replayEvents(): void {
@@ -517,11 +342,7 @@ function App() {
         bufferedEvents = []
         detailsLoaded = true
         setDetails({ ...next, task, events: snapshotEvents })
-        if (
-          pendingEvents.some(
-            (event) => event.type === 'result' || event.type === 'error' || event.type === 'winner_selected',
-          )
-        ) {
+        if (pendingEvents.some((event) => event.type === 'result' || event.type === 'error')) {
           refreshTaskList()
         }
       })
@@ -539,55 +360,6 @@ function App() {
   const diff = useMemo(() => diffFrom(details?.events ?? []), [details?.events])
   const diffChunks = useMemo(() => splitDiff(diff?.patch ?? ''), [diff?.patch])
   const selectedPatch = diffChunks.get(activeDiffFile) ?? diffChunks.values().next().value ?? ''
-  const compete = useMemo(() => competeView(details?.events ?? []), [details?.events])
-  const displayedCandidates = [...compete.candidates].sort(
-    (first, second) => Number(Boolean(second.synthesized)) - Number(Boolean(first.synthesized)),
-  )
-
-  async function selectWinner(attemptId: string) {
-    if (!details || !attemptId) return
-    setSelectingWinner(attemptId)
-    setError('')
-    try {
-      await request(`/api/tasks/${encodeURIComponent(details.task.id)}/select`, {
-        method: 'POST',
-        body: JSON.stringify({ attemptId }),
-      })
-      const next = await request<TaskDetails>(`/api/tasks/${encodeURIComponent(details.task.id)}`)
-      setDetails((current) =>
-        current?.task.id === details.task.id
-          ? { ...next, events: mergeEvents(next.events, current.events) }
-          : next,
-      )
-      await refreshLists()
-      setNotice('Winner selected and saved for this task.')
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not select winner')
-    } finally {
-      setSelectingWinner('')
-    }
-  }
-
-  async function synthesizeCandidate() {
-    if (!details) return
-    setError('')
-    try {
-      await request(`/api/tasks/${encodeURIComponent(details.task.id)}/synthesize`, {
-        method: 'POST',
-        body: JSON.stringify({}),
-      })
-      const next = await request<TaskDetails>(`/api/tasks/${encodeURIComponent(details.task.id)}`)
-      setDetails((current) =>
-        current?.task.id === details.task.id
-          ? { ...next, events: mergeEvents(next.events, current.events) }
-          : current,
-      )
-      await refreshLists()
-      setNotice('Synthesis started in a new isolated worktree.')
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not synthesize candidate strengths')
-    }
-  }
 
   async function createRepo(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -612,18 +384,8 @@ function App() {
   async function createTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const form = new FormData(event.currentTarget)
-    const mode = String(form.get('mode'))
-    if (
-      mode === 'compete' &&
-      ![taskProviders.implementer, taskProviders.reviewer].every((provider) =>
-        CODE_EDIT_PROVIDERS.has(provider),
-      )
-    ) {
-      setError('Compete mode requires code-edit-capable providers. OpenAI API cannot be a competitor.')
-      return
-    }
     const model = (role: 'implementer' | 'reviewer'): ModelRef => ({
-      provider: taskProviders[role],
+      provider: String(form.get(`${role}-provider`)) as ProviderKind,
       model: String(form.get(`${role}-model`)).trim(),
       effort: String(form.get(`${role}-effort`)) as NonNullable<ModelRef['effort']>,
     })
@@ -1082,155 +844,15 @@ function App() {
             )}
           </section>
 
-          <aside
-            className="diff-panel"
-            aria-label={details?.task.mode === 'compete' ? 'Candidate comparison' : 'Diff viewer'}
-          >
+          <aside className="diff-panel" aria-label="Diff viewer">
             <div className="diff-header">
               <div>
-                <p className="eyebrow">{details?.task.mode === 'compete' ? 'COMPETE REVIEW' : 'WORKTREE'}</p>
-                <h2>{details?.task.mode === 'compete' ? 'Candidate comparison' : 'Changes'}</h2>
+                <p className="eyebrow">WORKTREE</p>
+                <h2>Changes</h2>
               </div>
-              <span className="diff-count">
-                {details?.task.mode === 'compete' ? compete.candidates.length : (diff?.files.length ?? 0)}
-              </span>
+              <span className="diff-count">{diff?.files.length ?? 0}</span>
             </div>
-            {details?.task.mode === 'compete' ? (
-              <div className="compete-review" data-testid="compete-review">
-                <section className="judge-card" aria-label="Judge decision">
-                  <p className="eyebrow">JUDGE</p>
-                  {compete.judgment ? (
-                    <>
-                      <h3 data-testid="compete-judge-summary">{compete.judgment.summary}</h3>
-                      <p data-testid="compete-judge-rationale">{compete.judgment.rationale}</p>
-                    </>
-                  ) : compete.judgeFailure ? (
-                    <p className="muted" data-testid="compete-judge-error">
-                      The judge could not compare successful candidate diffs: {compete.judgeFailure}
-                    </p>
-                  ) : (
-                    <p className="muted">The judge will compare successful candidate diffs.</p>
-                  )}
-                </section>
-                {details?.task.status === 'review_ready' &&
-                compete.candidates.filter(
-                  (candidate) => !candidate.synthesized && candidate.status === 'succeeded' && candidate.diff,
-                ).length >= 2 &&
-                !compete.synthesisSucceeded ? (
-                  <section className="synthesis-controls" aria-label="Synthesize candidate strengths">
-                    <button
-                      className="primary-button"
-                      type="button"
-                      data-testid="synthesize-strengths"
-                      disabled={compete.synthesisRunning || Boolean(selectingWinner)}
-                      onClick={() => void synthesizeCandidate()}
-                    >
-                      {compete.synthesisRunning
-                        ? 'Synthesizing strengths…'
-                        : compete.synthesisError
-                          ? 'Retry synthesis'
-                          : 'Synthesize strengths'}
-                    </button>
-                    {compete.synthesisRunning ? (
-                      <p role="status">The judge model is combining candidate changes in a fresh worktree.</p>
-                    ) : null}
-                    {compete.synthesisError ? (
-                      <p className="synthesis-error" role="alert" data-testid="synthesis-error">
-                        Synthesis failed: {compete.synthesisError}
-                      </p>
-                    ) : null}
-                  </section>
-                ) : null}
-                {compete.synthesisSucceeded ? (
-                  <p className="synthesis-success" data-testid="synthesis-success">
-                    The synthesized candidate is ready to review and select.
-                  </p>
-                ) : null}
-                <div className="candidate-grid" aria-label="Candidate diffs">
-                  {compete.candidates.length ? (
-                    displayedCandidates.map((candidate) => (
-                      <article className="candidate-card" key={candidate.attemptId}>
-                        <header className="candidate-heading">
-                          <div>
-                            <p className="eyebrow">
-                              {candidate.synthesized
-                                ? 'SYNTHESIZED CANDIDATE'
-                                : `CANDIDATE ${compete.candidates.filter((item) => !item.synthesized).indexOf(candidate) + 1}`}
-                            </p>
-                            <h3>{modelIdentity(candidate.model)}</h3>
-                          </div>
-                          <span className={`candidate-status status-${candidate.status}`}>
-                            {candidate.status.replaceAll('_', ' ')}
-                          </span>
-                        </header>
-                        {candidate.diff ? (
-                          <>
-                            <div className="candidate-files">
-                              {candidate.diff.files.map((file) => (
-                                <span className="candidate-file" key={file.path}>
-                                  {file.path}{' '}
-                                  <span>
-                                    +{file.additions} −{file.deletions}
-                                  </span>
-                                </span>
-                              ))}
-                            </div>
-                            <pre className="candidate-diff" data-testid="candidate-diff">
-                              {candidate.diff.patch.split('\n').map((line, lineIndex) => (
-                                <span
-                                  className={
-                                    line.startsWith('+') && !line.startsWith('+++')
-                                      ? 'diff-line added'
-                                      : line.startsWith('-') && !line.startsWith('---')
-                                        ? 'diff-line removed'
-                                        : line.startsWith('@@')
-                                          ? 'diff-line hunk'
-                                          : 'diff-line'
-                                  }
-                                  key={`${lineIndex}-${line}`}
-                                >
-                                  {line || ' '}
-                                </span>
-                              ))}
-                            </pre>
-                          </>
-                        ) : (
-                          <p className="candidate-empty">
-                            {candidate.reason ?? 'Waiting for this candidate to produce a diff.'}
-                          </p>
-                        )}
-                        {compete.selectedAttemptId === candidate.attemptId ? (
-                          <span className="winner-badge" data-testid="selected-winner">
-                            Selected winner
-                          </span>
-                        ) : details?.task.status === 'review_ready' &&
-                          candidate.status === 'succeeded' &&
-                          candidate.diff ? (
-                          <button
-                            className="primary-button select-winner-button"
-                            type="button"
-                            disabled={
-                              Boolean(selectingWinner) ||
-                              Boolean(compete.selectedAttemptId) ||
-                              compete.synthesisRunning
-                            }
-                            onClick={() => void selectWinner(candidate.attemptId)}
-                          >
-                            {selectingWinner === candidate.attemptId ? 'Saving winner…' : 'Select winner'}
-                          </button>
-                        ) : null}
-                      </article>
-                    ))
-                  ) : (
-                    <div className="diff-empty">
-                      <div className="diff-empty-icon">⌁</div>
-                      <h3>No candidates yet</h3>
-                      <p>Candidate status and diffs will appear here as they finish.</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ) : diff ? (
+            {diff ? (
               <>
                 <div className="diff-summary">
                   <span>
@@ -1288,11 +910,7 @@ function App() {
                 <p>The latest task diff will appear here when the agent finishes.</p>
               </div>
             )}
-            <div className="diff-footer">
-              {details?.task.mode === 'compete'
-                ? 'Only successful candidates can be selected'
-                : 'Diff from the task result event'}
-            </div>
+            <div className="diff-footer">Diff from the task result event</div>
           </aside>
         </main>
       )}
@@ -1408,23 +1026,14 @@ function App() {
               </label>
               <label>
                 Workflow
-                <select
-                  name="mode"
-                  aria-label="Workflow"
-                  value={taskMode}
-                  onChange={(event) => setTaskMode(event.target.value)}
-                >
+                <select name="mode" aria-label="Workflow">
                   <option value="review_loop">Implement + review</option>
                   <option value="single">Single agent</option>
-                  <option value="compete">Compete — compare independent candidates</option>
+                  <option value="compete" disabled>
+                    Compete — not available yet
+                  </option>
                 </select>
               </label>
-              {taskMode === 'compete' ? (
-                <p className="muted" role="note">
-                  Compete mode needs providers that can edit code. Providers without code-edit capability,
-                  including OpenAI API, are unavailable as competitors.
-                </p>
-              ) : null}
               <div className="task-model-grid">
                 {(['implementer', 'reviewer'] as const).map((role) => {
                   const model = roleModel(config, role)
@@ -1440,15 +1049,8 @@ function App() {
                           onChange={(event) => updateTaskProvider(role, event.target.value as ProviderKind)}
                         >
                           {PROVIDER_KINDS.map((provider) => (
-                            <option
-                              key={provider}
-                              value={provider}
-                              disabled={taskMode === 'compete' && !CODE_EDIT_PROVIDERS.has(provider)}
-                            >
+                            <option key={provider} value={provider}>
                               {PROVIDER_LABELS[provider]}
-                              {taskMode === 'compete' && !CODE_EDIT_PROVIDERS.has(provider)
-                                ? ' (cannot edit code)'
-                                : ''}
                             </option>
                           ))}
                         </select>
@@ -1493,14 +1095,7 @@ function App() {
                 <button className="quiet-button" type="button" onClick={() => setShowTaskForm(false)}>
                   Cancel
                 </button>
-                <button
-                  className="primary-button"
-                  type="submit"
-                  disabled={
-                    taskMode === 'compete' &&
-                    Object.values(taskProviders).some((provider) => !CODE_EDIT_PROVIDERS.has(provider))
-                  }
-                >
+                <button className="primary-button" type="submit">
                   Start task
                 </button>
               </div>

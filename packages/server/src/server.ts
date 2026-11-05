@@ -24,12 +24,10 @@ import { EFFORTS, PROVIDER_KINDS, ROLES, resolveRole } from '@joy/core'
 import { ConfigStore, configSchema, joyHome, resolvePaths, type JoyConfig } from '@joy/config'
 import {
   addUsage,
-  appendTaskEvent,
   createAttempt,
   createRepo,
   createReview,
   createTask,
-  getAttempt,
   getRepo,
   getTask,
   interruptRunningWork,
@@ -47,10 +45,10 @@ import {
 import type { AttemptRecord, Database, RepoRecord, StoredTask } from '@joy/db'
 import { WorktreeExecutor } from '@joy/executor'
 import type { Executor, WorkspaceDiff } from '@joy/core'
-import { compete, reviewLoop, synthesizeStrengths } from '@joy/orchestrator'
-import type { SynthesisSourceCandidate } from '@joy/orchestrator'
+import { reviewLoop } from '@joy/orchestrator'
 import { ClaudeCliProvider, CodexCliProvider, OpenAiApiProvider } from '@joy/providers'
 import { MIN_SECRET_VALUE_LENGTH, Redactor, SecretStore } from '@joy/secrets'
+import { appendTaskEventIfAttemptExists } from './task-events.js'
 
 const modelSchema = z.strictObject({
   provider: z.enum(PROVIDER_KINDS),
@@ -78,24 +76,6 @@ const taskInputSchema = z.strictObject({
   maxRounds: z.number().int().min(1).max(20).optional(),
 })
 const idSchema = z.string().min(1).max(128)
-const workspaceDiffSchema = z.object({
-  files: z.array(
-    z.object({
-      path: z.string(),
-      oldPath: z.string().optional(),
-      status: z.enum(['added', 'modified', 'deleted', 'renamed']),
-      additions: z.number().int().nonnegative(),
-      deletions: z.number().int().nonnegative(),
-    }),
-  ),
-  patch: z.string(),
-})
-const synthesisSourceCandidateSchema = z.object({
-  attemptId: idSchema,
-  model: modelSchema,
-  status: z.literal('succeeded'),
-  diff: workspaceDiffSchema,
-})
 const openAiSecretInputSchema = z.strictObject({
   value: z.string().trim().min(MIN_SECRET_VALUE_LENGTH).max(4096),
 })
@@ -182,17 +162,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   const publish = (taskId: TaskId, attemptId: AttemptId, type: string, payload: unknown): TaskEvent => {
     const safe = redactor.redactValue(payload)
-    const storedAttempt = getAttempt(db, attemptId)
-    const event = storedAttempt
-      ? appendTaskEvent(db, attemptId, type, safe)
-      : {
-          taskId,
-          attemptId,
-          seq: listTaskEvents(db, taskId).at(-1)?.seq ?? 0,
-          type,
-          payload: safe,
-          ts: new Date().toISOString(),
-        }
+    const event = appendTaskEventIfAttemptExists(db, attemptId, type, safe)
+    if (!event) throw new Error(`Cannot publish ${type} without a persisted attempt`)
     const message = JSON.stringify({ type: 'event', event })
     for (const socket of subscribers.get(taskId) ?? []) {
       if (socket.readyState === WebSocket.OPEN) socket.send(message)
@@ -289,27 +260,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     if (url.pathname === '/api/tasks' && method === 'POST') {
       const input = taskInputSchema.parse(await readJson(req))
-      if (input.mode === 'compete') {
-        const config = await configStore.get()
-        const overrides = (input.roleOverrides ?? {}) as Partial<RoleConfig>
-        const implementer = resolveRole('implementer', config.roles as RoleConfig, overrides)
-        const reviewer = resolveRole('reviewer', config.roles as RoleConfig, overrides)
-        if (implementer.provider === reviewer.provider)
-          throw new HttpError(
-            400,
-            'Compete mode requires implementer and reviewer to use different providers',
-          )
-        for (const model of [implementer, reviewer]) {
-          const provider = providers[model.provider]
-          if (!provider)
-            throw new HttpError(400, `Compete mode requires configured provider ${model.provider}`)
-          if (!provider.capabilities.codeEdit)
-            throw new HttpError(
-              400,
-              `Compete mode requires code-edit capable providers; ${model.provider} cannot edit code`,
-            )
-        }
-      }
+      if (input.mode === 'compete') throw new HttpError(422, 'Compete mode is not available in P1 yet')
       const repo = getRepo(db, input.repoId as RepoId)
       if (!repo) throw new HttpError(404, `Repository ${input.repoId} was not found`)
       const task = createTask(db, {
@@ -349,105 +300,6 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       json(res, 200, { events: listTaskEvents(db, task.id, after) })
       return
     }
-    const selectMatch = /^\/api\/tasks\/([^/]+)\/select$/.exec(url.pathname)
-    if (selectMatch && method === 'POST') {
-      const task = requireTask(decodeURIComponent(selectMatch[1] ?? ''))
-      if (task.mode !== 'compete')
-        throw new HttpError(409, 'Only compete tasks have a winning attempt to select')
-      if (task.status !== 'review_ready')
-        throw new HttpError(409, `Task cannot select a winner from ${task.status}`)
-      if (running.has(task.id)) throw new HttpError(409, 'A task operation is already running')
-      const body = z.strictObject({ attemptId: idSchema }).parse(await readJson(req))
-      const currentTask = requireTask(task.id)
-      if (currentTask.status !== 'review_ready')
-        throw new HttpError(409, 'Task is no longer ready for winner selection')
-      if (running.has(task.id)) throw new HttpError(409, 'A task operation is already running')
-      const attempt = getAttempt(db, body.attemptId as AttemptId)
-      if (!attempt || attempt.taskId !== task.id)
-        throw new HttpError(404, 'Attempt was not found for this task')
-      if (attempt.status !== 'succeeded')
-        throw new HttpError(409, 'Only a successful candidate can be selected')
-      const taskEvents = listTaskEvents(db, task.id)
-      const latestRunStart = taskEvents.filter((event) => event.type === 'compete_run_started').at(-1)
-      if (latestRunStart) {
-        const latestRunAttemptIds = new Set(
-          taskEvents
-            .filter((event) => event.seq > latestRunStart.seq && event.type === 'attempt')
-            .map((event) => event.attemptId),
-        )
-        if (!latestRunAttemptIds.has(attempt.id))
-          throw new HttpError(409, 'Only candidates from the latest compete run can be selected')
-      }
-      setTaskStatus(db, task.id, 'done')
-      const event = publish(task.id, attempt.id, 'winner_selected', { attemptId: attempt.id })
-      json(res, 200, { task: getTask(db, task.id), selectedAttemptId: attempt.id, event })
-      return
-    }
-    const synthesizeMatch = /^\/api\/tasks\/([^/]+)\/synthesize$/.exec(url.pathname)
-    if (synthesizeMatch && method === 'POST') {
-      z.strictObject({}).parse(await readJson(req))
-      const task = requireTask(decodeURIComponent(synthesizeMatch[1] ?? ''))
-      if (task.mode !== 'compete')
-        throw new HttpError(409, 'Only compete tasks can synthesize candidate strengths')
-      if (task.status !== 'review_ready')
-        throw new HttpError(409, `Task cannot synthesize strengths from ${task.status}`)
-      if (running.has(task.id)) throw new HttpError(409, 'A task operation is already running')
-
-      const latestRun = latestSynthesisSources(db, task.id)
-      if (!latestRun.runStart)
-        throw new HttpError(409, 'No completed competition run is available to synthesize')
-      if (latestRun.candidates.length < 2)
-        throw new HttpError(409, 'Synthesis requires at least two successful candidates from the latest run')
-      if (
-        latestRun.runEvents.some((event) => {
-          if (
-            event.type !== 'synthesis_result' ||
-            typeof event.payload !== 'object' ||
-            event.payload === null
-          )
-            return false
-          return (event.payload as { status?: unknown }).status === 'succeeded'
-        })
-      )
-        throw new HttpError(409, 'This competition run already has a synthesized candidate')
-
-      const repo = getRepo(db, task.repoId)
-      if (!repo) throw new HttpError(404, `Repository ${task.repoId} was not found`)
-      const config = await configStore.get()
-      const synthesizer = resolveRole('judge', config.roles as RoleConfig, task.roleOverrides)
-      const synthesizerProvider = providers[synthesizer.provider]
-      if (!synthesizerProvider)
-        throw new HttpError(409, `No provider configured for synthesizer ${synthesizer.provider}`)
-      if (!synthesizerProvider.capabilities.codeEdit)
-        throw new HttpError(409, `Synthesizer provider ${synthesizer.provider} is not code-edit capable`)
-
-      const currentTask = requireTask(task.id)
-      if (currentTask.status !== 'review_ready')
-        throw new HttpError(409, `Task cannot synthesize strengths from ${currentTask.status}`)
-      if (running.has(task.id)) throw new HttpError(409, 'A task operation is already running')
-      const currentRun = latestSynthesisSources(db, task.id)
-      if (!currentRun.runStart || currentRun.candidates.length < 2)
-        throw new HttpError(
-          409,
-          'No completed competition run with at least two successful candidates is available',
-        )
-      if (
-        currentRun.runEvents.some((event) => {
-          if (
-            event.type !== 'synthesis_result' ||
-            typeof event.payload !== 'object' ||
-            event.payload === null
-          )
-            return false
-          return (event.payload as { status?: unknown }).status === 'succeeded'
-        })
-      )
-        throw new HttpError(409, 'This competition run already has a synthesized candidate')
-
-      const started = scheduleSynthesis(currentTask, repo, currentRun.candidates, synthesizer)
-      json(res, 202, { task: getTask(db, task.id), event: started })
-      return
-    }
     const cancelMatch = /^\/api\/tasks\/([^/]+)\/cancel$/.exec(url.pathname)
     if (cancelMatch && method === 'POST') {
       const task = requireTask(decodeURIComponent(cancelMatch[1] ?? ''))
@@ -464,7 +316,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       const task = requireTask(decodeURIComponent(resumeMatch[1] ?? ''))
       if (task.status !== 'failed' && task.status !== 'cancelled')
         throw new HttpError(409, `Task cannot be resumed from ${task.status}`)
-      const state = task.mode === 'compete' ? undefined : resumeState(task)
+      const state = resumeState(task)
       if (running.has(task.id)) throw new HttpError(409, 'Task is already running')
       setTaskStatus(db, task.id, 'queued')
       scheduleTask({ ...task, status: 'queued' }, state)
@@ -556,80 +408,15 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     })
   }
 
-  function scheduleSynthesis(
-    task: StoredTask,
-    repo: RepoRecord,
-    candidates: SynthesisSourceCandidate[],
-    synthesizer: ModelRef,
-  ): TaskEvent {
-    const controller = new AbortController()
-    const active: ActiveTask = { controller, promise: Promise.resolve() }
-    const anchorAttemptId = candidates[0]?.attemptId
-    if (!anchorAttemptId) throw new Error('Synthesis has no source candidate')
-    running.set(task.id, active)
-    let started: TaskEvent
-    try {
-      started = publish(task.id, anchorAttemptId, 'synthesis_started', {
-        sourceAttemptIds: candidates.map((candidate) => candidate.attemptId),
-        model: synthesizer,
-      })
-    } catch (error) {
-      if (running.get(task.id) === active) running.delete(task.id)
-      throw error
-    }
-
-    const markInterruptedAttempt = () => {
-      const attemptEvent = listTaskEvents(db, task.id)
-        .filter(
-          (event) =>
-            event.seq > started.seq &&
-            event.type === 'attempt' &&
-            typeof event.payload === 'object' &&
-            event.payload !== null &&
-            (event.payload as { synthesized?: unknown }).synthesized === true,
-        )
-        .at(-1)
-      if (attemptEvent && getAttempt(db, attemptEvent.attemptId))
-        updateAttempt(db, attemptEvent.attemptId, {
-          status: controller.signal.aborted ? 'cancelled' : 'failed',
-        })
-    }
-    active.promise = runSynthesisTask(task, repo, candidates, synthesizer, controller)
-      .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : 'Synthesis failed unexpectedly'
-        try {
-          markInterruptedAttempt()
-          const hasTerminalEvent = listTaskEvents(db, task.id).some(
-            (event) =>
-              event.seq > started.seq &&
-              (event.type === 'synthesis_result' || event.type === 'synthesis_error'),
-          )
-          if (!hasTerminalEvent) publish(task.id, anchorAttemptId, 'synthesis_error', { message })
-        } catch {
-          try {
-            markInterruptedAttempt()
-          } catch {
-            // The operation lock is still released in finally if persistence itself is unavailable.
-          }
-        }
-      })
-      .finally(() => {
-        if (running.get(task.id) === active) running.delete(task.id)
-      })
-    return started
-  }
-
   async function runTask(task: StoredTask, controller: AbortController, resume?: ResumeState): Promise<void> {
     let attempt = resume?.attempt
+    let activeRoles: RoleConfig | undefined
     try {
       const repo = getRepo(db, task.repoId)
       if (!repo) throw new Error(`Repository ${task.repoId} was not found`)
       const config = await configStore.get()
       const roles = config.roles as RoleConfig
-      if (task.mode === 'compete') {
-        await runCompeteTask(task, repo, roles, controller)
-        return
-      }
+      activeRoles = roles
       const configuredImplementer = resolveRole('implementer', roles, task.roleOverrides)
       const implementer = resume
         ? { ...configuredImplementer, provider: resume.attempt.provider, model: resume.attempt.model }
@@ -657,19 +444,52 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Task failed'
+      const status = controller.signal.aborted ? 'cancelled' : 'failed'
       if (!attempt) {
-        const implementer = resolveRole('implementer', initialConfig.roles as RoleConfig, task.roleOverrides)
-        attempt = createAttempt(db, {
-          id: randomUUID() as AttemptId,
-          taskId: task.id,
-          provider: implementer.provider,
-          model: implementer.model,
-          status: 'failed',
-        })
+        let implementer = activeRoles
+          ? resolveRole('implementer', activeRoles, task.roleOverrides)
+          : task.roleOverrides?.implementer
+        if (!implementer) {
+          try {
+            activeRoles = (await configStore.get()).roles as RoleConfig
+            implementer = resolveRole('implementer', activeRoles, task.roleOverrides)
+          } catch {
+            // Without active roles or an explicit override, an attempt would misreport its model.
+          }
+        }
+        if (implementer) {
+          try {
+            attempt = createAttempt(db, {
+              id: randomUUID() as AttemptId,
+              taskId: task.id,
+              provider: implementer.provider,
+              model: implementer.model,
+              status: 'failed',
+            })
+          } catch {
+            // If the anchor cannot be persisted, no replayable error event can be emitted.
+          }
+        }
       }
-      updateAttempt(db, attempt.id, { status: controller.signal.aborted ? 'cancelled' : 'failed' })
-      setTaskStatus(db, task.id, controller.signal.aborted ? 'cancelled' : 'failed')
-      publish(task.id, attempt.id, 'error', { message })
+      if (attempt) {
+        try {
+          updateAttempt(db, attempt.id, { status })
+        } catch {
+          // Keep trying to persist the task's terminal state independently.
+        }
+      }
+      try {
+        setTaskStatus(db, task.id, status)
+      } catch {
+        // The database is unavailable; do not fabricate a WebSocket event.
+      }
+      if (attempt) {
+        try {
+          publish(task.id, attempt.id, 'error', { message })
+        } catch {
+          // Event persistence failed; it must not be broadcast with a synthetic sequence.
+        }
+      }
     }
   }
 
@@ -748,219 +568,6 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (!finished) throw new Error('Review loop stopped without a result')
   }
 
-  async function runCompeteTask(
-    task: StoredTask,
-    repo: RepoRecord,
-    roles: RoleConfig,
-    controller: AbortController,
-  ): Promise<void> {
-    const implementer = resolveRole('implementer', roles, task.roleOverrides)
-    const reviewer = resolveRole('reviewer', roles, task.roleOverrides)
-    const judge = resolveRole('judge', roles, task.roleOverrides)
-    const preflightModel =
-      [implementer, reviewer, judge].find((model) => !providers[model.provider]) ?? implementer
-    const failPreflight = (model: ModelRef, message: string) => {
-      const attemptId = randomUUID() as AttemptId
-      createAttempt(db, {
-        id: attemptId,
-        taskId: task.id,
-        provider: model.provider,
-        model: model.model,
-        status: 'failed',
-      })
-      setTaskStatus(db, task.id, 'failed')
-      publish(task.id, attemptId, 'result', {
-        type: 'result',
-        status: 'failed',
-        approved: false,
-        rounds: 0,
-        reason: message,
-      })
-    }
-    if (implementer.provider === reviewer.provider) {
-      failPreflight(implementer, 'Compete mode requires implementer and reviewer to use different providers')
-      return
-    }
-    const missingProvider = [
-      { role: 'implementer', model: implementer },
-      { role: 'reviewer', model: reviewer },
-      { role: 'judge', model: judge },
-    ].find(({ model }) => !providers[model.provider])
-    if (missingProvider) {
-      failPreflight(
-        missingProvider.model,
-        `No provider configured for ${missingProvider.role} ${missingProvider.model.provider}`,
-      )
-      return
-    }
-    for (const model of [implementer, reviewer]) {
-      const provider = providers[model.provider]
-      if (!provider) {
-        failPreflight(model, `Compete mode requires configured provider ${model.provider}`)
-        return
-      }
-      if (!provider.capabilities.codeEdit) {
-        failPreflight(
-          model,
-          `Compete mode requires code-edit capable providers; ${model.provider} cannot edit code`,
-        )
-        return
-      }
-    }
-
-    let anchorAttemptId: AttemptId | undefined
-    let finished = false
-    let runStarted = false
-    const runId = randomUUID()
-    const markRunStarted = (attemptId: AttemptId) => {
-      if (runStarted) return
-      runStarted = true
-      publish(task.id, attemptId, 'compete_run_started', { runId })
-    }
-    for await (const event of compete(
-      {
-        taskId: task.id,
-        repo,
-        prompt: task.prompt,
-        competitors: [implementer, reviewer],
-        judge,
-        signal: controller.signal,
-      },
-      { providers, executor },
-    )) {
-      if (event.type === 'attempt') {
-        anchorAttemptId ??= event.attemptId
-        if (!getAttempt(db, event.attemptId)) {
-          createAttempt(db, {
-            id: event.attemptId,
-            taskId: task.id,
-            provider: event.model.provider,
-            model: event.model.model,
-            status: event.status,
-          })
-        }
-        updateAttempt(db, event.attemptId, {
-          status: event.status,
-          ...(event.workspace
-            ? {
-                worktreePath: event.workspace.path,
-                branch: event.workspace.branch,
-                baseCommit: event.workspace.baseCommit,
-              }
-            : {}),
-          ...(event.diff ? { diffStats: summarizeDiff(event.diff) } : {}),
-        })
-        markRunStarted(event.attemptId)
-      } else if (event.type === 'agent') {
-        persistUsageEvent(db, event.model.provider, event.event)
-        if (event.role === 'implementer' && event.attemptId && event.event.type === 'session_started')
-          updateAttempt(db, event.attemptId, { sessionId: event.event.sessionId })
-      } else if (event.type === 'result') {
-        finished = true
-        const hasSelectableCandidate = event.candidates.some(
-          (candidate) => candidate.status === 'succeeded' && candidate.diff !== undefined,
-        )
-        const status: TaskStatus =
-          event.status === 'cancelled'
-            ? 'cancelled'
-            : event.status === 'failed'
-              ? hasSelectableCandidate
-                ? 'review_ready'
-                : 'failed'
-              : 'review_ready'
-        setTaskStatus(db, task.id, status)
-        if (!anchorAttemptId && event.candidates.length === 0) {
-          anchorAttemptId = randomUUID() as AttemptId
-          createAttempt(db, {
-            id: anchorAttemptId,
-            taskId: task.id,
-            provider: preflightModel.provider,
-            model: preflightModel.model,
-            status: event.status === 'cancelled' ? 'cancelled' : 'failed',
-          })
-        }
-        if (anchorAttemptId) markRunStarted(anchorAttemptId)
-      }
-
-      const attemptId =
-        event.type === 'attempt'
-          ? event.attemptId
-          : event.type === 'agent'
-            ? (event.attemptId ?? anchorAttemptId)
-            : event.type === 'judgment'
-              ? event.judgment.winnerAttemptId
-              : event.type === 'result'
-                ? (event.judgment?.winnerAttemptId ?? event.candidates[0]?.attemptId ?? anchorAttemptId)
-                : anchorAttemptId
-      if (attemptId) publish(task.id, attemptId, event.type, event)
-    }
-    if (!finished) throw new Error('Competition stopped without a result')
-  }
-
-  async function runSynthesisTask(
-    task: StoredTask,
-    repo: RepoRecord,
-    candidates: SynthesisSourceCandidate[],
-    synthesizer: ModelRef,
-    controller: AbortController,
-  ): Promise<void> {
-    let finished = false
-    for await (const event of synthesizeStrengths(
-      {
-        taskId: task.id,
-        repo,
-        prompt: task.prompt,
-        synthesizer,
-        candidates,
-        signal: controller.signal,
-      },
-      { providers, executor },
-    )) {
-      if (event.type === 'attempt') {
-        const candidate = event.candidate
-        if (!getAttempt(db, candidate.attemptId)) {
-          createAttempt(db, {
-            id: candidate.attemptId,
-            taskId: task.id,
-            provider: candidate.model.provider,
-            model: candidate.model.model,
-            status: candidate.status,
-          })
-        }
-        updateAttempt(db, candidate.attemptId, {
-          status: candidate.status,
-          ...(candidate.workspace
-            ? {
-                worktreePath: candidate.workspace.path,
-                branch: candidate.workspace.branch,
-                baseCommit: candidate.workspace.baseCommit,
-              }
-            : {}),
-          ...(candidate.diff ? { diffStats: summarizeDiff(candidate.diff) } : {}),
-        })
-        publish(task.id, candidate.attemptId, 'attempt', candidate)
-      } else if (event.type === 'agent') {
-        persistUsageEvent(db, event.model.provider, event.event)
-        if (event.event.type === 'session_started')
-          updateAttempt(db, event.attemptId, { sessionId: event.event.sessionId })
-        publish(task.id, event.attemptId, 'agent', { role: 'synthesizer', round: 1, event: event.event })
-      } else {
-        finished = true
-        updateAttempt(db, event.candidate.attemptId, {
-          status: event.candidate.status,
-          ...(event.candidate.diff ? { diffStats: summarizeDiff(event.candidate.diff) } : {}),
-        })
-        publish(task.id, event.candidate.attemptId, 'synthesis_result', {
-          attemptId: event.candidate.attemptId,
-          status: event.candidate.status,
-          sourceAttemptIds: event.candidate.sourceAttemptIds,
-          ...(event.candidate.reason ? { reason: event.candidate.reason } : {}),
-        })
-      }
-    }
-    if (!finished) throw new Error('Synthesis stopped without a result')
-  }
-
   async function runSingle(
     task: StoredTask,
     repo: RepoRecord,
@@ -1015,33 +622,6 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const attempt = latestAttempt(db, taskId)
     if (attempt) publish(taskId, attempt.id, 'interrupted', { taskId, attemptId: attempt.id })
   }
-  for (const task of listTasks(db)) {
-    const events = listTaskEvents(db, task.id)
-    const started = events.filter((event) => event.type === 'synthesis_started').at(-1)
-    if (!started) continue
-    if (
-      events.some(
-        (event) =>
-          event.seq > started.seq && (event.type === 'synthesis_result' || event.type === 'synthesis_error'),
-      )
-    )
-      continue
-    const attemptEvent = events
-      .filter(
-        (event) =>
-          event.seq > started.seq &&
-          event.type === 'attempt' &&
-          typeof event.payload === 'object' &&
-          event.payload !== null &&
-          (event.payload as { synthesized?: unknown }).synthesized === true,
-      )
-      .at(-1)
-    if (attemptEvent && getAttempt(db, attemptEvent.attemptId))
-      updateAttempt(db, attemptEvent.attemptId, { status: 'failed' })
-    publish(task.id, started.attemptId, 'synthesis_error', {
-      message: 'Synthesis interrupted by server restart',
-    })
-  }
 
   return {
     httpServer,
@@ -1072,40 +652,6 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (ownsDatabase && db.isOpen) db.close()
     },
   }
-}
-
-function latestSynthesisSources(
-  db: Database,
-  taskId: TaskId,
-): {
-  runStart?: TaskEvent
-  runEvents: TaskEvent[]
-  candidates: SynthesisSourceCandidate[]
-} {
-  const events = listTaskEvents(db, taskId)
-  const runStart = events.filter((event) => event.type === 'compete_run_started').at(-1)
-  if (!runStart) return { runEvents: [], candidates: [] }
-  const runEvents = events.filter((event) => event.seq > runStart.seq)
-  const result = runEvents.filter((event) => event.type === 'result').at(-1)
-  const payload =
-    typeof result?.payload === 'object' && result.payload !== null
-      ? (result.payload as Record<string, unknown>)
-      : undefined
-  const candidates = Array.isArray(payload?.candidates)
-    ? payload.candidates.flatMap((candidate) => {
-        const parsed = synthesisSourceCandidateSchema.safeParse(candidate)
-        return parsed.success
-          ? [
-              {
-                attemptId: parsed.data.attemptId as AttemptId,
-                model: parsed.data.model as ModelRef,
-                diff: parsed.data.diff as WorkspaceDiff,
-              },
-            ]
-          : []
-      })
-    : []
-  return { runStart, runEvents, candidates }
 }
 
 function persistUsageEvent(db: Database, provider: ProviderKind, event: AgentEvent): void {
@@ -1180,11 +726,7 @@ function isAllowedOrigin(origin: string | undefined, allowPlaywrightOrigin = fal
 
 function requiresJsonContentType(method: string, pathname: string): boolean {
   if (method === 'POST') {
-    return (
-      pathname === '/api/repos' ||
-      pathname === '/api/tasks' ||
-      /^\/api\/tasks\/[^/]+\/(?:select|synthesize)$/.test(pathname)
-    )
+    return pathname === '/api/repos' || pathname === '/api/tasks'
   }
   return method === 'PUT' && ['/api/config', '/api/secrets/openai-api-key'].includes(pathname)
 }

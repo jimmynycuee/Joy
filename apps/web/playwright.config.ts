@@ -22,7 +22,7 @@ export default defineConfig({
   webServer: {
     command: 'pnpm --filter @joy/web exec node --import tsx e2e/fake-preview.ts',
     url: `http://127.0.0.1:${webPort}`,
-    reuseExistingServer: false,
+    reuseExistingServer: !process.env.CI,
     timeout: 30_000,
     env: {
       JOY_E2E_API_PORT: String(apiPort),
