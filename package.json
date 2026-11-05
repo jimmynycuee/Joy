@@ -16,6 +16,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:e2e": "pnpm --filter @joy/web test:e2e",
+    "joy": "tsx scripts/joy.ts",
     "test:watch": "vitest",
     "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test"
   },

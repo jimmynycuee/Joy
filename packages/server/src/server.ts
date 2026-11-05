@@ -1,4 +1,5 @@
 import { createServer as createHttpServer } from 'node:http'
+import { mkdir } from 'node:fs/promises'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { randomUUID } from 'node:crypto'
@@ -49,6 +50,8 @@ import type { Executor, WorkspaceDiff } from '@joy/core'
 import { reviewLoop } from '@joy/orchestrator'
 import { ClaudeCliProvider, CodexCliProvider, OpenAiApiProvider } from '@joy/providers'
 import { Redactor, SecretStore } from '@joy/secrets'
+import { runDoctor } from './doctor.js'
+import type { DoctorOptions } from './doctor.js'
 
 const modelSchema = z.strictObject({
   provider: z.enum(PROVIDER_KINDS),
@@ -101,6 +104,8 @@ export interface JoyServerOptions {
   executor?: Executor
   /** Adds only the fixed Playwright E2E origin; this is never enabled by default. */
   allowPlaywrightOrigin?: boolean
+  /** Test seams for prerequisite checks; production uses the current process and OS services. */
+  doctor?: Omit<DoctorOptions, 'home' | 'commands'>
 }
 
 export interface JoyServer {
@@ -133,6 +138,7 @@ interface ResumeState {
 export async function createJoyServer(options: JoyServerOptions = {}): Promise<JoyServer> {
   const allowedOrigins = createOriginAllowlist(options.allowPlaywrightOrigin ?? false)
   const home = options.home ?? joyHome()
+  await mkdir(home, { recursive: true })
   const configStore = options.configStore ?? new ConfigStore(join(home, 'config.yaml'))
   const initialConfig = await configStore.get()
   const paths = resolvePaths(initialConfig, home)
@@ -257,6 +263,19 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const url = requestUrl(req)
     if (url.pathname === '/api/health' && method === 'GET') {
       json(res, 200, { ok: true })
+      return
+    }
+    if (url.pathname === '/api/doctor' && method === 'GET') {
+      const config = await configStore.get()
+      const doctor = await runDoctor({
+        ...options.doctor,
+        home,
+        commands: {
+          ...(config.providers.claude.command ? { claude: config.providers.claude.command } : {}),
+          ...(config.providers.codex.command ? { codex: config.providers.codex.command } : {}),
+        },
+      })
+      json(res, 200, { doctor })
       return
     }
     if (url.pathname === '/api/repos' && method === 'GET') {
