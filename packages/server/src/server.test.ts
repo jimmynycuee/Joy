@@ -16,6 +16,7 @@ import type {
 } from '@joy/core'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ConfigStore } from '@joy/config'
+import type { DoctorReport } from '@joy/doctor'
 import {
   appendTaskEvent,
   createAttempt,
@@ -131,6 +132,7 @@ function fixture(
     secretEnv?: NodeJS.ProcessEnv
     allowPlaywrightOrigin?: boolean
     configStore?: ConfigStore
+    doctor?: () => Promise<DoctorReport>
   } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), 'joy-server-test-'))
@@ -165,6 +167,7 @@ function fixture(
     redactor,
     executor,
     ...(options.allowPlaywrightOrigin ? { allowPlaywrightOrigin: true } : {}),
+    ...(options.doctor ? { doctor: options.doctor } : {}),
     providers: {
       'claude-cli': implementer,
       'codex-cli': reviewer,
@@ -274,6 +277,38 @@ function tryWebSocket(
 }
 
 describe('Joy local server', () => {
+  it('serves doctor diagnostics on demand without making them a startup gate', async () => {
+    const report: DoctorReport = {
+      checkedAt: '2026-11-05T00:00:00.000Z',
+      checks: [
+        { id: 'node', label: 'Node.js', status: 'ok', detail: 'v22.13.0' },
+        {
+          id: 'gh-authentication',
+          label: 'GitHub authentication',
+          status: 'missing',
+          detail: 'Not authenticated',
+          repair: 'Run gh auth login.',
+        },
+      ],
+    }
+    let doctorCalls = 0
+    const { serverPromise } = fixture({
+      doctor: async () => {
+        doctorCalls++
+        return report
+      },
+    })
+    const { origin } = await start(serverPromise)
+
+    expect(doctorCalls).toBe(0)
+    expect((await fetch(`${origin}/api/health`)).status).toBe(200)
+    expect(doctorCalls).toBe(0)
+    const response = await fetch(`${origin}/api/doctor`)
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual(report)
+    expect(doctorCalls).toBe(1)
+  })
+
   it('rejects non-loopback Host headers before processing API requests', async () => {
     const { serverPromise } = fixture()
     const { origin } = await start(serverPromise)

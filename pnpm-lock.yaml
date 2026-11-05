@@ -102,6 +102,15 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/doctor:
+    dependencies:
+      '@joy/config':
+        specifier: workspace:*
+        version: link:../config
+      '@joy/secrets':
+        specifier: workspace:*
+        version: link:../secrets
+
   packages/executor:
     dependencies:
       '@joy/core':
@@ -155,6 +164,9 @@ importers:
       '@joy/db':
         specifier: workspace:*
         version: link:../db
+      '@joy/doctor':
+        specifier: workspace:*
+        version: link:../doctor
       '@joy/executor':
         specifier: workspace:*
         version: link:../executor

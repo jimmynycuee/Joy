@@ -273,6 +273,82 @@ p {
   color: var(--faint);
   font-size: 12px;
 }
+.doctor-card {
+  min-height: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+  margin-top: 18px;
+  padding: 12px 9px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+}
+.doctor-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 9px;
+}
+.doctor-heading .eyebrow {
+  margin-bottom: 4px;
+}
+.doctor-heading h2 {
+  margin: 0;
+  font-size: 12px;
+}
+.doctor-message {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.doctor-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.doctor-check {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  align-items: start;
+  gap: 7px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.doctor-status {
+  padding-top: 1px;
+  color: var(--muted);
+  font-family: 'DM Mono', monospace;
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.doctor-ok {
+  color: var(--green);
+}
+.doctor-missing {
+  color: var(--red);
+}
+.doctor-untested {
+  color: var(--accent);
+}
+.doctor-check strong {
+  display: block;
+  color: #e8e8eb;
+  font-size: 10px;
+}
+.doctor-check p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+.doctor-check .doctor-repair {
+  color: #c4bacf;
+}
 .empty-repo {
   display: flex;
   flex: 1;

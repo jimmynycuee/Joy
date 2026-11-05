@@ -8,7 +8,11 @@
   "engines": {
     "node": ">=22.13"
   },
+  "bin": {
+    "joy": "scripts/joy.mjs"
+  },
   "scripts": {
+    "joy": "node scripts/joy.mjs",
     "build": "pnpm -r --if-present build",
     "typecheck": "pnpm -r --if-present typecheck",
     "lint": "eslint .",

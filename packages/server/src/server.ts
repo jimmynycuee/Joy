@@ -22,6 +22,8 @@ import type {
 } from '@joy/core'
 import { EFFORTS, PROVIDER_KINDS, ROLES, resolveRole } from '@joy/core'
 import { ConfigStore, configSchema, joyHome, resolvePaths, type JoyConfig } from '@joy/config'
+import { runDoctor } from '@joy/doctor'
+import type { DoctorReport } from '@joy/doctor'
 import {
   addUsage,
   appendTaskEvent,
@@ -101,6 +103,8 @@ export interface JoyServerOptions {
   executor?: Executor
   /** Adds only the fixed Playwright E2E origin; this is never enabled by default. */
   allowPlaywrightOrigin?: boolean
+  /** Injected for tests; diagnostics otherwise run only when GET /api/doctor is requested. */
+  doctor?: () => Promise<DoctorReport>
 }
 
 export interface JoyServer {
@@ -257,6 +261,22 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const url = requestUrl(req)
     if (url.pathname === '/api/health' && method === 'GET') {
       json(res, 200, { ok: true })
+      return
+    }
+    if (url.pathname === '/api/doctor' && method === 'GET') {
+      const config = await configStore.get()
+      const report = await (
+        options.doctor ??
+        (() =>
+          runDoctor({
+            home,
+            commands: {
+              ...(config.providers.claude.command ? { claude: config.providers.claude.command } : {}),
+              ...(config.providers.codex.command ? { codex: config.providers.codex.command } : {}),
+            },
+          }))
+      )()
+      json(res, 200, report)
       return
     }
     if (url.pathname === '/api/repos' && method === 'GET') {

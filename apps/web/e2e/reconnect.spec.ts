@@ -45,6 +45,13 @@ test('reconnects from the snapshot cursor and deduplicates replayed and sequence
       await route.fulfill({ json: { tasks: [task] } })
     } else if (path === '/api/config') {
       await route.fulfill({ json: { config } })
+    } else if (path === '/api/doctor') {
+      await route.fulfill({
+        json: {
+          checkedAt: '2026-11-05T00:00:00.000Z',
+          checks: [{ id: 'node', label: 'Node.js', status: 'ok', detail: 'Node.js is available.' }],
+        },
+      })
     } else if (path === '/api/secrets/openai-api-key') {
       await route.fulfill({ json: { set: false } })
     } else if (path === `/api/tasks/${task.id}`) {

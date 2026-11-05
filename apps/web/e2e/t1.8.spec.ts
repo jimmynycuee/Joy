@@ -2,6 +2,38 @@ import { test, expect } from '@playwright/test'
 import type { ModelRef } from '@joy/core'
 
 test('settings, secure key status, and a complete fake-provider task flow', async ({ page, request }) => {
+  await page.route('**/api/doctor', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        checkedAt: '2026-11-05T00:00:00.000Z',
+        checks: [
+          { id: 'node', label: 'Node.js', status: 'ok', detail: 'v22.13.0' },
+          {
+            id: 'gh-authentication',
+            label: 'GitHub authentication',
+            status: 'missing',
+            detail: 'Not authenticated',
+            repair: 'Run gh auth login.',
+          },
+          {
+            id: 'claude-cli',
+            label: 'Claude Code',
+            status: 'untested',
+            detail: 'Joy has no verified supported-version range.',
+          },
+          {
+            id: 'codex-cli',
+            label: 'Codex CLI',
+            status: 'missing',
+            detail: 'Codex CLI is not installed.',
+            repair: 'Install Codex CLI and ensure its command is available on PATH.',
+          },
+        ],
+      }),
+    })
+  })
   await page.route('**/api/config', async (route) => {
     if (route.request().method() !== 'GET') {
       await route.continue()
@@ -15,6 +47,15 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
   await expect(page.getByRole('region', { name: 'Task activity' })).toBeVisible()
+  const readiness = page.getByRole('region', { name: 'System readiness' })
+  await expect(readiness.getByText('Node.js')).toBeVisible()
+  await expect(readiness.getByText('Not authenticated')).toBeVisible()
+  await expect(readiness.getByText('Run gh auth login.')).toBeVisible()
+  await expect(readiness.getByText('Codex CLI is not installed.')).toBeVisible()
+  await expect(
+    readiness.getByText('Install Codex CLI and ensure its command is available on PATH.'),
+  ).toBeVisible()
+  await expect(readiness.getByText('untested', { exact: true })).toBeVisible()
   await expect(page.getByRole('complementary', { name: 'Diff viewer' })).toBeVisible()
 
   await page.getByRole('button', { name: 'Settings' }).click()
@@ -27,6 +68,10 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   }
   const settingsImplementerProvider = page.getByLabel('Implementer provider')
   await expect(settingsImplementerProvider.locator('option[value="openai-api"]')).toHaveCount(0)
+  await expect(page.getByLabel('Reviewer provider').locator('option[value="codex-cli"]')).toHaveJSProperty(
+    'disabled',
+    true,
+  )
   await settingsImplementerProvider.selectOption('claude-cli')
   await page.getByLabel('Implementer model').fill('claude-opus-4-6')
   await page.getByRole('button', { name: 'Save role settings' }).click()
@@ -63,6 +108,10 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   await expect(
     taskDialog.getByLabel('Implementer provider').locator('option[value="openai-api"]'),
   ).toHaveCount(0)
+  await expect(taskDialog.getByLabel('Reviewer provider')).toHaveValue('claude-cli')
+  await expect(
+    taskDialog.getByLabel('Reviewer provider').locator('option[value="codex-cli"]'),
+  ).toHaveJSProperty('disabled', true)
   await taskDialog.getByLabel('Task repository').selectOption({ index: 1 })
   await taskDialog.getByLabel('Task title').fill('Show the fake diff')
   await taskDialog.getByLabel('Task instructions').fill('Update the greeting and explain the result.')
@@ -96,4 +145,15 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   expect(JSON.stringify(details.events)).not.toContain(secret)
   await page.waitForTimeout(4100)
   await page.screenshot({ path: 'test-results/t1.8-workspace.png', fullPage: true })
+})
+
+test('doctor check failures do not block the workspace or settings', async ({ page }) => {
+  await page.route('**/api/doctor', (route) => route.abort())
+  await page.goto('/')
+
+  await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
+  const readiness = page.getByRole('region', { name: 'System readiness' })
+  await expect(readiness).toContainText('Readiness checks are unavailable')
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
 })
