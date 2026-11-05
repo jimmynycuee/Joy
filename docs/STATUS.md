@@ -6,7 +6,7 @@
 - T1.8／PR #9 follow-up：SecretStore/API 現在拒絕短於 Redactor 最低長度的值與舊短值；provider 切換會更新預設建議模型並保留自訂模型；WebSocket 初始事件改為緩衝後合併，避免逐事件重排，序號計算支援大型回放。
 - PR #9 保持 draft，secrets handling 的 owner review 仍待完成。PR #8 的 head `fbdb1a4e453653739d377426d003c77d021bf5f1` 已 live 確認 Ubuntu/macOS/Windows 全綠，並已 fetch/merge 到 `t1.8-web`。重基後的更新已本地驗證：`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check`（221 passed、2 skipped）、兩次並行 `pnpm test:e2e`（各 8/8）、`pnpm --filter @joy/web build`、`git diff --check` 皆通過；GitHub CI 等待 publication 後執行。
 - 目前階段：**P2 進行中**。T2.1 自動 strengths 合成及獨立審查提出的重啟恢復、競爭、prompt 容量、錯誤收尾與 provider capability 缺陷已修正；PR #10 已 squash-merge 至相依分支 `t1.8-web`，未合併至 `main`。T2.2 draft PR #11（head `29229e8`）與 T3.9 draft PR #12（head `fc0439c`）為後續工作。
-- **T4.1 遠端存取：** PR #21（`t4.1-remote-auth`）已整合最新 `t1.8-web` tip `5ce4e97` 以解決 base 衝突，保留 loopback-only bearer 驗證、Host/Origin 防護與 [Tailscale Serve 指引](remote-access.md)。PR 必須保持 draft 並等待 owner human review；不得標 ready 或合併。未部署，真實 tailnet 行為未驗證。T4.1 未修改 `apps/web`，目前 Web UI 尚不會附加 token。
+- **T4.1 遠端存取：** PR #21（`t4.1-remote-auth`）已整合最新 `t1.8-web` tip `6e60af7` 並解決 base 衝突；保留 loopback-only bearer 驗證、Host/Origin 防護與 [Tailscale Serve 指引](remote-access.md)。server 定向測試 15/15、隔離繼承 Git 身分的 `pnpm check`（199 tests passed、2 skipped）通過；更新後的 GitHub CI 尚待執行。PR 必須保持 draft 並等待 owner human review；不得標 ready 或合併。未部署，真實 tailnet 行為未驗證。T4.1 未修改 `apps/web`，目前 Web UI 尚不會附加 token。
 - 本地驗證：`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（181 tests passed、2 skipped）；T2.1 Playwright E2E 通過（3 specs），orchestrator/server 定向測試 44/44 通過。所有互動測試使用 fake providers，沒有呼叫真模型。一般環境的 `pnpm check` 有一項既有 fallback-identity 測試受繼承 Git 身分影響，已另開 issue #13。
 
 ## 分支與 PR
