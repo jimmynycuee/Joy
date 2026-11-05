@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { McpServerConfig } from '@joy/core'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
@@ -19,22 +19,22 @@ export function createToolHubMcpServer(dispatch: ToolHubDispatcher): McpServer {
   server.registerTool(
     'ask_peer',
     { description: descriptions.ask_peer, inputSchema: toolHubInputSchemas.ask_peer },
-    async (args) => executeTool(dispatch, { name: 'ask_peer', arguments: args }),
+    async (args, extra) => executeTool(dispatch, { name: 'ask_peer', arguments: args }, extra.signal),
   )
   server.registerTool(
     'task_status',
     { description: descriptions.task_status, inputSchema: toolHubInputSchemas.task_status },
-    async (args) => executeTool(dispatch, { name: 'task_status', arguments: args }),
+    async (args, extra) => executeTool(dispatch, { name: 'task_status', arguments: args }, extra.signal),
   )
   server.registerTool(
     'request_approval',
     { description: descriptions.request_approval, inputSchema: toolHubInputSchemas.request_approval },
-    async (args) => executeTool(dispatch, { name: 'request_approval', arguments: args }),
+    async (args, extra) => executeTool(dispatch, { name: 'request_approval', arguments: args }, extra.signal),
   )
   server.registerTool(
     'approve',
     { description: descriptions.approve, inputSchema: toolHubInputSchemas.approve },
-    async (args) => executeTool(dispatch, { name: 'approve', arguments: args }),
+    async (args, extra) => executeTool(dispatch, { name: 'approve', arguments: args }, extra.signal),
   )
   return server
 }
@@ -49,7 +49,7 @@ export function createToolHubMcpConfig(endpoint: string, token: string): McpServ
     name: TOOL_HUB_SERVER_NAME,
     transport: 'stdio',
     command: process.execPath,
-    args: ['--import', tsxLoader, entrypoint],
+    args: ['--import', pathToFileURL(tsxLoader).href, entrypoint],
     env: { JOY_TOOL_HUB_ENDPOINT: endpoint, JOY_TOOL_HUB_TOKEN: token },
   }
 }
@@ -60,9 +60,9 @@ export async function startToolHubStdio(dispatch: ToolHubDispatcher): Promise<Mc
   return server
 }
 
-async function executeTool(dispatch: ToolHubDispatcher, call: ToolHubCall) {
+async function executeTool(dispatch: ToolHubDispatcher, call: ToolHubCall, signal: AbortSignal) {
   try {
-    const value = await dispatch(call)
+    const value = await dispatch(call, signal)
     return { content: [{ type: 'text' as const, text: JSON.stringify(value) }] }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Tool Hub request failed'

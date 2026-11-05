@@ -43,7 +43,7 @@ export interface ToolHubRuntime {
   cwd: string
   maxAskPeerCalls: number
   budget: ToolHubBudget
-  reserveAskPeer?(input: { provider: ProviderKind }): Promise<void> | void
+  reserveAskPeer?(input: { provider: ProviderKind }): void
   askPeer(input: AskPeerInput): Promise<ToolHubValue>
   taskStatus(): Promise<ToolHubValue>
   requestApproval?(action: ProposedAction): Promise<ToolHubValue>
@@ -76,8 +76,13 @@ export function createToolHubDispatcher(runtime: ToolHubRuntime): ToolHubDispatc
       if (runtime.budget.askPeerCalls >= runtime.maxAskPeerCalls) {
         throw new Error(`ask_peer limit reached (${runtime.maxAskPeerCalls} per task)`)
       }
-      await runtime.reserveAskPeer?.({ provider: input.provider })
       runtime.budget.askPeerCalls += 1
+      try {
+        runtime.reserveAskPeer?.({ provider: input.provider })
+      } catch (error) {
+        runtime.budget.askPeerCalls -= 1
+        throw error
+      }
       return runtime.askPeer({
         taskId: runtime.taskId,
         provider: input.provider,

@@ -1,4 +1,5 @@
 import { createServer } from 'node:http'
+import type { ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -52,6 +53,65 @@ describe('stdio Tool Hub bridge', () => {
       if (details) throw new Error(`MCP stdio child failed: ${details}`, { cause: error })
       throw error
     } finally {
+      await client.close()
+      await new Promise<void>((resolve, reject) =>
+        httpServer.close((error) => (error ? reject(error) : resolve())),
+      )
+    }
+  }, 15_000)
+
+  it('aborts the local endpoint request when the MCP caller cancels ask_peer', async () => {
+    const token = 'x'.repeat(43)
+    const sessionId = 's'.repeat(43)
+    let requestReceived!: () => void
+    let responseClosed!: () => void
+    let activeResponse: ServerResponse | undefined
+    const requestStarted = new Promise<void>((resolve) => {
+      requestReceived = resolve
+    })
+    const connectionClosed = new Promise<void>((resolve) => {
+      responseClosed = resolve
+    })
+    const httpServer = createServer((_req, res) => {
+      activeResponse = res
+      res.once('close', () => {
+        if (!res.writableEnded) responseClosed()
+      })
+      _req.on('data', () => undefined)
+      _req.once('end', () => requestReceived())
+    })
+    await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve))
+    const address = httpServer.address() as AddressInfo
+    const config = createToolHubMcpConfig(
+      `http://127.0.0.1:${address.port}/internal/tool-hub/${sessionId}`,
+      token,
+    )
+    if (config.transport !== 'stdio') throw new Error('Tool Hub transport must use stdio')
+    const client = new Client({ name: 'joy-stdio-cancel-test', version: '1.0.0' })
+    const transport = new StdioClientTransport({
+      command: config.command,
+      args: config.args,
+      env: config.env ?? {},
+      stderr: 'pipe',
+    })
+    try {
+      await client.connect(transport)
+      const controller = new AbortController()
+      const pending = client.callTool(
+        { name: 'ask_peer', arguments: { provider: 'codex-cli', question: 'Review this change' } },
+        undefined,
+        { signal: controller.signal },
+      )
+      await requestStarted
+      controller.abort()
+      await expect(pending).rejects.toThrow()
+      const didClose = await Promise.race([
+        connectionClosed.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 3000)),
+      ])
+      expect(didClose).toBe(true)
+    } finally {
+      activeResponse?.end()
       await client.close()
       await new Promise<void>((resolve, reject) =>
         httpServer.close((error) => (error ? reject(error) : resolve())),

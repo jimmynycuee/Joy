@@ -59,7 +59,7 @@ describe('Tool Hub dispatcher', () => {
   it('reserves an ask_peer event before invoking the provider, including failed peer attempts', async () => {
     const order: string[] = []
     const deps = runtime({
-      reserveAskPeer: async () => {
+      reserveAskPeer: () => {
         order.push('reserved')
       },
       askPeer: async () => {
@@ -73,6 +73,31 @@ describe('Tool Hub dispatcher', () => {
     ).rejects.toThrow('peer failed')
     expect(order).toEqual(['reserved', 'peer'])
     expect(deps.budget.askPeerCalls).toBe(1)
+  })
+
+  it('rolls back the in-memory budget when durable reservation fails', async () => {
+    const deps = runtime({
+      reserveAskPeer: () => {
+        throw new Error('could not persist ask_peer budget')
+      },
+    })
+    const dispatch = createToolHubDispatcher(deps)
+    const call = { name: 'ask_peer' as const, arguments: { provider: 'codex-cli', question: 'Review' } }
+    await expect(dispatch(call)).rejects.toThrow('could not persist ask_peer budget')
+    expect(deps.budget.askPeerCalls).toBe(0)
+    expect(deps.askPeer).not.toHaveBeenCalled()
+  })
+
+  it('enforces the task limit for concurrent ask_peer calls', async () => {
+    const deps = runtime({ maxAskPeerCalls: 1 })
+    const dispatch = createToolHubDispatcher(deps)
+    const call = { name: 'ask_peer' as const, arguments: { provider: 'codex-cli', question: 'Review' } }
+    const results = await Promise.allSettled([dispatch(call), dispatch(call)])
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1)
+    expect(deps.budget.askPeerCalls).toBe(1)
+    expect(deps.reserveAskPeer).toHaveBeenCalledTimes(1)
+    expect(deps.askPeer).toHaveBeenCalledTimes(1)
   })
 
   it('caps ask_peer calls for the task and does not silently ignore the excess call', async () => {

@@ -17,8 +17,10 @@ if (
   throw new Error('Joy Tool Hub only accepts an authenticated loopback endpoint')
 }
 
-await startToolHubStdio(async (call) => {
+await startToolHubStdio(async (call, requestSignal) => {
   let response: Response
+  const timeoutSignal = AbortSignal.timeout(60_000)
+  const signal = requestSignal ? AbortSignal.any([requestSignal, timeoutSignal]) : timeoutSignal
   try {
     response = await fetch(url, {
       method: 'POST',
@@ -27,7 +29,7 @@ await startToolHubStdio(async (call) => {
         'content-type': 'application/json',
       },
       body: JSON.stringify(call),
-      signal: AbortSignal.timeout(60_000),
+      signal,
     })
   } catch {
     throw new Error('Joy Tool Hub could not reach the local task service')
