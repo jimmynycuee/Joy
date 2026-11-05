@@ -2,17 +2,14 @@
 
 > 開工前先讀本檔、`AGENTS.md`、`docs/PLAN.md`；收工前更新本檔。這裡記錄最新進度、阻塞、下一步與最近決策。
 
-- 最後更新：2026-11-04
-- 目前階段：**P2 進行中**。T2.1 自動 strengths 合成及獨立審查提出的重啟恢復、競爭、prompt 容量、錯誤收尾與 provider capability 缺陷已修正並在本地驗證；PR #10 仍 draft。T2.2 draft PR #11（head `29229e8`）與 T3.9 draft PR #12（head `fc0439c`）三平台 CI 全綠。GitHub 上 #2–#5 仍 open、非 draft 且三平台 CI 全綠；#6/#7 merged 到相依分支而非 `main`；#8/#9 三平台 CI 全綠且仍 draft，#9 secrets handling 必須先由 owner human review。依目前指示所有 PR 保持 draft、不合併。
-- 前次工作分支：`t2.1-compete`，基於 `t1.8-web` commit `a852b60`；包含 T2.1 引擎、server/UI、審查修正與自動合成候選實作，PR #10 為 draft。
-- 本次 T4.2 工作分支：`t4.2-local-pwa`，基於提供的 `t1.8-web` 分支；只包含下方記錄的本機 PWA foundation。
-- 前次本地驗證：`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（181 tests passed、2 skipped）；T2.1 Playwright E2E 通過（3 specs），orchestrator/server 定向測試 44/44 通過。所有互動測試使用 fake providers，沒有呼叫真模型。一般環境的 `pnpm check` 有一項既有 fallback-identity 測試受繼承 Git 身分影響，已另開 issue #13。
-
-## T4.2 部分進度（2026-11-04）
-
-- Owner 選擇「Local PWA first」。新工作分支 `t4.2-local-pwa` 以提供的 `t1.8-web` 為基底，只實作 `apps/web` 的 installable local PWA foundation：manifest、Production app-shell service worker/offline fallback、dev 模式不註冊 worker，以及圖示與測試。
-- T4.2 完整票仍未完成，`docs/PLAN.md` checkbox 保持未勾；Web Push 與遠端存取/驗證/ingress/外部通知均未實作。Web Push 延後到 T4.1 遠端存取基礎完成後再做。
-- 驗證：`pnpm check`（移除繼承的 Git identity 環境變數後）通過，183 tests passed、2 skipped；Web build 成功，Playwright UI E2E 5/5 通過。未隔離 Git identity 的 `pnpm check` 僅因既有 fallback-identity test 失敗。
+- 最後更新：2026-11-05
+- T1.8／PR #9 follow-up：SecretStore/API 現在拒絕短於 Redactor 最低長度的值與舊短值；provider 切換會更新預設建議模型並保留自訂模型；WebSocket 初始事件改為緩衝後合併，避免逐事件重排，序號計算支援大型回放。
+- PR #9 保持 draft，secrets handling 的 owner review 仍待完成。PR #8 的 head `fbdb1a4e453653739d377426d003c77d021bf5f1` 已 live 確認 Ubuntu/macOS/Windows 全綠，並已 fetch/merge 到 `t1.8-web`。重基後的更新已本地驗證：`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check`（221 passed、2 skipped）、兩次並行 `pnpm test:e2e`（各 8/8）、`pnpm --filter @joy/web build`、`git diff --check` 皆通過；GitHub CI 等待 publication 後執行。
+- 目前階段：**P2 進行中**。T2.1 自動 strengths 合成及獨立審查提出的重啟恢復、競爭、prompt 容量、錯誤收尾與 provider capability 缺陷已修正並在本地驗證；PR #10 仍 draft。T2.2 draft PR #11（head `29229e8`）與 T3.9 draft PR #12（head `fc0439c`）三平台 CI 全綠。GitHub 上 #2–#5 仍 open、非 draft 且三平台 CI 全綠；#6/#7 merged 到相依分支而非 `main`；#8 head `fbdb1a4` 三平台 checks 全綠且仍 draft。#9 舊 head `dcb9153` 因 base conflict 沒有 checks；已合併新 base 的 head 在本地驗證完成，GitHub CI 等待 publication，secrets handling 仍須 owner human review。依目前指示所有 PR 保持 draft、不合併。
+- T4.2 部分進度（2026-11-05）：PR #17 `t4.2-local-pwa`（draft；base=`t1.8-web`）交付 `apps/web` 的 local-only installable PWA foundation：manifest、Production app-shell service worker/offline fallback、dev 模式不註冊 worker，以及圖示與測試。此分支已合併最新 `t1.8-web` 基底；未修改基底分支。
+- T4.2 完整票仍未完成，`docs/PLAN.md` checkbox 保持未勾；Web Push、遠端存取/驗證/ingress/外部通知均未實作。Web Push 延後到 T4.1 遠端存取基礎完成後再做。
+- 工作分支：`t2.1-compete`，基於 `t1.8-web` commit `a852b60`；目前包含 T2.1 引擎、server/UI、審查修正與自動合成候選實作，PR #10 為 draft。
+- 本地驗證：`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（181 tests passed、2 skipped）；T2.1 Playwright E2E 通過（3 specs），orchestrator/server 定向測試 44/44 通過。所有互動測試使用 fake providers，沒有呼叫真模型。一般環境的 `pnpm check` 有一項既有 fallback-identity 測試受繼承 Git 身分影響，已另開 issue #13。
 
 ## 分支與 PR
 
@@ -29,7 +26,7 @@ main … t1.5-review-loop
 
 - 已 live 核實 #6/#7 為 merged，三平台 checks 成功；#7 的 base 是 `t1.6-server`，不能據此聲稱已在 `main` 經 CI 或已部署。
 - #2–#5 目前仍 open、非 draft；各自 Ubuntu、macOS、Windows checks 成功，尚未合併。
-- #9 的 Ubuntu、macOS、Windows checks 全綠，但 secrets 變更須 owner human review；未見 GitHub review 留言。
+- #9 已發布 head `dcb91534f565b513c3b080de826c55a0dd0d561f` 因 base conflict 沒有 checks；本地已合併 #8 綠色 head 並驗證更新，但 GitHub checks 等待 publication。Secrets 變更仍須 owner human review；未見 GitHub review 留言。
 - #8 的 Ubuntu、macOS、Windows checks 現已全綠；先前 macOS runner 取消已由後續成功結果解決，PR 仍 draft。
 - #10 前一個已發布 head `9fa9ca9` 的 Ubuntu、macOS、Windows checks 全綠；之後的獨立審查修正已在本地驗證，PR 仍 draft，GitHub 尚無 review。#11 head `29229e8`、#12 head `fc0439c` 的三平台 checks 全綠，兩者皆為 draft。
 
@@ -46,7 +43,7 @@ main … t1.5-review-loop
 
 ## 卡住 / 需要人做的事
 
-1. **T1.8 draft PR #9**（[PR #9](https://github.com/jimmynycuee/Joy/pull/9)）：三平台 CI 全綠；secrets handling 仍需 owner human review。
+1. **T1.8 draft PR #9**（[PR #9](https://github.com/jimmynycuee/Joy/pull/9)）：舊 head 因 base conflict 沒有 checks；本地更新已通過完整 check、兩次並行 E2E 與 web build，GitHub checks 等待 publication；secrets handling 仍需 owner human review。
 2. **T2.1 draft PR #10**（[PR #10](https://github.com/jimmynycuee/Joy/pull/10)）：獨立審查的五項發現已修正；定向測試、完整 `pnpm check`（隔離繼承 Git 身分）與 Playwright E2E 通過。維持 draft、不合併，GitHub 尚無 review。
 3. **T2.3 policy**：動作對應權限等級是安全政策，已送 owner 問題卡；答覆前不設定 tier、不啟用分類。
 4. **T2.4 Telegram**：依賴 T2.3 審核路徑，且需 owner 的 bot token 與 chat-id 綁定；目前尚未核實可用的 Telegram 憑證或帳號。
@@ -59,26 +56,27 @@ main … t1.5-review-loop
 
 ## 下一步（依相依順序）
 
-1. T4.1 遠端存取是 Web Push 的前置工作；本分支僅交付 local-only PWA foundation，完整 T4.2 checkbox 維持未勾，待 T4.1 後再實作 Web Push。
+1. T4.1 遠端存取是 Web Push 的前置工作；PR #17 僅交付 local-only PWA foundation，T4.2 完整 checkbox 維持未勾，待 T4.1 後再實作 Web Push。
 2. 保持 #10 draft/no-merge hold；新 head 的 checks 與 owner review 都未確認前，不改變 readiness 狀態。
 3. #11 T2.2 與 #12 T3.9 已交付且 CI 綠；只推進不依賴未決 tier/trigger/quota/scheduler 政策的工作。
-4. #9 等待 owner human review；#8 已全綠，不需重跑。持續核對 #2–#5 與相依 PR 狀態，不把 stack merge 說成進 `main`。
+4. #9 的 secrets handling 等待 owner human review；已將 #8 綠色 head 合併到 #9 source branch，本地驗證完成後待 publication/GitHub checks。持續核對 #2–#5 與相依 PR 狀態，不把 stack merge 說成進 `main`。
 5. Codex 真實 fixture、模型名稱確認與 Windows 實機驗證留待相應條件可用時處理。
 
 ## 最近的決策（新的放最上面）
 
-| 日期       | 決策                                                                                                                                                                              | 原因 / 出處                                                                                            |
-| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| 2026-11-04 | T4.2 依 owner「Local PWA first」分段；先交付本機可安裝 PWA 基礎，Web Push/遠端能力留待 T4.1 後；完整票完成前不勾選。                                                              | T4.1 是遠端存取相依；避免在本階段引入推播與遠端邊界。                                                  |
-| 2026-11-04 | 「合併優點」採自動 synthesis；使用配置的 Judge 模型在獨立 worktree 執行額外呼叫，輸出可檢視、可明確選取的新候選，原候選保留。                                                     | owner 回答自動合成；維持明確勝者選取與 worktree 隔離。                                                 |
-| 2026-11-03 | T2.1 以 Implementer/Reviewer 不同 provider 作平行候選，各在獨立 worktree 執行；read-only Judge 結構化比較，使用者明確選勝並將 `winner_selected` 持久化。                          | 既有 API 沒有 synthesis/merge flow；是否增加模型呼叫、人工融合或延後已透過問題卡詢問。                 |
-| 2026-11-03 | T2.1 裁判失敗但有成功候選時仍可 review/select；preflight 失敗要持久化並以首個缺失角色 provider 標記 anchor；勝者選取在讀取 body 後重驗狀態；resume 用 run boundary 限定最新候選。 | 唯讀獨立審查發現兩項中度與一項低度問題，均以 regression tests 重現與修正。                             |
-| 2026-11-03 | T1.8 UI 從 task details/WebSocket replay 使用結果 diff，不新增 diff GET route；OpenAI key API 僅回 `{ set, source }`，key 走 SecretStore/Redactor。                               | `Executor.diff()` 會 `git add --all` 改 worktree index；fake-provider Playwright e2e 驗證 key 不回顯。 |
-| 2026-11-03 | T1.9 GitHub 發布由 `packages/github` 負責；限定非預設 worktree branch，無 shell push，開 draft PR。                                                                               | bare remote + 假 gh 測試；push 由明確 UI 動作觸發。                                                    |
-| 2026-11-03 | T1.7 event log 採 task-wide 單調序號，Redactor 遮罩後才寫 DB；usage 按 UTC 日/provider 累加。                                                                                     | 多次 attempt 可連續回放，避免秘密落盤。                                                                |
-| 2026-11-03 | T1.6 server 固定只綁 `127.0.0.1`；重啟中斷以 `failed` + `interrupted` event 記錄，恢復沿用 worktree 與 implementer session/model。                                                | 維持本機邊界並保存恢復檢查點。                                                                         |
-| 2026-11-03 | Judge/reviewer 使用結構化 JSON Schema；列出 blocker 卻 approve 視為不通過；reviewLoop 輪數用完仍未通過保留工作結果，且不自動清理 worktree。                                       | 交由人檢視結果後再決定是否交付或清理。                                                                 |
-| 2026-11-03 | 真實模型測試使用最便宜模型與 low effort；Codex fixture 暫以合成 fixture，錄到真實 fixture 後重跑 contract test。                                                                  | 控制訂閱額度使用並保持 adapter 合約驗證。                                                              |
+| 日期       | 決策                                                                                                                                                                                                                                      | 原因 / 出處                                                                                            |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| 2026-11-04 | T4.2 依 owner「Local PWA first」分段；先交付本機可安裝 PWA 基礎，Web Push/遠端能力留待 T4.1 後；完整票完成前不勾選。                                                                                                                      | T4.1 是遠端存取相依；避免在本階段引入推播與遠端邊界。                                                  |
+| 2026-11-05 | #9 source branch 合併 #8 已通過三平台 checks 的 exact head `fbdb1a4e453653739d377426d003c77d021bf5f1`；Playwright 每次 invocation 使用穩定 run ID、獨立輸出與隨機 API/web ports，server 僅在明確 opt-in 時允許精確 loopback HTTP origin。 | 避免 PR stack 衝突與並行 E2E 共享資源；維持 server origin allowlist 邊界。                             |
+| 2026-11-04 | 「合併優點」採自動 synthesis；使用配置的 Judge 模型在獨立 worktree 執行額外呼叫，輸出可檢視、可明確選取的新候選，原候選保留。                                                                                                             | owner 回答自動合成；維持明確勝者選取與 worktree 隔離。                                                 |
+| 2026-11-03 | T2.1 以 Implementer/Reviewer 不同 provider 作平行候選，各在獨立 worktree 執行；read-only Judge 結構化比較，使用者明確選勝並將 `winner_selected` 持久化。                                                                                  | 既有 API 沒有 synthesis/merge flow；是否增加模型呼叫、人工融合或延後已透過問題卡詢問。                 |
+| 2026-11-03 | T2.1 裁判失敗但有成功候選時仍可 review/select；preflight 失敗要持久化並以首個缺失角色 provider 標記 anchor；勝者選取在讀取 body 後重驗狀態；resume 用 run boundary 限定最新候選。                                                         | 唯讀獨立審查發現兩項中度與一項低度問題，均以 regression tests 重現與修正。                             |
+| 2026-11-03 | T1.8 UI 從 task details/WebSocket replay 使用結果 diff，不新增 diff GET route；OpenAI key API 僅回 `{ set, source }`，key 走 SecretStore/Redactor。                                                                                       | `Executor.diff()` 會 `git add --all` 改 worktree index；fake-provider Playwright e2e 驗證 key 不回顯。 |
+| 2026-11-03 | T1.9 GitHub 發布由 `packages/github` 負責；限定非預設 worktree branch，無 shell push，開 draft PR。                                                                                                                                       | bare remote + 假 gh 測試；push 由明確 UI 動作觸發。                                                    |
+| 2026-11-03 | T1.7 event log 採 task-wide 單調序號，Redactor 遮罩後才寫 DB；usage 按 UTC 日/provider 累加。                                                                                                                                             | 多次 attempt 可連續回放，避免秘密落盤。                                                                |
+| 2026-11-03 | T1.6 server 固定只綁 `127.0.0.1`；重啟中斷以 `failed` + `interrupted` event 記錄，恢復沿用 worktree 與 implementer session/model。                                                                                                        | 維持本機邊界並保存恢復檢查點。                                                                         |
+| 2026-11-03 | Judge/reviewer 使用結構化 JSON Schema；列出 blocker 卻 approve 視為不通過；reviewLoop 輪數用完仍未通過保留工作結果，且不自動清理 worktree。                                                                                               | 交由人檢視結果後再決定是否交付或清理。                                                                 |
+| 2026-11-03 | 真實模型測試使用最便宜模型與 low effort；Codex fixture 暫以合成 fixture，錄到真實 fixture 後重跑 contract test。                                                                                                                          | 控制訂閱額度使用並保持 adapter 合約驗證。                                                              |
 
 ## 已知的坑
 

@@ -1,4 +1,5 @@
 import { AsyncEntry } from '@napi-rs/keyring'
+import { MIN_SECRET_VALUE_LENGTH } from './redact.js'
 
 /** Every secret Joy knows about. Adding one here is the only way to store it. */
 export const SECRET_NAMES = ['openai_api_key', 'telegram_bot_token', 'line_channel_secret'] as const
@@ -77,6 +78,13 @@ export interface SecretStoreOptions {
   onSecret?: (value: string) => void
 }
 
+function assertRedactable(name: SecretName, value: string): void {
+  if (value.length < MIN_SECRET_VALUE_LENGTH)
+    throw new Error(
+      `${name} must be at least ${MIN_SECRET_VALUE_LENGTH} characters long so Joy can redact it safely.`,
+    )
+}
+
 export class SecretStore {
   private readonly backend: SecretBackend
   private readonly env: NodeJS.ProcessEnv
@@ -93,7 +101,10 @@ export class SecretStore {
     const envVar = ENV_OVERRIDES[name]
     const fromEnv = envVar ? this.env[envVar] : undefined
     const value = fromEnv && fromEnv.trim() !== '' ? fromEnv.trim() : await this.backend.get(name)
-    if (value) this.onSecret(value)
+    if (value) {
+      assertRedactable(name, value)
+      this.onSecret(value)
+    }
     return value
   }
 
@@ -103,11 +114,13 @@ export class SecretStore {
     const envVar = ENV_OVERRIDES[name]
     const fromEnv = envVar ? this.env[envVar]?.trim() : undefined
     if (fromEnv) {
+      assertRedactable(name, fromEnv)
       this.onSecret(fromEnv)
       return { set: true, source: 'env' }
     }
     const fromBackend = await this.backend.get(name)
     if (fromBackend) {
+      assertRedactable(name, fromBackend)
       this.onSecret(fromBackend)
       return { set: true, source: 'keychain' }
     }
@@ -118,6 +131,7 @@ export class SecretStore {
     assertName(name)
     const trimmed = value.trim()
     if (trimmed === '') throw new Error(`Refusing to store an empty ${name}. Use delete() to remove it.`)
+    assertRedactable(name, trimmed)
     this.onSecret(trimmed)
     await this.backend.set(name, trimmed)
   }
