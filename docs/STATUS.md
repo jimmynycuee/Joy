@@ -2,13 +2,13 @@
 
 > 開工前先讀本檔、`AGENTS.md`、`docs/PLAN.md`；收工前更新本檔。這裡記錄最新進度、阻塞、下一步與最近決策。
 
-- 最後更新：2026-11-04
-- **T4.3 review follow-up**：在 `t4.3-desktop`（基於 `t1.8-web` commit `36605031`）補上通知只在狀態變更時觸發、Tauri 單實例與視窗恢復、macOS Reopen、啟動隱藏/一般啟動顯示、autostart 失敗時回復勾選狀態，以及 updater 併發保護與設定/網路錯誤區分；loopback HTTP client 禁用代理，Vite dev server 固定 strict port。`requireSignedVersion` 已核實為 updater v2 支援欄位並維持開啟。PR #20 保持 draft。
-- **T4.3 驗證限制**：`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（181 passed、2 skipped）；root `pnpm build` 通過且未執行 Tauri；純邏輯 Rust tests 6/6 通過，Cargo metadata lock 驗證通過。`cargo check` 因 Cloud Debian 缺 `glib-2.0` 開發檔案而在 app compile 前被擋，無可執行 app 可截圖。Updater release 尚需 owner 提供 HTTPS endpoint、公鑰及匹配私鑰；打包後 web UI/backend bridge 仍未完成。`packages/server` 只有預設綁 loopback ephemeral port 的 programmatic API，沒有 server CLI；README 已說明 4317 整合需外部 launcher。
-
-- 目前專案階段：**P2 進行中**。T2.1 自動 strengths 合成及獨立審查提出的重啟恢復、競爭、prompt 容量、錯誤收尾與 provider capability 缺陷已修正並在本地驗證；PR #10 仍 draft。T2.2 draft PR #11（head `29229e8`）與 T3.9 draft PR #12（head `fc0439c`）三平台 CI 全綠。GitHub 上 #2–#5 仍 open、非 draft 且三平台 CI 全綠；#6/#7 merged 到相依分支而非 `main`；#8/#9 三平台 CI 全綠且仍 draft，#9 secrets handling 必須先由 owner human review。依目前指示所有 PR 保持 draft、不合併。
-- 先前工作分支：`t2.1-compete`，基於 `t1.8-web` commit `a852b60`；包含 T2.1 引擎、server/UI、審查修正與自動合成候選實作，PR #10 為 draft。
-- T2.1 過往本地驗證：`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（181 tests passed、2 skipped）；T2.1 Playwright E2E 通過（3 specs），orchestrator/server 定向測試 44/44 通過。所有互動測試使用 fake providers，沒有呼叫真模型。一般環境的 `pnpm check` 有一項既有 fallback-identity 測試受繼承 Git 身分影響，已另開 issue #13。
+- 最後更新：2026-11-05
+- **T4.3 PR #20 conflict follow-up**：已將最新 `t1.8-web`（`dcb91534`）合併至 `t4.3-desktop`，保留 base 的 PR #9 更新並解決 `docs/STATUS.md` 衝突；PR #20 維持 draft，合併提交後待發布並由 CI 驗證。
+- T1.8／PR #9 follow-up：SecretStore/API 現在拒絕短於 Redactor 最低長度的值與舊短值；provider 切換會更新預設建議模型並保留自訂模型；WebSocket 初始事件改為緩衝後合併，避免逐事件重排，序號計算支援大型回放。
+- PR #9 仍保持 draft，secrets handling 的 owner review 仍待完成。#9 目前仍需等 PR #8 的修補已驗證並發布新 head 後才能對齊 base；此工作尚未對舊 #8 head rebase。此次本地 `pnpm check`（189 tests passed、2 skipped）、8 個 Playwright E2E specs、web build 與 `git diff --check` 通過；新 head 的 GitHub CI 尚未驗證。
+- 目前階段：**P2 進行中**。T2.1 自動 strengths 合成及獨立審查提出的重啟恢復、競爭、prompt 容量、錯誤收尾與 provider capability 缺陷已修正並在本地驗證；PR #10 仍 draft。T2.2 draft PR #11（head `29229e8`）與 T3.9 draft PR #12（head `fc0439c`）三平台 CI 全綠。GitHub 上 #2–#5 仍 open、非 draft 且三平台 CI 全綠；#6/#7 merged 到相依分支而非 `main`；#8/#9 三平台 CI 全綠且仍 draft，#9 secrets handling 必須先由 owner human review。依目前指示所有 PR 保持 draft、不合併。
+- 工作分支：`t2.1-compete`，基於 `t1.8-web` commit `a852b60`；目前包含 T2.1 引擎、server/UI、審查修正與自動合成候選實作，PR #10 為 draft。
+- 本地驗證：`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL pnpm check` 通過（181 tests passed、2 skipped）；T2.1 Playwright E2E 通過（3 specs），orchestrator/server 定向測試 44/44 通過。所有互動測試使用 fake providers，沒有呼叫真模型。一般環境的 `pnpm check` 有一項既有 fallback-identity 測試受繼承 Git 身分影響，已另開 issue #13。
 
 ## 分支與 PR
 
@@ -23,8 +23,6 @@ main … t1.5-review-loop
                           └─ #12 T3.9 model stats/UI（draft；base=t2.2-tools）
 ```
 
-T4.3 獨立堆疊：`t4.3-desktop` → `t1.8-web`（[draft PR #20](https://github.com/jimmynycuee/Joy/pull/20)；未修改 PR #9 或其他 ticket PR）。
-
 - 已 live 核實 #6/#7 為 merged，三平台 checks 成功；#7 的 base 是 `t1.6-server`，不能據此聲稱已在 `main` 經 CI 或已部署。
 - #2–#5 目前仍 open、非 draft；各自 Ubuntu、macOS、Windows checks 成功，尚未合併。
 - #9 的 Ubuntu、macOS、Windows checks 全綠，但 secrets 變更須 owner human review；未見 GitHub review 留言。
@@ -33,15 +31,14 @@ T4.3 獨立堆疊：`t4.3-desktop` → `t1.8-web`（[draft PR #20](https://githu
 
 ## 現在的樣子
 
-| 部分                            | 狀態                                                                                                                                            |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| monorepo / CI                   | pnpm、TypeScript strict、ESLint、Prettier、Vitest；三平台 CI 執行 `pnpm check`。                                                                |
-| `packages/core` / `packages/db` | 領域介面、SQLite schema、task/repo CRUD、事件/reviews/usage 持久化已完成。                                                                      |
-| `packages/providers`            | Claude CLI、Codex CLI、OpenAI API adapters 完成；Codex 目前仍使用合成 fixture，尚待登入電腦錄製真實 fixture。                                   |
-| `packages/executor`             | 每個 attempt 使用獨立 Git worktree/branch，提供 diff、commit、cleanup。                                                                         |
-| `packages/orchestrator`         | T1.5 `reviewLoop()` 完成；T2.1 支援並行競賽、自動 strengths 合成、24,000-byte provider prompt 上限，以及 code-edit capability 驗證。            |
-| server / UI / GitHub            | T2.1 server 支援合成成功候選的事件持久化與選取、競爭互斥、重啟恢復和異常收尾；UI 將合成候選置頂、顯示 diff 並可選取；fake-provider E2E 通過。   |
-| `apps/desktop`                  | T4.3 tray、single-instance、autostart、通知與 updater flow；純邏輯 Rust tests 通過，native build/runtime、UI bridge 與 signed update 尚未驗證。 |
+| 部分                            | 狀態                                                                                                                                          |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| monorepo / CI                   | pnpm、TypeScript strict、ESLint、Prettier、Vitest；三平台 CI 執行 `pnpm check`。                                                              |
+| `packages/core` / `packages/db` | 領域介面、SQLite schema、task/repo CRUD、事件/reviews/usage 持久化已完成。                                                                    |
+| `packages/providers`            | Claude CLI、Codex CLI、OpenAI API adapters 完成；Codex 目前仍使用合成 fixture，尚待登入電腦錄製真實 fixture。                                 |
+| `packages/executor`             | 每個 attempt 使用獨立 Git worktree/branch，提供 diff、commit、cleanup。                                                                       |
+| `packages/orchestrator`         | T1.5 `reviewLoop()` 完成；T2.1 支援並行競賽、自動 strengths 合成、24,000-byte provider prompt 上限，以及 code-edit capability 驗證。          |
+| server / UI / GitHub            | T2.1 server 支援合成成功候選的事件持久化與選取、競爭互斥、重啟恢復和異常收尾；UI 將合成候選置頂、顯示 diff 並可選取；fake-provider E2E 通過。 |
 
 ## 卡住 / 需要人做的事
 
@@ -55,7 +52,6 @@ T4.3 獨立堆疊：`t4.3-desktop` → `t1.8-web`（[draft PR #20](https://githu
 8. **Codex 真實 fixture**：既有 fixture 是合成資料；Cloud Codex CLI 目前沒有登入；需有已登入 CLI session 後錄製並重跑 provider contract test。
 9. 確認模型名稱仍待帳號實測；Windows 實機尚未手動測過，只有 CI 證據。
 10. GitHub #2–#5 雖三平台 CI 綠仍 open；#6/#7 僅合併在相依分支，尚不能聲稱全鏈已進 `main` 或已部署。
-11. **T4.3 native build/UI**：Cloud 沒有 GTK/WebKit 開發套件且非 root，無法本機建置/截圖 Tauri；updater 尚缺 owner release endpoint 與簽署材料。production web bundle 的 backend bridge 仍待後續處理。
 
 ## 下一步（依相依順序）
 
@@ -63,13 +59,11 @@ T4.3 獨立堆疊：`t4.3-desktop` → `t1.8-web`（[draft PR #20](https://githu
 2. #11 T2.2 與 #12 T3.9 已交付且 CI 綠；只推進不依賴未決 tier/trigger/quota/scheduler 政策的工作。
 3. #9 等待 owner human review；#8 已全綠，不需重跑。持續核對 #2–#5 與相依 PR 狀態，不把 stack merge 說成進 `main`。
 4. Codex 真實 fixture、模型名稱確認與 Windows 實機驗證留待相應條件可用時處理。
-5. T4.3 draft PR 等具備 WebKitGTK 的 native builder 驗證 tray 與打包；owner 設定 endpoint/public key/private signing key 後再驗 updater artifacts 和下載安裝。
 
 ## 最近的決策（新的放最上面）
 
 | 日期       | 決策                                                                                                                                                                              | 原因 / 出處                                                                                            |
 | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| 2026-11-04 | T4.3 只改 desktop/Tauri 專屬實作；通知只在輪詢觀察到狀態轉換時發出；updater 保留 signed-version 驗證，endpoint/pubkey 留空等待 owner 提供。                                       | 避免碰 T4.2 PWA 與 T4.1 auth；不虛構 signing material；native Linux build 缺 GLib/WebKitGTK。          |
 | 2026-11-04 | 「合併優點」採自動 synthesis；使用配置的 Judge 模型在獨立 worktree 執行額外呼叫，輸出可檢視、可明確選取的新候選，原候選保留。                                                     | owner 回答自動合成；維持明確勝者選取與 worktree 隔離。                                                 |
 | 2026-11-03 | T2.1 以 Implementer/Reviewer 不同 provider 作平行候選，各在獨立 worktree 執行；read-only Judge 結構化比較，使用者明確選勝並將 `winner_selected` 持久化。                          | 既有 API 沒有 synthesis/merge flow；是否增加模型呼叫、人工融合或延後已透過問題卡詢問。                 |
 | 2026-11-03 | T2.1 裁判失敗但有成功候選時仍可 review/select；preflight 失敗要持久化並以首個缺失角色 provider 標記 anchor；勝者選取在讀取 body 後重驗狀態；resume 用 run boundary 限定最新候選。 | 唯讀獨立審查發現兩項中度與一項低度問題，均以 regression tests 重現與修正。                             |

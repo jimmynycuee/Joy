@@ -8,7 +8,7 @@ const runtime = await startFakeJoyRuntime()
 const vite = await createServer({
   configFile: resolve(appDirectory, 'vite.config.ts'),
   root: appDirectory,
-  server: { host: '0.0.0.0', port: 4173, strictPort: true },
+  server: { host: '127.0.0.1', port: 4173, strictPort: true },
 })
 await vite.listen()
 

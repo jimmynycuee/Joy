@@ -50,7 +50,7 @@ import type { Executor, WorkspaceDiff } from '@joy/core'
 import { compete, reviewLoop, synthesizeStrengths } from '@joy/orchestrator'
 import type { SynthesisSourceCandidate } from '@joy/orchestrator'
 import { ClaudeCliProvider, CodexCliProvider, OpenAiApiProvider } from '@joy/providers'
-import { Redactor, SecretStore } from '@joy/secrets'
+import { MIN_SECRET_VALUE_LENGTH, Redactor, SecretStore } from '@joy/secrets'
 
 const modelSchema = z.strictObject({
   provider: z.enum(PROVIDER_KINDS),
@@ -96,7 +96,9 @@ const synthesisSourceCandidateSchema = z.object({
   status: z.literal('succeeded'),
   diff: workspaceDiffSchema,
 })
-const openAiSecretInputSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
+const openAiSecretInputSchema = z.strictObject({
+  value: z.string().trim().min(MIN_SECRET_VALUE_LENGTH).max(4096),
+})
 const MAX_BODY_BYTES = 1_000_000
 
 export interface TaskEvent {
@@ -117,6 +119,7 @@ export interface JoyServerOptions {
   redactor?: Redactor
   providers?: Partial<Record<ProviderKind, AgentProvider>>
   executor?: Executor
+  allowPlaywrightOrigin?: boolean
 }
 
 export interface JoyServer {
@@ -220,7 +223,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   httpServer.on('upgrade', (req, socket, head) => {
     try {
       const url = requestUrl(req)
-      if (url.pathname !== '/ws' || !isLocalOrigin(req.headers.origin)) {
+      if (
+        !isLocalHostHeader(req.headers.host) ||
+        url.pathname !== '/ws' ||
+        !isAllowedOrigin(req.headers.origin, options.allowPlaywrightOrigin)
+      ) {
         socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
         socket.destroy()
         return
@@ -249,8 +256,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   })
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const url = requestUrl(req)
+    if (!isLocalHostHeader(req.headers.host))
+      throw new HttpError(403, 'Host must be localhost, 127.0.0.1, or [::1]')
+    if (!isAllowedOrigin(req.headers.origin, options.allowPlaywrightOrigin))
+      throw new HttpError(403, 'Origin is not allowed')
     const method = req.method ?? 'GET'
+    const url = requestUrl(req)
+    if (requiresJsonContentType(method, url.pathname) && !isJsonContentType(req.headers['content-type']))
+      throw new HttpError(415, 'Content-Type must be application/json')
     if (url.pathname === '/api/health' && method === 'GET') {
       json(res, 200, { ok: true })
       return
@@ -286,6 +299,16 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
             400,
             'Compete mode requires implementer and reviewer to use different providers',
           )
+        for (const model of [implementer, reviewer]) {
+          const provider = providers[model.provider]
+          if (!provider)
+            throw new HttpError(400, `Compete mode requires configured provider ${model.provider}`)
+          if (!provider.capabilities.codeEdit)
+            throw new HttpError(
+              400,
+              `Compete mode requires code-edit capable providers; ${model.provider} cannot edit code`,
+            )
+        }
       }
       const repo = getRepo(db, input.repoId as RepoId)
       if (!repo) throw new HttpError(404, `Repository ${input.repoId} was not found`)
@@ -634,10 +657,19 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Task failed'
-      if (attempt)
-        updateAttempt(db, attempt.id, { status: controller.signal.aborted ? 'cancelled' : 'failed' })
+      if (!attempt) {
+        const implementer = resolveRole('implementer', initialConfig.roles as RoleConfig, task.roleOverrides)
+        attempt = createAttempt(db, {
+          id: randomUUID() as AttemptId,
+          taskId: task.id,
+          provider: implementer.provider,
+          model: implementer.model,
+          status: 'failed',
+        })
+      }
+      updateAttempt(db, attempt.id, { status: controller.signal.aborted ? 'cancelled' : 'failed' })
       setTaskStatus(db, task.id, controller.signal.aborted ? 'cancelled' : 'failed')
-      publish(task.id, attempt?.id ?? ('unknown' as AttemptId), 'error', { message })
+      publish(task.id, attempt.id, 'error', { message })
     }
   }
 
@@ -727,20 +759,53 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const judge = resolveRole('judge', roles, task.roleOverrides)
     const preflightModel =
       [implementer, reviewer, judge].find((model) => !providers[model.provider]) ?? implementer
-    if (implementer.provider === reviewer.provider) {
+    const failPreflight = (model: ModelRef, message: string) => {
       const attemptId = randomUUID() as AttemptId
       createAttempt(db, {
         id: attemptId,
         taskId: task.id,
-        provider: implementer.provider,
-        model: implementer.model,
+        provider: model.provider,
+        model: model.model,
         status: 'failed',
       })
       setTaskStatus(db, task.id, 'failed')
-      publish(task.id, attemptId, 'error', {
-        message: 'Compete mode requires implementer and reviewer to use different providers',
+      publish(task.id, attemptId, 'result', {
+        type: 'result',
+        status: 'failed',
+        approved: false,
+        rounds: 0,
+        reason: message,
       })
+    }
+    if (implementer.provider === reviewer.provider) {
+      failPreflight(implementer, 'Compete mode requires implementer and reviewer to use different providers')
       return
+    }
+    const missingProvider = [
+      { role: 'implementer', model: implementer },
+      { role: 'reviewer', model: reviewer },
+      { role: 'judge', model: judge },
+    ].find(({ model }) => !providers[model.provider])
+    if (missingProvider) {
+      failPreflight(
+        missingProvider.model,
+        `No provider configured for ${missingProvider.role} ${missingProvider.model.provider}`,
+      )
+      return
+    }
+    for (const model of [implementer, reviewer]) {
+      const provider = providers[model.provider]
+      if (!provider) {
+        failPreflight(model, `Compete mode requires configured provider ${model.provider}`)
+        return
+      }
+      if (!provider.capabilities.codeEdit) {
+        failPreflight(
+          model,
+          `Compete mode requires code-edit capable providers; ${model.provider} cannot edit code`,
+        )
+        return
+      }
     }
 
     let anchorAttemptId: AttemptId | undefined
@@ -1081,14 +1146,35 @@ function requestUrl(req: IncomingMessage): URL {
   }
 }
 
-function isLocalOrigin(origin: string | undefined): boolean {
-  if (!origin) return true
-  try {
-    const host = new URL(origin).hostname
-    return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1'
-  } catch {
-    return false
+function isLocalHostHeader(host: string | undefined): boolean {
+  if (!host) return false
+  const match = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::(\d{1,5}))?$/i.exec(host)
+  return Boolean(match && (match[1] === undefined || Number(match[1]) <= 65_535))
+}
+
+function isAllowedOrigin(origin: string | undefined, allowPlaywrightOrigin = false): boolean {
+  return (
+    origin === undefined ||
+    origin === 'tauri://localhost' ||
+    origin === 'http://localhost:5173' ||
+    origin === 'http://127.0.0.1:5173' ||
+    (allowPlaywrightOrigin && (origin === 'http://127.0.0.1:4173' || origin === 'http://localhost:4173'))
+  )
+}
+
+function requiresJsonContentType(method: string, pathname: string): boolean {
+  if (method === 'POST') {
+    return (
+      pathname === '/api/repos' ||
+      pathname === '/api/tasks' ||
+      /^\/api\/tasks\/[^/]+\/(?:select|synthesize)$/.test(pathname)
+    )
   }
+  return method === 'PUT' && ['/api/config', '/api/secrets/openai-api-key'].includes(pathname)
+}
+
+function isJsonContentType(contentType: string | undefined): boolean {
+  return contentType?.split(';', 1)[0]?.trim().toLowerCase() === 'application/json'
 }
 
 async function readJson(req: IncomingMessage): Promise<unknown> {

@@ -164,6 +164,7 @@ export async function startFakeJoyRuntime(port = 4317): Promise<FakeJoyRuntime> 
     configStore: new ConfigStore(join(home, 'config.yaml')),
     secretStore,
     redactor,
+    allowPlaywrightOrigin: true,
     executor: new E2EFakeExecutor(),
     providers: {
       'openai-api': new E2EFakeProvider('openai-api'),

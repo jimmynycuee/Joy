@@ -5,6 +5,8 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: '127.0.0.1',
+    // Keep the dev server on the local API's allowlisted 5173 origin.
+    strictPort: true,
     proxy: {
       '/api': 'http://127.0.0.1:4317',
       '/ws': { target: 'ws://127.0.0.1:4317', ws: true },
