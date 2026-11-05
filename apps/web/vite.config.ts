@@ -41,7 +41,7 @@ function verifyWindowsApiTokenAcl(path: string): void {
   const script = `
 $ErrorActionPreference = 'Stop'
 $path = $env:JOY_API_TOKEN_FILE
-$acl = Get-Acl -LiteralPath $path
+$acl = [System.IO.File]::GetAccessControl($path)
 $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $ownerSid = $acl.Owner.Translate([System.Security.Principal.SecurityIdentifier]).Value
 $allowRules = @($acl.Access | Where-Object { $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow })

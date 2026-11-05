@@ -813,7 +813,7 @@ try {
   $path = $env:JOY_API_TOKEN_FILE
   $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
   $stage = 'read-acl'
-  $acl = Get-Acl -LiteralPath $path
+  $acl = [System.IO.File]::GetAccessControl($path)
   $stage = 'set-acl'
   $acl.SetAccessRuleProtection($true, $false)
   foreach ($existingRule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($existingRule) }
@@ -823,9 +823,9 @@ try {
     [System.Security.AccessControl.AccessControlType]::Allow
   )
   [void]$acl.AddAccessRule($readRule)
-  Set-Acl -LiteralPath $path -AclObject $acl
+  [System.IO.File]::SetAccessControl($path, $acl)
   $stage = 'verify-acl'
-  $verified = Get-Acl -LiteralPath $path
+  $verified = [System.IO.File]::GetAccessControl($path)
   $allowRules = @($verified.Access | Where-Object { $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow })
   $unexpected = @($allowRules | Where-Object {
     $_.IsInherited -or $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $currentSid.Value

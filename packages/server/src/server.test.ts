@@ -475,7 +475,7 @@ describe('Joy local server', () => {
             `
 $ErrorActionPreference = 'Stop'
 $path = $env:JOY_API_TOKEN_FILE
-$acl = Get-Acl -LiteralPath $path
+$acl = [System.IO.File]::GetAccessControl($path)
 $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $ownerSid = $acl.Owner.Translate([System.Security.Principal.SecurityIdentifier]).Value
 $allowedSids = @($acl.Access | Where-Object { $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow } | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value })
