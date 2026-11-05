@@ -22,8 +22,6 @@ import type {
 } from '@joy/core'
 import { EFFORTS, PROVIDER_KINDS, ROLES, resolveRole } from '@joy/core'
 import { ConfigStore, configSchema, joyHome, resolvePaths, type JoyConfig } from '@joy/config'
-import { runDoctor } from '@joy/doctor'
-import type { DoctorReport } from '@joy/doctor'
 import {
   addUsage,
   appendTaskEvent,
@@ -80,6 +78,7 @@ const taskInputSchema = z.strictObject({
 const idSchema = z.string().min(1).max(128)
 const openAiSecretInputSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
 const MAX_BODY_BYTES = 1_000_000
+const SUPPORTED_JOY_ORIGINS = ['tauri://localhost', 'http://127.0.0.1:5173'] as const
 const PLAYWRIGHT_E2E_ORIGINS = ['http://127.0.0.1:4173', 'http://localhost:4173'] as const
 
 export interface TaskEvent {
@@ -103,8 +102,6 @@ export interface JoyServerOptions {
   executor?: Executor
   /** Adds only the fixed Playwright E2E origin; this is never enabled by default. */
   allowPlaywrightOrigin?: boolean
-  /** Injected for tests; diagnostics otherwise run only when GET /api/doctor is requested. */
-  doctor?: () => Promise<DoctorReport>
 }
 
 export interface JoyServer {
@@ -261,22 +258,6 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const url = requestUrl(req)
     if (url.pathname === '/api/health' && method === 'GET') {
       json(res, 200, { ok: true })
-      return
-    }
-    if (url.pathname === '/api/doctor' && method === 'GET') {
-      const config = await configStore.get()
-      const report = await (
-        options.doctor ??
-        (() =>
-          runDoctor({
-            home,
-            commands: {
-              ...(config.providers.claude.command ? { claude: config.providers.claude.command } : {}),
-              ...(config.providers.codex.command ? { codex: config.providers.codex.command } : {}),
-            },
-          }))
-      )()
-      json(res, 200, report)
       return
     }
     if (url.pathname === '/api/repos' && method === 'GET') {
@@ -738,7 +719,7 @@ function isLoopbackHost(host: string | undefined): boolean {
 }
 
 function createOriginAllowlist(allowPlaywrightOrigin: boolean): Set<string> {
-  return new Set(['tauri://localhost', ...(allowPlaywrightOrigin ? PLAYWRIGHT_E2E_ORIGINS : [])])
+  return new Set([...SUPPORTED_JOY_ORIGINS, ...(allowPlaywrightOrigin ? PLAYWRIGHT_E2E_ORIGINS : [])])
 }
 
 function isAllowedOrigin(
@@ -748,20 +729,7 @@ function isAllowedOrigin(
 ): boolean {
   const origin = req.headers.origin
   if (origin === undefined) return allowMissing
-  if (allowedOrigins.has(origin)) return true
-  const host = req.headers.host
-  if (!host) return false
-  try {
-    const parsedOrigin = new URL(origin)
-    const requestOrigin = new URL(`http://${host}`)
-    return (
-      parsedOrigin.protocol === 'http:' &&
-      parsedOrigin.origin === origin &&
-      parsedOrigin.host.toLowerCase() === requestOrigin.host.toLowerCase()
-    )
-  } catch {
-    return false
-  }
+  return allowedOrigins.has(origin)
 }
 
 function assertJsonContentType(req: IncomingMessage): void {

@@ -28,9 +28,6 @@ type TaskDetails = {
   events: TaskEvent[]
 }
 type SecretStatus = { set: boolean; source?: 'env' | 'keychain' }
-type DoctorStatus = 'ok' | 'missing' | 'untested'
-type DoctorCheck = { id: string; label: string; status: DoctorStatus; detail: string; repair?: string }
-type DoctorReport = { checkedAt: string; checks: DoctorCheck[] }
 type ApiError = { error?: string }
 
 const ROLE_LABELS: Record<Role, string> = {
@@ -56,26 +53,6 @@ function providersForRole(role: Role): ProviderKind[] {
   return role === 'implementer'
     ? PROVIDER_KINDS.filter((provider) => provider !== 'openai-api')
     : [...PROVIDER_KINDS]
-}
-
-function providerIsUnavailable(provider: ProviderKind, report: DoctorReport | null): boolean {
-  const checkId = provider === 'claude-cli' ? 'claude-cli' : provider === 'codex-cli' ? 'codex-cli' : null
-  return (
-    checkId !== null &&
-    report?.checks.some((check) => check.id === checkId && check.status === 'missing') === true
-  )
-}
-
-function taskRoleModel(config: JoyConfig | null, role: Role, report: DoctorReport | null): ModelRef {
-  const selected = roleModel(config, role)
-  if (!providerIsUnavailable(selected.provider, report)) return selected
-  const providers = providersForRole(role)
-  const fallback =
-    providers.find((provider) => provider !== 'openai-api' && !providerIsUnavailable(provider, report)) ??
-    providers.find((provider) => !providerIsUnavailable(provider, report))
-  return fallback
-    ? { ...selected, provider: fallback, model: MODEL_SUGGESTIONS[fallback][0] ?? selected.model }
-    : selected
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -194,10 +171,6 @@ function App() {
   const [secretStatus, setSecretStatus] = useState<SecretStatus | null>(null)
   const [secretStatusLoading, setSecretStatusLoading] = useState(true)
   const [secretStatusRetry, setSecretStatusRetry] = useState(0)
-  const [doctorReport, setDoctorReport] = useState<DoctorReport | null>(null)
-  const [doctorLoading, setDoctorLoading] = useState(true)
-  const [doctorUnavailable, setDoctorUnavailable] = useState(false)
-  const [doctorRetry, setDoctorRetry] = useState(0)
   const [selectedTaskId, setSelectedTaskId] = useState('')
   const [details, setDetails] = useState<TaskDetails | null>(null)
   const [page, setPage] = useState<'tasks' | 'settings'>('tasks')
@@ -238,26 +211,6 @@ function App() {
       active = false
     }
   }, [])
-
-  useEffect(() => {
-    let active = true
-    void request<DoctorReport>('/api/doctor')
-      .then((report) => {
-        if (!active) return
-        setDoctorReport(report)
-        setDoctorUnavailable(false)
-        setDoctorLoading(false)
-      })
-      .catch(() => {
-        if (!active) return
-        setDoctorReport(null)
-        setDoctorUnavailable(true)
-        setDoctorLoading(false)
-      })
-    return () => {
-      active = false
-    }
-  }, [doctorRetry])
 
   useEffect(() => {
     let active = true
@@ -478,18 +431,6 @@ function App() {
   async function createTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const form = new FormData(event.currentTarget)
-    const workflow = String(form.get('mode'))
-    const activeRoles: Array<'implementer' | 'reviewer'> =
-      workflow === 'single' ? ['implementer'] : ['implementer', 'reviewer']
-    for (const role of activeRoles) {
-      const provider = String(form.get(`${role}-provider`)) as ProviderKind
-      if (providerIsUnavailable(provider, doctorReport)) {
-        setError(
-          `${PROVIDER_LABELS[provider]} is unavailable. Choose an available provider in System readiness.`,
-        )
-        return
-      }
-    }
     const model = (role: 'implementer' | 'reviewer'): ModelRef => ({
       provider: String(form.get(`${role}-provider`)) as ProviderKind,
       model: String(form.get(`${role}-model`)).trim(),
@@ -503,7 +444,7 @@ function App() {
           repoId: String(form.get('repoId')),
           title: String(form.get('title')).trim(),
           prompt: String(form.get('prompt')).trim(),
-          mode: workflow,
+          mode: String(form.get('mode')),
           roleOverrides: { implementer: model('implementer'), reviewer: model('reviewer') },
         }),
       })
@@ -522,9 +463,8 @@ function App() {
     const form = new FormData(event.currentTarget)
     const roles = { ...config.roles } as RoleConfig
     for (const role of ROLES) {
-      const selectedProvider = form.get(`${role}-provider`)
       roles[role] = {
-        provider: (selectedProvider ?? roleModel(config, role).provider) as ProviderKind,
+        provider: String(form.get(`${role}-provider`)) as ProviderKind,
         model: String(form.get(`${role}-model`)).trim(),
         effort: String(form.get(`${role}-effort`)) as NonNullable<ModelRef['effort']>,
       }
@@ -665,13 +605,8 @@ function App() {
                             }
                           >
                             {providersForRole(role).map((provider) => (
-                              <option
-                                key={provider}
-                                value={provider}
-                                disabled={providerIsUnavailable(provider, doctorReport)}
-                              >
+                              <option key={provider} value={provider}>
                                 {PROVIDER_LABELS[provider]}
-                                {providerIsUnavailable(provider, doctorReport) ? ' (unavailable)' : ''}
                               </option>
                             ))}
                           </select>
@@ -857,49 +792,6 @@ function App() {
                 )}
               </div>
             )}
-            <section className="doctor-card" aria-label="System readiness">
-              <div className="doctor-heading">
-                <div>
-                  <p className="eyebrow">ENVIRONMENT</p>
-                  <h2>System readiness</h2>
-                </div>
-                {!doctorLoading && (
-                  <button
-                    className="text-button"
-                    type="button"
-                    aria-label="Retry readiness checks"
-                    onClick={() => {
-                      setDoctorLoading(true)
-                      setDoctorRetry((attempt) => attempt + 1)
-                    }}
-                  >
-                    Retry
-                  </button>
-                )}
-              </div>
-              {doctorLoading ? (
-                <p className="doctor-message" role="status">
-                  Checking environment…
-                </p>
-              ) : doctorUnavailable ? (
-                <p className="doctor-message" role="status">
-                  Readiness checks are unavailable. The workspace remains usable.
-                </p>
-              ) : (
-                <ul className="doctor-list">
-                  {doctorReport?.checks.map((check) => (
-                    <li className="doctor-check" key={check.id}>
-                      <span className={`doctor-status doctor-${check.status}`}>{check.status}</span>
-                      <div>
-                        <strong>{check.label}</strong>
-                        <p>{check.detail}</p>
-                        {check.repair && <p className="doctor-repair">Fix: {check.repair}</p>}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
             <div className="sidebar-footer">
               <div className="local-badge">
                 <span className="connection-dot" /> Joy is running locally
@@ -1178,7 +1070,7 @@ function App() {
               </label>
               <div className="task-model-grid">
                 {(['implementer', 'reviewer'] as const).map((role) => {
-                  const model = taskRoleModel(config, role, doctorReport)
+                  const model = roleModel(config, role)
                   return (
                     <fieldset className="task-role-card" key={role}>
                       <legend>{ROLE_LABELS[role]}</legend>
@@ -1190,13 +1082,8 @@ function App() {
                           defaultValue={model.provider}
                         >
                           {providersForRole(role).map((provider) => (
-                            <option
-                              key={provider}
-                              value={provider}
-                              disabled={providerIsUnavailable(provider, doctorReport)}
-                            >
+                            <option key={provider} value={provider}>
                               {PROVIDER_LABELS[provider]}
-                              {providerIsUnavailable(provider, doctorReport) ? ' (unavailable)' : ''}
                             </option>
                           ))}
                         </select>

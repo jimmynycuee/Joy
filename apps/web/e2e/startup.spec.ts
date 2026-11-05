@@ -42,13 +42,6 @@ test('workspace and settings remain usable while key status is unavailable and c
       await route.fulfill({ json: { tasks: [task] } })
     } else if (path === '/api/config') {
       await route.fulfill({ json: { config } })
-    } else if (path === '/api/doctor') {
-      await route.fulfill({
-        json: {
-          checkedAt: '2026-11-05T00:00:00.000Z',
-          checks: [{ id: 'node', label: 'Node.js', status: 'ok', detail: 'Node.js is available.' }],
-        },
-      })
     } else if (path === `/api/tasks/${task.id}`) {
       await route.fulfill({ json: { task, repo, attempts: [], reviews: [], events: [] } })
     } else {
@@ -58,7 +51,6 @@ test('workspace and settings remain usable while key status is unavailable and c
 
   await page.goto('/')
   await expect(page.getByRole('heading', { name: task.title })).toBeVisible()
-  await expect(page.getByRole('region', { name: 'System readiness' })).toContainText('Node.js')
   await expect(page.getByRole('alert')).toHaveCount(0)
 
   await page.getByRole('button', { name: 'Settings' }).click()

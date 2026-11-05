@@ -16,7 +16,6 @@ import type {
 } from '@joy/core'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ConfigStore } from '@joy/config'
-import type { DoctorReport } from '@joy/doctor'
 import {
   appendTaskEvent,
   createAttempt,
@@ -132,7 +131,6 @@ function fixture(
     secretEnv?: NodeJS.ProcessEnv
     allowPlaywrightOrigin?: boolean
     configStore?: ConfigStore
-    doctor?: () => Promise<DoctorReport>
   } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), 'joy-server-test-'))
@@ -167,7 +165,6 @@ function fixture(
     redactor,
     executor,
     ...(options.allowPlaywrightOrigin ? { allowPlaywrightOrigin: true } : {}),
-    ...(options.doctor ? { doctor: options.doctor } : {}),
     providers: {
       'claude-cli': implementer,
       'codex-cli': reviewer,
@@ -216,7 +213,7 @@ async function waitForStatus(origin: string, id: string, status: string): Promis
 async function postJson(url: string, body: unknown) {
   return fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', origin: new URL(url).origin },
+    headers: { 'content-type': 'application/json', origin: 'http://127.0.0.1:5173' },
     body: JSON.stringify(body),
   })
 }
@@ -277,38 +274,6 @@ function tryWebSocket(
 }
 
 describe('Joy local server', () => {
-  it('serves doctor diagnostics on demand without making them a startup gate', async () => {
-    const report: DoctorReport = {
-      checkedAt: '2026-11-05T00:00:00.000Z',
-      checks: [
-        { id: 'node', label: 'Node.js', status: 'ok', detail: 'v22.13.0' },
-        {
-          id: 'gh-authentication',
-          label: 'GitHub authentication',
-          status: 'missing',
-          detail: 'Not authenticated',
-          repair: 'Run gh auth login.',
-        },
-      ],
-    }
-    let doctorCalls = 0
-    const { serverPromise } = fixture({
-      doctor: async () => {
-        doctorCalls++
-        return report
-      },
-    })
-    const { origin } = await start(serverPromise)
-
-    expect(doctorCalls).toBe(0)
-    expect((await fetch(`${origin}/api/health`)).status).toBe(200)
-    expect(doctorCalls).toBe(0)
-    const response = await fetch(`${origin}/api/doctor`)
-    expect(response.status).toBe(200)
-    expect(await response.json()).toEqual(report)
-    expect(doctorCalls).toBe(1)
-  })
-
   it('rejects non-loopback Host headers before processing API requests', async () => {
     const { serverPromise } = fixture()
     const { origin } = await start(serverPromise)
@@ -379,6 +344,7 @@ describe('Joy local server', () => {
     const hostile = await tryWebSocket(url, 'https://attacker.example')
     const originless = await tryWebSocket(url)
     const crossSite = await tryWebSocket(url, 'http://127.0.0.1:4317', { 'sec-fetch-site': 'cross-site' })
+    const unapprovedLoopback = await tryWebSocket(url, 'http://127.0.0.1:5174')
 
     expect(hostile.status).toBe(403)
     expect(hostile.messages).toEqual([])
@@ -386,6 +352,8 @@ describe('Joy local server', () => {
     expect(originless.messages).toEqual([])
     expect(crossSite.status).toBe(403)
     expect(crossSite.messages).toEqual([])
+    expect(unapprovedLoopback.status).toBe(403)
+    expect(unapprovedLoopback.messages).toEqual([])
   })
 
   it('rejects untrusted Origin headers before processing API requests', async () => {
@@ -453,14 +421,14 @@ describe('Joy local server', () => {
     },
   )
 
-  it('requires JSON Content-Type, same-authority Origin, and permits the Tauri origin', async () => {
+  it('requires JSON Content-Type and permits only supported Joy origins', async () => {
     const { serverPromise } = fixture()
     const { origin } = await start(serverPromise)
     const rejected = await rawRequest(
       origin,
       '/api/repos',
       'POST',
-      { host: new URL(origin).host, origin, 'content-type': 'text/plain' },
+      { host: new URL(origin).host, origin: 'http://127.0.0.1:5173', 'content-type': 'text/plain' },
       JSON.stringify({ path: '/tmp/rejected', defaultBranch: 'main' }),
     )
     expect(rejected.status).toBe(415)
@@ -469,18 +437,31 @@ describe('Joy local server', () => {
       origin,
       '/api/config',
       'PUT',
-      { host: new URL(origin).host, origin },
+      { host: new URL(origin).host, origin: 'http://127.0.0.1:5173' },
       JSON.stringify({}),
     )
     expect(config.status).toBe(415)
 
     const unknownRoute = await rawRequest(origin, '/api/unknown', 'POST', {
       host: new URL(origin).host,
-      origin,
+      origin: 'http://127.0.0.1:5173',
     })
     expect(unknownRoute.status).toBe(404)
 
-    const crossAuthority = await rawRequest(
+    const unapprovedLoopback = await rawRequest(
+      origin,
+      '/api/repos',
+      'POST',
+      {
+        host: new URL(origin).host,
+        origin: 'http://127.0.0.1:5174',
+        'content-type': 'application/json',
+      },
+      JSON.stringify({ path: '/tmp/unapproved-origin', defaultBranch: 'main' }),
+    )
+    expect(unapprovedLoopback.status).toBe(403)
+
+    const vite = await rawRequest(
       origin,
       '/api/repos',
       'POST',
@@ -489,15 +470,18 @@ describe('Joy local server', () => {
         origin: 'http://127.0.0.1:5173',
         'content-type': 'application/json',
       },
-      JSON.stringify({ path: '/tmp/cross-authority', defaultBranch: 'main' }),
+      JSON.stringify({ path: '/tmp/vite-origin', defaultBranch: 'main' }),
     )
-    expect(crossAuthority.status).toBe(403)
+    expect(vite.status).toBe(201)
 
-    const sameOrigin = await rawRequest(origin, '/api/health', 'GET', { host: new URL(origin).host, origin })
-    expect(sameOrigin.status).toBe(200)
-    const crossSiteFetch = await rawRequest(origin, '/api/health', 'GET', {
+    const sameAuthority = await rawRequest(origin, '/api/health', 'GET', {
       host: new URL(origin).host,
       origin,
+    })
+    expect(sameAuthority.status).toBe(403)
+    const crossSiteFetch = await rawRequest(origin, '/api/health', 'GET', {
+      host: new URL(origin).host,
+      origin: 'http://127.0.0.1:5173',
       'sec-fetch-site': 'cross-site',
     })
     expect(crossSiteFetch.status).toBe(403)
@@ -592,8 +576,14 @@ describe('Joy local server', () => {
     const responses = await Promise.all([
       fetch(`${origin}/api/tasks/%E0%A4%A`),
       fetch(`${origin}/api/tasks/%E0%A4%A/events`),
-      rawRequest(origin, '/api/tasks/%E0%A4%A/cancel', 'POST', { host: new URL(origin).host, origin }),
-      rawRequest(origin, '/api/tasks/%E0%A4%A/resume', 'POST', { host: new URL(origin).host, origin }),
+      rawRequest(origin, '/api/tasks/%E0%A4%A/cancel', 'POST', {
+        host: new URL(origin).host,
+        origin: 'http://127.0.0.1:5173',
+      }),
+      rawRequest(origin, '/api/tasks/%E0%A4%A/resume', 'POST', {
+        host: new URL(origin).host,
+        origin: 'http://127.0.0.1:5173',
+      }),
     ])
 
     expect(responses.map((response) => response.status)).toEqual([400, 400, 400, 400])
@@ -622,7 +612,9 @@ describe('Joy local server', () => {
     appendTaskEvent(db, attempt.id, 'phase', { index: 3 })
     const { events } = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
 
-    const socket = new WebSocket(`${websocket}/ws?taskId=${task.id}&after=1`, { origin })
+    const socket = new WebSocket(`${websocket}/ws?taskId=${task.id}&after=1`, {
+      origin: 'http://127.0.0.1:5173',
+    })
     const messages = await receiveMessages(socket, 4)
     expect(messages[0]).toMatchObject({
       type: 'snapshot',
@@ -663,7 +655,9 @@ describe('Joy local server', () => {
     const { task } = (await taskResponse.json()) as { task: { id: string } }
 
     const result = await waitForStatus(origin, task.id, 'done')
-    const socket = new WebSocket(`${websocket}/ws?taskId=${task.id}&after=0`, { origin })
+    const socket = new WebSocket(`${websocket}/ws?taskId=${task.id}&after=0`, {
+      origin: 'http://127.0.0.1:5173',
+    })
     const messages = await receiveMessages(socket, result.events.length + 2)
     expect(messages[0]).toMatchObject({ type: 'snapshot', task: { id: task.id } })
     expect(messages[1]).toMatchObject({ type: 'ready', taskId: task.id })
@@ -675,9 +669,9 @@ describe('Joy local server', () => {
     expect(executor.prepareCalls).toBe(1)
     expect(db.isOpen).toBe(true)
 
-    const sameOriginSocket = await tryWebSocket(`${websocket}/ws?taskId=${task.id}`, origin)
-    expect(sameOriginSocket.status).toBe(101)
-    expect(sameOriginSocket.messages[0]).toMatchObject({ type: 'snapshot', task: { id: task.id } })
+    const viteSocket = await tryWebSocket(`${websocket}/ws?taskId=${task.id}`, 'http://127.0.0.1:5173')
+    expect(viteSocket.status).toBe(101)
+    expect(viteSocket.messages[0]).toMatchObject({ type: 'snapshot', task: { id: task.id } })
 
     const tauriSocket = await tryWebSocket(`${websocket}/ws?taskId=${task.id}`, 'tauri://localhost')
     expect(tauriSocket.status).toBe(101)
@@ -705,7 +699,7 @@ describe('Joy local server', () => {
     expect(await emptyStatus.json()).toEqual({ set: false })
     const saved = await fetch(`${origin}/api/secrets/openai-api-key`, {
       method: 'PUT',
-      headers: { 'content-type': 'application/json', origin },
+      headers: { 'content-type': 'application/json', origin: 'http://127.0.0.1:5173' },
       body: JSON.stringify({ value: key }),
     })
     expect(saved.status).toBe(200)
@@ -734,7 +728,7 @@ describe('Joy local server', () => {
 
     const deleted = await fetch(`${origin}/api/secrets/openai-api-key`, {
       method: 'DELETE',
-      headers: { origin },
+      headers: { origin: 'http://127.0.0.1:5173' },
     })
     expect(await deleted.json()).toEqual({ set: false })
     expect(secretBackend.values.has('openai_api_key')).toBe(false)
@@ -753,14 +747,14 @@ describe('Joy local server', () => {
 
     const put = await fetch(`${origin}/api/secrets/openai-api-key`, {
       method: 'PUT',
-      headers: { 'content-type': 'application/json', origin },
+      headers: { 'content-type': 'application/json', origin: 'http://127.0.0.1:5173' },
       body: JSON.stringify({ value: 'replacement-openai-secret-53' }),
     })
     expect(put.status).toBe(409)
     expect(await put.text()).not.toContain(envKey)
     const deleted = await fetch(`${origin}/api/secrets/openai-api-key`, {
       method: 'DELETE',
-      headers: { origin },
+      headers: { origin: 'http://127.0.0.1:5173' },
     })
     expect(deleted.status).toBe(409)
     expect(await deleted.text()).not.toContain(envKey)
@@ -832,7 +826,7 @@ describe('Joy local server', () => {
     const replayed = (await (await fetch(`${restartedOrigin}/api/tasks/${task.id}`)).json()) as TaskDetails
     expect(replayed.events).toEqual(result.events)
     const socket = new WebSocket(`ws://127.0.0.1:${address.port}/ws?taskId=${task.id}`, {
-      origin: restartedOrigin,
+      origin: 'http://127.0.0.1:5173',
     })
     const messages = await receiveMessages(socket, replayed.events.length + 2)
     expect(messages[0]).toMatchObject({ type: 'snapshot', task: { id: task.id } })
@@ -924,7 +918,7 @@ describe('Joy local server', () => {
       origin,
       '/api/config',
       'PUT',
-      { host: new URL(origin).host, origin, 'content-type': 'application/json' },
+      { host: new URL(origin).host, origin: 'http://127.0.0.1:5173', 'content-type': 'application/json' },
       JSON.stringify({ roles: { implementer: { provider: 'openai-api', model: 'gpt-test' } } }),
     )
 
@@ -989,7 +983,7 @@ describe('Joy local server', () => {
     await new Promise((resolve) => setTimeout(resolve, 15))
     const cancelled = await rawRequest(origin, `/api/tasks/${task.id}/cancel`, 'POST', {
       host: new URL(origin).host,
-      origin,
+      origin: 'http://127.0.0.1:5173',
     })
     expect(cancelled.status).toBe(200)
     const result = await waitForStatus(origin, task.id, 'cancelled')
@@ -1025,7 +1019,7 @@ describe('Joy local server', () => {
     const { origin } = await start(serverPromise)
     const response = await rawRequest(origin, `/api/tasks/${task.id}/resume`, 'POST', {
       host: new URL(origin).host,
-      origin,
+      origin: 'http://127.0.0.1:5173',
     })
     await waitForStatus(origin, task.id, 'failed')
     const details = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
@@ -1071,7 +1065,7 @@ describe('Joy local server', () => {
     )
     const resume = await rawRequest(origin, `/api/tasks/${task.id}/resume`, 'POST', {
       host: new URL(origin).host,
-      origin,
+      origin: 'http://127.0.0.1:5173',
     })
     expect(resume.status).toBe(202)
     await waitForStatus(origin, task.id, 'done')

@@ -2,31 +2,35 @@
 
 > 接手前請先讀本檔、`AGENTS.md` 與 `docs/PLAN.md`。本檔記錄目前進度、阻塞與決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。
 
-- 最後更新：2026-11-05 04:06 UTC
-- 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** PR #58 的 P1 主體與 PR #60 的文件更新已合併。GitHub Actions 最新觀察到的 `main` push run（41962420463）對應 SHA `a0c76274e6adb092fd509ff41ba207a143a2a35c`，於 2026-11-05 03:35:57 UTC 完成且成功；這只證明該 run 的 SHA，不代表其他 PR head 已針對它驗證。
-- 本次狀態快照取自 2026-11-05 04:06 UTC 的 live PR snapshots；本次只更新本檔，不改 `docs/PLAN.md` 的 ticket 勾選或其他檔案。
-- 計畫狀態：依 `docs/PLAN.md` v0.2。T1.12、T1.13、T1.8、T1.9 與 T0.4 均未據本快照標記完成。
+- 最後更新：2026-11-05 04:14 UTC
+- 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** 本 checkout 的 `origin/main` 為 `a0c7627`；PR #64 已合併，該 PR 四項 checks 通過，但未另行確認合併後 `main` CI。T1.12 的 #53 仍 open/draft、base `t1.7-event-log`、四項 checks 通過並等待 owner review；T1.13/T1.8 的 #62 仍 open/draft，但目前與 `main` 衝突且新 head 尚無 checks。相關計畫仍未勾選；T1.9 真實測試 repo 驗收亦未完成。
+- 後續階段有部分獨立進度：T4.2 的 #17 為 open/draft、base `t1.8-web`、無衝突；Ubuntu、macOS、Windows 與 web E2E 四項 GitHub checks 全通過。這是本機 PWA 基礎，不是已完成 Web Push 驗收，也不解除 P1/P2 的依賴順序。
 
-## P1 狀態與阻塞（GitHub 快照：2026-11-05 04:06 UTC）
+## 即時狀態（GitHub PR 快照：2026-11-05 04:14 UTC）
 
-1. **main 最新可見狀態：** Actions run `41962420463`（workflow `CI`，`main` push）於 `2026-11-05 03:35:57 UTC` 完成成功，head SHA 為 `a0c76274e6adb092fd509ff41ba207a143a2a35c`；Ubuntu、macOS、Windows 與 web E2E 四項 jobs 均成功。這是 workflow-run 證據，不是直接讀取 branch ref，也不替任何其他 SHA 背書。
-2. **本文件所在 PR #65：** [#65](https://github.com/jimmynycuee/Joy/pull/65) 為 open/draft，base `main`，live head `54311a7a89776393b8136c7a274b22f1bb6b35cb`，base snapshot `a0c76274e6adb092fd509ff41ba207a143a2a35c`。GitHub 回報與目前 `main` 衝突，該 snapshot 沒有 checks。此分支既有 PR-wide comparison 有 20 個檔案；本次新增的變更仍限於 `docs/STATUS.md`，不整理或改動既有範圍。
-3. **T1.8 / PR #9：** [#9](https://github.com/jimmynycuee/Joy/pull/9) 為 open/draft，base `t1.9-github-pr`、base snapshot `fbdb1a4e453653739d377426d003c77d021bf5f1`，head `5ce4e977c456de255686a496eddc3d1ce70c3b47`，live 狀態 clean、無衝突。該 head 的 `check (ubuntu-latest)`、`check (windows-latest)`、`check (macos-latest)`、`web E2E (ubuntu-latest)` 四項 checks 均 completed/success；正式 reviews 清單為空，owner reviewer `jimmynycuee` 已被請求。checks 僅代表此 head，不代表它已對齊最新 `main`。保持 draft，不更動 PR 或分支。
-4. **T1.8 / PR #66：** [#66](https://github.com/jimmynycuee/Joy/pull/66) 為 open/draft，base `main`、base snapshot `a0c76274e6adb092fd509ff41ba207a143a2a35c`，與 #9 共用 head `5ce4e977c456de255686a496eddc3d1ce70c3b47`。GitHub 回報與目前 `main` 衝突；該 head 的上述四項 checks 均成功，但不驗證對齊或與最新 base 相容。本輪不修改 #66。
-5. **T1.12 / PR #53：** [#53](https://github.com/jimmynycuee/Joy/pull/53) 為 open/draft，base `t1.7-event-log`、base snapshot `c196f74ade116c58f3b9dc00f27bbcc9ab84c525`，head `5ed6c322b81869edcd551268e10b1a6c6ecb2c0e`，live 狀態 clean。此 head 的 Ubuntu、Windows、macOS 與 web E2E 四項 checks 均 completed/success，formal reviews 清單為空；owner review 與 base alignment 仍待處理。checks 僅對應此 head，不能視為已對齊最新 `main`。維持 draft。
-6. **PR #57 維持 open、未修改：** [#57](https://github.com/jimmynycuee/Joy/pull/57) 為 open、非 draft，與 #53 共用 head `5ed6c322b81869edcd551268e10b1a6c6ecb2c0e`，base `main`、base snapshot `2c3fdb4ca7924cd52dea62321d037a83e01766ab`。GitHub 回報它與目前 `main` 衝突；同一 head 的四項 checks 雖然成功，不能證明與最新 `main` 相容。本輪不改 #57 或其共享分支，維持 open。
-7. **T1.13 / PR #62（canonical draft）：** [#62](https://github.com/jimmynycuee/Joy/pull/62) 為 open/draft，base `main`、base snapshot `ceebdc5c0117ed4b9bb2f25e126ed045651eb9d1`，live head `348593b25a601f5f88f2b07e959ec40be855e5d0`。GitHub 回報與目前 `main` 衝突；此 live head 沒有列出 checks，formal reviews 清單為空。獨立 review 的修正工作由其既有 Session 處理；本快照不宣稱修正已完成、已進入 PR，或已對新 head 驗證。保持 #62 為 canonical draft，不變更 PR metadata。
-8. **PR #63：** [#63](https://github.com/jimmynycuee/Joy/pull/63) 為 closed、未合併；不是 T1.13 的 canonical PR。
-9. **使用者 access gates：** T1.9 publisher 已整合至 `main`，但真實測試 repository/access 選擇仍未解除；fake `gh` 或 local bare remote 不替代真實驗收。T0.4 真實 Codex fixture 仍需使用者選定已登入的執行環境。未選定前不執行 gated actions，也不宣稱驗收完成；不假設 Cloud 已登入。
-10. **P2 與其他 review：** T1.12/T1.13/T1.8 尚未完成相應驗收，T1.9/T0.4 gates 也未解除，故依 PLAN 保持 P2 暫停。其他 owner-review follow-ups 仍包括 [#44](https://github.com/jimmynycuee/Joy/pull/44)、`packages/core` provider/model interfaces 與 `packages/secrets` keychain handling；#21 不在本輪範圍。
+**主線：** [PR #64](https://github.com/jimmynycuee/Joy/pull/64) 已合併；本 checkout 的 `origin/main` 為 `a0c7627`，PR #64 的四項 checks 均通過。未另行確認合併後 `main` 的 CI。
+
+### P1 尚未完成；P2 依計畫順序暫停
+
+1. **T1.12 / PR #53：** open/draft，base `t1.7-event-log`，head `5ed6c322b81869edcd551268e10b1a6c6ecb2c0e`，無衝突；Ubuntu、macOS、Windows、web E2E 四項 checks 全通過。owner `jimmynycuee` 已列為 requested reviewer，尚無正式 review/approval。較新的 bot 留言聲稱曾把 base 改為 `main`，但 live PR 欄位仍是 `t1.7-event-log`，故以欄位快照為準。此前獨立 review 指出 resume allowlist 拒絕時機、無法更新 allowlist 的錯誤指引、資料庫值結構驗證及非活動 role/未建立 attempt 狀態處理等待驗證事項；四項 CI 綠不等於這些事項已解除。
+2. **重複 PR #57：** open、非 draft，與 #53 共用 head `5ed6c322`，base `main` 且與目前 main 衝突；四項 checks 全通過，無正式 review。保持開啟，不發布到共享 head 或關閉它。
+3. **T1.13 / T1.8 的 PR #62：** open/draft、base `main`、head `348593b25a601f5f88f2b07e959ec40be855e5d0`；目前與 `main` 衝突，最新 head 沒有 checks，也沒有正式 review 或留言。#62 的功能尚未整合；T1.13/T1.8 維持未勾選，且本次不修改 #62。
+4. **publisher / T1.9 與 Web UI PR：** [#8](https://github.com/jimmynycuee/Joy/pull/8) open/draft、base `t1.7-event-log`、head `fbdb1a4e453653739d377426d003c77d021bf5f1`，三平台 checks 通過，無 review/comment。[#9](https://github.com/jimmynycuee/Joy/pull/9) open/draft、base `t1.9-github-pr`、head `5ce4e977c456de255686a496eddc3d1ce70c3b47`，無衝突，四項 checks 全通過，無 review/comment。T1.9 仍需依 PLAN 在安全指定的真實測試 repo 驗收，尚不可勾選。#66 是同 head 指向 `main` 的重複 PR；目前 open/draft、與 main 衝突，四項 checks 通過，不改動它。
+5. **其他 owner review：** [#44](https://github.com/jimmynycuee/Joy/pull/44) open、非 draft、clean，三平台 checks 全通過，已請求 owner review、尚無正式 review。[#2](https://github.com/jimmynycuee/Joy/pull/2) open、非 draft、與 main 衝突且目前無 checks；留言要求 owner review `packages/core` 介面。`packages/secrets` keychain/secret-handling 的 owner review 亦仍是後續事項。
+6. **T0.4 Codex fixture：** 合成 fixture 不能替代真實錄製。先前記錄為 Cloud 無 Codex CLI、唯一列出的 Mac 離線；此阻塞在本次沒有重新檢查。
+
+### T4.2 部分進度（未完成驗收）
+
+[PR #17](https://github.com/jimmynycuee/Joy/pull/17) 提供本機可安裝 PWA 基礎，仍 open/draft，base `t1.8-web`、head `ad4539dacbe87cb5088891afd6a972e32add6a86`，無衝突、無正式 review。Ubuntu、macOS、Windows 與 web E2E 四項 checks 全通過。PR 描述限定本機 PWA，Web Push／遠端存取待 T4.1，T4.2 驗收條件仍未完成。工作階段回報本機 `pnpm check` 為 223 passed/2 skipped、web build 通過及 E2E 9/9；但 PR 說明列的是 183 passed/2 skipped、E2E 5/5，數字不一致，需在更新 PR 描述或宣告完成前核實。此回合未重跑這些命令，也未修改 PR #17。
 
 ## 下一步（依賴順序）
 
-1. 先完成 T1.12 / #53 的 owner review 與 base alignment；更新後對確切的新 head 重新驗證。#57 維持 open、不修改。
-2. 按 PLAN 接續 T1.9 真實測試 repository/access 選擇與驗收；取得選擇前不執行 gated test。T0.4 的已登入 Codex fixture 執行環境亦仍需使用者選定。
-3. 接續 T1.13 / #62：由其既有 Session 完成獨立 review follow-up；待結果實際出現在 PR head 後，再對新 head 和最新 base 做相應驗證。此處不預先宣稱修正已完成。
-4. 再按順序完成 T1.8 / #9 的整合驗收；checks 需對應實際更新後的 head/base。#66 維持不動。
-5. 所有 P1 驗收與 T0.4/T1.9 gates 完成前，保持 P2 暫停；只有在最新 main/head 均經相應驗證後才依 PLAN 推進。
+1. 完成 #53 待處理的 T1.12 修正／驗證並取得必要 owner review；遵守共享 head 限制，保留 #57 開啟。
+2. 按 PLAN 在安全指定的測試 repo 實際驗收 T1.9 draft PR 建立；fake `gh`／local bare remote 測試不足以勾選。
+3. #62 目前與 main 衝突、沒有最新 head checks；等待既定 owner 流程處理，保持 draft 且不修改該 PR。T1.13/T1.8 只有在整合到 main 並完成驗收後才可勾選。
+4. 完成仍待處理的 T0.4 真實 Codex fixture 和必要 owner reviews；驗證 P1 前維持 P2 hold。P4 的 #17 僅代表部分進度，不能代替 P1 完成或 Web Push 驗收。
+
+**待重做（從最新 main 重實作；已核對舊分支內容與 main，只列仍有價值且未在 main 的工作）：** T0.4/T0.6 — `t0.6-stable-memory-fts-key`; T2.2 — `t2.2-tools`; T3.1 — `reason/t3-1-add-selectable-assi-7a20bfa9`; T3.2 — `t3.2-dispatch-tools`; T3.3 — `t3.3-memory`, `fix/github-pat-memory-filter`; T3.4 — `reason/t3-4-add-memory-manageme-5e3fdbbf`; T3.5 — `t3.5-project-memory`; T3.6 — `t3.6-event-memory`; T3.7 — `t3.7-scheduler`; T3.8 — `t3.8-google-workspace`; T3.9 — `t3.9-model-stats`; T4.1 — `t4.1-remote-auth`; T4.2 — `t4.2-local-pwa`; T4.3 — `reason/t4-3-add-tauri-desktop-s-29500001`; T4.4 — `t4.4-windows-codex`。Memory writes, credentials/auth, and other sensitive changes still require owner review.
 
 ## 歷史 P1 狀態快照（PR 狀態截至 2026-11-04 18:49 UTC；main 更新至 18:52 UTC）
 
