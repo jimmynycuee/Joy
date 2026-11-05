@@ -16,15 +16,7 @@ import type {
 } from '@joy/core'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ConfigStore } from '@joy/config'
-import {
-  appendTaskEvent,
-  createAttempt,
-  createRepo,
-  createTask,
-  openDatabase,
-  setTaskStatus,
-  updateAttempt,
-} from '@joy/db'
+import { createAttempt, createRepo, createTask, openDatabase, setTaskStatus, updateAttempt } from '@joy/db'
 import type { Database } from '@joy/db'
 import { MemoryBackend, Redactor, SecretStore } from '@joy/secrets'
 import { createJoyServer } from './server.js'
@@ -43,14 +35,6 @@ afterEach(async () => {
 const rid = (id: string) => id as RepoId
 const tid = (id: string) => id as TaskId
 const aid = (id: string) => id as AttemptId
-function deferred() {
-  let resolve!: () => void
-  const promise = new Promise<void>((finish) => {
-    resolve = finish
-  })
-  return { promise, resolve }
-}
-
 function receiveMessages(socket: WebSocket, count: number): Promise<unknown[]> {
   return new Promise((resolve, reject) => {
     const messages: unknown[] = []
@@ -88,8 +72,7 @@ class FakeProvider implements AgentProvider {
 
   constructor(
     readonly kind: ProviderKind,
-    private readonly output: AgentEvent[] | ((options: RunOptions) => AgentEvent[]) = [],
-    private readonly beforeEvents?: (options: RunOptions) => Promise<void>,
+    private readonly output: AgentEvent[] = [],
   ) {}
 
   async *run(options: RunOptions): AsyncGenerator<AgentEvent> {
@@ -97,7 +80,6 @@ class FakeProvider implements AgentProvider {
     const sessionId = options.resumeSessionId ?? `session-${this.calls.length}`
     if (!options.resumeSessionId) yield { type: 'session_started', sessionId }
     yield { type: 'message', text: 'working' }
-    await this.beforeEvents?.(options)
     if (options.prompt === 'wait') {
       await new Promise<void>((resolve) => {
         if (options.signal.aborted) resolve()
@@ -106,91 +88,14 @@ class FakeProvider implements AgentProvider {
       yield { type: 'done', sessionId, isError: false }
       return
     }
-    const output = typeof this.output === 'function' ? this.output(options) : this.output
-    for (const event of output.length ? output : [{ type: 'done', sessionId, isError: false } as AgentEvent])
+    for (const event of this.output.length
+      ? this.output
+      : [{ type: 'done', sessionId, isError: false } as AgentEvent])
       yield event
   }
 
   async healthCheck() {
     return { ok: true, installed: true, loggedIn: true as const }
-  }
-}
-
-function successfulJudge(): FakeProvider {
-  return new FakeProvider('openai-api', (options) => {
-    const marker = 'Candidate data (JSON): '
-    const data = JSON.parse(options.prompt.slice(options.prompt.indexOf(marker) + marker.length)) as {
-      attemptId: string
-    }[]
-    return [
-      {
-        type: 'done',
-        sessionId: 'fake-judge',
-        isError: false,
-        structured: {
-          winnerAttemptId: data[0]?.attemptId,
-          summary: 'The first candidate wins.',
-          rationale: 'This fake judgment selects the first candidate.',
-        },
-      },
-    ]
-  })
-}
-
-function successfulJudgeAndSynthesizer(beforeEvents?: (options: RunOptions) => Promise<void>): FakeProvider {
-  return new FakeProvider(
-    'openai-api',
-    (options) => {
-      if (options.prompt.includes('Synthesis candidate data (JSON):'))
-        return [
-          { type: 'done', sessionId: 'fake-synthesizer', isError: false, finalMessage: 'Combined strengths' },
-        ]
-      const marker = 'Candidate data (JSON): '
-      const data = JSON.parse(options.prompt.slice(options.prompt.indexOf(marker) + marker.length)) as {
-        attemptId: string
-      }[]
-      return [
-        {
-          type: 'done',
-          sessionId: 'fake-judge',
-          isError: false,
-          structured: {
-            winnerAttemptId: data[0]?.attemptId,
-            summary: 'The first candidate wins.',
-            rationale: 'This fake judgment selects the first candidate.',
-          },
-        },
-      ]
-    },
-    beforeEvents,
-  )
-}
-
-class GatedConfigStore extends ConfigStore {
-  blockedReads = 0
-  private gate: Promise<void> | undefined
-  private releaseGate: (() => void) | undefined
-
-  blockReads() {
-    this.blockedReads = 0
-    this.gate = new Promise<void>((resolve) => {
-      this.releaseGate = resolve
-    })
-  }
-
-  releaseReads() {
-    this.releaseGate?.()
-    this.releaseGate = undefined
-    this.gate = undefined
-  }
-
-  override async get() {
-    const config = await super.get()
-    if (this.gate) {
-      this.blockedReads++
-      await this.gate
-    }
-    return config
   }
 }
 
@@ -205,47 +110,11 @@ class FailOnceConfigStore extends ConfigStore {
     return super.get()
   }
 }
-
-class ThrowOnceRedactor extends Redactor {
-  failNextSynthesisAgent = false
-  failNextSynthesisStarted = false
-
-  override redactValue<T>(value: T): T {
-    if (
-      this.failNextSynthesisAgent &&
-      typeof value === 'object' &&
-      value !== null &&
-      'role' in value &&
-      value.role === 'synthesizer'
-    ) {
-      this.failNextSynthesisAgent = false
-      throw new Error('Simulated event publishing failure')
-    }
-    if (
-      this.failNextSynthesisStarted &&
-      typeof value === 'object' &&
-      value !== null &&
-      'sourceAttemptIds' in value
-    ) {
-      this.failNextSynthesisStarted = false
-      throw new Error('Simulated synthesis-start publishing failure')
-    }
-    return super.redactValue(value)
-  }
-}
-
 class FakeExecutor implements Executor {
   prepareCalls = 0
   async prepare(repo: Workspace['repo'], taskId: TaskId, attemptId: AttemptId): Promise<Workspace> {
     this.prepareCalls++
-    return {
-      repo,
-      taskId,
-      attemptId,
-      path: `/fake/worktree/${attemptId}`,
-      branch: `joy/${taskId}/${attemptId}`,
-      baseCommit: 'base-sha',
-    }
+    return { repo, taskId, attemptId, path: '/fake/worktree', branch: 'joy/t1/a1', baseCommit: 'base-sha' }
   }
   async diff() {
     return diff
@@ -260,8 +129,6 @@ function fixture(
   options: {
     implementer?: FakeProvider
     reviewer?: FakeProvider
-    judge?: FakeProvider
-    omitProvider?: ProviderKind
     redactor?: Redactor
     secretBackend?: MemoryBackend
     secretEnv?: NodeJS.ProcessEnv
@@ -285,16 +152,9 @@ function fixture(
         structured: { approve: true, summary: 'ok', findings: [] },
       },
     ])
-  const api = options.judge ?? new FakeProvider('openai-api')
+  const api = new FakeProvider('openai-api')
   const redactor = options.redactor ?? new Redactor()
   const secretBackend = options.secretBackend ?? new MemoryBackend()
-  const configuredProviders: Partial<Record<ProviderKind, AgentProvider>> = {
-    'claude-cli': implementer,
-    'codex-cli': reviewer,
-    'openai-api': api,
-  }
-  if (options.omitProvider)
-    Object.defineProperty(configuredProviders, options.omitProvider, { value: undefined, enumerable: true })
   const serverOptions: JoyServerOptions = {
     home: dir,
     database: db,
@@ -306,7 +166,11 @@ function fixture(
     }),
     redactor,
     executor,
-    providers: configuredProviders,
+    providers: {
+      'claude-cli': implementer,
+      'codex-cli': reviewer,
+      'openai-api': api,
+    },
     ...(options.redactor ? { redactor: options.redactor } : {}),
     ...(options.allowPlaywrightOrigin ? { allowPlaywrightOrigin: true } : {}),
   }
@@ -348,29 +212,6 @@ async function waitForStatus(origin: string, id: string, status: string): Promis
   throw new Error(`Task did not reach ${status}`)
 }
 
-async function waitForCondition(check: () => boolean, description: string): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    if (check()) return
-    await new Promise((resolve) => setTimeout(resolve, 5))
-  }
-  throw new Error(`Timed out waiting for ${description}`)
-}
-
-async function waitForEvent(origin: string, id: string, type: string): Promise<TaskDetails> {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const response = await fetch(`${origin}/api/tasks/${id}`)
-    const body = (await response.json()) as TaskDetails
-    if (
-      body.events.some(
-        (value) => typeof value === 'object' && value !== null && (value as { type?: unknown }).type === type,
-      )
-    )
-      return body
-    await new Promise((resolve) => setTimeout(resolve, 5))
-  }
-  throw new Error(`Task did not emit ${type}`)
-}
-
 async function postJson(url: string, body: unknown) {
   return fetch(url, {
     method: 'POST',
@@ -394,50 +235,6 @@ function requestWithHeaders(
     req.once('error', reject)
     req.end(body)
   })
-}
-
-function startIncompletePost(url: string, prefix: string) {
-  const req = httpRequest(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'transfer-encoding': 'chunked' },
-  })
-  const response = new Promise<{ status: number; body: unknown }>((resolve, reject) => {
-    req.once('response', (res) => {
-      const chunks: Buffer[] = []
-      res.on('data', (chunk: Buffer) => chunks.push(chunk))
-      res.once('end', () => {
-        resolve({
-          status: res.statusCode ?? 0,
-          body: JSON.parse(Buffer.concat(chunks).toString()) as unknown,
-        })
-      })
-    })
-    req.once('error', reject)
-  })
-  req.flushHeaders()
-  req.write(prefix)
-  return { complete: (suffix: string) => req.end(suffix), response }
-}
-
-async function createCompeteTask(origin: string, title: string): Promise<string> {
-  const repoResponse = await postJson(`${origin}/api/repos`, {
-    path: `/tmp/${title.toLowerCase().replaceAll(' ', '-')}`,
-    defaultBranch: 'main',
-  })
-  const { repo } = (await repoResponse.json()) as { repo: { id: string } }
-  const created = await postJson(`${origin}/api/tasks`, {
-    repoId: repo.id,
-    title,
-    prompt: 'Compare two fake implementations',
-    mode: 'compete',
-    roleOverrides: {
-      implementer: { provider: 'claude-cli', model: 'haiku', effort: 'low' },
-      reviewer: { provider: 'codex-cli', model: 'gpt-6-luna', effort: 'low' },
-      judge: { provider: 'openai-api', model: 'gpt-6-luna', effort: 'low' },
-    },
-  })
-  const { task } = (await created.json()) as { task: { id: string } }
-  return task.id
 }
 
 describe('Joy local server', () => {
@@ -476,58 +273,30 @@ describe('Joy local server', () => {
     socket.close()
     const result = await waitForStatus(origin, task.id, 'done')
     expect(result.task.status).toBe('done')
-    expect(result.attempts[0]).toMatchObject({
-      status: 'succeeded',
-      worktreePath: expect.stringMatching(/^\/fake\/worktree\//),
-    })
+    expect(result.attempts[0]).toMatchObject({ status: 'succeeded', worktreePath: '/fake/worktree' })
     expect(result.events.length).toBeGreaterThan(0)
     expect(executor.prepareCalls).toBe(1)
     expect(db.isOpen).toBe(true)
-
-    const compete = await postJson(`${origin}/api/tasks`, {
-      repoId: repo.id,
-      title: 'Compare implementations',
-      prompt: 'Do it',
-      mode: 'compete',
-      roleOverrides: {
-        implementer: { provider: 'claude-cli', model: 'opus' },
-        reviewer: { provider: 'claude-cli', model: 'haiku' },
-      },
-    })
-    expect(compete.status).toBe(400)
   })
 
-  it('rejects compete tasks when either candidate provider cannot edit code before creating work', async () => {
+  it('rejects unsupported compete mode with 422 before creating a task or starting work', async () => {
     const { serverPromise, executor, implementer, reviewer, api } = fixture()
-    api.capabilities.codeEdit = false
     const { origin } = await start(serverPromise)
     const { repo } = (await (
-      await postJson(`${origin}/api/repos`, { path: '/non-editing-compete-repo', defaultBranch: 'main' })
+      await postJson(`${origin}/api/repos`, { path: '/p1-only-repo', defaultBranch: 'main' })
     ).json()) as { repo: { id: string } }
 
-    for (const roleOverrides of [
-      {
-        implementer: { provider: 'openai-api', model: 'gpt-6-luna' },
-        reviewer: { provider: 'codex-cli', model: 'gpt-6-luna' },
-      },
-      {
-        implementer: { provider: 'claude-cli', model: 'haiku' },
-        reviewer: { provider: 'openai-api', model: 'gpt-6-luna' },
-      },
-    ]) {
-      const response = await postJson(`${origin}/api/tasks`, {
-        repoId: repo.id,
-        title: 'Reject non-editing competitor',
-        prompt: 'Compare implementations',
-        mode: 'compete',
-        roleOverrides,
-      })
-      expect(response.status).toBe(400)
-      expect(await response.text()).toContain('code-edit capable')
-    }
+    const response = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Compete is unavailable in P1',
+      prompt: 'This must be rejected before work starts.',
+      mode: 'compete',
+    })
 
-    const { tasks } = (await (await fetch(`${origin}/api/tasks`)).json()) as { tasks: unknown[] }
-    expect(tasks).toHaveLength(0)
+    expect(response.status).toBe(422)
+    expect(await response.json()).toEqual({ error: 'Compete mode is not available in P1 yet' })
+    const taskList = (await (await fetch(`${origin}/api/tasks`)).json()) as { tasks: unknown[] }
+    expect(taskList.tasks).toHaveLength(0)
     expect(executor.prepareCalls).toBe(0)
     expect(implementer.calls).toHaveLength(0)
     expect(reviewer.calls).toHaveLength(0)
@@ -543,6 +312,18 @@ describe('Joy local server', () => {
     const { repo } = (await (
       await postJson(`${origin}/api/repos`, { path: '/early-failure-repo', defaultBranch: 'main' })
     ).json()) as { repo: { id: string } }
+    const currentConfig = await configStore.get()
+    await configStore.save({
+      ...currentConfig,
+      roles: {
+        ...currentConfig.roles,
+        implementer: {
+          ...currentConfig.roles.implementer,
+          provider: 'openai-api',
+          model: 'current-config-model',
+        },
+      },
+    })
     configStore.failNextRead = true
 
     const response = await postJson(`${origin}/api/tasks`, {
@@ -553,7 +334,7 @@ describe('Joy local server', () => {
     })
     expect(response.status).toBe(201)
     const { task } = (await response.json()) as { task: { id: string } }
-    const details = await waitForEvent(origin, task.id, 'error')
+    const details = await waitForStatus(origin, task.id, 'failed')
     const errorEvent = details.events.find(
       (value) =>
         typeof value === 'object' && value !== null && (value as { type?: unknown }).type === 'error',
@@ -561,55 +342,44 @@ describe('Joy local server', () => {
     expect(errorEvent.seq).toBeGreaterThan(0)
     expect(errorEvent.payload.message).toContain('Simulated config read failure')
     expect(details.attempts).toHaveLength(1)
-    expect(details.attempts[0]).toMatchObject({ status: 'failed' })
+    expect(details.attempts[0]).toMatchObject({
+      provider: 'openai-api',
+      model: 'current-config-model',
+      status: 'failed',
+    })
     expect(details.task.status).toBe('failed')
   })
 
-  it('revalidates compete provider capabilities when resuming after configuration changes', async () => {
-    const configDir = mkdtempSync(join(tmpdir(), 'joy-changed-roles-'))
+  it('keeps the task failed and emits no fabricated event when failure-attempt persistence fails', async () => {
+    const configDir = mkdtempSync(join(tmpdir(), 'joy-failing-attempt-'))
     dirs.push(configDir)
-    const configStore = new ConfigStore(join(configDir, 'config.yaml'))
-    const { db, api, executor, implementer, reviewer, serverPromise } = fixture({ configStore })
-    api.capabilities.codeEdit = false
+    const configStore = new FailOnceConfigStore(join(configDir, 'config.yaml'))
+    const { db, serverPromise } = fixture({ configStore })
     const { origin } = await start(serverPromise)
-    const repo = createRepo(db, {
-      id: rid('repo-config-changed'),
-      path: '/config-changed-repo',
-      defaultBranch: 'main',
-    })
-    const task = createTask(db, {
-      id: tid('task-config-changed'),
-      repoId: repo.id,
-      title: 'Resume with changed providers',
-      prompt: 'Do not run unsupported providers',
-      mode: 'compete',
-    })
-    setTaskStatus(db, task.id, 'failed')
-    const config = await configStore.get()
-    await configStore.save({
-      ...config,
-      roles: {
-        ...config.roles,
-        reviewer: { ...config.roles.reviewer, provider: 'openai-api' },
-      },
-    })
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/attempt-persistence-failure', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    db.exec(`
+      CREATE TRIGGER reject_attempt_insert
+      BEFORE INSERT ON attempts
+      BEGIN
+        SELECT RAISE(ABORT, 'simulated attempt persistence failure');
+      END;
+    `)
+    configStore.failNextRead = true
 
-    const resumed = await postJson(`${origin}/api/tasks/${task.id}/resume`, {})
-    expect(resumed.status).toBe(202)
-    const details = await waitForEvent(origin, task.id, 'result')
-    expect(details.task.status).toBe('failed')
-    expect(details.attempts).toHaveLength(1)
-    expect(details.attempts[0]).toMatchObject({ provider: 'openai-api', status: 'failed' })
-    expect(details.events).toContainEqual(
-      expect.objectContaining({
-        type: 'result',
-        payload: expect.objectContaining({ reason: expect.stringContaining('code-edit capable') }),
-      }),
-    )
-    expect(executor.prepareCalls).toBe(0)
-    expect(implementer.calls).toHaveLength(0)
-    expect(reviewer.calls).toHaveLength(0)
-    expect(api.calls).toHaveLength(0)
+    const response = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Attempt persistence fails',
+      prompt: 'The task state should still become terminal.',
+      mode: 'review_loop',
+    })
+    expect(response.status).toBe(201)
+    const { task } = (await response.json()) as { task: { id: string } }
+    const details = await waitForStatus(origin, task.id, 'failed')
+    expect(details.attempts).toHaveLength(0)
+    expect(details.events).toHaveLength(0)
+    expect((await fetch(`${origin}/api/health`)).status).toBe(200)
   })
 
   it('rejects untrusted Host and Origin headers and requires JSON for body methods', async () => {
@@ -671,8 +441,6 @@ describe('Joy local server', () => {
     expect(missingPutContentType.status).toBe(415)
     for (const [path, method] of [
       ['/api/tasks', 'POST'],
-      ['/api/tasks/missing/select', 'POST'],
-      ['/api/tasks/missing/synthesize', 'POST'],
       ['/api/secrets/openai-api-key', 'PUT'],
     ] as const) {
       const missing = await requestWithHeaders(`${origin}${path}`, method, {}, '{}')
@@ -731,6 +499,10 @@ describe('Joy local server', () => {
       origin: 'http://localhost:4173',
     })
     expect(deniedLocalhost.status).toBe(403)
+    const deniedDynamicLoopback = await requestWithHeaders(`${defaultOrigin}/api/health`, 'GET', {
+      origin: 'http://127.0.0.1:49131',
+    })
+    expect(deniedDynamicLoopback.status).toBe(403)
 
     const playwrightServer = fixture({ allowPlaywrightOrigin: true })
     const { origin: playwrightOrigin } = await start(playwrightServer.serverPromise)
@@ -742,445 +514,21 @@ describe('Joy local server', () => {
       origin: 'http://localhost:4173',
     })
     expect(allowedLocalhost.status).toBe(200)
-  })
+    const allowedDynamicLoopback = await requestWithHeaders(`${playwrightOrigin}/api/health`, 'GET', {
+      origin: 'http://localhost:49131',
+    })
+    expect(allowedDynamicLoopback.status).toBe(200)
 
-  it('runs competing providers in isolated worktrees, persists judge rationale, and selects a winner', async () => {
-    const judge = new FakeProvider('openai-api', (options) => {
-      const marker = 'Candidate data (JSON): '
-      const data = JSON.parse(options.prompt.slice(options.prompt.indexOf(marker) + marker.length)) as {
-        attemptId: string
-      }[]
-      return [
-        {
-          type: 'done',
-          sessionId: 'judge-session',
-          isError: false,
-          structured: {
-            winnerAttemptId: data[1]?.attemptId,
-            summary: 'Candidate two is stronger.',
-            rationale: 'It covers the edge case with a focused regression test.',
-          },
-        },
-      ]
-    })
-    const { db, executor, serverPromise } = fixture({ judge })
-    const { origin } = await start(serverPromise)
-    const { repo } = (await (
-      await postJson(`${origin}/api/repos`, { path: '/compete-repo', defaultBranch: 'main' })
-    ).json()) as { repo: { id: string } }
-    const created = await postJson(`${origin}/api/tasks`, {
-      repoId: repo.id,
-      title: 'Compare implementations',
-      prompt: 'Fix the edge case',
-      mode: 'compete',
-      roleOverrides: {
-        implementer: { provider: 'claude-cli', model: 'haiku', effort: 'low' },
-        reviewer: { provider: 'codex-cli', model: 'gpt-6-luna', effort: 'low' },
-        judge: { provider: 'openai-api', model: 'gpt-6-luna', effort: 'low' },
-      },
-    })
-    expect(created.status).toBe(201)
-    const { task } = (await created.json()) as { task: { id: string } }
-    expect((await waitForStatus(origin, task.id, 'review_ready')).task.status).toBe('review_ready')
-
-    const details = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
-    expect(details.attempts).toHaveLength(2)
-    expect(details.attempts.map((attempt) => attempt.status)).toEqual(['succeeded', 'succeeded'])
-    expect(new Set(details.attempts.map((attempt) => attempt.worktreePath)).size).toBe(2)
-    const events = details.events as Array<{ attemptId: string; type: string; payload: unknown }>
-    const result = events.find((event) => event.type === 'result')?.payload as
-      | {
-          candidates: Array<{ attemptId: string; status: string; diff: WorkspaceDiff }>
-          judgment: { winnerAttemptId: string; summary: string; rationale: string }
-        }
-      | undefined
-    expect(result?.candidates).toHaveLength(2)
-    expect(result?.candidates.map((candidate) => candidate.status)).toEqual(['succeeded', 'succeeded'])
-    expect(result?.candidates[0]?.diff.patch).toContain('fixed')
-    expect(result?.judgment).toMatchObject({
-      summary: 'Candidate two is stronger.',
-      rationale: 'It covers the edge case with a focused regression test.',
-    })
-
-    const badSelection = await postJson(`${origin}/api/tasks/${task.id}/select`, {
-      attemptId: 'foreign-attempt',
-    })
-    expect(badSelection.status).toBe(404)
-    const failedAttempt = createAttempt(db, {
-      id: aid('failed-candidate'),
-      taskId: task.id as TaskId,
-      provider: 'codex-cli',
-      model: 'gpt-6-luna',
-      status: 'failed',
-    })
-    const failedSelection = await postJson(`${origin}/api/tasks/${task.id}/select`, {
-      attemptId: failedAttempt.id,
-    })
-    expect(failedSelection.status).toBe(409)
-    const selectedAttemptId = result?.judgment.winnerAttemptId
-    const selection = await postJson(`${origin}/api/tasks/${task.id}/select`, {
-      attemptId: selectedAttemptId,
-    })
-    expect(selection.status).toBe(200)
-    expect(await selection.json()).toMatchObject({ task: { status: 'done' }, selectedAttemptId })
-    const persisted = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
-    expect(persisted.events).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'winner_selected',
-          payload: { attemptId: selectedAttemptId },
-        }),
-      ]),
-    )
-    expect(db.isOpen).toBe(true)
-    expect(executor.prepareCalls).toBe(2)
-  })
-
-  it('synthesizes strengths into a separate candidate that can be selected', async () => {
-    const judge = successfulJudgeAndSynthesizer()
-    const { executor, api, serverPromise } = fixture({ judge })
-    const { origin } = await start(serverPromise)
-    const taskId = await createCompeteTask(origin, 'Synthesize candidate strengths')
-    const initial = await waitForStatus(origin, taskId, 'review_ready')
-    const sourceIds = initial.attempts.map((attempt) => String(attempt['id']))
-
-    const started = await postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
-    expect(started.status).toBe(202)
-    const details = await waitForEvent(origin, taskId, 'synthesis_result')
-    expect(details.task.status).toBe('review_ready')
-    expect(details.attempts).toHaveLength(3)
-    expect(executor.prepareCalls).toBe(3)
-    expect(api.calls).toHaveLength(2)
-    expect(api.calls[1]).toMatchObject({
-      cwd: expect.stringMatching(/^\/fake\/worktree\//),
-      autonomy: 'workspace-write',
-    })
-    for (const sourceId of sourceIds) expect(api.calls[1]?.prompt).toContain(sourceId)
-
-    const events = details.events as Array<{ type: string; payload: unknown }>
-    const synthesizedEvent = events
-      .filter((event) => event.type === 'attempt' && (event.payload as { synthesized?: boolean }).synthesized)
-      .at(-1)
-    expect(synthesizedEvent?.payload).toMatchObject({
-      status: 'succeeded',
-      synthesized: true,
-      diff: { patch: 'diff --git a/src/fix.ts b/src/fix.ts\n+fixed\n' },
-    })
-    const synthesizedPayload = synthesizedEvent?.payload as {
-      attemptId: string
-      sourceAttemptIds: string[]
+    for (const origin of [
+      'https://localhost:49131',
+      'http://example.test:49131',
+      'http://localhost:0',
+      'http://localhost',
+      'http://localhost:49131/path',
+    ]) {
+      const rejected = await requestWithHeaders(`${playwrightOrigin}/api/health`, 'GET', { origin })
+      expect(rejected.status, `${origin} must remain rejected`).toBe(403)
     }
-    expect(new Set(synthesizedPayload.sourceAttemptIds)).toEqual(new Set(sourceIds))
-    const synthesizedCandidate = synthesizedPayload
-
-    const duplicate = await postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
-    expect(duplicate.status).toBe(409)
-    const selection = await postJson(`${origin}/api/tasks/${taskId}/select`, {
-      attemptId: synthesizedCandidate.attemptId,
-    })
-    expect(selection.status).toBe(200)
-    expect(await selection.json()).toMatchObject({
-      task: { status: 'done' },
-      selectedAttemptId: synthesizedCandidate.attemptId,
-    })
-  })
-
-  it('rejects synthesis when the configured judge provider cannot edit code', async () => {
-    const judge = successfulJudgeAndSynthesizer()
-    judge.capabilities.codeEdit = false
-    const { serverPromise } = fixture({ judge })
-    const { origin } = await start(serverPromise)
-    const taskId = await createCompeteTask(origin, 'Non-editing judge cannot synthesize')
-    await waitForStatus(origin, taskId, 'review_ready')
-
-    const response = await postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
-    expect(response.status).toBe(409)
-    expect(await response.text()).toContain('code-edit capable')
-    expect(
-      judge.calls.filter((call) => call.prompt.includes('Synthesis candidate data (JSON):')),
-    ).toHaveLength(0)
-  })
-
-  it('serializes concurrent synthesis requests after asynchronous configuration reads', async () => {
-    const synthesisGate = deferred()
-    const judge = successfulJudgeAndSynthesizer(async (options) => {
-      if (options.prompt.includes('Synthesis candidate data (JSON):')) await synthesisGate.promise
-    })
-    const configDir = mkdtempSync(join(tmpdir(), 'joy-gated-config-'))
-    dirs.push(configDir)
-    const configStore = new GatedConfigStore(join(configDir, 'config.yaml'))
-    const { executor, api, serverPromise } = fixture({ judge, configStore })
-    const { origin } = await start(serverPromise)
-    const taskId = await createCompeteTask(origin, 'Concurrent synthesis requests')
-    await waitForStatus(origin, taskId, 'review_ready')
-
-    configStore.blockReads()
-    const firstRequest = postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
-    const secondRequest = postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
-    await waitForCondition(() => configStore.blockedReads === 2, 'both synthesis config reads')
-    configStore.releaseReads()
-    const responses = await Promise.all([firstRequest, secondRequest])
-    try {
-      expect(responses.map((response) => response.status).sort((a, b) => a - b)).toEqual([202, 409])
-    } finally {
-      synthesisGate.resolve()
-    }
-    await waitForEvent(origin, taskId, 'synthesis_result')
-    expect(api.calls.filter((call) => call.prompt.includes('Synthesis candidate data (JSON):'))).toHaveLength(
-      1,
-    )
-    expect(executor.prepareCalls).toBe(3)
-  })
-
-  it('rejects winner selection while a synthesis is already running', async () => {
-    const synthesisGate = deferred()
-    const judge = successfulJudgeAndSynthesizer(async (options) => {
-      if (options.prompt.includes('Synthesis candidate data (JSON):')) await synthesisGate.promise
-    })
-    const { serverPromise } = fixture({ judge })
-    const { origin } = await start(serverPromise)
-    const taskId = await createCompeteTask(origin, 'Selection races synthesis')
-    const details = await waitForStatus(origin, taskId, 'review_ready')
-    const source = details.attempts.find((attempt) => attempt['status'] === 'succeeded')
-    expect(source).toBeDefined()
-
-    const pendingSelection = startIncompletePost(
-      `${origin}/api/tasks/${taskId}/select`,
-      `{"attemptId":"${String(source?.['id'])}`,
-    )
-    await new Promise((resolve) => setTimeout(resolve, 25))
-    const synthesis = await postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
-    pendingSelection.complete('"}')
-    const selection = await pendingSelection.response
-    synthesisGate.resolve()
-
-    expect(synthesis.status).toBe(202)
-    expect(selection.status).toBe(409)
-    await waitForEvent(origin, taskId, 'synthesis_result')
-    const latest = (await (await fetch(`${origin}/api/tasks/${taskId}`)).json()) as TaskDetails
-    expect(latest.task.status).toBe('review_ready')
-  })
-
-  it('marks an orphaned synthesis failed and clears its UI state after restart', async () => {
-    const { db, restart, serverPromise } = fixture({ judge: successfulJudge() })
-    const { origin, server } = await start(serverPromise)
-    const taskId = await createCompeteTask(origin, 'Recover an interrupted synthesis')
-    const initial = await waitForStatus(origin, taskId, 'review_ready')
-    const source = initial.attempts.find((attempt) => attempt['status'] === 'succeeded')
-    expect(source).toBeDefined()
-    const sourceId = String(source?.['id'])
-    const orphaned = createAttempt(db, {
-      id: aid('orphaned-synthesis'),
-      taskId: tid(taskId),
-      provider: 'openai-api',
-      model: 'gpt-6-luna',
-      status: 'running',
-    })
-    appendTaskEvent(db, aid(sourceId), 'synthesis_started', {
-      sourceAttemptIds: [sourceId],
-      model: { provider: 'openai-api', model: 'gpt-6-luna' },
-    })
-    appendTaskEvent(db, orphaned.id, 'attempt', {
-      attemptId: orphaned.id,
-      model: { provider: 'openai-api', model: 'gpt-6-luna' },
-      status: 'running',
-      synthesized: true,
-      sourceAttemptIds: [sourceId],
-    })
-    await server.close()
-
-    const { origin: restartedOrigin } = await start(restart())
-    const recovered = await waitForEvent(restartedOrigin, taskId, 'synthesis_error')
-    expect(recovered.task.status).toBe('review_ready')
-    expect(recovered.attempts.find((attempt) => attempt['id'] === orphaned.id)).toMatchObject({
-      status: 'failed',
-    })
-    expect(recovered.events).toContainEqual(
-      expect.objectContaining({
-        type: 'synthesis_error',
-        payload: { message: expect.stringContaining('interrupted by server restart') },
-      }),
-    )
-  })
-
-  it('marks a synthesis attempt failed when publishing an agent event throws', async () => {
-    const redactor = new ThrowOnceRedactor()
-    const { serverPromise } = fixture({ judge: successfulJudgeAndSynthesizer(), redactor })
-    const { origin } = await start(serverPromise)
-    const taskId = await createCompeteTask(origin, 'Synthesis event persistence failure')
-    await waitForStatus(origin, taskId, 'review_ready')
-    redactor.failNextSynthesisAgent = true
-
-    const started = await postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
-    expect(started.status).toBe(202)
-    const details = await waitForEvent(origin, taskId, 'synthesis_error')
-    const candidateEvent = details.events.find(
-      (event) =>
-        (event as { type?: string }).type === 'attempt' &&
-        (event as { payload?: { synthesized?: boolean } }).payload?.synthesized,
-    ) as { payload?: { attemptId?: string } } | undefined
-    expect(
-      details.attempts.find((attempt) => attempt['id'] === candidateEvent?.payload?.attemptId),
-    ).toMatchObject({
-      status: 'failed',
-    })
-  })
-
-  it('releases the operation lock if publishing synthesis_started throws', async () => {
-    const redactor = new ThrowOnceRedactor()
-    redactor.failNextSynthesisStarted = true
-    const { serverPromise } = fixture({ judge: successfulJudgeAndSynthesizer(), redactor })
-    const { origin } = await start(serverPromise)
-    const taskId = await createCompeteTask(origin, 'Synthesis start event failure')
-    await waitForStatus(origin, taskId, 'review_ready')
-
-    const failed = await postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
-    expect(failed.status).toBe(500)
-    const retry = await postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
-    expect(retry.status).toBe(202)
-    await waitForEvent(origin, taskId, 'synthesis_result')
-  })
-
-  it('keeps original candidates selectable when synthesis fails', async () => {
-    const judge = new FakeProvider('openai-api', (options) => {
-      if (options.prompt.includes('Synthesis candidate data (JSON):'))
-        return [
-          {
-            type: 'done',
-            sessionId: 'failed-synthesis',
-            isError: true,
-            finalMessage: 'Fake synthesis failure',
-          },
-        ]
-      const marker = 'Candidate data (JSON): '
-      const data = JSON.parse(options.prompt.slice(options.prompt.indexOf(marker) + marker.length)) as {
-        attemptId: string
-      }[]
-      return [
-        {
-          type: 'done',
-          sessionId: 'fake-judge',
-          isError: false,
-          structured: {
-            winnerAttemptId: data[0]?.attemptId,
-            summary: 'First candidate',
-            rationale: 'Selected by fake judge',
-          },
-        },
-      ]
-    })
-    const { serverPromise } = fixture({ judge })
-    const { origin } = await start(serverPromise)
-    const taskId = await createCompeteTask(origin, 'Failed synthesis preserves candidates')
-    const initial = await waitForStatus(origin, taskId, 'review_ready')
-    const started = await postJson(`${origin}/api/tasks/${taskId}/synthesize`, {})
-    expect(started.status).toBe(202)
-    const details = await waitForEvent(origin, taskId, 'synthesis_result')
-    expect(details.task.status).toBe('review_ready')
-    const result = (details.events as Array<{ type: string; payload: unknown }>).find(
-      (event) => event.type === 'synthesis_result',
-    )?.payload as { status?: string; reason?: string } | undefined
-    expect(result).toMatchObject({ status: 'failed', reason: 'Fake synthesis failure' })
-    const source = initial.attempts.find((attempt) => attempt['status'] === 'succeeded')
-    const selection = await postJson(`${origin}/api/tasks/${taskId}/select`, { attemptId: source?.['id'] })
-    expect(selection.status).toBe(200)
-  })
-
-  it('keeps successful candidates selectable when the judge fails', async () => {
-    const judge = new FakeProvider('openai-api', [
-      { type: 'done', sessionId: 'failed-judge', isError: true, finalMessage: 'Fake judge failure' },
-    ])
-    const { serverPromise } = fixture({ judge })
-    const { origin } = await start(serverPromise)
-    const taskId = await createCompeteTask(origin, 'Judge failure remains reviewable')
-
-    const details = await waitForStatus(origin, taskId, 'review_ready')
-    const candidate = details.attempts.find((attempt) => attempt['status'] === 'succeeded')
-    expect(candidate).toBeDefined()
-    const selected = await postJson(`${origin}/api/tasks/${taskId}/select`, {
-      attemptId: candidate?.['id'],
-    })
-    expect(selected.status).toBe(200)
-    expect(await selected.json()).toMatchObject({ task: { status: 'done' } })
-  })
-
-  it('persists an event explaining compete preflight failures without candidate attempts', async () => {
-    const { serverPromise } = fixture({ omitProvider: 'openai-api' })
-    const { origin } = await start(serverPromise)
-    const taskId = await createCompeteTask(origin, 'Missing judge provider')
-
-    const details = await waitForStatus(origin, taskId, 'failed')
-    const result = details.events.find((event) => (event as { type?: string }).type === 'result') as
-      { payload?: { reason?: string } } | undefined
-    expect(result).toBeDefined()
-    expect(result?.payload?.reason).toContain('No provider configured for judge openai-api')
-    expect(details.attempts).toContainEqual(
-      expect.objectContaining({ provider: 'openai-api', model: 'gpt-6-luna', status: 'failed' }),
-    )
-  })
-
-  it('rejects a second winner selection after a concurrent request closes review', async () => {
-    const { serverPromise } = fixture({ judge: successfulJudge() })
-    const { origin } = await start(serverPromise)
-    const taskId = await createCompeteTask(origin, 'Concurrent winner selection')
-    const details = await waitForStatus(origin, taskId, 'review_ready')
-    const candidates = details.attempts.filter((attempt) => attempt['status'] === 'succeeded')
-    expect(candidates).toHaveLength(2)
-
-    const first = startIncompletePost(
-      `${origin}/api/tasks/${taskId}/select`,
-      `{"attemptId":"${String(candidates[0]?.['id'])}`,
-    )
-    await new Promise((resolve) => setTimeout(resolve, 25))
-    const second = await postJson(`${origin}/api/tasks/${taskId}/select`, {
-      attemptId: candidates[1]?.['id'],
-    })
-    expect(second.status).toBe(200)
-    first.complete('"}')
-    expect((await first.response).status).toBe(409)
-  })
-
-  it('keeps candidates from a resumed compete run separate and rejects stale selections', async () => {
-    const { db, serverPromise } = fixture({ judge: successfulJudge() })
-    const { origin } = await start(serverPromise)
-    const taskId = await createCompeteTask(origin, 'Resume keeps candidates scoped')
-    const firstRun = await waitForStatus(origin, taskId, 'review_ready')
-    const oldCandidate = firstRun.attempts.find((attempt) => attempt['status'] === 'succeeded')
-    expect(oldCandidate).toBeDefined()
-
-    setTaskStatus(db, tid(taskId), 'cancelled')
-    const resumed = await postJson(`${origin}/api/tasks/${taskId}/resume`, {})
-    expect(resumed.status).toBe(202)
-    const secondRun = await waitForStatus(origin, taskId, 'review_ready')
-
-    const staleSelection = await postJson(`${origin}/api/tasks/${taskId}/select`, {
-      attemptId: oldCandidate?.['id'],
-    })
-    expect(staleSelection.status).toBe(409)
-    const runMarkers = secondRun.events.filter(
-      (event) => (event as { type?: string }).type === 'compete_run_started',
-    ) as Array<{ seq: number }>
-    expect(runMarkers).toHaveLength(2)
-    const attemptEvents = secondRun.events.filter(
-      (event) => (event as { type?: string }).type === 'attempt',
-    ) as Array<{ seq: number }>
-    expect(runMarkers[0]).toBeDefined()
-    expect(runMarkers[1]).toBeDefined()
-    const firstRunMarkerSeq = runMarkers[0]?.seq ?? Number.POSITIVE_INFINITY
-    const resumedRunMarkerSeq = runMarkers[1]?.seq ?? Number.POSITIVE_INFINITY
-    expect(attemptEvents[0]?.seq).toBeGreaterThan(firstRunMarkerSeq)
-    const resumedRunAttempt = attemptEvents.find((event) => event.seq > resumedRunMarkerSeq)
-    expect(resumedRunAttempt?.seq).toBeGreaterThan(resumedRunMarkerSeq)
-    const latestResult = secondRun.events
-      .filter((event) => (event as { type?: string }).type === 'result')
-      .at(-1) as { payload?: { candidates?: Array<{ attemptId: string; status: string }> } } | undefined
-    const currentCandidate = latestResult?.payload?.candidates?.find(
-      (candidate) => candidate.status === 'succeeded',
-    )
-    const currentSelection = await postJson(`${origin}/api/tasks/${taskId}/select`, {
-      attemptId: currentCandidate?.attemptId,
-    })
-    expect(currentSelection.status).toBe(200)
   })
 
   it('manages OpenAI keys without exposing them and redacts subsequent fake-provider events', async () => {
