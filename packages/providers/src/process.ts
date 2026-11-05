@@ -57,7 +57,7 @@ export function runJsonlProcess(spec: ProcessSpec): JsonlProcess {
     stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL)
   })
 
-  const kill = () => killTree(child.pid, isWindows)
+  const kill = () => killProcessTree(child.pid, isWindows)
   const onAbort = () => {
     aborted = true
     kill()
@@ -101,7 +101,7 @@ export function runJsonlProcess(spec: ProcessSpec): JsonlProcess {
   return { lines: lines(), exit }
 }
 
-function killTree(pid: number | undefined, isWindows: boolean): void {
+export function killProcessTree(pid: number | undefined, isWindows = process.platform === 'win32'): void {
   if (pid === undefined) return
   try {
     if (isWindows) {
