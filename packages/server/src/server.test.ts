@@ -477,10 +477,12 @@ $ErrorActionPreference = 'Stop'
 $path = $env:JOY_API_TOKEN_FILE
 $acl = [System.IO.File]::GetAccessControl($path)
 $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$ownerSid = $acl.Owner.Translate([System.Security.Principal.SecurityIdentifier]).Value
-$allowedSids = @($acl.Access | Where-Object { $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow } | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value })
-$inheritedAllowCount = @($acl.Access | Where-Object { $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and $_.IsInherited }).Count
-[pscustomobject]@{ currentSid = $currentSid; ownerSid = $ownerSid; allowedSids = $allowedSids; inheritedAllowCount = $inheritedAllowCount } | ConvertTo-Json -Compress -Depth 4
+$ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+$allowRules = @($acl.Access | Where-Object { $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow })
+$allowedSids = @($allowRules | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value })
+$inheritedAllowCount = @($allowRules | Where-Object { $_.IsInherited }).Count
+$deleteAllowedCount = @($allowRules | Where-Object { ($_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Delete) -ne 0 }).Count
+[pscustomobject]@{ currentSid = $currentSid; ownerSid = $ownerSid; allowedSids = $allowedSids; inheritedAllowCount = $inheritedAllowCount; deleteAllowedCount = $deleteAllowedCount } | ConvertTo-Json -Compress -Depth 4
 `,
           ],
           {
@@ -495,10 +497,12 @@ $inheritedAllowCount = @($acl.Access | Where-Object { $_.AccessControlType -eq [
           ownerSid: string
           allowedSids: string[]
           inheritedAllowCount: number
+          deleteAllowedCount: number
         }
         expect(acl.ownerSid).toBe(acl.currentSid)
         expect(acl.allowedSids).toEqual([acl.currentSid])
         expect(acl.inheritedAllowCount).toBe(0)
+        expect(acl.deleteAllowedCount).toBe(1)
       }
       await server.close()
       for (const spy of consoleSpies) output.push(...spy.mock.calls.flat().map(String))

@@ -817,12 +817,12 @@ try {
   $stage = 'set-acl'
   $acl.SetAccessRuleProtection($true, $false)
   foreach ($existingRule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($existingRule) }
-  $readRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+  $readAndDeleteRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
     $currentSid,
-    [System.Security.AccessControl.FileSystemRights]::Read,
+    [System.Security.AccessControl.FileSystemRights]::ReadAndDelete,
     [System.Security.AccessControl.AccessControlType]::Allow
   )
-  [void]$acl.AddAccessRule($readRule)
+  [void]$acl.AddAccessRule($readAndDeleteRule)
   [System.IO.File]::SetAccessControl($path, $acl)
   $stage = 'verify-acl'
   $verified = [System.IO.File]::GetAccessControl($path)
@@ -830,7 +830,11 @@ try {
   $unexpected = @($allowRules | Where-Object {
     $_.IsInherited -or $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $currentSid.Value
   })
-  if ($allowRules.Count -ne 1 -or $unexpected.Count -ne 0) { throw 'Unexpected API token ACL.' }
+  if (
+    $allowRules.Count -ne 1 -or
+    $unexpected.Count -ne 0 -or
+    $allowRules[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::ReadAndDelete
+  ) { throw 'Unexpected API token ACL.' }
 } catch {
   [Console]::Error.WriteLine('JOY_API_TOKEN_ACL_FAILURE:' + $stage + '/' + $_.Exception.GetType().Name)
   exit 1

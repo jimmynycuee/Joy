@@ -43,7 +43,7 @@ $ErrorActionPreference = 'Stop'
 $path = $env:JOY_API_TOKEN_FILE
 $acl = [System.IO.File]::GetAccessControl($path)
 $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-$ownerSid = $acl.Owner.Translate([System.Security.Principal.SecurityIdentifier]).Value
+$ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
 $allowRules = @($acl.Access | Where-Object { $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow })
 $unexpected = @($allowRules | Where-Object {
   $_.IsInherited -or $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $currentSid.Value
