@@ -787,10 +787,7 @@ async function readApiToken(tokenPath: string): Promise<string> {
   })
   try {
     const openedMetadata = await file.stat()
-    if (
-      process.platform !== 'win32' &&
-      (openedMetadata.dev !== metadata.dev || openedMetadata.ino !== metadata.ino)
-    ) {
+    if (openedMetadata.dev !== metadata.dev || openedMetadata.ino !== metadata.ino) {
       throw new Error('API token file changed while it was being opened; restart Joy to retry')
     }
     if (process.platform !== 'win32' && (openedMetadata.mode & 0o077) !== 0) {

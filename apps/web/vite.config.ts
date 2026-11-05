@@ -55,7 +55,9 @@ export function readApiToken(command: 'build' | 'serve', isPreview = false): str
       }
       if (!openedMetadata.isFile()) throw new Error(`Joy API token path must be a regular file: ${tokenFile}`)
       if (process.platform !== 'win32' && (Number(openedMetadata.mode) & 0o077) !== 0) {
-        throw new Error(`Joy API token file permissions must restrict access to its owner: ${tokenFile}`)
+        throw new Error(
+          `Joy API token file permissions must restrict access to its owner; run chmod 600 or delete and restart Joy: ${tokenFile}`,
+        )
       }
       fileToken = readFileSync(descriptor, 'utf8').trim()
     } finally {

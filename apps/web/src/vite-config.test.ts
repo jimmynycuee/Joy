@@ -72,7 +72,7 @@ describe('Vite API token configuration', () => {
     process.env.JOY_API_TOKEN_FILE = tokenFile
     delete process.env.JOY_API_TOKEN
 
-    expect(() => readApiToken('serve')).toThrow(/permissions must restrict access to its owner/)
+    expect(() => readApiToken('serve')).toThrow(/run chmod 600/)
   })
 
   it.skipIf(process.platform === 'win32')('rejects a symbolic token file', () => {
