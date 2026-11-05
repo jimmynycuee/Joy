@@ -1,5 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { EFFORTS } from '@joy/core'
@@ -139,13 +139,22 @@ describe('ConfigStore', () => {
 
 describe('paths', () => {
   it('uses JOY_HOME when set and derives default paths from it', () => {
-    const home = joyHome({ JOY_HOME: '/data/joy' })
-    expect(home).toBe('/data/joy')
+    const configuredHome = join(tmpdir(), 'data', 'joy')
+    const home = joyHome({ JOY_HOME: configuredHome })
+    expect(home).toBe(configuredHome)
     expect(resolvePaths(defaultConfig(), home)).toEqual({
-      config: join('/data/joy', 'config.yaml'),
-      worktrees: join('/data/joy', 'worktrees'),
-      database: join('/data/joy', 'joy.sqlite'),
+      config: join(configuredHome, 'config.yaml'),
+      worktrees: join(configuredHome, 'worktrees'),
+      database: join(configuredHome, 'joy.sqlite'),
     })
+  })
+
+  it('uses the default home when JOY_HOME is empty', () => {
+    expect(joyHome({ JOY_HOME: '' })).toBe(join(homedir(), '.joy'))
+  })
+
+  it('rejects a relative JOY_HOME so separate processes resolve one token directory', () => {
+    expect(() => joyHome({ JOY_HOME: 'relative/joy' })).toThrow('JOY_HOME must be an absolute path')
   })
 
   it('honors explicit paths in the config', () => {
