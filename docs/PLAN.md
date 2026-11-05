@@ -32,12 +32,12 @@
 - [x] T1.5 `orchestrator/review-loop`
 - [x] T1.10 機密存 OS 鑰匙圈（`packages/secrets`）
 - [x] T1.11 設定（`packages/config`；UI 設定頁併入 T1.8）
-- [ ] T1.6 server（HTTP + WebSocket、任務 CRUD、重啟恢復）
-- [ ] T1.7 事件紀錄（寫入 DB、可回放、經 Redactor 遮罩）
+- [x] T1.6 server（HTTP + WebSocket、任務 CRUD、重啟恢復；已整合至 main，PR #58）
+- [x] T1.7 事件紀錄（寫入 DB、可回放、經 Redactor 遮罩；已整合至 main，PR #58）
 - [ ] T1.12 repo 的 provider 允許清單
-- [ ] T1.9 GitHub：push 分支、開 draft PR
+- [ ] T1.9 GitHub：push 分支、開 draft PR（實作已整合至 main，PR #58；依驗收條件需在測試 repo 實際開 PR，此項尚未驗證）
 - [ ] T1.13 `joy doctor` 與首次啟動檢查
-- [ ] T1.8 Codex 風格 Web UI（含設定頁）
+- [ ] T1.8 Codex 風格 Web UI（含設定頁；UI 主體已整合至 main，PR #58；首頁顯示 T1.13 檢查結果尚待完成）
 - [ ] P2（T2.1–T2.8）、P3（T3.1–T3.9）、P4（T4.1–T4.9）、P5（T5.1–T5.7）：見 §6
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
