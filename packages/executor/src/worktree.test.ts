@@ -15,7 +15,13 @@ import { join } from 'node:path'
 import type { AttemptId, RepoId, RepoRef, TaskId } from '@joy/core'
 import { afterEach, describe, expect, it } from 'vitest'
 import { git } from './git.js'
-import { WorktreeExecutor, assertSafeId, parseNameStatus, parseNumstat } from './worktree.js'
+import {
+  WorktreeExecutor,
+  assertSafeId,
+  parseNameStatus,
+  parseNumstat,
+  parseWorktreeList,
+} from './worktree.js'
 
 const dirs: string[] = []
 afterEach(() => {
@@ -228,6 +234,20 @@ describe('assertSafeId', () => {
 })
 
 describe('git output parsers', () => {
+  it.each(['\0', '\0\0', '\0\n'])('parses worktree records separated by %j', (separator) => {
+    const main = ['worktree C:\\repo', 'HEAD abc123', 'branch refs/heads/main'].join('\0')
+    const managed = [
+      'worktree C:\\repo\\worktrees\\r1\\t1-a1',
+      'HEAD def456',
+      'branch refs/heads/joy/t1/a1',
+    ].join('\0')
+
+    expect(parseWorktreeList(`${main}${separator}${managed}`)).toEqual([
+      { path: 'C:\\repo', branch: 'main', headCommit: 'abc123' },
+      { path: 'C:\\repo\\worktrees\\r1\\t1-a1', branch: 'joy/t1/a1', headCommit: 'def456' },
+    ])
+  })
+
   it('parses -z name-status including renames', () => {
     expect(parseNameStatus('M\0a.txt\0R087\0old.txt\0new.txt\0A\0b c.txt\0')).toEqual([
       { path: 'a.txt', status: 'modified' },

@@ -203,20 +203,27 @@ export class WorktreeExecutor implements Executor {
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
-function parseWorktreeList(out: string): { path: string; branch: string | null; headCommit: string }[] {
+export function parseWorktreeList(
+  out: string,
+): { path: string; branch: string | null; headCommit: string }[] {
   const records: { path: string; branch: string | null; headCommit: string }[] = []
-  for (const block of out.split('\0\0')) {
-    const fields = block.split('\0').filter(Boolean)
-    const worktree = fields.find((field) => field.startsWith('worktree '))
-    const head = fields.find((field) => field.startsWith('HEAD '))
-    if (!worktree || !head) continue
-    const branchField = fields.find((field) => field.startsWith('branch refs/heads/'))
-    records.push({
-      path: worktree.slice('worktree '.length),
-      branch: branchField ? branchField.slice('branch refs/heads/'.length) : null,
-      headCommit: head.slice('HEAD '.length),
-    })
+  let current: { path: string; branch: string | null; headCommit: string } | null = null
+  const finish = () => {
+    if (current?.headCommit) records.push(current)
   }
+
+  for (const rawField of out.split('\0')) {
+    const field = rawField.replace(/^(?:\r?\n)+/, '')
+    if (field.startsWith('worktree ')) {
+      finish()
+      current = { path: field.slice('worktree '.length), branch: null, headCommit: '' }
+    } else if (field.startsWith('HEAD ') && current) {
+      current.headCommit = field.slice('HEAD '.length)
+    } else if (field.startsWith('branch refs/heads/') && current) {
+      current.branch = field.slice('branch refs/heads/'.length)
+    }
+  }
+  finish()
   return records
 }
 
