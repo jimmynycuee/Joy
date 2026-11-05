@@ -39,7 +39,7 @@ main ← t0-foundation (#2) ← t1.1-claude-cli (#3) ← t1.4-worktree (#4) ← 
 
 1. **T1.6 draft PR #6**：Ubuntu、macOS、Windows 三平台 CI 已通過，等待擁有者審核/合併；依擁有者指示，agent 不合併。
 2. **T1.7 draft PR #7**（[PR](https://github.com/jimmynycuee/Joy/pull/7)）：三平台 CI 通過，等待擁有者審核。
-3. **T1.9 draft PR #8**（[PR](https://github.com/jimmynycuee/Joy/pull/8)）：以 `t1.7-event-log` 為 base；最新 Windows CI 的兩個 publisher 測試超過 Vitest 預設 5 秒，逾時後 temp repo 清理才報 EBUSY。`packages/github/vitest.config.ts` 已為這組真實 Git fixture 測試設 30 秒時限；本機 `pnpm exec vitest run --project github` 通過（35/35），`pnpm check` 通過（186 passed、2 skipped）。此次修正待發布至既有 draft；新 head 的三平台 CI 待確認，依本次指示保持 draft、不合併。
+3. **T1.9 draft PR #8**（[PR](https://github.com/jimmynycuee/Joy/pull/8)）：以 `t1.7-event-log` 為 base；Windows CI 的兩個 publisher 測試超過 Vitest 預設 5 秒，逾時後 temp repo 清理才報 EBUSY。`packages/github/vitest.config.ts` 已為這組真實 Git fixture 測試設 30 秒時限；本機 `pnpm exec vitest run --project github` 通過（35/35），`pnpm check` 通過（186 passed、2 skipped）。修正已推至既有 draft；PR 保持 draft，等待擁有者審查。
 4. **Codex 真實 fixture**：擁有者的 Codex 額度暫時不夠。額度恢復後在已登入的電腦上執行
    `node scripts/record-fixtures.mjs codex`（預設用 gpt-6-luna + low effort），commit 結果，
    重跑 `pnpm vitest run --project providers codex`，修正不符的地方，然後刪掉 `synthetic-edit.*`。
