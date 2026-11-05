@@ -34,10 +34,10 @@
 - [x] T1.11 設定（`packages/config`；UI 設定頁併入 T1.8）
 - [x] T1.6 server（HTTP + WebSocket、任務 CRUD、重啟恢復；已整合至 main，PR #58）
 - [x] T1.7 事件紀錄（寫入 DB、可回放、經 Redactor 遮罩；已整合至 main，PR #58）
-- [ ] T1.12 repo 的 provider 允許清單
-- [ ] T1.9 GitHub：push 分支、開 draft PR（實作已整合至 main，PR #58；PR #8 仍 open/draft，三平台 CI 通過；依驗收條件需在測試 repo 實際開 PR，此項尚未驗證）
-- [ ] T1.13 `joy doctor` 與首次啟動檢查（實作在 open/draft PR #62，四項 CI 已通過；等待 owner review/合併後再標完成）
-- [ ] T1.8 Codex 風格 Web UI（含設定頁；UI 主體已整合至 main，PR #58；首頁檢查實作在 open/draft PR #62，四項 CI 已通過，待合併）
+- [ ] T1.12 repo 的 provider 允許清單（PR #53 已關閉未合併；尚未整合至 main）
+- [ ] T1.9 GitHub：push 分支、開 draft PR（實作已整合至 main，PR #58；PR #8 open/draft、三平台 checks 通過；PR #9 open/draft、四項 checks 通過；依驗收條件仍需在安全指定的測試 repo 實際開 PR，此項尚未驗證）
+- [ ] T1.13 `joy doctor` 與首次啟動檢查（實作在 open/draft PR #62，head `e5ce957`；與 `main` 無衝突、四項 CI 通過，等待 owner review/整合與驗收後再標完成）
+- [ ] T1.8 Codex 風格 Web UI（含設定頁；UI 主體已整合至 main，PR #58；首頁檢查實作在 open/draft PR #62，head `e5ce957`、與 `main` 無衝突且四項 CI 通過；整合與驗收前保持未勾選）
 - [ ] P2（T2.1–T2.8）、P3（T3.1–T3.9）、P4（T4.1–T4.9）、P5（T5.1–T5.7）：見 §6
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
@@ -351,7 +351,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 | ticket | 內容 | 驗收條件 |
 |---|---|---|
 | T4.1 | 遠端存取：token 驗證 + Tailscale 文件；server 預設只綁 127.0.0.1，開啟遠端要明確設定 | 沒有 token 的請求一律 401；token 可在 UI 重新產生並讓舊的失效 |
-| T4.2 | PWA + Web Push 通知 | 手機加到主畫面後收得到任務完成與審核通知 |
+| T4.2 | PWA + Web Push 通知（PR #17 提交本機可安裝 PWA 基礎；open/draft、base `t1.8-web`、head `ad4539d`，Ubuntu/macOS/Windows/web E2E 四項 checks 全通過；本機驗證報告與 PR 說明中的測試數字不一致，須核對；Web Push 仍待 T4.1） | 手機加到主畫面後收得到任務完成與審核通知 |
 | T4.3 | Tauri 桌面 app：系統匣、開機啟動、原生通知、自動更新 | macOS 與 Windows 安裝檔可安裝、更新、移除 |
 | T4.4 | Windows 強化：安裝檔、`.cmd` shim 的 spawn、WSL 偵測與 Codex fallback | Windows 實機完成一次交叉審查任務 |
 | T4.5 | `executor/docker`：可選的 container 模式（掛載 CLI 憑證、網路政策） | 不信任的 repo 可在 container 內跑完任務 |
