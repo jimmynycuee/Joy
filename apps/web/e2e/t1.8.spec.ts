@@ -1,7 +1,43 @@
 import { test, expect } from '@playwright/test'
 import type { ModelRef } from '@joy/core'
+import { E2E_API_TOKEN } from './fakes.js'
 
 test('settings, secure key status, and a complete fake-provider task flow', async ({ page, request }) => {
+  const apiRequests: Array<{ method: string; url: string; authorization: string | undefined }> = []
+  await page.addInitScript(() => {
+    const nativeWebSocket = window.WebSocket
+    const captureWindow = window as Window & {
+      __joyWebSocketCaptures?: Array<{
+        url: string
+        protocols: string | string[] | undefined
+        negotiatedProtocol: string
+      }>
+    }
+    captureWindow.__joyWebSocketCaptures = []
+    window.WebSocket = class extends nativeWebSocket {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        const capture = {
+          url: String(url),
+          protocols: Array.isArray(protocols) ? [...protocols] : protocols,
+          negotiatedProtocol: '',
+        }
+        super(url, protocols)
+        captureWindow.__joyWebSocketCaptures?.push(capture)
+        this.addEventListener('open', () => {
+          capture.negotiatedProtocol = this.protocol
+        })
+      }
+    }
+  })
+  page.on('request', (apiRequest) => {
+    if (new URL(apiRequest.url()).pathname.startsWith('/api/')) {
+      apiRequests.push({
+        method: apiRequest.method(),
+        url: apiRequest.url(),
+        authorization: apiRequest.headers()['authorization'],
+      })
+    }
+  })
   await page.route('**/api/config', async (route) => {
     if (route.request().method() !== 'GET') {
       await route.continue()
@@ -45,7 +81,9 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   await expect(page.getByText('Configured', { exact: true })).toBeVisible()
   await expect(page.locator('body')).not.toContainText(secret)
   await expect(page.locator('#openai-key')).toHaveValue('')
-  const configResponse = await request.get('/api/config')
+  const configResponse = await request.get('/api/config', {
+    headers: { authorization: `Bearer ${E2E_API_TOKEN}` },
+  })
   expect(await configResponse.text()).not.toContain(secret)
   await page.waitForTimeout(4100)
   await page.screenshot({ path: 'test-results/t1.8-settings.png', fullPage: true })
@@ -78,11 +116,15 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   await expect(page.getByText('done', { exact: true })).toBeVisible()
   await expect(page.locator('body')).not.toContainText(secret)
 
-  const taskListResponse = await request.get('/api/tasks')
+  const taskListResponse = await request.get('/api/tasks', {
+    headers: { authorization: `Bearer ${E2E_API_TOKEN}` },
+  })
   const taskList = (await taskListResponse.json()) as { tasks: Array<{ id: string; title: string }> }
   const createdTask = taskList.tasks.find((task) => task.title === 'Show the fake diff')
   expect(createdTask).toBeDefined()
-  const detailResponse = await request.get(`/api/tasks/${createdTask?.id}`)
+  const detailResponse = await request.get(`/api/tasks/${createdTask?.id}`, {
+    headers: { authorization: `Bearer ${E2E_API_TOKEN}` },
+  })
   const details = (await detailResponse.json()) as {
     task: { roleOverrides: { implementer: ModelRef } }
     attempts: Array<{ provider: string; model: string }>
@@ -94,6 +136,35 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   })
   expect(details.attempts[0]).toMatchObject({ provider: 'claude-cli', model: 'claude-opus-4-6' })
   expect(JSON.stringify(details.events)).not.toContain(secret)
+  expect((await page.locator('body').innerText()).includes(E2E_API_TOKEN)).toBe(false)
+  expect(apiRequests.length).toBeGreaterThan(0)
+  expect(apiRequests.every(({ url }) => !url.includes(E2E_API_TOKEN))).toBe(true)
+  expect(apiRequests.some(({ method }) => method === 'GET')).toBe(true)
+  expect(apiRequests.every(({ authorization }) => authorization === `Bearer ${E2E_API_TOKEN}`)).toBe(true)
+  const socketCaptures = await page.evaluate(
+    () =>
+      (
+        window as Window & {
+          __joyWebSocketCaptures?: Array<{
+            url: string
+            protocols: string | string[] | undefined
+            negotiatedProtocol: string
+          }>
+        }
+      ).__joyWebSocketCaptures ?? [],
+  )
+  const taskSockets = socketCaptures.filter(({ url }) => url.includes('/ws?taskId='))
+  expect(taskSockets.length > 0).toBe(true)
+  expect(
+    taskSockets.every(
+      ({ protocols, url }) =>
+        Array.isArray(protocols) &&
+        protocols[0] === 'joy' &&
+        protocols[1] === `joy-auth.${E2E_API_TOKEN}` &&
+        !url.includes(E2E_API_TOKEN),
+    ),
+  ).toBe(true)
+  expect(taskSockets.some(({ negotiatedProtocol }) => negotiatedProtocol === 'joy')).toBe(true)
   await page.waitForTimeout(4100)
   await page.screenshot({ path: 'test-results/t1.8-workspace.png', fullPage: true })
 })

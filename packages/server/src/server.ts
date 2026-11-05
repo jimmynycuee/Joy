@@ -1,7 +1,8 @@
 import { createServer as createHttpServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
+import { chmod, mkdir, open, readFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import { z, ZodError } from 'zod'
@@ -101,6 +102,8 @@ export interface JoyServerOptions {
   executor?: Executor
   /** Adds only the fixed Playwright E2E origins; this is never enabled by default. */
   allowPlaywrightOrigin?: boolean
+  /** Trusted runtime injection/testing only. Otherwise the token is persisted in <home>/api-token. */
+  apiToken?: string
 }
 
 export interface JoyServer {
@@ -136,9 +139,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const configStore = options.configStore ?? new ConfigStore(join(home, 'config.yaml'))
   const initialConfig = await configStore.get()
   const paths = resolvePaths(initialConfig, home)
+  const apiToken = options.apiToken ?? (await loadOrCreateApiToken(home))
+  if (apiToken.length === 0) throw new Error('API token must not be empty')
   const ownsDatabase = !options.database
   const db = options.database ?? openDatabase(paths.database)
   const redactor = options.redactor ?? new Redactor()
+  redactor.add(apiToken)
   const secretStore = options.secretStore ?? new SecretStore({ onSecret: (secret) => redactor.add(secret) })
   const providers: Partial<Record<ProviderKind, AgentProvider>> = {
     'claude-cli': new ClaudeCliProvider({
@@ -159,7 +165,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const executor = options.executor ?? new WorktreeExecutor({ worktreesDir: paths.worktrees })
   const running = new Map<TaskId, ActiveTask>()
   const subscribers = new Map<TaskId, Set<WebSocket>>()
-  const wsServer = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY_BYTES })
+  const wsServer = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_BODY_BYTES,
+    handleProtocols: (protocols) => (protocols.has('joy') ? 'joy' : false),
+  })
   let closed = false
 
   const publish = (taskId: TaskId, attemptId: AttemptId, type: string, payload: unknown): TaskEvent => {
@@ -197,7 +207,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (
         !isLoopbackHost(req.headers.host) ||
         req.headers['sec-fetch-site']?.toLowerCase() === 'cross-site' ||
-        !isAllowedOrigin(req, allowedOrigins, false)
+        !isAllowedOrigin(req, allowedOrigins, false) ||
+        !hasValidWebSocketAuth(req, apiToken)
       ) {
         socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
         socket.destroy()
@@ -255,6 +266,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     )
       throw new HttpError(403, 'Origin is not allowed')
     const url = requestUrl(req)
+    const isPublicHealth = url.pathname === '/api/health' && method === 'GET'
+    const isApiRoute = url.pathname === '/api' || url.pathname.startsWith('/api/')
+    if (
+      !isPublicHealth &&
+      (isApiRoute || !['GET', 'HEAD', 'OPTIONS'].includes(method)) &&
+      !hasValidBearerToken(req, apiToken)
+    )
+      throw new HttpError(403, 'Authentication required')
     if (url.pathname === '/api/health' && method === 'GET') {
       json(res, 200, { ok: true })
       return
@@ -700,6 +719,63 @@ function summarizeDiff(diff: WorkspaceDiff): Record<string, unknown> {
   }
 }
 
+async function loadOrCreateApiToken(home: string): Promise<string> {
+  await mkdir(home, { recursive: true, mode: 0o700 })
+  const tokenPath = join(home, 'api-token')
+
+  try {
+    return await readApiToken(tokenPath)
+  } catch (error) {
+    if (!hasErrorCode(error, 'ENOENT')) throw error
+  }
+
+  const token = randomBytes(32).toString('base64url')
+  try {
+    const file = await open(tokenPath, 'wx', 0o600)
+    try {
+      await file.writeFile(token, 'utf8')
+    } finally {
+      await file.close()
+    }
+    if (process.platform !== 'win32') await chmod(tokenPath, 0o600)
+    return token
+  } catch (error) {
+    if (!hasErrorCode(error, 'EEXIST')) throw error
+    return readApiToken(tokenPath)
+  }
+}
+
+async function readApiToken(tokenPath: string): Promise<string> {
+  if (process.platform !== 'win32') await chmod(tokenPath, 0o600)
+  const token = await readFile(tokenPath, 'utf8')
+  if (token.length === 0) throw new Error('API token file is empty')
+  return token
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return error instanceof Error && 'code' in error && error.code === code
+}
+
+function hasValidBearerToken(req: IncomingMessage, token: string): boolean {
+  const authorization = req.headers.authorization
+  return authorization?.startsWith('Bearer ') === true && tokensMatch(authorization.slice(7), token)
+}
+
+function hasValidWebSocketAuth(req: IncomingMessage, token: string): boolean {
+  const protocols = req.headers['sec-websocket-protocol']?.split(',').map((protocol) => protocol.trim()) ?? []
+  const credentials = protocols.filter((protocol) => protocol.startsWith('joy-auth.'))
+  if (!protocols.includes('joy') || credentials.length !== 1) return false
+  return tokensMatch(credentials[0]?.slice('joy-auth.'.length) ?? '', token)
+}
+
+function tokensMatch(candidate: string, token: string): boolean {
+  const expected = Buffer.from(token)
+  const supplied = Buffer.from(candidate)
+  const sameLength = supplied.length === expected.length
+  const comparable = sameLength ? supplied : Buffer.alloc(expected.length)
+  return timingSafeEqual(expected, comparable) && sameLength
+}
+
 function requestUrl(req: IncomingMessage): URL {
   try {
     return new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`)
@@ -721,6 +797,7 @@ function createOriginAllowlist(allowPlaywrightOrigin: boolean): Set<string> {
   return new Set([
     'tauri://localhost',
     'http://127.0.0.1:5173',
+    'http://localhost:5173',
     ...(allowPlaywrightOrigin ? PLAYWRIGHT_E2E_ORIGINS : []),
   ])
 }

@@ -2,11 +2,11 @@
 
 > 接手前請先讀本檔、`AGENTS.md` 與 `docs/PLAN.md`。本檔記錄目前進度、阻塞與決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。
 
-- 最後更新：2026-11-05 04:14 UTC
-- 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** 本 checkout 的 `origin/main` 為 `a0c7627`；PR #64 已合併，該 PR 四項 checks 通過，但未另行確認合併後 `main` CI。T1.12 的 #53 仍 open/draft、base `t1.7-event-log`、四項 checks 通過並等待 owner review；T1.13/T1.8 的 #62 仍 open/draft，但目前與 `main` 衝突且新 head 尚無 checks。相關計畫仍未勾選；T1.9 真實測試 repo 驗收亦未完成。
+- 最後更新：2026-11-05；T1.14 (#72) 本機 API token 安全修補正在 `t1.14-local-api-auth-token` 分支進行，基於 PR #71 合併後 main `4f71deb`；本項需 owner review。
+- 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** PR #71 已合併，這個 ticket 分支由 post-merge `main` (`4f71deb`) 建立。下方 04:14 UTC 的 PR 狀態資料是舊快照，不代表目前 GitHub 狀態；採取後續動作前須重新讀取相關 PR。T1.14 (#72) 正在處理，安全變更需 owner review。
 - 後續階段有部分獨立進度：T4.2 的 #17 為 open/draft、base `t1.8-web`、無衝突；Ubuntu、macOS、Windows 與 web E2E 四項 GitHub checks 全通過。這是本機 PWA 基礎，不是已完成 Web Push 驗收，也不解除 P1/P2 的依賴順序。
 
-## 即時狀態（GitHub PR 快照：2026-11-05 04:14 UTC）
+## 歷史狀態快照（截至 2026-11-05 04:14 UTC；非即時）
 
 **主線：** [PR #64](https://github.com/jimmynycuee/Joy/pull/64) 已合併；本 checkout 的 `origin/main` 為 `a0c7627`，PR #64 的四項 checks 均通過。未另行確認合併後 `main` 的 CI。
 

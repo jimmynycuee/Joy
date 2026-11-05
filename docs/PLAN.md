@@ -37,6 +37,7 @@
 - [ ] T1.12 repo 的 provider 允許清單
 - [ ] T1.9 GitHub：push 分支、開 draft PR（實作已整合至 main，PR #58；PR #8 open/draft、三平台 checks 通過；PR #9 open/draft、四項 checks 通過；依驗收條件仍需在安全指定的測試 repo 實際開 PR，此項尚未驗證）
 - [ ] T1.13 `joy doctor` 與首次啟動檢查（實作在 open/draft PR #62；最新 head `348593b` 與 `main` 衝突，尚無該 head checks；等待既定 owner 流程處理與驗收後再標完成）
+- [ ] T1.14 本機 API 與 WebSocket token 認證（Issue #72；修改請求與 WebSocket 驗證、Origin 雙層防護、私密 token 儲存與 UI 注入；需 owner review）
 - [ ] T1.8 Codex 風格 Web UI（含設定頁；UI 主體已整合至 main，PR #58；首頁檢查實作在 open/draft PR #62，但最新 head `348593b` 與 `main` 衝突且尚無 checks；整合及驗收前保持未勾選）
 - [ ] P2（T2.1–T2.8）、P3（T3.1–T3.9）、P4（T4.1–T4.9）、P5（T5.1–T5.7）：見 §6
 
@@ -316,6 +317,7 @@ autonomy_mode: normal            # careful | normal | hands-off
 | T1.11 | 設定：`config.yaml` 讀寫 + UI 設定頁（各角色模型） | 改設定後新任務立即套用 |
 | T1.12 | **repo 的 provider 允許清單**：每個 repo 設定可用哪些 provider（預設全部）；建立任務時檢查所選角色；T2.1、T2.2、T3.2 新增對應流程時沿用此清單 | 所選角色用到不允許的 provider 時任務直接拒絕，錯誤訊息說明是哪個角色 |
 | T1.13 | **`joy doctor` 與首次啟動檢查**：Node 版本、git、gh 登入、`claude` / `codex` 安裝與版本、鑰匙圈、資料目錄可寫；提供首頁可呈現的檢查結果 | 每項回報 OK / 缺少 / 版本未測過，並附修復指令；缺 CLI 時只停用該 provider，不阻止啟動 |
+| T1.14 | 本機 API 與 WebSocket 認證：server 首次啟動產生隨機 token，存於 `~/.joy` 私密檔案；Joy UI 對 API 與 WebSocket 連線附帶 token，保留 Origin 白名單並接受 `localhost` 與 `127.0.0.1` | 除 `GET /api/health` 外，沒有或錯誤 token 的 API 請求與 WebSocket 一律 403 且不產生副作用；合法 UI 流程正常；token 不出現在 log、事件或錯誤訊息；`pnpm check` 通過；需 owner review |
 
 **P1 完成後：開始用 Joy 開發 Joy。**
 
