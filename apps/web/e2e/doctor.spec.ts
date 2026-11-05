@@ -59,7 +59,7 @@ const doctor = {
 }
 
 test('homepage shows setup status and actionable repair guidance', async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 1100 })
+  await page.setViewportSize({ width: 1440, height: 1400 })
   let requests = 0
   await page.route('**/api/doctor', async (route) => {
     requests++

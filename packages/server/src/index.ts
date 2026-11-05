@@ -9,3 +9,5 @@ export type {
   DoctorReport,
   DoctorStatus,
 } from './doctor.js'
+export { describeDisallowedRoleProvider, findDisallowedRoleProviders } from './provider-allowlist.js'
+export type { DisallowedRoleProvider } from './provider-allowlist.js'
