@@ -2,27 +2,27 @@
 
 > 接手前請先讀本檔、`AGENTS.md` 與 `docs/PLAN.md`。本檔記錄目前進度、阻塞與決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。
 
-- 最後更新：2026-11-05 03:33 UTC
-- 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** 本輪 fetch `origin/main` 確認最新 `main` 為 `ceebdc5c0117ed4b9bb2f25e126ed045651eb9d1`；PR #60 的文件更新已合併。T1.12 仍待 owner review，T1.9 與 T0.4 的使用者 access gates 未解除。
-- 本輪驗證：`pnpm test:e2e` 五項全通過；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 全通過（格式、lint、12 個 workspace typechecks、207 tests passed、2 skipped）；`git diff --check` 通過。`pnpm joy doctor` 在隔離 `JOY_HOME` 執行，Node/Git/keychain/data directory 為 OK，GitHub auth、Claude CLI、Codex CLI 為 MISSING 並提供修復提示，預期 exit 1。
-- 計畫與決策：依 `docs/PLAN.md` v0.2；T1.6、T1.7 已整合。T1.13 diagnostics、首頁展示與 unavailable CLI 停用已在 draft PR #63；未合併前 T1.13/T1.8 清單仍未勾選。
+- 最後更新：2026-11-05 03:47 UTC
+- 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** PR #58 的 P1 主體與 PR #60 的文件更新已合併。GitHub Actions 最新觀察到的 `main` push run（41962420463）對應 SHA `a0c76274e6adb092fd509ff41ba207a143a2a35c`，結果成功；此為最新已觀察的 main push run，不代表 PR 分支已針對該 SHA 驗證。PR #62 回報的 base snapshot 仍是 `ceebdc5c0117ed4b9bb2f25e126ed045651eb9d1`。
+- 本輪文件驗證：`pnpm format:check` 通過（repo 全部檔案）；`git diff --check` 通過。
+- 計畫狀態：依 `docs/PLAN.md` v0.2；本次只更新本檔，不改 ticket 勾選。T1.12、T1.13、T1.8、T1.9 與 T0.4 均未據本快照標記完成。
 
-## P1 狀態與阻塞（#53/#57 live snapshot：2026-11-05 03:20 UTC；#63：03:32 UTC）
+## P1 狀態與阻塞（GitHub 快照：2026-11-05 03:46 UTC）
 
-1. **主要 P1 程式碼已進 main：** [PR #58](https://github.com/jimmynycuee/Joy/pull/58) 已合併，包含 T1.6、T1.7、T1.9 publisher、T1.8 UI 主體。PR #60 的文件更新也已合併；目前 main SHA 為 `ceebdc5c0117ed4b9bb2f25e126ed045651eb9d1`；#57 仍指向較舊 base SHA `2c3fdb4ca7924cd52dea62321d037a83e01766ab`。本輪沒有把 PR #60 的 head CI 當作此 merge commit 或新分支的驗證。
-2. **T1.12 / PR #53：** [#53](https://github.com/jimmynycuee/Joy/pull/53) 仍 open/draft，base `t1.7-event-log`，head `5ed6c322b81869edcd551268e10b1a6c6ecb2c0e`。這個 live head 已納入 resume 前同步驗證、allowlist 更新 API、DB persisted data 驗證、活動角色檢查與避免偽造 attempt 等修補；該 SHA 的 Ubuntu、macOS、Windows、web E2E 四項 checks 全成功，仍沒有 owner review/approval。此輪未修改或推送 #53。
-3. **#57 必須保持 open：** [#57](https://github.com/jimmynycuee/Joy/pull/57) 仍 open，與 #53 共用 head `5ed6c322b81869edcd551268e10b1a6c6ecb2c0e`，base `main`（base SHA `2c3fdb4ca7924cd52dea62321d037a83e01766ab`，目前 main 已前進至 `ceebdc5c0117ed4b9bb2f25e126ed045651eb9d1`），GitHub 回報與 main 衝突；其四項 CI 雖然通過該 head，衝突與 owner review gate 仍阻止整合。此輪未修改 #57，也未推送共享 head。
-4. **T1.9 尚未通過完整驗收：** publisher 已由 PR #58 整合；真實測試 repo draft PR 建立仍待使用者選擇/授權 access，fake `gh`／local bare remote 測試不替代真實驗收。不可繞過 gate。
-5. **T1.13 / T1.8 / PR #63：** 新增 `@joy/doctor`、`joy doctor`、`GET /api/doctor`、首頁 readiness card/retry、missing CLI 選項停用與 task fallback。隔離 home 的 CLI 實際執行成功；E2E 覆蓋成功報告、缺少 CLI 的停用與 fallback、失敗時 workspace/settings 仍可用。本機 `pnpm check` 與 Playwright 通過；PR #63 是 draft，最新發佈 head 的 fresh GitHub checks 須完成後再考慮 ready/merge。未合併前 PLAN 保持未勾選。
-6. **T0.4 Codex fixture 仍未完成：** 現有合成 fixture 不能替代真實錄製；真實 fixture 仍待使用者選定可用、已登入的執行環境，不使用 Cloud 虛構登入狀態。
-7. **其他 owner-review follow-ups：** [#44](https://github.com/jimmynycuee/Joy/pull/44) 與 #58 合併後的 `packages/core` provider/model interfaces、`packages/secrets` keychain handling owner review 仍待確認；PR #21 不在本輪範圍。
+1. **main 最新可見狀態：** GitHub Actions 最新列出的 `main` push run 為 `41962420463`，SHA `a0c76274e6adb092fd509ff41ba207a143a2a35c`，整體 conclusion 為 success。這是 workflow run 所見的 main push，不是直接讀取 branch ref；PR 的舊 base snapshot 不可當作對此 SHA 的驗證。
+2. **T1.13 / PR #62（canonical draft）：** [#62](https://github.com/jimmynycuee/Joy/pull/62) 為 open/draft，base `main`，head `f5602ffa02b85c23c470b421668d6c0b8fedc6fb`。此 head 的 `check (ubuntu-latest)`、`check (windows-latest)`、`check (macos-latest)`、`web E2E (ubuntu-latest)` 四項 GitHub checks 均 completed/success；這只證明該 head 的 checks。PR 的 base snapshot 是 `ceebdc5c0117ed4b9bb2f25e126ed045651eb9d1`，早於最新觀察到的 main push SHA，因此未驗證與最新 main 對齊。GitHub 已請求 owner `jimmynycuee` review，但 reviews 清單仍空，尚無 owner review/approval。最新交接稱獨立 review 仍在進行；GitHub PR 快照沒有獨立 review 結論，本檔不把該進度當作已獨立確認。保持 draft，不標 ready 或 merge。
+3. **PR #63 重複項：** [#63](https://github.com/jimmynycuee/Joy/pull/63) 為 closed、未合併；不是 T1.13 的 canonical PR。其 closed 狀態已由 live PR snapshot 確認，本輪不變更 PR metadata。
+4. **T1.12 / PR #53：** [#53](https://github.com/jimmynycuee/Joy/pull/53) 為 open/draft，base `t1.7-event-log`（base snapshot `c196f74ade116c58f3b9dc00f27bbcc9ab84c525`），head `5ed6c322b81869edcd551268e10b1a6c6ecb2c0e`。此 head 的 Ubuntu、Windows、macOS、web E2E 四項 checks 均 completed/success；owner `jimmynycuee` 已列為 requested reviewer，reviews 清單空，尚無 owner review/approval。保持 draft；checks 不證明它已對齊最新 main。
+5. **PR #57 維持 open、未修改：** [#57](https://github.com/jimmynycuee/Joy/pull/57) 仍 open、非 draft，base `main`，與 #53 共用 head `5ed6c322b81869edcd551268e10b1a6c6ecb2c0e`。GitHub 回報與目前 main tip 衝突；PR base snapshot 為 `2c3fdb4ca7924cd52dea62321d037a83e01766ab`。四項顯示的 checks 均成功，但衝突及舊 base snapshot 表示這些結果不驗證與最新 main 相容。本輪未改動 #57 或其共享分支，必須保持 open。
+6. **使用者 access gates：** T1.9 publisher 已整合至 main，但真實測試 repo/access 尚未有本輪確認的選擇；fake `gh` 或 local bare remote 不替代真實驗收。T0.4 真實 Codex fixture 仍需使用者選定已登入的執行環境。此兩項依賴使用者輸入；本輪沒有執行受 gate 限制的操作，也不以 Cloud 假設登入狀態。
+7. **P2 暫停：** T1.12/T1.13/T1.8 尚未完成整合驗收，且 T1.9/T0.4 gates 未解除；依 PLAN 不開始 P2。其他 owner-review follow-ups 仍包括 [#44](https://github.com/jimmynycuee/Joy/pull/44)、`packages/core` provider/model interfaces 與 `packages/secrets` keychain handling；#21 不在本輪範圍。
 
 ## 下一步（依賴順序）
 
-1. 等 PR #63 最新 head 的 fresh CI；檢查通過後標 ready 並在符合保護規則時合併。T1.12 的 #53 等 owner review、保持 draft；#57 保持 open。
-2. 等待使用者選擇 T1.9 safe test repository/access；取得後才實際驗證 draft PR 發佈，不改用 fake repo 當正式驗收。
-3. 等待使用者提供/選擇 T0.4 真實 Codex fixture 執行環境；未得到選擇前不錄製或宣稱完成。
-4. P1 的 T1.12、T1.9、T1.13/T1.8 acceptance 全部整合並核對最新 `main` checks 後，才依 PLAN 推進 P2、P3、P4、P5。
+1. 等待 #62 的獨立 review 與 owner review 結果；在更新後的基礎上完成 T1.13/T1.8 驗收前，保持 draft，不改 PR 或 branch metadata。
+2. #53 等 owner review，維持 draft；#57 維持 open 且不改動。需要基礎更新時，先確認授權及最新 PR/base 狀態，不把現有 checks 當成新 head 或最新 main 的驗證。
+3. 等待使用者選擇 T1.9 safe test repository/access 與 T0.4 真實 Codex fixture 執行環境；選擇未提供前不得執行 gated actions 或宣稱驗收完成。
+4. P1 尚未完成前保持 P2 暫停；只在依賴完成、最新 main/head 均經相應驗證後才按 PLAN 推進。
 
 ## 歷史 P1 狀態快照（PR 狀態截至 2026-11-04 18:49 UTC；main 更新至 18:52 UTC）
 
