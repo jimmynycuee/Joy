@@ -62,6 +62,7 @@ interface ExistingPullRequest {
   isDraft: boolean
   headRefName: string
   headRepositoryOwner: { login: string } | null
+  headRepository: { name: string } | null
   baseRefName: string
   body: string
 }
@@ -217,7 +218,7 @@ export class GitHubPublisher {
       return {
         commitSha: currentHead,
         pullRequestUrl: validatePullRequestUrl(existing.url, target),
-        body: existing.body,
+        body: this.redact(existing.body),
       }
     }
 
@@ -327,6 +328,27 @@ export class GitHubPublisher {
         )
       }
 
+      const changedBlobIds = parseChangedBlobIds(
+        await this.runGit(
+          ['diff-tree', '--no-commit-id', '--no-renames', '-r', '--raw', '-z', parent, commit, '--'],
+          workspace.path,
+          'Git changed blob list',
+        ),
+      )
+      for (const blobId of changedBlobIds) {
+        const content = await this.runGit(
+          ['cat-file', 'blob', blobId],
+          workspace.path,
+          'Git LFS pointer blob scan',
+          MAX_COMMAND_OUTPUT_BYTES,
+        )
+        if (containsGitLfsPointer(content)) {
+          throw new Error(
+            'Refusing to publish Git LFS pointer changes because their external payload cannot be safely scanned.',
+          )
+        }
+      }
+
       const patch = await this.runGit(
         [
           'diff',
@@ -357,16 +379,10 @@ export class GitHubPublisher {
     baseBranch: string,
     target: GitHubRepository,
   ): Promise<void> {
+    const fetchUrl = await this.resolveEffectiveFetchUrl(workspace, target)
     const ref = `refs/joy/github-publisher/base-check/${randomUUID()}`
     await this.runGit(
-      [
-        'fetch',
-        '--no-tags',
-        '--quiet',
-        '--',
-        workspace.repo.githubRemote as string,
-        `+refs/heads/${baseBranch}:${ref}`,
-      ],
+      ['fetch', '--no-tags', '--quiet', '--', fetchUrl, `+refs/heads/${baseBranch}:${ref}`],
       workspace.path,
       'Git fetch of the configured base branch',
     )
@@ -395,6 +411,43 @@ export class GitHubPublisher {
     }
   }
 
+  private async resolveEffectiveFetchUrl(workspace: Workspace, target: GitHubRepository): Promise<string> {
+    let candidate = workspace.repo.githubRemote
+    if (!candidate) throw new Error('RepoRef.githubRemote must identify the configured base repository.')
+    const seen = new Set<string>()
+
+    for (let rewrite = 0; rewrite < 8; rewrite++) {
+      if (seen.has(candidate)) {
+        throw new Error('The effective base fetch URL contains a rewrite cycle; refusing to publish.')
+      }
+      seen.add(candidate)
+      const effective = (
+        await this.runGit(
+          ['ls-remote', '--get-url', candidate],
+          workspace.path,
+          'Git effective base fetch URL',
+        )
+      ).trim()
+      let effectiveRepository: GitHubRepository
+      try {
+        effectiveRepository = parseGitHubRepository(effective)
+      } catch {
+        throw new Error(
+          'The effective base fetch URL is not a supported GitHub repository; refusing to publish.',
+        )
+      }
+      if (!sameRepository(effectiveRepository, target)) {
+        throw new Error(
+          'The effective base fetch URL does not match the configured GitHub repository; refusing to publish.',
+        )
+      }
+      if (effective === candidate) return effective
+      candidate = effective
+    }
+
+    throw new Error('The effective base fetch URL was rewritten too many times; refusing to publish.')
+  }
+
   private async findExistingPullRequest(
     target: GitHubRepository,
     head: string,
@@ -416,7 +469,7 @@ export class GitHubPublisher {
         '--state',
         'all',
         '--json',
-        'url,state,isDraft,headRefName,headRepositoryOwner,baseRefName,body',
+        'url,state,isDraft,headRefName,headRepositoryOwner,headRepository,baseRefName,body',
       ],
       cwd,
       'GitHub CLI PR lookup',
@@ -430,9 +483,13 @@ export class GitHubPublisher {
     if (!Array.isArray(found) || !found.every(isExistingPullRequest)) {
       throw new Error('GitHub CLI returned an invalid pull request list.')
     }
+    const expectedHeadOwner = headOwner.toLowerCase()
+    const expectedHeadRepository = target.name.toLowerCase()
     const branchPullRequests = (found as ExistingPullRequest[]).filter(
       (pr) =>
-        pr.headRefName === branch && pr.headRepositoryOwner?.login.toLowerCase() === headOwner.toLowerCase(),
+        pr.headRefName === branch &&
+        pr.headRepositoryOwner?.login.toLowerCase() === expectedHeadOwner &&
+        pr.headRepository?.name.toLowerCase() === expectedHeadRepository,
     )
     if (!branchPullRequests.length) return undefined
     const matchingBase = branchPullRequests.filter((pr) => pr.baseRefName === baseBranch)
@@ -602,14 +659,19 @@ function isExistingPullRequest(value: unknown): value is ExistingPullRequest {
   if (!value || typeof value !== 'object') return false
   const pr = value as Record<string, unknown>
   const owner = pr.headRepositoryOwner
+  const repository = pr.headRepository
   const validOwner =
     owner === null || (typeof owner === 'object' && 'login' in owner && typeof owner.login === 'string')
+  const validRepository =
+    repository === null ||
+    (typeof repository === 'object' && 'name' in repository && typeof repository.name === 'string')
   return (
     typeof pr.url === 'string' &&
     typeof pr.state === 'string' &&
     typeof pr.isDraft === 'boolean' &&
     typeof pr.headRefName === 'string' &&
     validOwner &&
+    validRepository &&
     typeof pr.baseRefName === 'string' &&
     typeof pr.body === 'string'
   )
@@ -689,6 +751,48 @@ function parseBinaryPaths(output: string): string[] {
     }
   }
   return paths
+}
+
+function containsGitLfsPointer(content: string): boolean {
+  const lines = content.trim().split(/\r?\n/)
+  const version = lines[0]?.trim()
+  if (
+    ![
+      'version https://git-lfs.github.com/spec/v1',
+      'version https://hawser.github.com/spec/v1',
+      'version http://git-media.io/v/2',
+    ].includes(version ?? '')
+  ) {
+    return false
+  }
+  const pointerFields = lines.slice(1)
+  return (
+    pointerFields.some((line) => /^oid sha256:[a-f0-9]{64}$/i.test(line)) &&
+    pointerFields.some((line) => /^size \d+$/.test(line))
+  )
+}
+
+function parseChangedBlobIds(output: string): string[] {
+  const records = output.split('\0')
+  const blobIds: string[] = []
+  for (let index = 0; index < records.length;) {
+    const header = records[index]
+    if (!header) {
+      index++
+      continue
+    }
+    if (records[index + 1] === undefined) {
+      throw new Error('Git returned an invalid changed blob listing.')
+    }
+    const match = /^:(\d{6}) (\d{6}) ([a-f0-9]{40}|[a-f0-9]{64}) ([a-f0-9]{40}|[a-f0-9]{64}) ([A-Z])$/i.exec(
+      header,
+    )
+    if (!match) throw new Error('Git returned an invalid changed blob listing.')
+    const [, , mode, , objectId, status] = match
+    if (status !== 'D' && mode !== '000000' && mode !== '160000' && objectId) blobIds.push(objectId)
+    index += 2
+  }
+  return blobIds
 }
 
 function addedPatchContent(patch: string): string {

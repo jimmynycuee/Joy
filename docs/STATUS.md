@@ -16,8 +16,9 @@
 
 ### T1.9 GitHub publisher
 
-- 已把 T1.9 publisher 改動重放至最新 main；程式檢查上游 repo／fork 與 base ancestry，逐一掃描將推送的 commits（敏感檔名、二進位變更、secret-like 新增內容與 commit message），並限制 Git／gh 子程序時間及診斷輸出。
-- 本機 `pnpm exec vitest run --project github packages/github/src/publisher.test.ts` 通過（35/35）；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 通過（格式、lint、typecheck；254 passed、2 skipped）。
+- 已把 T1.9 publisher 改動重放至最新 main；程式檢查推送／抓取目標與 base ancestry，逐一掃描將推送的 commits（敏感檔名、二進位變更、secret-like 新增內容、commit message 與每個修改後 blob 中的 Git LFS pointer），並限制 Git／gh 子程序時間及診斷輸出；重用既有 PR 時以 `headRepositoryOwner.login` 與 `headRepository.name` 完整比對（相容 gh 2.40–2.88）並遮罩 body。
+- 獨立審查指出 fetch URL rewrite、Git LFS payload、PR head repo identity 與既有 body 遮罩四項風險，均已修正並新增回歸測試；後續複審補捉編輯過的 LFS pointer 與舊版 gh schema，均已修正並加入測試；最新 head 的獨立複核待進行。
+- 本機 `pnpm exec vitest run --project github packages/github/src/publisher.test.ts` 通過（41/41）；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 通過（格式、lint、typecheck；260 passed、2 skipped）。`git diff --check` 通過。
 - PLAN 的真實驗收仍未完成：本機 `gh auth status` 顯示未登入，尚未建立 `[test] ` draft PR。已透過存取卡請求 `GITHUB_PAT`；取得後先用 `GH_TOKEN="$GITHUB_PAT" gh auth status` 驗證 CLI 登入，再開測試 PR，驗收後立即關閉並刪除測試分支。
 
 ### T1.14 本機 API 與 WebSocket token 認證
@@ -48,7 +49,7 @@
 - [PR #58](https://github.com/jimmynycuee/Joy/pull/58)：審核 `packages/core` 公開介面與 `packages/secrets` OS keychain／機密遮罩處理。
 - [PR #73](https://github.com/jimmynycuee/Joy/pull/73)：審核本機 API／WebSocket token 認證、token 檔案權限與 Windows ACL 邊界。
 - [PR #57](https://github.com/jimmynycuee/Joy/pull/57)：審核 repo provider allowlist 的政策／執行時檢查，以及無 attempt 預檢失敗事件的資料庫與事件格式。
-- [PR #54](https://github.com/jimmynycuee/Joy/pull/54)：審核 GitHub publisher 對 push target、提交歷史與 secret-like 內容的安全限制。
+- [PR #76](https://github.com/jimmynycuee/Joy/pull/76)：審核 T1.9 publisher 安全性後續修正：先驗證 Git URL rewrite 後的有效 fetch destination、阻擋 Git LFS pointer commits、以完整 head repository identity／branch／base 比對可重用 PR，並遮罩既有 PR body。新的獨立審查與 `[test] ` draft PR 真實驗收仍待完成；尚未核准。
 
 ## 需要擁有者處理
 
