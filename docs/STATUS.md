@@ -4,7 +4,7 @@
 > 這裡只寫 PLAN 沒有的東西：現在做到哪、卡在哪、下一步、最近的決策。進度打勾在 PLAN 的「進度」。
 
 - 最後更新：2026-11-05
-- 目前階段：**P1 進行中**（T1.1–T1.7、T1.10、T1.11、T1.12 已完成實作；T1.12 draft PR #53 等擁有者審核與新 head checks；PR base 仍為 `t1.7-event-log`，改為 `main` 尚未確認；剩 T1.9、T1.8）
+- 目前階段：**P1 進行中**（T1.1–T1.7、T1.10、T1.11、T1.12 已完成實作；T1.12 draft PR #53 的本機與三平台 checks 已通過，等待擁有者審核；PR base 仍為 `t1.7-event-log`，改為 `main` 尚未確認；剩 T1.9、T1.8）
 - 最新分支：`t1.12-repo-provider-allowlist`，從 `t1.7-event-log` 切出；PR #53 為 draft，PR #57 共用此 head 並維持 open。
 
 ## 分支與 PR（一條直線，每個疊在前一個上）
@@ -35,6 +35,8 @@ main ← t0-foundation (#2) ← t1.1-claude-cli (#3) ← t1.4-worktree (#4) ← 
 | server / UI / GitHub    | T1.6–T1.7 server 完成；T1.12 增加 repo provider allowlist、resume preflight、PATCH 更新與 DB 驗證（PR #53 draft）；UI T1.8、GitHub T1.9 尚未完成     |
 
 ## 卡住 / 需要人做的事
+
+- **T1.12 draft PR #53**：本機 `pnpm check` 與 head `f52a664ec8f40aa112709c214cc82e4f54bf22f3` 的 Ubuntu/macOS/Windows checks 均已通過；等待擁有者審核。base 仍為 `t1.7-event-log`，因為透過支援工具更新為 `main` 尚未確認。
 
 1. **T1.6 draft PR #6**：Ubuntu、macOS、Windows 三平台 CI 已通過，等待擁有者審核/合併；依擁有者指示，agent 不合併。
 2. **T1.7 draft PR #7**（[PR](https://github.com/jimmynycuee/Joy/pull/7)）：本機 `pnpm check` 通過；最新提交的 CI workflow run 為 `pending`，Ubuntu、macOS、Windows jobs 尚無結果。
