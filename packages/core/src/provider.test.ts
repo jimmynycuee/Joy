@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isProviderKind, parseModelRef } from './index.js'
+import { formatModelRef, isProviderKind, parseModelRef } from './provider.js'
 
 describe('isProviderKind', () => {
   it('accepts known providers', () => {
@@ -28,5 +28,10 @@ describe('parseModelRef', () => {
     expect(parseModelRef(':opus')).toBeNull()
     expect(parseModelRef('claude-cli:')).toBeNull()
     expect(parseModelRef('unknown:model')).toBeNull()
+  })
+
+  it('round-trips with formatModelRef', () => {
+    const ref = parseModelRef('codex-cli:gpt-5-codex')
+    expect(ref && formatModelRef(ref)).toBe('codex-cli:gpt-5-codex')
   })
 })
