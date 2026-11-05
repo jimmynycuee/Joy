@@ -8,7 +8,7 @@ import { configSchema, defaultConfig } from './schema.js'
 
 /** Joy's data directory. `JOY_HOME` overrides `~/.joy` (tests, portable installs). */
 export function joyHome(env: NodeJS.ProcessEnv = process.env): string {
-  const home = env.JOY_HOME ?? join(homedir(), '.joy')
+  const home = env.JOY_HOME || join(homedir(), '.joy')
   if (!isAbsolute(home)) throw new Error('JOY_HOME must be an absolute path')
   return resolve(home)
 }

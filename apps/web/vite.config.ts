@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync } from 'node:fs'
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 import { defineConfig } from 'vite'
@@ -32,36 +32,59 @@ export function readApiToken(command: 'build' | 'serve', isPreview = false): str
     if (metadata.isSymbolicLink())
       throw new Error(`Joy API token file must not be a symbolic link: ${tokenFile}`)
     if (!metadata.isFile()) throw new Error(`Joy API token path must be a regular file: ${tokenFile}`)
-    if (process.platform !== 'win32' && (Number(metadata.mode) & 0o077) !== 0) {
-      throw new Error(`Joy API token file permissions must restrict access to its owner: ${tokenFile}`)
-    }
+    const flags = process.platform === 'win32' ? 'r' : fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW
+    let descriptor: number
     try {
-      fileToken = readFileSync(tokenFile, 'utf8').trim()
+      descriptor = openSync(tokenFile, flags)
     } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ELOOP') {
+        throw new Error(`Joy API token file must not be a symbolic link: ${tokenFile}`, { cause: error })
+      }
       throw new Error(
-        `Could not read the Joy API token file at ${tokenFile}. Set JOY_API_TOKEN or provide a readable JOY_API_TOKEN_FILE.`,
+        `Could not open the Joy API token file at ${tokenFile}. Set JOY_API_TOKEN or provide a readable JOY_API_TOKEN_FILE.`,
         { cause: error },
       )
     }
+    try {
+      const openedMetadata = fstatSync(descriptor)
+      if (
+        Number(metadata.dev) !== Number(openedMetadata.dev) ||
+        Number(metadata.ino) !== Number(openedMetadata.ino)
+      ) {
+        throw new Error(`Joy API token file changed while it was being opened: ${tokenFile}`)
+      }
+      if (!openedMetadata.isFile()) throw new Error(`Joy API token path must be a regular file: ${tokenFile}`)
+      if (process.platform !== 'win32' && (Number(openedMetadata.mode) & 0o077) !== 0) {
+        throw new Error(`Joy API token file permissions must restrict access to its owner: ${tokenFile}`)
+      }
+      fileToken = readFileSync(descriptor, 'utf8').trim()
+    } finally {
+      closeSync(descriptor)
+    }
   }
   if (!fileToken) {
+    if (metadata) {
+      throw new Error(
+        `Joy API token file is empty; remove it and restart Joy to generate a new token: ${tokenFile}`,
+      )
+    }
     throw new Error(
       `Joy API token is required to run the web UI. Set JOY_API_TOKEN or create ${tokenFile} (or set JOY_API_TOKEN_FILE).`,
     )
   }
-  assertApiToken(fileToken)
+  assertApiToken(fileToken, `Joy API token file ${tokenFile}`)
   return fileToken
 }
 
-function joyHome(): string {
-  const home = process.env.JOY_HOME ?? join(homedir(), '.joy')
+export function joyHome(): string {
+  const home = process.env.JOY_HOME || join(homedir(), '.joy')
   if (!isAbsolute(home)) throw new Error('JOY_HOME must be an absolute path')
   return resolve(home)
 }
 
-function assertApiToken(token: string): void {
+function assertApiToken(token: string, source = 'Joy API token'): void {
   if (!API_TOKEN_PATTERN.test(token)) {
-    throw new Error('Joy API token must contain at least 16 URL-safe characters.')
+    throw new Error(`${source} must contain at least 16 URL-safe characters.`)
   }
 }
 

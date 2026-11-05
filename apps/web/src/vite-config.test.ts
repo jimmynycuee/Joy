@@ -1,8 +1,8 @@
 import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { readApiToken } from '../vite.config.js'
+import { joyHome, readApiToken } from '../vite.config.js'
 
 const token = 'vite-config-test-token-1234567890'
 const originalJoyHome = process.env.JOY_HOME
@@ -35,6 +35,12 @@ describe('Vite API token configuration', () => {
     delete process.env.JOY_API_TOKEN_FILE
 
     expect(readApiToken('serve')).toBe(token)
+  })
+
+  it('uses the default directory when JOY_HOME is empty', () => {
+    process.env.JOY_HOME = ''
+
+    expect(joyHome()).toBe(join(homedir(), '.joy'))
   })
 
   it('requires an absolute JOY_HOME to keep server and UI token paths consistent', () => {

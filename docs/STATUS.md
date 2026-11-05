@@ -2,8 +2,8 @@
 
 > 接手前請先讀本檔、`AGENTS.md` 與 `docs/PLAN.md`。本檔記錄目前進度、阻塞與決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。
 
-- 最後更新：2026-11-05；T1.14 (#72) 由 draft PR #73 交付，分支 `t1.14-local-api-auth-token` 基於 PR #71 合併後 main `4f71deb`。獨立安全審查發現的 token 路徑／檔案處理問題已修正，並補上絕對 `JOY_HOME`、hard-link 錯誤指引與單一使用者開發警告；本機驗證通過，owner `jimmynycuee` 已列為 reviewer。
-- 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** PR #71 已合併，T1.14 分支由 post-merge `main` (`4f71deb`) 建立。PR #73 仍是 draft；head `c078ed0` 的四項 CI 全通過，最新本機補強推送後需再確認 CI；安全變更需 owner review，未取得 review 前不得標 ready 或 merge。下方 04:14 UTC 的 PR 狀態資料是舊快照，不代表目前 GitHub 狀態；採取其他 PR 的後續動作前須重新讀取相關 PR。
+- 最後更新：2026-11-05；T1.14 (#72) 由 draft PR #73 交付，分支 `t1.14-local-api-auth-token` 基於 PR #71 合併後 main `4f71deb`。獨立安全審查無 blocker；已補上 token 路徑／檔案處理、絕對 `JOY_HOME`、hard-link 錯誤指引與單一使用者開發警告。本機完整檢查 217 通過、2 跳過，E2E 4/4，build token 非洩漏；owner `jimmynycuee` 已列為 reviewer。
+- 目前階段：**P1 尚未完成；P2 依計畫順序暫停。** PR #71 已合併，T1.14 分支由 post-merge `main` (`4f71deb`) 建立。PR #73 仍是 draft；前一 head `008ee2b` 的 Windows CI 因測試硬寫 POSIX `/data/joy` 失敗，已改用系統暫存目錄形成跨平台絕對路徑；同時補上空 `JOY_HOME` 預設與 Vite 開檔後 inode/權限複核。這些修正的本機完整檢查通過，新 head CI 與 owner review 仍待完成；未取得 owner review 前不得標 ready 或 merge。下方 04:14 UTC 的 PR 狀態資料是舊快照，不代表目前 GitHub 狀態；採取其他 PR 的後續動作前須重新讀取相關 PR。
 - 後續階段有部分獨立進度：T4.2 的 #17 為 open/draft、base `t1.8-web`、無衝突；Ubuntu、macOS、Windows 與 web E2E 四項 GitHub checks 全通過。這是本機 PWA 基礎，不是已完成 Web Push 驗收，也不解除 P1/P2 的依賴順序。
 
 ## 歷史狀態快照（截至 2026-11-05 04:14 UTC；非即時）
