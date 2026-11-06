@@ -53,6 +53,7 @@ import {
 } from '@joy/db'
 import type { ApprovalStatus, AttemptRecord, Database, RepoRecord, StoredTask } from '@joy/db'
 import { ApprovalBroker } from './approvals.js'
+import { TelegramChannel } from '@joy/channels'
 import { WorktreeExecutor } from '@joy/executor'
 import type { Executor, WorkspaceDiff } from '@joy/core'
 import { reviewLoop } from '@joy/orchestrator'
@@ -112,6 +113,11 @@ const taskInputSchema = z.strictObject({
   maxRounds: z.number().int().min(1).max(20).optional(),
 })
 const idSchema = z.string().min(1).max(128)
+/** Secrets the settings page can manage, by URL segment. Values never leave the server. */
+const SECRET_ROUTES: Record<string, { name: 'openai_api_key' | 'telegram_bot_token'; env: string }> = {
+  'openai-api-key': { name: 'openai_api_key', env: 'OPENAI_API_KEY' },
+  'telegram-bot-token': { name: 'telegram_bot_token', env: 'JOY_TELEGRAM_BOT_TOKEN' },
+}
 const openAiSecretInputSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
 const approvalDecisionSchema = z.strictObject({ note: z.string().max(2_000).optional() })
 const approvalStatusSchema = z.enum(['pending', 'approved', 'denied', 'expired']).optional()
@@ -159,6 +165,8 @@ export interface JoyServerOptions {
   ownerApprovalChannel?: boolean
   /** Overrides `approvals.timeout_minutes` (tests). */
   approvalTimeoutMs?: number
+  /** Telegram Bot API overrides (tests point this at a fake API). */
+  telegram?: { baseUrl?: string; fetch?: typeof fetch; pollTimeoutSeconds?: number }
   /** Overrides for the built-in Codex app-server provider (tests and local development). */
   codexAppServer?: { command?: string; argsPrefix?: string[]; env?: NodeJS.ProcessEnv; timeoutMs?: number }
   /** Test seams for prerequisite checks; production uses the current process and OS services. */
@@ -271,8 +279,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const safe = redactor.redactValue(payload)
     const event = appendTaskEvent(db, attemptId, type, safe)
     sendEvent(taskId, event)
+    if (type === 'result') notifyResult(taskId, safe)
     return event
   }
+  // Assigned once Telegram is set up below; results published before then are not announced.
+  let notifyResult: (taskId: TaskId, payload: unknown) => void = () => {}
 
   const approvals = new ApprovalBroker({
     db,
@@ -283,6 +294,94 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   })
   // Nobody is waiting for approvals created before this process started.
   expirePendingApprovals(db)
+
+  // Telegram (T2.4b): only when the owner's chat id is configured. The token is read from the keychain per call.
+  const telegramChatId = initialConfig.channels.telegram.owner_chat_id
+  const telegram = telegramChatId
+    ? new TelegramChannel({
+        ownerChatId: telegramChatId,
+        token: async () => {
+          const token = await secretStore.get('telegram_bot_token')
+          if (token) redactor.add(token)
+          return token
+        },
+        ...(options.telegram?.baseUrl ? { baseUrl: options.telegram.baseUrl } : {}),
+        ...(options.telegram?.fetch ? { fetch: options.telegram.fetch } : {}),
+        ...(options.telegram?.pollTimeoutSeconds !== undefined
+          ? { pollTimeoutSeconds: options.telegram.pollTimeoutSeconds }
+          : {}),
+        onRejected: (reason, detail) =>
+          console.warn(redactor.redact(`[joy] Telegram: dropped ${reason} ${JSON.stringify(detail)}`)),
+        onError: (error) => console.warn(redactor.redact(`[joy] Telegram: ${error.message}`)),
+      })
+    : undefined
+  const notifyOwner = (text: string) => {
+    void telegram
+      ?.send({ text })
+      .catch((error: Error) => console.warn(redactor.redact(`[joy] Telegram: ${error.message}`)))
+  }
+  if (telegram) {
+    notifyResult = (taskId, payload) => {
+      const result = payload as { status?: string; approved?: boolean; reason?: string }
+      const title = getTask(db, taskId)?.title ?? taskId
+      const icon =
+        result.status === 'succeeded'
+          ? result.approved === false
+            ? '🟡'
+            : '✅'
+          : result.status === 'cancelled'
+            ? '⏹'
+            : '❌'
+      notifyOwner(
+        `${icon} ${title}: ${result.status ?? 'finished'}${result.reason ? ` — ${result.reason}` : ''}`,
+      )
+    }
+    approvals.onRequested((approval, preReview) => {
+      const title = getTask(db, approval.taskId)?.title ?? approval.taskId
+      const lines = [
+        '🔴 Joy needs your approval',
+        `Task: ${title}`,
+        approval.action.summary,
+        ...(approval.action.provenance === 'external_content' ? ['Requested from external content.'] : []),
+        ...(preReview
+          ? [
+              `Pre-review (${preReview.provider}): ${preReview.approve ? 'allow' : 'deny'} — ${preReview.summary}`,
+            ]
+          : []),
+      ]
+      void telegram
+        .send({
+          text: redactor.redact(lines.join('\n')),
+          correlationId: approval.id,
+          buttons: [
+            { id: 'approve', label: 'Approve' },
+            { id: 'deny', label: 'Deny' },
+          ],
+        })
+        .catch((error: Error) => console.warn(redactor.redact(`[joy] Telegram: ${error.message}`)))
+    })
+    telegram.onMessage(async (message) => {
+      if (message.correlationId && (message.buttonId === 'approve' || message.buttonId === 'deny')) {
+        const decided = approvals.decide(
+          message.correlationId,
+          message.buttonId === 'approve' ? 'approved' : 'denied',
+          'telegram',
+        )
+        await telegram.send({
+          text: decided
+            ? decided.status === 'approved'
+              ? '✅ Approved. The task continues.'
+              : '⛔ Denied. The action was not run.'
+            : 'That request was already answered or has expired.',
+        })
+        return
+      }
+      const pending = approvals.pending().length
+      await telegram.send({
+        text: `Joy is running. ${pending} approval${pending === 1 ? '' : 's'} waiting. Chatting with the assistant comes in a later version.`,
+      })
+    })
+  }
   const publishTaskFailure = (taskId: TaskId, message: string): TaskEvent => {
     const event = appendTaskFailureEvent(db, taskId, redactor.redact(message))
     sendEvent(taskId, event)
@@ -598,25 +697,25 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       json(res, 200, { config: await configStore.save(config) })
       return
     }
-    if (url.pathname === '/api/secrets/openai-api-key' && method === 'GET') {
-      json(res, 200, await secretStore.status('openai_api_key'))
+    const secretMatch = /^\/api\/secrets\/([a-z-]+)$/.exec(url.pathname)
+    const secretKey = secretMatch?.[1] ?? ''
+    // Own keys only: a path like /api/secrets/constructor must not reach Object.prototype.
+    const secret = Object.hasOwn(SECRET_ROUTES, secretKey) ? SECRET_ROUTES[secretKey] : undefined
+    if (secret && method === 'GET') {
+      json(res, 200, await secretStore.status(secret.name))
       return
     }
-    if (url.pathname === '/api/secrets/openai-api-key' && method === 'PUT') {
-      const { value } = openAiSecretInputSchema.parse(await readJson(req))
-      const status = await secretStore.status('openai_api_key')
+    if (secret && (method === 'PUT' || method === 'DELETE')) {
+      const status = await secretStore.status(secret.name)
       if (status.source === 'env')
-        throw new HttpError(409, 'OPENAI_API_KEY is supplied by the environment; manage it there instead.')
-      await secretStore.set('openai_api_key', value)
-      json(res, 200, await secretStore.status('openai_api_key'))
-      return
-    }
-    if (url.pathname === '/api/secrets/openai-api-key' && method === 'DELETE') {
-      const status = await secretStore.status('openai_api_key')
-      if (status.source === 'env')
-        throw new HttpError(409, 'OPENAI_API_KEY is supplied by the environment; manage it there instead.')
-      await secretStore.delete('openai_api_key')
-      json(res, 200, await secretStore.status('openai_api_key'))
+        throw new HttpError(409, `${secret.env} is supplied by the environment; manage it there instead.`)
+      if (method === 'PUT') {
+        const { value } = openAiSecretInputSchema.parse(await readJson(req))
+        await secretStore.set(secret.name, value)
+      } else {
+        await secretStore.delete(secret.name)
+      }
+      json(res, 200, await secretStore.status(secret.name))
       return
     }
     if (url.pathname === '/api/providers' && method === 'GET') {
@@ -1202,6 +1301,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         httpServer.once('error', onError)
         httpServer.listen(port, '127.0.0.1', () => {
           httpServer.off('error', onError)
+          telegram?.start()
           resolve(httpServer.address() as AddressInfo)
         })
       })
@@ -1209,6 +1309,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     async close() {
       if (closed) return
       closed = true
+      await telegram?.stop()
       const activeTasks = [...running.values()]
       for (const active of activeTasks) active.controller.abort()
       await Promise.all(activeTasks.map((active) => active.promise))

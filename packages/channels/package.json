@@ -1,0 +1,17 @@
+{
+  "name": "@joy/channels",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Messaging channels to reach the owner (Telegram first; LINE later).",
+  "license": "BUSL-1.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@joy/core": "workspace:*"
+  }
+}
