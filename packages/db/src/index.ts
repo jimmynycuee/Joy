@@ -91,3 +91,5 @@ export {
   setScheduleEnabled,
 } from './schedules.js'
 export type { ReminderRecord, ReminderStatus, ScheduleAction, ScheduleRecord } from './schedules.js'
+export { modelStats } from './stats.js'
+export type { ImplementerStats, ModelStats, ReviewerStats, StatsFilter } from './stats.js'
