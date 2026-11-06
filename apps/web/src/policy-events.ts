@@ -51,6 +51,15 @@ export function policyEventTitle(type: string, payload: Payload): string | undef
   if (type === 'approval.requested') {
     return `Waiting for your approval: ${text(payload?.summary) ?? KIND_LABELS[text(payload?.kind) ?? ''] ?? 'an action'}`
   }
+  if (type === 'quota.handoff') {
+    const from = (payload?.from as { provider?: string } | undefined)?.provider ?? 'the first model'
+    const to = (payload?.to as { provider?: string } | undefined)?.provider ?? 'another model'
+    return `Out of quota: ${from} handed the task to ${to} in the same worktree`
+  }
+  if (type === 'quota.queued') {
+    const at = text(payload?.resumeAt)
+    return `Out of quota: waiting${at ? ` until ${new Date(at).toLocaleString()}` : ''}, then resuming`
+  }
   if (type === 'task.paused') return 'Paused: no answer in time. Approve it to resume the same session.'
   if (type === 'approval.granted')
     return `Allowed once by your late approval: ${text(payload?.summary) ?? ''}`.trim()
@@ -70,6 +79,7 @@ export function policyEventKind(type: string, payload: Payload): string | undefi
   if (type === 'policy.pre_review') return 'policy-review'
   if (type === 'approval.requested' || type === 'task.paused') return 'policy-approve'
   if (type === 'approval.granted') return 'policy-auto'
+  if (type === 'quota.handoff' || type === 'quota.queued') return 'policy-notify'
   if (type === 'approval.decided') return payload?.status === 'approved' ? 'policy-auto' : 'policy-approve'
   return undefined
 }

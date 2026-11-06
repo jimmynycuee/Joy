@@ -29,6 +29,7 @@ import type {
 import { afterEach, describe, expect, it } from 'vitest'
 import { ConfigStore } from '@joy/config'
 import {
+  addUsage,
   appendTaskEvent,
   createAttempt,
   createRepo,
@@ -160,6 +161,10 @@ function fixture(
     approvalTimeoutMs?: number
     telegram?: JoyServerOptions['telegram']
     publisher?: JoyServerOptions['publisher']
+    /** Providers that replace the fixture's fakes (merged last). */
+    providers?: Partial<Record<ProviderKind, AgentProvider>>
+    quotaResumeBufferMs?: number
+    taskTimeLimitMs?: number
     /** Use the server's real Codex app-server provider, driven by a fake app-server process. */
     codexAppServer?: JoyServerOptions['codexAppServer']
     /** Worktree path the fake executor hands out; must exist when a real child process runs in it. */
@@ -227,8 +232,13 @@ function fixture(
       'claude-cli': implementer,
       ...(options.codexAppServer ? {} : { 'codex-cli': reviewer }),
       'openai-api': api,
+      ...options.providers,
     },
     ...(options.codexAppServer ? { codexAppServer: options.codexAppServer } : {}),
+    ...(options.quotaResumeBufferMs !== undefined
+      ? { quotaResumeBufferMs: options.quotaResumeBufferMs }
+      : {}),
+    ...(options.taskTimeLimitMs !== undefined ? { taskTimeLimitMs: options.taskTimeLimitMs } : {}),
     ...(options.redactor ? { redactor: options.redactor } : {}),
   }
   const serverPromise = createJoyServer(serverOptions)
@@ -387,6 +397,45 @@ async function patchJson(url: string, body: unknown) {
     body: JSON.stringify(body),
   })
 }
+
+/** A provider whose every run is scripted: each call takes the next list of events (the last list repeats). */
+function scriptedProvider(
+  kind: ProviderKind,
+  runs: Array<(options: RunOptions) => AgentEvent[] | Promise<AgentEvent[]>>,
+) {
+  const calls: RunOptions[] = []
+  const provider: AgentProvider = {
+    kind,
+    capabilities: {
+      codeEdit: true,
+      tools: true,
+      resume: true,
+      presetSessionId: true,
+      delegatedApproval: false,
+      quotaEvents: true,
+      structuredOutput: true,
+    },
+    async *run(options: RunOptions) {
+      calls.push(options)
+      const script = runs[Math.min(calls.length - 1, runs.length - 1)]
+      for (const event of (await script?.(options)) ?? []) yield event
+    },
+    healthCheck: async () => ({ ok: true, installed: true, loggedIn: true as const }),
+  }
+  return { provider, calls }
+}
+
+const outOfQuota = (sessionId: string, resetsAt?: number): AgentEvent[] => [
+  { type: 'session_started', sessionId },
+  { type: 'quota', status: 'limited', windows: [], ...(resetsAt !== undefined ? { resetsAt } : {}) },
+  { type: 'error', message: 'usage limit reached', recoverable: false },
+  { type: 'done', sessionId, isError: true },
+]
+const finished = (sessionId: string): AgentEvent[] => [
+  { type: 'session_started', sessionId },
+  { type: 'message', text: 'finished' },
+  { type: 'done', sessionId, isError: false, finalMessage: 'finished' },
+]
 
 describe('Joy local server', () => {
   it('serves sanitized prerequisite checks for the homepage without running provider commands', async () => {
@@ -1959,6 +2008,196 @@ describe('Joy local server', () => {
     expect(((await (await fetch(`${origin}/api/tasks/${second}`)).json()) as TaskDetails).task.status).toBe(
       'cancelled',
     )
+  })
+
+  it('hands a task to the other provider in the same worktree when the first runs out of quota', async () => {
+    const claude = scriptedProvider('claude-cli', [
+      () => outOfQuota('s-claude', Math.floor(Date.now() / 1000) + 3600),
+    ])
+    const codex = scriptedProvider('codex-cli', [() => finished('s-codex')])
+    const { serverPromise } = fixture({
+      providers: { 'claude-cli': claude.provider, 'codex-cli': codex.provider },
+    })
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, {
+      path: '/tmp/handoff-repo',
+      defaultBranch: 'main',
+    })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const taskResponse = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Hand off',
+      prompt: 'Fix add()',
+      mode: 'single',
+    })
+    const { task } = (await taskResponse.json()) as { task: { id: string } }
+    const done = await waitForStatus(origin, task.id, 'done', 5_000)
+
+    expect(codex.calls).toHaveLength(1)
+    expect(codex.calls[0]?.cwd).toBe('/fake/worktree')
+    expect(codex.calls[0]?.resumeSessionId).toBeUndefined()
+    expect(codex.calls[0]?.prompt).toContain('taking over a task from claude-cli')
+    expect(codex.calls[0]?.prompt).toContain('Fix add()')
+    const handoff = done.events.find((event) => (event as { type?: string }).type === 'quota.handoff') as
+      { payload: { from: { provider: string }; to: { provider: string } } } | undefined
+    expect(handoff?.payload.from.provider).toBe('claude-cli')
+    expect(handoff?.payload.to.provider).toBe('codex-cli')
+    expect(done.attempts.map((a) => a.provider)).toEqual(['claude-cli', 'codex-cli'])
+    const quota = (await (await fetch(`${origin}/api/quota`)).json()) as {
+      providers: Record<string, { limitedNow: boolean }>
+    }
+    expect(quota.providers['claude-cli']?.limitedNow).toBe(true)
+  })
+
+  it('queues the task when nobody else can take over and resumes the session after the reset', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'joy-quota-queue-'))
+    dirs.push(home)
+    const configStore = new ConfigStore(join(home, 'config.yaml'))
+    await configStore.update((config) => ({ ...config, fallback: { on_rate_limit: 'queue' } }))
+    const claude = scriptedProvider('claude-cli', [
+      () => outOfQuota('s-claude', Math.floor(Date.now() / 1000)),
+      () => finished('s-claude'),
+    ])
+    const { serverPromise } = fixture({
+      configStore,
+      quotaResumeBufferMs: 0,
+      providers: { 'claude-cli': claude.provider },
+    })
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, {
+      path: '/tmp/queue-repo',
+      defaultBranch: 'main',
+    })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const taskResponse = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Queue',
+      prompt: 'p',
+      mode: 'single',
+    })
+    const { task } = (await taskResponse.json()) as { task: { id: string } }
+    const done = await waitForStatus(origin, task.id, 'done', 5_000)
+    expect(claude.calls).toHaveLength(2)
+    expect(claude.calls[1]?.resumeSessionId).toBe('s-claude')
+    expect(claude.calls[1]?.prompt).toContain('usage limit has reset')
+    expect(done.events.some((event) => (event as { type?: string }).type === 'quota.queued')).toBe(true)
+  })
+
+  it('fails instead of handing off when the fallback is fail', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'joy-quota-fail-'))
+    dirs.push(home)
+    const configStore = new ConfigStore(join(home, 'config.yaml'))
+    await configStore.update((config) => ({ ...config, fallback: { on_rate_limit: 'fail' } }))
+    const claude = scriptedProvider('claude-cli', [() => outOfQuota('s-claude')])
+    const codex = scriptedProvider('codex-cli', [() => finished('s-codex')])
+    const { serverPromise } = fixture({
+      configStore,
+      providers: { 'claude-cli': claude.provider, 'codex-cli': codex.provider },
+    })
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, {
+      path: '/tmp/quota-fail',
+      defaultBranch: 'main',
+    })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const taskResponse = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'f',
+      prompt: 'p',
+      mode: 'single',
+    })
+    const { task } = (await taskResponse.json()) as { task: { id: string } }
+    await waitForStatus(origin, task.id, 'failed', 5_000)
+    expect(codex.calls).toHaveLength(0)
+  })
+
+  it('stops a task that spends more than its OpenAI API limit', async () => {
+    const api = scriptedProvider('openai-api', [
+      (options) =>
+        new Promise<AgentEvent[]>((resolve) => {
+          // Report the spend, then keep running until Joy stops the task.
+          setTimeout(() => resolve([]), 0)
+          options.signal.addEventListener('abort', () => resolve([]), { once: true })
+        }).then(() => [{ type: 'done', sessionId: 'a', isError: false } as AgentEvent]),
+    ])
+    const spending: AgentProvider = {
+      ...api.provider,
+      async *run(options, model) {
+        yield { type: 'session_started', sessionId: 'a' }
+        yield { type: 'usage', inputTokens: 1, outputTokens: 1, costUsd: 5 }
+        await new Promise<void>((resolve) =>
+          options.signal.addEventListener('abort', () => resolve(), { once: true }),
+        )
+        yield* api.provider.run(options, model)
+      },
+    }
+    const { serverPromise } = fixture({ providers: { 'openai-api': spending } })
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, {
+      path: '/tmp/cost-repo',
+      defaultBranch: 'main',
+    })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const taskResponse = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Spend',
+      prompt: 'p',
+      mode: 'single',
+      roleOverrides: { implementer: { provider: 'openai-api', model: 'gpt-6-luna' } },
+    })
+    const { task } = (await taskResponse.json()) as { task: { id: string } }
+    const failed = await waitForStatus(origin, task.id, 'failed', 5_000)
+    const result = failed.events.find((event) => (event as { type?: string }).type === 'result') as
+      { payload: { reason: string } } | undefined
+    expect(result?.payload.reason).toContain('max_api_usd')
+  })
+
+  it('stops a task that runs longer than its time limit', async () => {
+    const implementer = new FakeProvider('claude-cli')
+    implementer.waitForAbort = true
+    const { serverPromise } = fixture({ implementer, taskTimeLimitMs: 50 })
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, {
+      path: '/tmp/time-repo',
+      defaultBranch: 'main',
+    })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const taskResponse = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Slow',
+      prompt: 'p',
+      mode: 'single',
+    })
+    const { task } = (await taskResponse.json()) as { task: { id: string } }
+    const failed = await waitForStatus(origin, task.id, 'failed', 5_000)
+    expect(JSON.stringify(failed.events)).toContain('ran longer than')
+  })
+
+  it('refuses OpenAI API runs once the monthly budget is used up', async () => {
+    const api = scriptedProvider('openai-api', [() => finished('a')])
+    const { db, serverPromise } = fixture({ providers: { 'openai-api': api.provider } })
+    addUsage(db, { provider: 'openai-api', costUsd: 100 })
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, {
+      path: '/tmp/budget-repo',
+      defaultBranch: 'main',
+    })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const taskResponse = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Budget',
+      prompt: 'p',
+      mode: 'single',
+      roleOverrides: { implementer: { provider: 'openai-api', model: 'gpt-6-luna' } },
+    })
+    const { task } = (await taskResponse.json()) as { task: { id: string } }
+    const failed = await waitForStatus(origin, task.id, 'failed', 5_000)
+    expect(JSON.stringify(failed.events)).toContain('budget for this month is used up')
+    expect(api.calls).toHaveLength(0)
+    const quota = (await (await fetch(`${origin}/api/quota`)).json()) as {
+      openaiApi: { monthSpentUsd: number; monthlyCapUsd: number }
+    }
+    expect(quota.openaiApi).toEqual({ monthSpentUsd: 100, monthlyCapUsd: 30 })
   })
 
   it('preserves the task ask_peer budget across a resumed provider session', async () => {

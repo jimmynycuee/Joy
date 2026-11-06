@@ -1244,3 +1244,16 @@ select {
 .publish-panel a {
   font-weight: 600;
 }
+
+.usage-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  margin-bottom: 8px;
+  opacity: 0.85;
+}
+
+.usage-limited {
+  color: #b42318;
+}

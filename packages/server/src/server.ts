@@ -38,6 +38,7 @@ import {
   approveTimedOutApproval,
   expirePendingApprovals,
   getApproval,
+  getAttempt,
   getRepo,
   getTask,
   interruptRunningWork,
@@ -137,6 +138,19 @@ const SECRET_ROUTES: Record<string, { name: 'openai_api_key' | 'telegram_bot_tok
   'telegram-bot-token': { name: 'telegram_bot_token', env: 'JOY_TELEGRAM_BOT_TOKEN' },
 }
 const secretValueSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
+/** Runs `check` before every run of `inner`; a thrown error refuses the run before any request is made. */
+function withMonthlyBudget(inner: AgentProvider, check: () => Promise<void>): AgentProvider {
+  return {
+    kind: inner.kind,
+    capabilities: inner.capabilities,
+    healthCheck: () => inner.healthCheck(),
+    async *run(opts, model) {
+      await check()
+      yield* inner.run(opts, model)
+    },
+  }
+}
+
 /** Identifies an action for one-time grants; computed from the redacted action, as stored in approvals. */
 function actionFingerprint(action: { kind: string; detail: unknown }): string {
   return JSON.stringify({ kind: action.kind, detail: action.detail })
@@ -190,6 +204,10 @@ export interface JoyServerOptions {
   approvalTimeoutMs?: number
   /** Telegram Bot API overrides (tests point this at a fake API). */
   telegram?: { baseUrl?: string; fetch?: typeof fetch; pollTimeoutSeconds?: number }
+  /** Wait this long after a provider's quota reset before resuming a queued task. Default 60 s. */
+  quotaResumeBufferMs?: number
+  /** Overrides budget.per_task.max_minutes (tests). */
+  taskTimeLimitMs?: number
   /** Replaces the GitHub publisher (tests). */
   publisher?: { publish(workspace: Workspace, input: DraftPullRequestInput): Promise<PublishedPullRequest> }
   /** Overrides for the built-in Codex app-server provider (tests and local development). */
@@ -222,6 +240,9 @@ interface ActiveTask {
   promise: Promise<void>
   /** Set when an approval timed out and the run was stopped to wait for the owner (approvals.on_timeout: pause). */
   pausedFor?: string
+  /** Set when the task was stopped by a cost or time limit. */
+  stoppedFor?: string
+  timeLimit?: NodeJS.Timeout
 }
 
 interface ResumeState {
@@ -293,6 +314,18 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }),
     ...options.providers,
   } satisfies Partial<Record<ProviderKind, AgentProvider>>
+  // Every OpenAI API run, including injected ones, refuses to start once the month's budget is used up.
+  const apiProvider = providers['openai-api']
+  if (apiProvider) {
+    providers['openai-api'] = withMonthlyBudget(apiProvider, async () => {
+      const cap = (await configStore.get()).budget.openai_api_usd_monthly_cap
+      const spent = monthlyApiSpend()
+      if (spent >= cap)
+        throw new Error(
+          `The OpenAI API budget for this month is used up ($${spent.toFixed(2)} of $${cap.toFixed(2)}, budget.openai_api_usd_monthly_cap).`,
+        )
+    })
+  }
   const executor = options.executor ?? new WorktreeExecutor({ worktreesDir: paths.worktrees })
   // Commits through the executor and scans with the same redactor that guards events and logs.
   const publisher =
@@ -819,6 +852,22 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       json(res, 202, { task: getTask(db, task.id), resumed: true })
       return
     }
+    if (url.pathname === '/api/quota' && method === 'GET') {
+      const config = await configStore.get()
+      json(res, 200, {
+        providers: Object.fromEntries(
+          [...quotaState.entries()].map(([provider, state]) => [
+            provider,
+            { ...state, limitedNow: isLimitedNow(provider) },
+          ]),
+        ),
+        openaiApi: {
+          monthSpentUsd: monthlyApiSpend(),
+          monthlyCapUsd: config.budget.openai_api_usd_monthly_cap,
+        },
+      })
+      return
+    }
     if (url.pathname === '/api/usage' && method === 'GET') {
       json(res, 200, { usage: listUsage(db) })
       return
@@ -924,6 +973,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const active: ActiveTask = { controller, promise: Promise.resolve() }
     running.set(task.id, active)
     active.promise = runTask(task, controller, resume).finally(() => {
+      clearTimeout(active.timeLimit)
       if (running.get(task.id) === active) running.delete(task.id)
     })
   }
@@ -936,6 +986,20 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (!repo) throw new Error(`Repository ${task.repoId} was not found`)
       const config = await configStore.get()
       failureConfig = config
+      const active = running.get(task.id)
+      if (active) {
+        // Read with the rest of the run's config, so the limit follows the settings at start.
+        const minutes = config.budget.per_task.max_minutes
+        active.timeLimit = setTimeout(
+          () =>
+            stopTask(
+              task.id,
+              `Stopped: the task ran longer than ${minutes} minutes (budget.per_task.max_minutes).`,
+            ),
+          options.taskTimeLimitMs ?? minutes * 60_000,
+        )
+        active.timeLimit.unref?.()
+      }
       const roles = config.roles as RoleConfig
       const configuredImplementer = resolveRole('implementer', roles, task.roleOverrides)
       const implementer = resume
@@ -1381,6 +1445,189 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
   }
 
+  /** Latest quota report per provider, for handoff decisions and the UI. */
+  const quotaState = new Map<
+    ProviderKind,
+    { status: 'allowed' | 'warning' | 'limited'; resetsAt?: number; at: number }
+  >()
+  function noteQuota(provider: ProviderKind, event: Extract<AgentEvent, { type: 'quota' }>): void {
+    const resetsAt = event.resetsAt ?? Math.min(...event.windows.map((w) => w.resetsAt ?? Infinity))
+    quotaState.set(provider, {
+      status: event.status,
+      ...(Number.isFinite(resetsAt) ? { resetsAt } : {}),
+      at: Date.now(),
+    })
+  }
+  function isLimitedNow(provider: ProviderKind): boolean {
+    const state = quotaState.get(provider)
+    if (state?.status !== 'limited') return false
+    return state.resetsAt === undefined
+      ? Date.now() - state.at < 60 * 60_000
+      : state.resetsAt * 1000 > Date.now()
+  }
+
+  /** OpenAI API spend per task (subscription CLIs report estimates only and are not charged). */
+  const taskApiSpend = new Map<TaskId, number>()
+  function chargeTask(
+    taskId: TaskId,
+    provider: ProviderKind,
+    event: Extract<AgentEvent, { type: 'usage' }>,
+  ): void {
+    if (provider !== 'openai-api' || !event.costUsd) return
+    const spent = (taskApiSpend.get(taskId) ?? 0) + event.costUsd
+    taskApiSpend.set(taskId, spent)
+    void configStore.get().then((config) => {
+      const cap = config.budget.per_task.max_api_usd
+      if (spent > cap)
+        stopTask(
+          taskId,
+          `Stopped: this task spent $${spent.toFixed(2)} on the OpenAI API, over its $${cap.toFixed(2)} limit (budget.per_task.max_api_usd).`,
+        )
+    })
+  }
+  function stopTask(taskId: TaskId, reason: string): void {
+    const active = running.get(taskId)
+    if (!active || active.stoppedFor || active.pausedFor) return
+    active.stoppedFor = reason
+    active.controller.abort()
+  }
+  /** OpenAI API spend this calendar month (UTC), from the usage table. */
+  function monthlyApiSpend(): number {
+    const month = new Date().toISOString().slice(0, 7)
+    return listUsage(db)
+      .filter((row) => row.provider === 'openai-api' && row.day.startsWith(month))
+      .reduce((total, row) => total + row.costUsd, 0)
+  }
+
+  /** A code-editing provider other than `from` that the repo allows and that is not out of quota. */
+  function pickHandoffModel(
+    config: JoyConfig,
+    task: StoredTask,
+    repo: RepoRecord,
+    from: ProviderKind,
+  ): ModelRef | undefined {
+    const roles = config.roles as RoleConfig
+    const preferred: Role[] = ['implementer', 'reviewer', 'orchestrator', 'judge']
+    for (const role of preferred) {
+      const candidate = resolveRole(role, roles, task.roleOverrides)
+      if (candidate.provider === from) continue
+      if (!repo.allowedProviders.includes(candidate.provider)) continue
+      if (!providers[candidate.provider]?.capabilities.codeEdit) continue
+      if (isLimitedNow(candidate.provider)) continue
+      return candidate
+    }
+    return undefined
+  }
+
+  function handoffPrompt(
+    task: StoredTask,
+    from: ModelRef,
+    diff: WorkspaceDiff,
+    lastMessage: string | undefined,
+  ): string {
+    const patch =
+      diff.patch.length > 30_000 ? `${diff.patch.slice(0, 30_000)}\n… (diff truncated)` : diff.patch
+    return [
+      `You are taking over a task from ${from.provider} (${from.model}), which ran out of its usage quota. Continue in this same worktree; do not start over.`,
+      '',
+      `Task:\n${task.prompt}`,
+      '',
+      diff.files.length
+        ? `Changes made so far (unified diff against the starting commit):\n${patch}`
+        : 'No files have been changed yet.',
+      ...(lastMessage ? ['', `The previous agent's last message:\n${lastMessage}`] : []),
+      '',
+      'Finish the task, run the tests that exist, and summarize what you did.',
+    ].join('\n')
+  }
+
+  /**
+   * The provider ran out of usage. Following fallback.on_rate_limit, hand the task to another provider in the same
+   * worktree (once per task), or queue it until the quota resets and resume the same session. Returns true when the
+   * task was handed off or queued (the caller must not finalize it).
+   */
+  async function handleUsageLimit(
+    task: StoredTask,
+    repo: RepoRecord,
+    attempt: AttemptRecord,
+    model: ModelRef,
+    workspace: Workspace,
+    diff: WorkspaceDiff,
+    done: Extract<AgentEvent, { type: 'done' }> | undefined,
+    controller: AbortController,
+  ): Promise<boolean> {
+    const config = await configStore.get()
+    const policy = config.fallback.on_rate_limit
+    if (policy === 'fail') return false
+    const alreadyHandedOff = listTaskEvents(db, task.id).some((event) => event.type === 'quota.handoff')
+    if (policy === 'swap_provider' && !alreadyHandedOff) {
+      const next = pickHandoffModel(config, task, repo, model.provider)
+      if (next) {
+        updateAttempt(db, attempt.id, { status: 'cancelled', diffStats: summarizeDiff(diff) })
+        const nextAttempt = createAttempt(db, {
+          id: randomUUID() as AttemptId,
+          taskId: task.id,
+          provider: next.provider,
+          model: next.model,
+          status: 'running',
+        })
+        const prompt = handoffPrompt(task, model, diff, done?.finalMessage)
+        publish(task.id, nextAttempt.id, 'quota.handoff', {
+          from: { provider: model.provider, model: model.model },
+          to: { provider: next.provider, model: next.model },
+          summary: prompt,
+        })
+        await runSingle(task, repo, nextAttempt, next, controller, undefined, { workspace, prompt })
+        return true
+      }
+    }
+    // Nobody else can take over (or queueing was chosen): wait for the quota to reset, then resume the session.
+    const resetsAt = quotaState.get(model.provider)?.resetsAt
+    const resumeAt = resetsAt
+      ? resetsAt * 1000 + (options.quotaResumeBufferMs ?? 60_000)
+      : Date.now() + 60 * 60_000
+    if (!attempt.sessionId && !getAttempt(db, attempt.id)?.sessionId) return false
+    updateAttempt(db, attempt.id, { status: 'cancelled', diffStats: summarizeDiff(diff) })
+    setTaskStatus(db, task.id, 'queued')
+    publish(task.id, attempt.id, 'quota.queued', {
+      provider: model.provider,
+      resumeAt: new Date(resumeAt).toISOString(),
+      reason: alreadyHandedOff ? 'Both providers are out of quota' : 'No other provider can take over',
+    })
+    scheduleQuotaResume(task.id, resumeAt)
+    return true
+  }
+
+  const quotaTimers = new Map<TaskId, NodeJS.Timeout>()
+  function scheduleQuotaResume(taskId: TaskId, resumeAt: number): void {
+    clearTimeout(quotaTimers.get(taskId))
+    const timer = setTimeout(
+      () => {
+        quotaTimers.delete(taskId)
+        void (async () => {
+          const task = getTask(db, taskId)
+          if (!task || task.status !== 'queued' || running.has(taskId)) return
+          try {
+            const state = await resumeState(task)
+            scheduleTask(task, {
+              ...state,
+              prompt: 'Your usage limit has reset. Continue the task from where you stopped.',
+            })
+          } catch (error) {
+            setTaskStatus(db, taskId, 'failed')
+            publishTaskFailure(
+              taskId,
+              redactor.redact(error instanceof Error ? error.message : 'Could not resume'),
+            )
+          }
+        })()
+      },
+      Math.max(0, resumeAt - Date.now()),
+    )
+    timer.unref?.()
+    quotaTimers.set(taskId, timer)
+  }
+
   async function runSingle(
     task: StoredTask,
     repo: RepoRecord,
@@ -1388,12 +1635,15 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     model: ModelRef,
     controller: AbortController,
     resume?: ResumeState,
+    /** Another provider taking over in the same worktree after a usage limit (no session to resume). */
+    handoff?: { workspace: Workspace; prompt: string },
   ): Promise<void> {
     const provider = providers[model.provider]
     if (!provider) throw new Error(`No provider configured for ${model.provider}`)
     if (!provider.capabilities.codeEdit)
       throw new Error(`${model.provider} does not support code editing required by single mode`)
-    const workspace = resume?.workspace ?? (await executor.prepare(repo, task.id, attempt.id))
+    const workspace =
+      handoff?.workspace ?? resume?.workspace ?? (await executor.prepare(repo, task.id, attempt.id))
     updateAttempt(db, attempt.id, {
       status: 'running',
       worktreePath: workspace.path,
@@ -1408,7 +1658,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         : undefined
     const options: RunOptions = {
       cwd: workspace.path,
-      prompt: resume?.prompt ?? task.prompt,
+      prompt: handoff?.prompt ?? resume?.prompt ?? task.prompt,
       autonomy: 'workspace-write',
       signal: controller.signal,
       ...(toolHub ? { mcpServers: [toolHub.server] } : {}),
@@ -1419,11 +1669,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     let done: Extract<AgentEvent, { type: 'done' }> | undefined
     let failure: string | undefined
+    const runStartedAt = Date.now()
     const approvalKey = resolve(workspace.path)
     if (toolHub) codexApprovalHandlers.set(approvalKey, toolHub.codexApproval)
     try {
       for await (const event of provider.run(options, model)) {
         persistUsageEvent(db, model.provider, event)
+        if (event.type === 'quota') noteQuota(model.provider, event)
+        if (event.type === 'usage') chargeTask(task.id, model.provider, event)
         if (event.type === 'session_started') updateAttempt(db, attempt.id, { sessionId: event.sessionId })
         if (event.type === 'error' && !event.recoverable) failure = event.message
         if (event.type === 'done') done = event
@@ -1436,6 +1689,30 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       toolHub?.close()
     }
     const diff = await executor.diff(workspace)
+    const limited = quotaState.get(model.provider)
+    const runFailed = !done || done.isError || !!failure
+    if (
+      !controller.signal.aborted &&
+      runFailed &&
+      limited?.status === 'limited' &&
+      limited.at >= runStartedAt
+    ) {
+      if (await handleUsageLimit(task, repo, attempt, model, workspace, diff, done, controller)) return
+    }
+    const stoppedFor = running.get(task.id)?.stoppedFor
+    if (stoppedFor) {
+      updateAttempt(db, attempt.id, { status: 'failed', diffStats: summarizeDiff(diff) })
+      setTaskStatus(db, task.id, 'failed')
+      publish(task.id, attempt.id, 'result', {
+        type: 'result',
+        status: 'failed',
+        approved: false,
+        rounds: 1,
+        diff,
+        reason: stoppedFor,
+      })
+      return
+    }
     const pausedFor = running.get(task.id)?.pausedFor
     if (pausedFor) {
       updateAttempt(db, attempt.id, { status: 'cancelled', diffStats: summarizeDiff(diff) })
@@ -1462,6 +1739,17 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const attempt = latestAttempt(db, taskId)
     if (attempt) publish(taskId, attempt.id, 'interrupted', { taskId, attemptId: attempt.id })
   }
+  // Tasks waiting for a quota reset keep their resume time in the event log.
+  for (const task of listTasks(db)) {
+    if (task.status !== 'queued') continue
+    const queued = listTaskEvents(db, task.id)
+      .filter((event) => event.type === 'quota.queued')
+      .at(-1)
+    const resumeAt = Date.parse(
+      String((queued?.payload as { resumeAt?: unknown } | undefined)?.resumeAt ?? ''),
+    )
+    if (Number.isFinite(resumeAt)) scheduleQuotaResume(task.id, resumeAt)
+  }
 
   return {
     httpServer,
@@ -1482,6 +1770,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (closed) return
       closed = true
       await telegram?.stop()
+      for (const timer of quotaTimers.values()) clearTimeout(timer)
       const activeTasks = [...running.values()]
       for (const active of activeTasks) active.controller.abort()
       await Promise.all(activeTasks.map((active) => active.promise))
