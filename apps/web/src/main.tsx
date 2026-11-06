@@ -282,6 +282,8 @@ function TelegramSettings({
 }) {
   const [tokenStatus, setTokenStatus] = useState<SecretStatus | null>(null)
   const [message, setMessage] = useState('')
+  // An older server may not send the channels section at all.
+  const chatId = config.channels?.telegram?.owner_chat_id
 
   useEffect(() => {
     request<SecretStatus>('/api/secrets/telegram-bot-token')
@@ -326,14 +328,8 @@ function TelegramSettings({
           <p className="eyebrow">CHANNELS</p>
           <h2 id="telegram-heading">Telegram</h2>
         </div>
-        <span
-          className={
-            tokenStatus?.set && config.channels.telegram.owner_chat_id
-              ? 'status-pill configured'
-              : 'status-pill'
-          }
-        >
-          {tokenStatus?.set && config.channels.telegram.owner_chat_id ? 'Configured' : 'Not configured'}
+        <span className={tokenStatus?.set && chatId ? 'status-pill configured' : 'status-pill'}>
+          {tokenStatus?.set && chatId ? 'Configured' : 'Not configured'}
         </span>
       </div>
       <p className="muted secret-description">
@@ -347,7 +343,7 @@ function TelegramSettings({
           name="telegram-chat-id"
           inputMode="numeric"
           pattern="-?[0-9]+"
-          defaultValue={config.channels.telegram.owner_chat_id ?? ''}
+          defaultValue={chatId ?? ''}
         />
         {tokenStatus?.source === 'env' ? (
           <div className="env-managed" role="status">
