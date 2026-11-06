@@ -13,6 +13,7 @@ import type {
   AttemptId,
   AttemptStatus,
   ModelRef,
+  OutboundMessage,
   ProposedAction,
   ProviderKind,
   RepoId,
@@ -118,7 +119,7 @@ const SECRET_ROUTES: Record<string, { name: 'openai_api_key' | 'telegram_bot_tok
   'openai-api-key': { name: 'openai_api_key', env: 'OPENAI_API_KEY' },
   'telegram-bot-token': { name: 'telegram_bot_token', env: 'JOY_TELEGRAM_BOT_TOKEN' },
 }
-const openAiSecretInputSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
+const secretValueSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
 const approvalDecisionSchema = z.strictObject({ note: z.string().max(2_000).optional() })
 const approvalStatusSchema = z.enum(['pending', 'approved', 'denied', 'expired']).optional()
 const toolHubCallSchema = z.strictObject({ name: z.enum(TOOL_HUB_TOOL_NAMES), arguments: z.unknown() })
@@ -315,9 +316,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         onError: (error) => console.warn(redactor.redact(`[joy] Telegram: ${error.message}`)),
       })
     : undefined
-  const notifyOwner = (text: string) => {
+  /** Every outbound Telegram message goes through here: redacted, and failures only logged. */
+  const sendTelegram = (message: OutboundMessage) => {
     void telegram
-      ?.send({ text })
+      ?.send({ ...message, text: redactor.redact(message.text) })
       .catch((error: Error) => console.warn(redactor.redact(`[joy] Telegram: ${error.message}`)))
   }
   if (telegram) {
@@ -332,9 +334,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           : result.status === 'cancelled'
             ? '⏹'
             : '❌'
-      notifyOwner(
-        `${icon} ${title}: ${result.status ?? 'finished'}${result.reason ? ` — ${result.reason}` : ''}`,
-      )
+      sendTelegram({
+        text: `${icon} ${title}: ${result.status ?? 'finished'}${result.reason ? ` — ${result.reason}` : ''}`,
+      })
     }
     approvals.onRequested((approval, preReview) => {
       const title = getTask(db, approval.taskId)?.title ?? approval.taskId
@@ -349,16 +351,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
             ]
           : []),
       ]
-      void telegram
-        .send({
-          text: redactor.redact(lines.join('\n')),
-          correlationId: approval.id,
-          buttons: [
-            { id: 'approve', label: 'Approve' },
-            { id: 'deny', label: 'Deny' },
-          ],
-        })
-        .catch((error: Error) => console.warn(redactor.redact(`[joy] Telegram: ${error.message}`)))
+      sendTelegram({
+        text: lines.join('\n'),
+        correlationId: approval.id,
+        buttons: [
+          { id: 'approve', label: 'Approve' },
+          { id: 'deny', label: 'Deny' },
+        ],
+      })
     })
     telegram.onMessage(async (message) => {
       if (message.correlationId && (message.buttonId === 'approve' || message.buttonId === 'deny')) {
@@ -367,7 +367,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           message.buttonId === 'approve' ? 'approved' : 'denied',
           'telegram',
         )
-        await telegram.send({
+        sendTelegram({
           text: decided
             ? decided.status === 'approved'
               ? '✅ Approved. The task continues.'
@@ -377,7 +377,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         return
       }
       const pending = approvals.pending().length
-      await telegram.send({
+      sendTelegram({
         text: `Joy is running. ${pending} approval${pending === 1 ? '' : 's'} waiting. Chatting with the assistant comes in a later version.`,
       })
     })
@@ -710,7 +710,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (status.source === 'env')
         throw new HttpError(409, `${secret.env} is supplied by the environment; manage it there instead.`)
       if (method === 'PUT') {
-        const { value } = openAiSecretInputSchema.parse(await readJson(req))
+        const { value } = secretValueSchema.parse(await readJson(req))
         await secretStore.set(secret.name, value)
       } else {
         await secretStore.delete(secret.name)
@@ -1060,7 +1060,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           options.approvalTimeoutMs ?? config.approvals.timeout_minutes * 60_000,
         )
       } finally {
-        if (getTask(db, task.id)?.status === 'awaiting_approval') setTaskStatus(db, task.id, 'running')
+        // Another red action of this task may still be waiting; only the last answer resumes the status.
+        const stillWaiting = listApprovals(db, { status: 'pending', taskId: task.id }).length > 0
+        if (!stillWaiting && getTask(db, task.id)?.status === 'awaiting_approval')
+          setTaskStatus(db, task.id, 'running')
       }
     }
     const dispatch = createToolHubDispatcher({

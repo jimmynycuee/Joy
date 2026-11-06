@@ -458,16 +458,19 @@ export function latestAttempt(db: Database, taskId: TaskId): AttemptRecord | und
 
 /** Marks active work as interrupted but leaves its worktree/session checkpoint available to resume. */
 export function interruptRunningWork(db: Database): TaskId[] {
-  const tasks = db.prepare("SELECT id FROM tasks WHERE status = 'running'").all() as unknown as {
+  // awaiting_approval is running work too: nobody is waiting for its approval after a restart.
+  const tasks = db
+    .prepare("SELECT id FROM tasks WHERE status IN ('running', 'awaiting_approval')")
+    .all() as unknown as {
     id: string
   }[]
   db.exec('BEGIN')
   try {
     db.prepare(
-      "UPDATE attempts SET status = 'failed', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE status IN ('preparing', 'running', 'reviewing', 'fixing') AND task_id IN (SELECT id FROM tasks WHERE status = 'running')",
+      "UPDATE attempts SET status = 'failed', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE status IN ('preparing', 'running', 'reviewing', 'fixing') AND task_id IN (SELECT id FROM tasks WHERE status IN ('running', 'awaiting_approval'))",
     ).run()
     db.prepare(
-      "UPDATE tasks SET status = 'failed', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE status = 'running'",
+      "UPDATE tasks SET status = 'failed', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE status IN ('running', 'awaiting_approval')",
     ).run()
     db.exec('COMMIT')
   } catch (error) {

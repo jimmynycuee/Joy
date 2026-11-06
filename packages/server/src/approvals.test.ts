@@ -13,7 +13,7 @@ afterEach(() => {
 const action: ProposedAction = {
   kind: 'send_mail',
   summary: 'Send token sk-secret-value-123',
-  detail: {},
+  detail: { command: 'curl -H "Authorization: Bearer sk-secret-value-123"' },
   provenance: 'agent',
 }
 
@@ -57,6 +57,7 @@ describe('ApprovalBroker', () => {
     const waiting = broker.request(input, new AbortController().signal, 10_000)
     const [pending] = broker.pending()
     expect(pending?.action.summary).toBe('Send token [REDACTED]')
+    expect(JSON.stringify(pending?.action.detail)).not.toContain('sk-secret-value-123')
     broker.decide(pending?.id ?? '', 'approved', 'telegram')
     expect(await waiting).toBe('approved')
     expect(getApproval(db, pending?.id ?? '')?.decidedVia).toBe('telegram')
@@ -85,5 +86,13 @@ describe('ApprovalBroker', () => {
     expect(seen).toHaveLength(1)
     broker.decide(seen[0] ?? '', 'denied', 'web')
     expect(await waiting).toBe('denied')
+  })
+
+  it('resolves at once when a channel decides synchronously while being notified', async () => {
+    const { broker } = setup()
+    broker.onRequested((approval) => broker.decide(approval.id, 'approved', 'auto-test'))
+    const started = Date.now()
+    expect(await broker.request(input, new AbortController().signal, 10_000)).toBe('approved')
+    expect(Date.now() - started).toBeLessThan(1_000)
   })
 })

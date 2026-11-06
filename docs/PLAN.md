@@ -42,6 +42,7 @@
 - [x] T2.7b Codex app-server 審核接到 policy 與 UI（server 預設改用 app-server，`providers.codex.transport: exec` 可退回）
 - [x] T2.4a 核准中心與 UI（🔴 動作等擁有者在 UI 核准；逾時視為未核准）
 - [x] T2.4b Telegram 通知與核准按鈕（設定頁輸入 chat id 與 bot token，重啟後生效）
+- [ ] T1.9b 把 publisher 接到 server API 與 UI「開 PR」按鈕（審查發現 T1.9 的 publisher 從未接線，擁有者無法本機驗收）
 - [ ] T2.4c 逾時後任務停在「等待核准」，核准後以同一 session 接續
 - [ ] P2（T2.1–T2.8）、P3（T3.1–T3.9）、P4（T4.1–T4.9）、P5（T5.1–T5.7）：見 §6
 

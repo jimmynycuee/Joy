@@ -117,10 +117,36 @@ describe('TelegramChannel', () => {
     await tg.pollOnce()
     expect(received).toEqual([])
     expect(rejected).toEqual([
-      'message from a chat that is not the owner',
-      'callback from a chat that is not the owner',
+      'message from someone who is not the owner',
+      'callback from someone who is not the owner',
       'unsupported update',
     ])
+  })
+
+  it("rejects a stranger's press inside the owner's chat id (group chats)", async () => {
+    const api = fakeApi([
+      [
+        {
+          update_id: 1,
+          callback_query: {
+            id: 'cb',
+            from: { id: 777 },
+            message: { chat: { id: 1001 } },
+            data: 'approval-1:approve',
+          },
+        },
+        { update_id: 2, message: { chat: { id: 1001 }, from: { id: 777 }, text: 'hi' } },
+      ],
+    ])
+    const rejected: string[] = []
+    const tg = channel(api, rejected)
+    const received: InboundMessage[] = []
+    tg.onMessage(async (msg) => {
+      received.push(msg)
+    })
+    await tg.pollOnce()
+    expect(received).toEqual([])
+    expect(rejected).toHaveLength(2)
   })
 
   it('keeps the token out of error messages', async () => {
