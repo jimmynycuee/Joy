@@ -2238,7 +2238,7 @@ describe('Joy local server', () => {
     expect(((await first.json()) as { message: { content: string } }).message.content).toBe(
       'You have 1 repo(s).',
     )
-    expect(seen[0]?.tools).toEqual(['list_repos', 'list_tasks', 'task_status'])
+    expect(seen[0]?.tools).toEqual(['list_repos', 'list_tasks', 'create_task', 'cancel_task', 'task_status'])
     expect(seen[0]?.prompt).toContain('You are Joy')
     expect(seen[0]?.resume).toBeUndefined()
 
@@ -2303,10 +2303,114 @@ describe('Joy local server', () => {
     expect((listed as Array<{ name: string }>).map((t) => t.name)).toEqual([
       'list_repos',
       'list_tasks',
+      'create_task',
+      'cancel_task',
       'task_status',
     ])
     expect(called).toEqual({ tasks: [] })
     expect(implementer.calls[0]?.cwd).toBe(join(home, 'assistant'))
+  })
+
+  it('starts a task from the conversation and reports its result back there', async () => {
+    let created: { id: string } | undefined
+    const assistantApiProvider = (tools: ApiTool[]): AgentProvider => ({
+      ...scriptedProvider('openai-api', []).provider,
+      async *run(options: RunOptions) {
+        const repos = (await tools.find((t) => t.name === 'list_repos')?.run({}, options.signal)) as {
+          repos: Array<{ id: string }>
+        }
+        created = (await tools
+          .find((t) => t.name === 'create_task')
+          ?.run(
+            { repo_id: repos.repos[0]?.id, title: 'Fix add', prompt: 'Fix add() in math.js', mode: 'single' },
+            options.signal,
+          )) as { id: string }
+        yield { type: 'session_started', sessionId: 'resp_1' }
+        yield { type: 'done', sessionId: 'resp_1', isError: false, finalMessage: 'Started it.' }
+      },
+    })
+    const { serverPromise } = fixture({ assistantApiProvider })
+    const { origin } = await start(serverPromise)
+    await postJson(`${origin}/api/repos`, { path: '/tmp/dispatch-repo', defaultBranch: 'main' })
+    const { conversation } = (await (await postJson(`${origin}/api/conversations`, {})).json()) as {
+      conversation: { id: string }
+    }
+    const reply = await postJson(`${origin}/api/conversations/${conversation.id}/messages`, {
+      text: 'Please fix add() in my repo',
+    })
+    expect(reply.status).toBe(200)
+    expect(created?.id).toBeTruthy()
+    await waitForStatus(origin, created?.id ?? '', 'done', 5_000)
+
+    let messages: Array<{ role: string; content: string }> = []
+    for (let i = 0; i < 100; i++) {
+      messages = (
+        (await (await fetch(`${origin}/api/conversations/${conversation.id}`)).json()) as {
+          messages: typeof messages
+        }
+      ).messages
+      if (messages.length >= 3) break
+      await new Promise((r) => setTimeout(r, 10))
+    }
+    expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'assistant'])
+    expect(messages[2]?.content).toContain('Task "Fix add" finished')
+    const task = (await (await fetch(`${origin}/api/tasks/${created?.id}`)).json()) as {
+      task: { originConversationId: string; mode: string }
+    }
+    expect(task.task).toMatchObject({ originConversationId: conversation.id, mode: 'single' })
+  })
+
+  it('lets the assistant cancel a task and rejects bad task input', async () => {
+    const implementer = new FakeProvider('claude-cli')
+    implementer.waitForAbort = true
+    let cancelResult: unknown
+    let badInput: string | undefined
+    const assistantApiProvider = (tools: ApiTool[]): AgentProvider => ({
+      ...scriptedProvider('openai-api', []).provider,
+      async *run(options: RunOptions) {
+        const tasks = (await tools
+          .find((t) => t.name === 'list_tasks')
+          ?.run({ status: 'running' }, options.signal)) as {
+          tasks: Array<{ id: string }>
+        }
+        cancelResult = await tools
+          .find((t) => t.name === 'cancel_task')
+          ?.run({ task_id: tasks.tasks[0]?.id }, options.signal)
+        try {
+          await tools
+            .find((t) => t.name === 'create_task')
+            ?.run({ repo_id: 'nope', title: '', prompt: 'x' }, options.signal)
+        } catch (error) {
+          badInput = (error as Error).message
+        }
+        yield { type: 'session_started', sessionId: 'r' }
+        yield { type: 'done', sessionId: 'r', isError: false, finalMessage: 'Cancelled.' }
+      },
+    })
+    const { serverPromise } = fixture({ implementer, assistantApiProvider })
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, {
+      path: '/tmp/cancel-repo',
+      defaultBranch: 'main',
+    })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const taskResponse = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Long',
+      prompt: 'p',
+      mode: 'single',
+    })
+    const { task } = (await taskResponse.json()) as { task: { id: string } }
+    await waitForStatus(origin, task.id, 'running')
+    const { conversation } = (await (await postJson(`${origin}/api/conversations`, {})).json()) as {
+      conversation: { id: string }
+    }
+    await postJson(`${origin}/api/conversations/${conversation.id}/messages`, {
+      text: 'Stop the running task',
+    })
+    expect(cancelResult).toMatchObject({ id: task.id })
+    await waitForStatus(origin, task.id, 'cancelled', 5_000)
+    expect(badInput).toBeTruthy()
   })
 
   it('records a failed assistant turn and reports it', async () => {
