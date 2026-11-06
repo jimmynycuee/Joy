@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import type { AgentEvent, ProviderKind } from '@joy/core'
 import type { ProcessExit } from './process.js'
 import { runJsonlProcess } from './process.js'
@@ -49,12 +50,22 @@ export async function* runCli(spec: CliRunSpec): AsyncGenerator<AgentEvent> {
 
 function spawnFailure(spec: CliRunSpec, exit: ProcessExit): Error {
   const err = exit.spawnError as NodeJS.ErrnoException
-  return new Error(
-    err.code === 'ENOENT'
-      ? `${spec.label} CLI not found ("${spec.command}"). Install it and log in, or set its path in Joy's settings.`
-      : `Could not start ${spec.label}: ${err.message}`,
-    { cause: err },
-  )
+  return new Error(spawnErrorMessage(spec.label, spec.command, spec.cwd, err), { cause: err })
+}
+
+/**
+ * Node reports ENOENT both for a missing program and for a missing working directory; tell them apart so the
+ * user is not sent to reinstall a CLI that is fine.
+ */
+export function spawnErrorMessage(
+  label: string,
+  command: string,
+  cwd: string,
+  err: NodeJS.ErrnoException,
+): string {
+  if (err.code !== 'ENOENT') return `Could not start ${label}: ${err.message}`
+  if (!existsSync(cwd)) return `Could not start ${label}: the working directory does not exist (${cwd})`
+  return `${label} CLI not found ("${command}"). Install it and log in, or set its path in Joy's settings.`
 }
 
 function exitReason(spec: CliRunSpec, exit: ProcessExit): string {

@@ -26,6 +26,14 @@
 - task-level `external_content` 來源經 DB 持久化並由 server 套用到 action policy；即使 hands-off，外部內容來源的動作仍需人工核准。Settings 提供模式選擇。
 - identity-sanitized Linux `pnpm check` 通過（PR implementation 的格式、lint、workspace typechecks、346 passed、2 skipped）；`pnpm test:e2e` 通過（4/4），包括 Settings 模式儲存與 startup 可用性。mainline checkout 首輪 E2E 發現舊按鈕名稱 locator，PR 分支改正後全套重跑通過。政策測試使用 fake providers；未呼叫真實 CLI 或模型。
 
+### T2.7b Codex 審核接到 policy
+
+- server 的 Codex 預設改用 app-server（`providers.codex.transport`，預設 `app-server`；設為 `exec` 可退回舊的 `codex exec`）。之前 T2.7 的 adapter 已合併但 server 沒有使用。
+- app-server 的核准請求依 worktree 路徑交給該次執行的 policy：`classifyCodexApproval` 判斷指令（解開 `bash -lc '…'`）、cwd 與寫入根目錄；🟢／🟡 回 `accept`（每次重新判斷，不用 `acceptForSession`），🔴 回 `decline`。找不到對應執行（例如 review loop 的唯讀審查者）一律 `decline`。
+- UI 時間軸以文字顯示權限判定與預審結果，🔴 標紅、🟡 標黃。
+- 啟動 CLI 時 cwd 不存在，錯誤訊息改為「工作目錄不存在」，不再誤報 CLI 未安裝。
+- 驗證：server 以假的 app-server 子行程端到端測試（安全指令 accept、worktree 外寫入 decline、policy 事件寫入）；真實 Codex 聯調仍列在 T0.4。
+
 ### T2.3 擁有者審查後的修正（PR #84）
 
 - Claude 的 `Bash`：只有單一、無 shell 語法的 `pnpm`／`npm`／`yarn` 的 test、lint、build、typecheck、check、format:check，與 `git status`／`diff`／`log`／`show` 視為 worktree 內執行（🟢）；其他一律 🔴。
@@ -76,6 +84,8 @@
 - [PR #54](https://github.com/jimmynycuee/Joy/pull/54)：審核 GitHub publisher 對 push target、提交歷史與 secret-like 內容的安全限制。
 - [PR #62](https://github.com/jimmynycuee/Joy/pull/62)：審核 `joy doctor` 的 OS 鑰匙圈可用性檢查；只探測可用性、不讀取已存憑證。
 - [PR #84](https://github.com/jimmynycuee/Joy/pull/84)：審核 `packages/policy` 分級與全域模式、跨模型預審、task provenance DB/core 介面及 Claude delegated approval 接線；紅色動作在人工核准通道尚未完成前保持不執行。
+
+- T2.7b（本 PR）：審核 `packages/policy` 的 `classifyCodexApproval` 規則，以及 server 預設改用 Codex app-server。
 
 ## 需要擁有者處理
 

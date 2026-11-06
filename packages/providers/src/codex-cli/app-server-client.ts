@@ -2,6 +2,7 @@ import type { RunOptions } from '@joy/core'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { killProcessTree, type ProcessExit } from '../process.js'
+import { spawnErrorMessage } from '../cli-run.js'
 import { isRecord, str } from '../guards.js'
 import type {
   AppServerWireMessage,
@@ -209,9 +210,7 @@ export class CodexAppServerClient {
   private exitMessage(exit: ProcessExit): string {
     if (exit.spawnError) {
       const error = exit.spawnError as NodeJS.ErrnoException
-      return error.code === 'ENOENT'
-        ? `Codex CLI not found ("${this.options.command}"). Install it and log in, or set its path in Joy's settings.`
-        : `Could not start Codex app-server: ${error.message}`
+      return spawnErrorMessage('Codex', this.options.command, this.options.cwd, error)
     }
     if (exit.aborted) return 'Cancelled'
     if (exit.timedOut)

@@ -95,3 +95,38 @@ export function isInside(path: string, cwd: string): boolean {
   const rel = relative(root, target)
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
 }
+
+/** The parts of a Codex app-server approval request the policy needs (kept independent of the provider package). */
+export type CodexApprovalInput =
+  | {
+      method: 'item/commandExecution/requestApproval'
+      kind: string
+      command?: string | null
+      cwd?: string | null
+    }
+  | { method: 'item/fileChange/requestApproval'; grantRoot?: string | null }
+
+/**
+ * Map a Codex app-server approval request to a policy action. Codex only asks when it wants to step outside its
+ * workspace-write sandbox, so anything that cannot be shown to stay inside the worktree is red.
+ */
+export function classifyCodexApproval(request: CodexApprovalInput, worktree: string): ProposedAction {
+  let kind: ActionKind = 'run_outside_worktree'
+  let summary: string
+  if (request.method === 'item/commandExecution/requestApproval') {
+    const command = unwrapShell(request.command ?? '')
+    const cwdInside = !request.cwd || isInside(request.cwd, worktree)
+    if (request.kind === 'command' && cwdInside && isSafeWorktreeCommand(command)) kind = 'run_in_worktree'
+    summary = `Codex requested to run: ${request.command ?? '(no command given)'}`
+  } else {
+    if (request.grantRoot && isInside(request.grantRoot, worktree)) kind = 'edit_worktree'
+    summary = `Codex requested to write files${request.grantRoot ? ` under ${request.grantRoot}` : ''}`
+  }
+  return { kind, summary, detail: request, provenance: 'agent' }
+}
+
+/** Codex often wraps commands as `bash -lc '<cmd>'`; judge the inner command when the wrapper is that simple. */
+function unwrapShell(command: string): string {
+  const match = /^(?:ba|z)?sh -l?c '([^']*)'$/.exec(command.trim())
+  return match?.[1] ?? command
+}

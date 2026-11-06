@@ -10,6 +10,8 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { request as httpRequest } from 'node:http'
+import { syntheticCodexAppServerFixture } from '../../providers/test-support/codex-app-server-fixtures.js'
+import { fakeCodexAppServer } from '../../providers/test-support/fixtures.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
@@ -132,9 +134,10 @@ class FakeProvider implements AgentProvider {
 
 class FakeExecutor implements Executor {
   prepareCalls = 0
+  constructor(private readonly path = '/fake/worktree') {}
   async prepare(repo: Workspace['repo'], taskId: TaskId, attemptId: AttemptId): Promise<Workspace> {
     this.prepareCalls++
-    return { repo, taskId, attemptId, path: '/fake/worktree', branch: 'joy/t1/a1', baseCommit: 'base-sha' }
+    return { repo, taskId, attemptId, path: this.path, branch: 'joy/t1/a1', baseCommit: 'base-sha' }
   }
   async diff() {
     return diff
@@ -154,6 +157,10 @@ function fixture(
     secretEnv?: NodeJS.ProcessEnv
     allowPlaywrightOrigin?: boolean
     ownerApprovalChannel?: boolean
+    /** Use the server's real Codex app-server provider, driven by a fake app-server process. */
+    codexAppServer?: JoyServerOptions['codexAppServer']
+    /** Worktree path the fake executor hands out; must exist when a real child process runs in it. */
+    worktreePath?: string
     configStore?: ConfigStore
     doctor?: Omit<DoctorOptions, 'home' | 'commands'>
     apiToken?: string
@@ -172,7 +179,7 @@ function fixture(
   }
   const db = openDatabase(':memory:')
   databases.push(db)
-  const executor = new FakeExecutor()
+  const executor = new FakeExecutor(options.worktreePath)
   const implementer = options.implementer ?? new FakeProvider('claude-cli')
   const reviewer =
     options.reviewer ??
@@ -205,9 +212,10 @@ function fixture(
     ...(options.generateApiToken ? {} : { apiToken: options.apiToken ?? TEST_API_TOKEN }),
     providers: {
       'claude-cli': implementer,
-      'codex-cli': reviewer,
+      ...(options.codexAppServer ? {} : { 'codex-cli': reviewer }),
       'openai-api': api,
     },
+    ...(options.codexAppServer ? { codexAppServer: options.codexAppServer } : {}),
     ...(options.redactor ? { redactor: options.redactor } : {}),
   }
   const serverPromise = createJoyServer(serverOptions)
@@ -240,14 +248,21 @@ interface TaskDetails {
   events: unknown[]
 }
 
-async function waitForStatus(origin: string, id: string, status: string): Promise<TaskDetails> {
-  for (let attempt = 0; attempt < 100; attempt++) {
+async function waitForStatus(
+  origin: string,
+  id: string,
+  status: string,
+  timeoutMs = 500,
+): Promise<TaskDetails> {
+  const deadline = Date.now() + timeoutMs
+  let last: TaskDetails | undefined
+  do {
     const response = await fetch(`${origin}/api/tasks/${id}`)
-    const body = (await response.json()) as TaskDetails
-    if (body.task.status === status) return body
+    last = (await response.json()) as TaskDetails
+    if (last.task.status === status) return last
     await new Promise((resolve) => setTimeout(resolve, 5))
-  }
-  throw new Error(`Task did not reach ${status}`)
+  } while (Date.now() < deadline)
+  throw new Error(`Task did not reach ${status} (last status: ${last.task.status})`)
 }
 
 async function waitForProviderCalls(provider: FakeProvider, count: number): Promise<void> {
@@ -1394,6 +1409,61 @@ describe('Joy local server', () => {
     )
     expect(skipped).toHaveLength(2)
   })
+
+  it(
+    'routes Codex app-server approval requests through the policy of the owning run',
+    { timeout: 20_000 },
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'joy-codex-approvals-'))
+      dirs.push(dir)
+      const approvalsPath = join(dir, 'approvals.jsonl')
+      const fixtureData = structuredClone(syntheticCodexAppServerFixture)
+      // A safe test command inside the worktree, and a file write with no root inside it (red).
+      fixtureData.commandApproval.params.command = 'pnpm test'
+      fixtureData.commandApproval.params.cwd = dir
+      const { serverPromise } = fixture({
+        worktreePath: dir,
+        codexAppServer: {
+          command: process.execPath,
+          argsPrefix: [fakeCodexAppServer],
+          env: { FAKE_APP_SERVER_FIXTURE: JSON.stringify(fixtureData), FAKE_APPROVALS_OUT: approvalsPath },
+          timeoutMs: 10_000,
+        },
+      })
+      const { origin } = await start(serverPromise)
+      const repoResponse = await postJson(`${origin}/api/repos`, {
+        path: '/tmp/codex-approvals',
+        defaultBranch: 'main',
+      })
+      const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+      const taskResponse = await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: 'Codex approvals',
+        prompt: 'Run the tests',
+        mode: 'single',
+        roleOverrides: { implementer: { provider: 'codex-cli', model: 'gpt-6-luna', effort: 'low' } },
+      })
+      const { task } = (await taskResponse.json()) as { task: { id: string } }
+      // Spawns a real child process, so allow more time than the in-process fakes need.
+      const result = await waitForStatus(origin, task.id, 'done', 15_000)
+
+      const answers = readFileSync(approvalsPath, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { id: string; result: { decision: string } })
+      expect(answers).toEqual([
+        { id: 'command-approval', result: { decision: 'accept' } },
+        { id: 'file-approval', result: { decision: 'decline' } },
+      ])
+      const policy = result.events
+        .filter((event) => (event as { type?: string }).type === 'policy.action')
+        .map((event) => (event as { payload: { kind: string; tier: string } }).payload)
+      expect(policy).toEqual([
+        expect.objectContaining({ kind: 'run_in_worktree', tier: 'auto' }),
+        expect.objectContaining({ kind: 'run_outside_worktree', tier: 'approve' }),
+      ])
+    },
+  )
 
   it('preserves the task ask_peer budget across a resumed provider session', async () => {
     const implementer = new FakeProvider('claude-cli')
