@@ -461,6 +461,49 @@ function PublishPanel({ details, onChanged }: { details: TaskDetails; onChanged:
   )
 }
 
+interface QuotaReport {
+  providers?: Record<string, { status: string; limitedNow?: boolean; resetsAt?: number }>
+  openaiApi?: { monthSpentUsd: number; monthlyCapUsd: number }
+}
+
+/** OpenAI API spend this month and any provider that is out of quota. Refreshes every 30 s. */
+function UsageStrip() {
+  const [report, setReport] = useState<QuotaReport | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    const load = () =>
+      request<QuotaReport>('/api/quota')
+        .then((body) => {
+          if (!cancelled) setReport(body)
+        })
+        .catch(() => undefined)
+    void load()
+    const timer = window.setInterval(() => void load(), 30_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [])
+  const api = report?.openaiApi
+  const limited = Object.entries(report?.providers ?? {}).filter(([, state]) => state.limitedNow)
+  if (!api && limited.length === 0) return null
+  return (
+    <div className="usage-strip" data-testid="usage-strip">
+      {api && typeof api.monthSpentUsd === 'number' ? (
+        <span>
+          OpenAI API ${api.monthSpentUsd.toFixed(2)} / ${api.monthlyCapUsd.toFixed(2)} this month
+        </span>
+      ) : null}
+      {limited.map(([provider, state]) => (
+        <span className="usage-limited" key={provider}>
+          {provider} out of quota
+          {state.resetsAt ? ` until ${new Date(state.resetsAt * 1000).toLocaleTimeString()}` : ''}
+        </span>
+      ))}
+    </div>
+  )
+}
+
 function App() {
   const [repos, setRepos] = useState<Repo[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
@@ -1184,6 +1227,7 @@ function App() {
               )}
             </section>
             <div className="sidebar-footer">
+              <UsageStrip />
               <div className="local-badge">
                 <span className="connection-dot" /> Joy is running locally
               </div>

@@ -45,4 +45,12 @@ describe('policy event labels', () => {
     )
     expect(policyEventKind('approval.decided', { status: 'approved' })).toBe('policy-auto')
   })
+
+  it('describes quota handoffs and queueing', () => {
+    expect(
+      policyEventTitle('quota.handoff', { from: { provider: 'claude-cli' }, to: { provider: 'codex-cli' } }),
+    ).toBe('Out of quota: claude-cli handed the task to codex-cli in the same worktree')
+    expect(policyEventTitle('quota.queued', {})).toBe('Out of quota: waiting, then resuming')
+    expect(policyEventKind('quota.handoff', {})).toBe('policy-notify')
+  })
 })

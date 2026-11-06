@@ -92,6 +92,16 @@
 - 不呼叫真實模型；若測試確實需要真實模型，只能使用 haiku 或 gpt-6-luna、low effort，且必須是 opt-in。
 - 每個 ticket 從最新 main 開獨立分支，diff 只保留該 ticket。CI 失敗最多修 3 次；無法修復時記錄原因並繼續不相依工作。
 
+### T2.5 額度交接與成本上限
+
+- 執行中收到 `quota: limited`（Claude `rate_limit_event`、OpenAI 429、Codex app-server 額度事件）且這次執行失敗時，依 `fallback.on_rate_limit`：
+  - `swap_provider`（預設）：在同一個 worktree 交給另一家（依角色設定挑選：可改檔、repo 允許、目前沒有超額），新的 attempt 收到交接摘要（任務、目前 diff、前一位的最後訊息）。每個任務只交接一次。
+  - 沒有人能接手，或設為 `queue`：任務排隊，事件 `quota.queued` 記下接續時間（額度重置後 60 秒）；時間到用同一個 session 接續。重啟後依事件重新排程。
+  - `fail`：照舊失敗。
+- 成本上限：單一任務的 OpenAI API 花費超過 `budget.per_task.max_api_usd` 就停止；執行超過 `budget.per_task.max_minutes` 就停止；本月 OpenAI API 花費達到 `budget.openai_api_usd_monthly_cap` 後，所有 OpenAI API 執行在送出請求前就被拒絕。訂閱 CLI 回報的金額只是估算，不計入。
+- `GET /api/quota`：各家目前的額度狀態與本月 API 花費；UI 左下角顯示。
+- 限制：交接目前只在單一模式（single）；review loop 與競賽模式的交接留待之後。
+
 ### T2.4c 逾時暫停與接續
 
 - 核准逾時（`approvals.on_timeout: pause`，預設）時，Joy 中止這次執行，任務停在 `awaiting_approval`，事件 `task.paused`。設為 `deny` 則維持舊行為：告訴 agent 未核准，任務繼續。
