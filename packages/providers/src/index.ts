@@ -6,8 +6,15 @@ export { runJsonlProcess } from './process.js'
 export type { JsonlLine, JsonlProcess, ProcessExit, ProcessSpec } from './process.js'
 export { buildCodexArgs, mcpOverrides } from './codex-cli/args.js'
 export { CodexStreamParser } from './codex-cli/parse.js'
-export { CodexCliProvider } from './codex-cli/provider.js'
+export { CodexAppServerProvider } from './codex-cli/app-server.js'
+export type { CodexAppServerOptions } from './codex-cli/app-server.js'
+export { CodexCliProvider, CodexExecProvider } from './codex-cli/provider.js'
 export type { CodexCliOptions } from './codex-cli/provider.js'
+export type {
+  CodexApprovalDecision,
+  CodexApprovalHandler,
+  CodexApprovalRequest,
+} from './codex-cli/app-server-client.js'
 export { runCli } from './cli-run.js'
 export type { CliRunSpec, StreamParser } from './cli-run.js'
 export { OpenAiApiProvider } from './openai-api/provider.js'

@@ -17,6 +17,7 @@ function setup(env: Record<string, string>, timeoutMs?: number) {
   dirs.push(dir)
   const argsOut = join(dir, 'args.json')
   const provider = new CodexCliProvider({
+    mode: 'exec',
     command: process.execPath,
     argsPrefix: [fakeCli],
     env: { ...process.env, FAKE_ARGS_OUT: argsOut, ...env },
@@ -72,7 +73,7 @@ describe('CodexCliProvider', () => {
   })
 
   it('cannot preset session ids or delegate approvals', () => {
-    const { capabilities } = new CodexCliProvider()
+    const { capabilities } = new CodexCliProvider({ mode: 'exec' })
     expect(capabilities.presetSessionId).toBe(false)
     expect(capabilities.delegatedApproval).toBe(false)
   })
