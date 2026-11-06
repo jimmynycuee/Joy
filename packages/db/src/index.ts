@@ -55,6 +55,7 @@ export {
   getConversation,
   listConversations,
   listMessages,
+  resetSessionsUsingMemory,
   setConversationTitle,
   updateConversationSession,
 } from './conversations.js'

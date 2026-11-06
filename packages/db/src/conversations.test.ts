@@ -5,6 +5,7 @@ import {
   getConversation,
   listConversations,
   listMessages,
+  resetSessionsUsingMemory,
   setConversationTitle,
   updateConversationSession,
 } from './conversations.js'
@@ -74,5 +75,31 @@ describe('conversations', () => {
     expect(getTask(db, 't1' as TaskId)?.originConversationId).toBe('c1')
     db.prepare("DELETE FROM conversations WHERE id = 'c1'").run()
     expect(getTask(db, 't1' as TaskId)?.originConversationId).toBeUndefined()
+  })
+
+  it('records the memories behind a session and a reply, and resets sessions that used a memory', () => {
+    const db = fresh()
+    createConversation(db, { id: 'a', channel: 'web' })
+    createConversation(db, { id: 'b', channel: 'web' })
+    const reply = appendMessage(db, 'a', 'assistant', 'ok', ['m1', 'm2'])
+    expect(reply.memoryIds).toEqual(['m1', 'm2'])
+    expect(appendMessage(db, 'a', 'user', 'x').memoryIds).toEqual([])
+    const session = { provider: 'openai-api' as const, model: 'm', sessionId: 's' }
+    updateConversationSession(db, 'a', { ...session, memoryIds: ['m1', 'm2'] })
+    updateConversationSession(db, 'b', { ...session, memoryIds: ['m3'] })
+    expect(getConversation(db, 'a')?.memoryIds).toEqual(['m1', 'm2'])
+
+    expect(resetSessionsUsingMemory(db, 'm2')).toBe(1)
+    expect(getConversation(db, 'a')).not.toHaveProperty('sessionId')
+    expect(getConversation(db, 'a')?.memoryIds).toEqual([])
+    expect(getConversation(db, 'b')).toMatchObject({ sessionId: 's', memoryIds: ['m3'] })
+    // The reply keeps its record of what it used.
+    expect(listMessages(db, 'a')[0]?.memoryIds).toEqual(['m1', 'm2'])
+  })
+
+  it('rejects memory ids that are not JSON', () => {
+    const db = fresh()
+    createConversation(db, { id: 'a', channel: 'web' })
+    expect(() => db.prepare("UPDATE conversations SET memory_ids = 'nope' WHERE id = 'a'").run()).toThrow()
   })
 })
