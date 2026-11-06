@@ -326,6 +326,26 @@ export const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE messages ADD COLUMN memory_ids TEXT CHECK (memory_ids IS NULL OR json_valid(memory_ids));
     `,
   },
+  {
+    version: 11,
+    name: 'project note proposals for AGENTS.md',
+    sql: /* sql */ `
+      -- Joy proposes, the owner applies. base_sha256 is the file the proposal was drawn up against (NULL: no file).
+      CREATE TABLE project_notes (
+        id              TEXT PRIMARY KEY,
+        repo_id         TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+        note            TEXT NOT NULL,
+        base_sha256     TEXT,
+        proposed        TEXT NOT NULL,
+        conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+        status          TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'applied', 'rejected', 'conflict')),
+        created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        decided_at      TEXT
+      ) STRICT;
+      CREATE INDEX project_notes_status ON project_notes(status, created_at);
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

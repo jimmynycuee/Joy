@@ -615,6 +615,84 @@ function MemoryPanel(props: {
   )
 }
 
+interface ProjectNote {
+  id: string
+  note: string
+  file: string
+  repoPath?: string
+  stale?: boolean
+  diff?: Array<{ kind: 'same' | 'add' | 'remove'; text: string }>
+}
+
+/** AGENTS.md notes Joy proposed (T3.5). Nothing reaches the repository until the owner applies the diff here. */
+function ProjectNotesPanel(props: { onError: (message: string) => void }) {
+  const [notes, setNotes] = useState<ProjectNote[]>([])
+
+  async function load() {
+    const body = await request<{ notes?: ProjectNote[] }>('/api/project-notes?status=pending')
+    setNotes(Array.isArray(body.notes) ? body.notes : [])
+  }
+
+  useEffect(() => {
+    void load().catch(() => undefined)
+    const timer = window.setInterval(() => void load().catch(() => undefined), 5000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  async function decide(id: string, action: 'apply' | 'reject') {
+    try {
+      await request(`/api/project-notes/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: '{}' })
+    } catch (error) {
+      props.onError(error instanceof Error ? error.message : 'Could not update the proposal')
+    }
+    await load().catch(() => undefined)
+  }
+
+  if (notes.length === 0) return null
+  return (
+    <section className="project-notes" aria-label="Project note proposals" data-testid="project-notes">
+      <h3>Proposed project notes</h3>
+      {notes.map((note) => (
+        <article key={note.id} className="project-note">
+          <p>
+            <strong>{note.note}</strong>
+            <span className="muted">
+              {' '}
+              → {note.repoPath ? `${note.repoPath}/` : ''}
+              {note.file}
+            </span>
+          </p>
+          {note.stale ? (
+            <p className="muted">The file changed since this was proposed. Reject it and ask Joy again.</p>
+          ) : (
+            <pre className="diff" aria-label={`Diff for ${note.note}`}>
+              {(note.diff ?? [])
+                .filter((line) => line.kind !== 'same')
+                .map((line, index) => (
+                  <span key={index} className={`diff-${line.kind}`}>
+                    {line.kind === 'add' ? '+ ' : '- '}
+                    {line.text}
+                    {'\n'}
+                  </span>
+                ))}
+            </pre>
+          )}
+          <div className="project-note-actions">
+            {note.stale ? null : (
+              <button type="button" className="primary-button" onClick={() => void decide(note.id, 'apply')}>
+                Apply to {note.file}
+              </button>
+            )}
+            <button type="button" className="quiet-button" onClick={() => void decide(note.id, 'reject')}>
+              Reject
+            </button>
+          </div>
+        </article>
+      ))}
+    </section>
+  )
+}
+
 async function deleteMemory(id: string, onChange: () => Promise<void>, onError: (message: string) => void) {
   try {
     await request(`/api/memories/${encodeURIComponent(id)}`, { method: 'DELETE' })
@@ -742,6 +820,7 @@ function AssistantPage() {
         <MemoryPanel memories={memories} onChange={loadMemories} onError={setFailure} />
       </aside>
       <section className="assistant-chat" aria-label="Chat">
+        <ProjectNotesPanel onError={setFailure} />
         <div className="chat-messages">
           {messages.length === 0 ? (
             <p className="muted">
