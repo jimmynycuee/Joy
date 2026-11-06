@@ -1178,3 +1178,11 @@ select {
     flex-direction: column;
   }
 }
+
+.event-policy-approve .event-marker {
+  background: #d92d20;
+}
+
+.event-policy-notify .event-marker {
+  background: #dc8a00;
+}

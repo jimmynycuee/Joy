@@ -1,7 +1,13 @@
 import type { ActionKind, AutonomyMode, ProposedAction, Tier } from '@joy/core'
 import { ACTION_KINDS } from '@joy/core'
 
-export { classifyClaudeToolAction, isInside, isSafeWorktreeCommand } from './classify.js'
+export {
+  classifyClaudeToolAction,
+  classifyCodexApproval,
+  isInside,
+  isSafeWorktreeCommand,
+} from './classify.js'
+export type { CodexApprovalInput } from './classify.js'
 
 /** The baseline tier for each operation. High-impact operations require a person regardless of mode. */
 export const ACTION_TIERS = {

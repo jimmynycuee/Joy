@@ -1,6 +1,11 @@
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { classifyClaudeToolAction, isInside, isSafeWorktreeCommand } from './classify.js'
+import {
+  classifyClaudeToolAction,
+  classifyCodexApproval,
+  isInside,
+  isSafeWorktreeCommand,
+} from './classify.js'
 
 const cwd = join('/work', 'project')
 const kind = (tool: string, input: unknown) => classifyClaudeToolAction(tool, input, cwd).kind
@@ -109,5 +114,53 @@ describe('isInside', () => {
     expect(isInside(join(cwd, 'a', 'b'), cwd)).toBe(true)
     expect(isInside(join('/work', 'project-evil', 'x'), cwd)).toBe(false)
     expect(isInside('a/../../x', cwd)).toBe(false)
+  })
+})
+
+describe('Codex app-server approval requests', () => {
+  const cmd = (command: string, extra: Record<string, unknown> = {}) =>
+    classifyCodexApproval(
+      { method: 'item/commandExecution/requestApproval', kind: 'command', command, ...extra },
+      cwd,
+    ).kind
+
+  it('lets safe commands inside the worktree run, including the usual bash -lc wrapper', () => {
+    expect(cmd('pnpm test')).toBe('run_in_worktree')
+    expect(cmd("bash -lc 'pnpm test'")).toBe('run_in_worktree')
+    expect(cmd('git status', { cwd: join(cwd, 'src') })).toBe('run_in_worktree')
+  })
+
+  it('treats unsafe commands, outside directories and non-command kinds as red', () => {
+    expect(cmd('curl https://example.com')).toBe('run_outside_worktree')
+    expect(cmd("bash -lc 'pnpm test && rm -rf /'")).toBe('run_outside_worktree')
+    expect(cmd('pnpm test', { cwd: '/etc' })).toBe('run_outside_worktree')
+    expect(
+      classifyCodexApproval(
+        { method: 'item/commandExecution/requestApproval', kind: 'humanCommand', command: 'pnpm test' },
+        cwd,
+      ).kind,
+    ).toBe('run_outside_worktree')
+    expect(
+      classifyCodexApproval({ method: 'item/commandExecution/requestApproval', kind: 'command' }, cwd).kind,
+    ).toBe('run_outside_worktree')
+  })
+
+  it('allows file writes only when the requested root is inside the worktree', () => {
+    const write = (grantRoot?: string) =>
+      classifyCodexApproval(
+        { method: 'item/fileChange/requestApproval', ...(grantRoot ? { grantRoot } : {}) },
+        cwd,
+      ).kind
+    expect(write(join(cwd, 'src'))).toBe('edit_worktree')
+    expect(write('/home/me')).toBe('run_outside_worktree')
+    expect(write()).toBe('run_outside_worktree')
+  })
+
+  it('keeps the original request as detail for the audit trail', () => {
+    const action = classifyCodexApproval(
+      { method: 'item/commandExecution/requestApproval', kind: 'command', command: 'pnpm test' },
+      cwd,
+    )
+    expect(action).toMatchObject({ provenance: 'agent', summary: 'Codex requested to run: pnpm test' })
   })
 })

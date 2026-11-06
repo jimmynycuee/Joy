@@ -78,3 +78,13 @@ describe('CodexCliProvider', () => {
     expect(capabilities.delegatedApproval).toBe(false)
   })
 })
+
+describe('spawn errors', () => {
+  it('says the working directory is missing instead of blaming the CLI', async () => {
+    const provider = new CodexCliProvider({ command: process.execPath })
+    const missing = join(tmpdir(), 'joy-definitely-missing-worktree')
+    await expect(collect(provider.run(opts(missing), model))).rejects.toThrow(
+      /working directory does not exist/,
+    )
+  })
+})

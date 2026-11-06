@@ -35,6 +35,11 @@ const roles = z.strictObject(
 )
 
 const cliPath = z.strictObject({ command: z.string().min(1).optional() })
+const codexCli = z.strictObject({
+  command: z.string().min(1).optional(),
+  /** `app-server` supports approvals and quota events; `exec` is the older one-shot JSONL fallback. */
+  transport: z.enum(['app-server', 'exec']).default('app-server'),
+})
 
 export const configSchema = z.strictObject({
   roles: roles.default(() => roles.parse({})),
@@ -71,9 +76,9 @@ export const configSchema = z.strictObject({
   providers: z
     .strictObject({
       claude: cliPath.default({}),
-      codex: cliPath.default({}),
+      codex: codexCli.default({ transport: 'app-server' }),
     })
-    .default({ claude: {}, codex: {} }),
+    .default({ claude: {}, codex: { transport: 'app-server' } }),
   paths: z
     .strictObject({
       /** Defaults to `<JOY_HOME>/worktrees`. */

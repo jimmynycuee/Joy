@@ -4,7 +4,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { link, lstat, mkdir, open, unlink } from 'node:fs/promises'
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import { z, ZodError } from 'zod'
 import type {
@@ -53,7 +53,13 @@ import type { AttemptRecord, Database, RepoRecord, StoredTask } from '@joy/db'
 import { WorktreeExecutor } from '@joy/executor'
 import type { Executor, WorkspaceDiff } from '@joy/core'
 import { reviewLoop } from '@joy/orchestrator'
-import { ClaudeCliProvider, CodexCliProvider, OpenAiApiProvider } from '@joy/providers'
+import {
+  ClaudeCliProvider,
+  CodexAppServerProvider,
+  CodexCliProvider,
+  OpenAiApiProvider,
+} from '@joy/providers'
+import type { CodexApprovalDecision, CodexApprovalRequest } from '@joy/providers'
 import { Redactor, SecretStore } from '@joy/secrets'
 import {
   createToolHubDispatcher,
@@ -65,7 +71,7 @@ import {
 } from '@joy/tools'
 import type { ToolHubBudget, ToolHubDispatcher } from '@joy/tools'
 import { effortCompatibilityError } from '@joy/model-effort'
-import { classifyClaudeToolAction, evaluateAction } from '@joy/policy'
+import { classifyClaudeToolAction, classifyCodexApproval, evaluateAction } from '@joy/policy'
 import { runDoctor } from './doctor.js'
 import type { DoctorOptions } from './doctor.js'
 import { describeDisallowedRoleProvider, findDisallowedRoleProviders } from './provider-allowlist.js'
@@ -146,6 +152,8 @@ export interface JoyServerOptions {
    * straight away: a cross-model pre-review would spend quota on a request nobody can approve.
    */
   ownerApprovalChannel?: boolean
+  /** Overrides for the built-in Codex app-server provider (tests and local development). */
+  codexAppServer?: { command?: string; argsPrefix?: string[]; env?: NodeJS.ProcessEnv; timeoutMs?: number }
   /** Test seams for prerequisite checks; production uses the current process and OS services. */
   doctor?: Omit<DoctorOptions, 'home' | 'commands'>
   /** Trusted runtime injection/testing only. Otherwise the token is persisted in <home>/api-token. */
@@ -208,13 +216,30 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const redactor = options.redactor ?? new Redactor()
   redactor.add(apiToken)
   const secretStore = options.secretStore ?? new SecretStore({ onSecret: (secret) => redactor.add(secret) })
+  const codexApprovalHandlers = new Map<
+    string,
+    (request: CodexApprovalRequest) => Promise<CodexApprovalDecision>
+  >()
   const providers: Partial<Record<ProviderKind, AgentProvider>> = {
     'claude-cli': new ClaudeCliProvider({
       ...(initialConfig.providers.claude.command ? { command: initialConfig.providers.claude.command } : {}),
     }),
-    'codex-cli': new CodexCliProvider({
-      ...(initialConfig.providers.codex.command ? { command: initialConfig.providers.codex.command } : {}),
-    }),
+    'codex-cli':
+      initialConfig.providers.codex.transport === 'exec'
+        ? new CodexCliProvider({
+            ...(initialConfig.providers.codex.command
+              ? { command: initialConfig.providers.codex.command }
+              : {}),
+          })
+        : new CodexAppServerProvider({
+            ...(initialConfig.providers.codex.command
+              ? { command: initialConfig.providers.codex.command }
+              : {}),
+            ...options.codexAppServer,
+            // Approvals are decided by the policy of the run that owns this worktree; unknown runs are declined.
+            approvalHandler: (request, runOptions) =>
+              codexApprovalHandlers.get(resolve(runOptions.cwd))?.(request) ?? 'decline',
+          }),
     'openai-api': new OpenAiApiProvider({
       apiKey: async () => {
         const key = await secretStore.get('openai_api_key')
@@ -776,7 +801,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     workspace: Workspace,
     config: JoyConfig,
     signal: AbortSignal,
-  ): { server: NonNullable<RunOptions['mcpServers']>[number]; close: () => void } {
+  ): {
+    server: NonNullable<RunOptions['mcpServers']>[number]
+    close: () => void
+    codexApproval: (request: CodexApprovalRequest) => Promise<CodexApprovalDecision>
+  } {
     const address = httpServer.address()
     if (!address || typeof address === 'string')
       throw new Error('Joy Tool Hub requires the local server to be listening')
@@ -984,7 +1013,28 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     })
     const endpoint = `http://127.0.0.1:${address.port}/internal/tool-hub/${sessionId}`
     toolHubSessions.set(sessionId, { token, dispatch })
+    const codexApproval = async (request: CodexApprovalRequest): Promise<CodexApprovalDecision> => {
+      const classified = classifyCodexApproval(
+        request.method === 'item/commandExecution/requestApproval'
+          ? {
+              method: request.method,
+              kind: request.params.kind,
+              command: request.params.command ?? null,
+              cwd: request.params.cwd ?? null,
+            }
+          : { method: request.method, grantRoot: request.params.grantRoot ?? null },
+        workspace.path,
+      )
+      const action =
+        task.provenance === 'external_content'
+          ? { ...classified, provenance: 'external_content' as const }
+          : classified
+      const assessed = await assessAction(action)
+      // Re-ask every time (never acceptForSession) so each request is judged on its own.
+      return assessed.decision.tier === 'approve' ? 'decline' : 'accept'
+    }
     return {
+      codexApproval,
       server: createToolHubMcpConfig(endpoint, token),
       close: () => {
         sessionController.abort()
@@ -1031,6 +1081,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     let done: Extract<AgentEvent, { type: 'done' }> | undefined
     let failure: string | undefined
+    const approvalKey = resolve(workspace.path)
+    if (toolHub) codexApprovalHandlers.set(approvalKey, toolHub.codexApproval)
     try {
       for await (const event of provider.run(options, model)) {
         persistUsageEvent(db, model.provider, event)
@@ -1040,6 +1092,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         publish(task.id, attempt.id, 'agent', { role: 'implementer', round: 1, event })
       }
     } finally {
+      if (toolHub && codexApprovalHandlers.get(approvalKey) === toolHub.codexApproval) {
+        codexApprovalHandlers.delete(approvalKey)
+      }
       toolHub?.close()
     }
     const diff = await executor.diff(workspace)

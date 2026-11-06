@@ -5,6 +5,7 @@ import { EFFORTS, PROVIDER_KINDS, ROLES } from '@joy/core'
 import type { ModelRef, ProviderKind, Role, RoleConfig } from '@joy/core'
 import type { JoyConfig } from '@joy/config'
 import './styles.css'
+import { policyEventKind, policyEventTitle } from './policy-events.js'
 
 type Repo = { id: string; path: string; defaultBranch: string; githubRemote?: string }
 type Task = {
@@ -142,6 +143,8 @@ function diffFrom(events: TaskEvent[]): WorkspaceDiff | null {
 
 function eventTitle(event: TaskEvent): string {
   const payload = record(event.payload)
+  const policyTitle = policyEventTitle(event.type, payload)
+  if (policyTitle) return policyTitle
   if (event.type === 'agent') {
     const agentEvent = record(payload?.event)
     if (agentEvent?.type === 'message' && typeof agentEvent.text === 'string') return agentEvent.text
@@ -165,6 +168,8 @@ function eventTitle(event: TaskEvent): string {
 }
 
 function eventKind(event: TaskEvent): string {
+  const policyKind = policyEventKind(event.type, record(event.payload))
+  if (policyKind) return policyKind
   if (event.type !== 'agent') return event.type
   const payload = record(event.payload)
   const role = payload?.role
