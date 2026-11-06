@@ -1,7 +1,9 @@
+import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -41,6 +43,7 @@ import {
 } from '@joy/db'
 import type { Database } from '@joy/db'
 import { MemoryBackend, Redactor, SecretStore } from '@joy/secrets'
+import { WorktreeExecutor } from '@joy/executor'
 import { createJoyServer } from './server.js'
 import type { JoyServer, JoyServerOptions } from './server.js'
 import type { DoctorOptions } from './doctor.js'
@@ -173,6 +176,8 @@ function fixture(
     taskTimeLimitMs?: number
     assistantApiProvider?: JoyServerOptions['assistantApiProvider']
     schedulerClock?: JoyServerOptions['schedulerClock']
+    /** A real executor instead of the fake (tests that need git worktrees). */
+    executor?: Executor
     /** Use the server's real Codex app-server provider, driven by a fake app-server process. */
     codexAppServer?: JoyServerOptions['codexAppServer']
     /** Worktree path the fake executor hands out; must exist when a real child process runs in it. */
@@ -225,7 +230,7 @@ function fixture(
       onSecret: (secret) => redactor.add(secret),
     }),
     redactor,
-    executor,
+    executor: options.executor ?? executor,
     ...(options.allowPlaywrightOrigin ? { allowPlaywrightOrigin: true } : {}),
     ...(options.ownerApprovalChannel !== undefined
       ? { ownerApprovalChannel: options.ownerApprovalChannel }
@@ -1814,7 +1819,7 @@ describe('Joy local server', () => {
     }
     const redactor = new Redactor()
     redactor.add('publish-secret-value')
-    const { serverPromise } = fixture({ publisher, redactor })
+    const { serverPromise, executor } = fixture({ publisher, redactor })
     const { origin } = await start(serverPromise)
     const repoResponse = await postJson(`${origin}/api/repos`, {
       path: '/tmp/publish-repo',
@@ -1843,29 +1848,35 @@ describe('Joy local server', () => {
       'https://github.com/o/r.git',
     )
 
-    const published = await postJson(`${origin}/api/tasks/${task.id}/publish`, { baseBranch: 'develop' })
-    expect(published.status).toBe(200)
-    expect(await published.json()).toEqual({
-      pullRequestUrl: 'https://github.com/o/r/pull/7',
-      commitSha: 'c'.repeat(40),
-    })
-    expect(calls[0]?.workspace).toMatchObject({
-      path: '/fake/worktree',
-      branch: 'joy/t1/a1',
-      baseCommit: 'base-sha',
-    })
-    expect(calls[0]?.input).toMatchObject({
-      title: 'Fix the bug',
-      baseBranch: 'develop',
-      summary: 'Fix add()',
-    })
-
     behaviour.fail = 'push rejected for publish-secret-value'
     const failed = await postJson(`${origin}/api/tasks/${task.id}/publish`, {})
     expect(failed.status).toBe(422)
     const failedText = await failed.text()
     expect(failedText).toContain('push rejected')
     expect(failedText).not.toContain('publish-secret-value')
+    delete behaviour.fail
+
+    const published = await postJson(`${origin}/api/tasks/${task.id}/publish`, { baseBranch: 'develop' })
+    expect(published.status).toBe(200)
+    expect(await published.json()).toEqual({
+      pullRequestUrl: 'https://github.com/o/r/pull/7',
+      commitSha: 'c'.repeat(40),
+    })
+    expect(calls[1]?.workspace).toMatchObject({
+      path: '/fake/worktree',
+      branch: 'joy/t1/a1',
+      baseCommit: 'base-sha',
+    })
+    expect(calls[1]?.input).toMatchObject({
+      title: 'Fix the bug',
+      baseBranch: 'develop',
+      summary: 'Fix add()',
+    })
+    // The branch is on GitHub; the local worktree is removed right away (T2.8).
+    expect(executor.cleaned).toEqual([calls[1]?.workspace.attemptId])
+
+    // Published and cleaned up: there is nothing left to publish.
+    expect((await postJson(`${origin}/api/tasks/${task.id}/publish`, {})).status).toBe(409)
 
     const details = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
     const types = details.events.map((event) => (event as { type?: string }).type)
@@ -2610,6 +2621,85 @@ describe('Joy local server', () => {
     })
     expect(response.status).toBeGreaterThanOrEqual(400)
     expect(((await response.json()) as { error: string }).error).toMatch(/judge.*openai-api/i)
+  })
+
+  it('lists Joy worktrees with size and unpushed commits, and removes them only with confirmation', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'joy-worktrees-'))
+    dirs.push(root)
+    const repoPath = join(root, 'repo')
+    const run = (cwd: string, ...args: string[]) =>
+      execFileSync('git', args, { cwd, stdio: 'pipe' }).toString()
+    mkdirSync(repoPath)
+    run(repoPath, 'init', '-q', '-b', 'main')
+    writeFileSync(join(repoPath, 'README.md'), 'hi\n')
+    run(repoPath, 'add', '.')
+    run(repoPath, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init')
+    const executor = new WorktreeExecutor({ worktreesDir: join(root, 'worktrees') })
+    const { serverPromise, db } = fixture({ executor })
+    const repo = createRepo(db, { id: rid('repo1'), path: repoPath, defaultBranch: 'main' })
+    const makeAttempt = async (taskId: string, status: 'done' | 'running') => {
+      createTask(db, { id: taskId as TaskId, repoId: repo.id, title: taskId, prompt: 'p', mode: 'single' })
+      setTaskStatus(db, taskId as TaskId, status)
+      const attempt = createAttempt(db, {
+        id: aid(`${taskId}-a`),
+        taskId: taskId as TaskId,
+        provider: 'claude-cli',
+        model: 'haiku',
+        status: 'succeeded',
+      })
+      const ws = await executor.prepare(repo, taskId as TaskId, attempt.id)
+      updateAttempt(db, attempt.id, { worktreePath: ws.path, branch: ws.branch, baseCommit: ws.baseCommit })
+      return ws
+    }
+    const kept = await makeAttempt('t-kept', 'done')
+    writeFileSync(join(kept.path, 'work.txt'), 'local work\n')
+    await executor.commit(kept, 'local commit')
+    const busy = await makeAttempt('t-busy', 'running')
+    const { origin } = await start(serverPromise)
+
+    type Row = {
+      path: string
+      taskId?: string
+      unpushedCommitCount: number
+      diskUsageBytes: number
+      stale: boolean
+    }
+    const list = async () =>
+      (await (await fetch(`${origin}/api/worktrees`)).json()) as {
+        worktrees: Row[]
+        totalBytes: number
+        staleAfterDays: number
+      }
+    const listed = await list()
+    expect(listed.staleAfterDays).toBe(14)
+    expect(listed.worktrees.map((w) => [w.taskId, w.unpushedCommitCount, w.stale]).sort()).toEqual([
+      ['t-busy', 0, false],
+      ['t-kept', 1, false],
+    ])
+    expect(listed.totalBytes).toBeGreaterThan(0)
+
+    const keptRow = listed.worktrees.find((w) => w.taskId === 't-kept')
+    // An unpushed commit is never deleted without the owner's confirmation.
+    const refused = await postJson(`${origin}/api/worktrees/remove`, { path: keptRow?.path })
+    expect(refused.status).toBe(409)
+    expect(await refused.text()).toMatch(/1 unpushed commit/)
+    expect(existsSync(kept.path)).toBe(true)
+    // A running task's worktree is not removed, and paths outside Joy's worktrees are refused.
+    expect((await postJson(`${origin}/api/tasks/t-busy/discard`, {})).status).toBe(409)
+    expect(existsSync(busy.path)).toBe(true)
+    expect((await postJson(`${origin}/api/worktrees/remove`, { path: repoPath })).status).toBe(404)
+
+    const confirmed = await postJson(`${origin}/api/worktrees/remove`, {
+      path: keptRow?.path,
+      confirmUnpushedCommits: true,
+    })
+    expect(confirmed.status).toBe(200)
+    expect(existsSync(kept.path)).toBe(false)
+    expect((await list()).worktrees.map((w) => w.taskId)).toEqual(['t-busy'])
+
+    setTaskStatus(db, 't-busy' as TaskId, 'cancelled')
+    expect((await postJson(`${origin}/api/tasks/t-busy/discard`, {})).status).toBe(200)
+    expect(existsSync(busy.path)).toBe(false)
   })
 
   it('reports model stats filtered by period and repository', async () => {

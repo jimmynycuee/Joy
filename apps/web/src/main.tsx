@@ -568,6 +568,146 @@ function ComparePanel({ details, onChanged }: { details: TaskDetails; onChanged:
   )
 }
 
+type WorktreeRow = {
+  path: string
+  repoPath: string
+  branch: string | null
+  diskUsageBytes: number
+  unpushedCommitCount: number
+  ageDays: number
+  stale: boolean
+  active: boolean
+  taskId?: string
+  taskTitle?: string
+  taskStatus?: string
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let value = bytes / 1024
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit++
+  }
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`
+}
+
+/** Removes worktrees; asks again before losing commits that exist nowhere else. */
+async function removeWithConfirmation(path: string, body: Record<string, unknown>): Promise<boolean> {
+  try {
+    await request(path, { method: 'POST', body: JSON.stringify(body) })
+    return true
+  } catch (error) {
+    const message = error instanceof Error ? error.message : ''
+    if (!/unpushed commit/.test(message)) throw error
+    if (!window.confirm(`${message}\n\nDelete these commits anyway?`)) return false
+    await request(path, { method: 'POST', body: JSON.stringify({ ...body, confirmUnpushedCommits: true }) })
+    return true
+  }
+}
+
+/** Worktree cleanup (T2.8): disk usage, idle worktrees, and removal that never loses commits silently. */
+function WorktreesPanel() {
+  const [data, setData] = useState<{
+    worktrees: WorktreeRow[]
+    totalBytes: number
+    staleAfterDays: number
+  } | null>(null)
+  const [failure, setFailure] = useState('')
+
+  async function load() {
+    const body = await request<{ worktrees?: WorktreeRow[]; totalBytes?: number; staleAfterDays?: number }>(
+      '/api/worktrees',
+    )
+    setData({
+      worktrees: Array.isArray(body.worktrees) ? body.worktrees : [],
+      totalBytes: typeof body.totalBytes === 'number' ? body.totalBytes : 0,
+      staleAfterDays: typeof body.staleAfterDays === 'number' ? body.staleAfterDays : 14,
+    })
+  }
+
+  useEffect(() => {
+    void load().catch(() => undefined)
+  }, [])
+
+  async function remove(row: WorktreeRow) {
+    setFailure('')
+    try {
+      await removeWithConfirmation('/api/worktrees/remove', { path: row.path })
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : 'Could not remove the worktree')
+    }
+    await load().catch(() => undefined)
+  }
+
+  const stale = data?.worktrees.filter((row) => row.stale && !row.active) ?? []
+  return (
+    <section className="settings-card" aria-label="Worktrees" data-testid="worktrees-panel">
+      <h2>Worktrees</h2>
+      <p className="muted">
+        {data ? `${data.worktrees.length} worktree(s) using ${formatBytes(data.totalBytes)}.` : 'Loading…'}
+        {stale.length ? ` ${stale.length} idle for more than ${data?.staleAfterDays} days.` : ''}
+      </p>
+      {data?.worktrees.length ? (
+        <ul className="worktree-list">
+          {data.worktrees.map((row) => (
+            <li key={row.path} className={row.stale ? 'worktree-item stale' : 'worktree-item'}>
+              <span>
+                <strong>{row.taskTitle ?? row.branch ?? row.path}</strong>
+                <span className="muted">
+                  {' '}
+                  · {formatBytes(row.diskUsageBytes)} · {Math.floor(row.ageDays)} day(s) idle
+                  {row.unpushedCommitCount ? ` · ${row.unpushedCommitCount} unpushed commit(s)` : ''}
+                  {row.stale ? ' · idle' : ''}
+                </span>
+              </span>
+              {row.active ? (
+                <span className="muted">running</span>
+              ) : (
+                <button type="button" className="quiet-button" onClick={() => void remove(row)}>
+                  Remove
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {failure ? <p className="approvals-error">{failure}</p> : null}
+    </section>
+  )
+}
+
+/** Throws away a finished task's worktrees (T2.8). */
+function DiscardButton({ details, onChanged }: { details: TaskDetails; onChanged: () => void }) {
+  const [failure, setFailure] = useState('')
+  const finished = ['done', 'review_ready', 'failed', 'cancelled'].includes(details.task.status)
+  const removed = details.events.some((event) => event.type === 'worktree.removed')
+  const published = details.events.some((event) => event.type === 'publish.done')
+  if (!finished || removed || published) return null
+  return (
+    <div className="discard-row">
+      <button
+        type="button"
+        className="quiet-button"
+        onClick={() => {
+          if (!window.confirm('Discard this task’s worktree and its changes?')) return
+          setFailure('')
+          void removeWithConfirmation(`/api/tasks/${encodeURIComponent(details.task.id)}/discard`, {})
+            .then(onChanged)
+            .catch((error: unknown) =>
+              setFailure(error instanceof Error ? error.message : 'Could not discard'),
+            )
+        }}
+      >
+        Discard worktree
+      </button>
+      {failure ? <p className="approvals-error">{failure}</p> : null}
+    </div>
+  )
+}
+
 function PublishPanel({ details, onChanged }: { details: TaskDetails; onChanged: () => void }) {
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState('')
@@ -1976,6 +2116,7 @@ function App() {
                 )}
               </section>
               {config ? <TelegramSettings config={config} onConfig={setConfig} /> : null}
+              <WorktreesPanel />
             </div>
           ) : (
             <div className="loading-card">Loading settings…</div>
@@ -2184,6 +2325,9 @@ function App() {
               <ComparePanel details={details} onChanged={() => void refreshSelectedTask()} />
             ) : null}
             {details ? <PublishPanel details={details} onChanged={() => void refreshSelectedTask()} /> : null}
+            {details ? (
+              <DiscardButton details={details} onChanged={() => void refreshSelectedTask()} />
+            ) : null}
             {diff ? (
               <>
                 <div className="diff-summary">
