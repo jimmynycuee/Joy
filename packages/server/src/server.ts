@@ -453,9 +453,16 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const reportToConversation = (taskId: TaskId, payload: unknown) => {
     const task = getTask(db, taskId)
     if (!task?.originConversationId || !getConversation(db, task.originConversationId)) return
-    const result = payload as { status?: string; approved?: boolean; reason?: string; rounds?: number }
-    const outcome =
-      result.status === 'succeeded'
+    const result = payload as {
+      status?: string
+      approved?: boolean
+      reason?: string
+      rounds?: number
+      awaitingChoice?: boolean
+    }
+    const outcome = result.awaitingChoice
+      ? `is ready for your decision: ${result.reason ?? 'compare the attempts'}`
+      : result.status === 'succeeded'
         ? result.approved === false
           ? `finished after ${result.rounds ?? 'several'} review round(s) without the reviewer's approval; it needs your decision`
           : 'finished and was approved by the cross-model review'
@@ -562,8 +569,17 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   }
   if (telegram) {
     notifyResult = (taskId, payload) => {
-      const result = payload as { status?: string; approved?: boolean; reason?: string }
+      const result = payload as {
+        status?: string
+        approved?: boolean
+        reason?: string
+        awaitingChoice?: boolean
+      }
       const title = getTask(db, taskId)?.title ?? taskId
+      if (result.awaitingChoice) {
+        sendTelegram({ text: `🟡 ${title}: ${result.reason ?? 'ready to compare'}` })
+        return
+      }
       const icon =
         result.status === 'succeeded'
           ? result.approved === false
@@ -970,10 +986,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       const task = requireTask(decodePathSegment(competeMatch[1] ?? ''))
       if (competeMatch[2] === 'choose') {
         const { attemptId } = z.strictObject({ attemptId: idSchema }).parse(await readJson(req))
-        json(res, 200, { task: await chooseCompeteAttempt(task, attemptId) })
+        json(res, 200, { task: await decideCompete(task, () => chooseCompeteAttempt(task, attemptId)) })
       } else {
         z.strictObject({}).parse(await readJson(req))
-        const attempt = await startCompeteMerge(task)
+        const attempt = await decideCompete(task, () => startCompeteMerge(task))
         json(res, 202, { task: getTask(db, task.id), attempt })
       }
       return
@@ -1378,11 +1394,13 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   /** The end of a compete phase: the owner now compares and decides. */
   function finishCompetePhase(task: StoredTask, attempt: AttemptRecord, reason: string): void {
     setTaskStatus(db, task.id, 'review_ready')
+    // Not a reviewer's rejection: the owner is asked to compare and choose.
     publish(task.id, attempt.id, 'result', {
       type: 'result',
       status: 'succeeded',
       approved: false,
       rounds: 1,
+      awaitingChoice: true,
       reason,
     })
   }
@@ -1499,11 +1517,25 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
   }
 
+  /** Compete tasks with a choose or merge request in progress; a second request is refused, not raced. */
+  const competeDecisions = new Set<TaskId>()
+
+  async function decideCompete<T>(task: StoredTask, decide: () => Promise<T>): Promise<T> {
+    if (task.mode !== 'compete')
+      throw new HttpError(409, 'Only compete tasks have attempts to choose from or merge')
+    const current = getTask(db, task.id) ?? task
+    if (current.status !== 'review_ready' || running.has(task.id) || competeDecisions.has(task.id))
+      throw new HttpError(409, `Wait until the comparison is ready (task is ${current.status})`)
+    competeDecisions.add(task.id)
+    try {
+      return await decide()
+    } finally {
+      competeDecisions.delete(task.id)
+    }
+  }
+
   /** The judge writes a merged version in a new worktree; the result gets one cross-model review. */
   async function startCompeteMerge(task: StoredTask): Promise<AttemptRecord> {
-    if (task.mode !== 'compete') throw new HttpError(409, 'Only compete tasks can be merged')
-    if (task.status !== 'review_ready' || running.has(task.id))
-      throw new HttpError(409, `The comparison is not ready to merge (task is ${task.status})`)
     const compared = competeOutcomes(task)
     if (!compared) throw new HttpError(409, 'The judge has not compared the attempts yet')
     const succeeded = compared.outcomes.filter((outcome) => outcome.status === 'succeeded' && outcome.diff)
@@ -1535,6 +1567,16 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const controller = new AbortController()
     const active: ActiveTask = { controller, promise: Promise.resolve() }
     running.set(task.id, active)
+    const minutes = config.budget.per_task.max_minutes
+    active.timeLimit = setTimeout(
+      () =>
+        stopTask(
+          task.id,
+          `Stopped: the merge ran longer than ${minutes} minutes (budget.per_task.max_minutes).`,
+        ),
+      options.taskTimeLimitMs ?? minutes * 60_000,
+    )
+    active.timeLimit.unref?.()
     active.promise = runCompeteMerge(
       task,
       repo,
@@ -1555,6 +1597,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         )
       })
       .finally(() => {
+        clearTimeout(active.timeLimit)
         if (running.get(task.id) === active) running.delete(task.id)
       })
     return attempt
@@ -1613,9 +1656,6 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   /** The owner keeps one attempt; the others' worktrees are removed (the owner's choice is the confirmation). */
   async function chooseCompeteAttempt(task: StoredTask, attemptId: string): Promise<StoredTask | undefined> {
-    if (task.mode !== 'compete') throw new HttpError(409, 'Only compete tasks have attempts to choose from')
-    if (task.status !== 'review_ready' || running.has(task.id))
-      throw new HttpError(409, `Wait until the comparison is ready (task is ${task.status})`)
     const attempts = listAttempts(db, task.id)
     const chosen = attempts.find((attempt) => attempt.id === attemptId)
     if (!chosen || chosen.status !== 'succeeded' || !chosen.diffStats)
@@ -2325,6 +2365,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
   }
 
+  const schedulerNow = () => options.schedulerClock?.now() ?? new Date()
+
   const scheduler = createScheduler({
     db,
     deliver: deliverScheduled,
@@ -2342,7 +2384,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         400,
         'Give the reminder time as an ISO date with a time zone, e.g. 2026-11-07T09:00:00+08:00',
       )
-    const now = options.schedulerClock?.now() ?? new Date()
+    const now = schedulerNow()
     if (due.getTime() < now.getTime() - 60_000) throw new HttpError(400, 'That time has already passed')
     return createReminder(db, {
       id: randomUUID(),
@@ -2353,7 +2395,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   }
 
   function addSchedule(input: z.infer<typeof scheduleInputSchema>, conversationId?: string) {
-    const now = options.schedulerClock?.now() ?? new Date()
+    const now = schedulerNow()
     let nextRunAt
     try {
       nextRunAt = firstRun(input.cron, now)
@@ -2385,7 +2427,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   }
 
   function cancelScheduled(id: string): boolean {
-    const now = (options.schedulerClock?.now() ?? new Date()).toISOString()
+    const now = schedulerNow().toISOString()
     return deleteSchedule(db, id) || finishReminder(db, id, 'cancelled', now)
   }
 
@@ -2947,6 +2989,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   for (const taskId of interruptRunningWork(db)) {
     const attempt = latestAttempt(db, taskId)
     if (attempt) publish(taskId, attempt.id, 'interrupted', { taskId, attemptId: attempt.id })
+    // A compete task stopped during a merge still has judged attempts the owner can choose from.
+    const task = getTask(db, taskId)
+    if (task?.mode === 'compete' && attempt && competeOutcomes(task))
+      finishCompetePhase(
+        task,
+        attempt,
+        'Joy restarted before the merge finished. You can choose one of the attempts or merge again.',
+      )
   }
   // Tasks waiting for a quota reset keep their resume time in the event log.
   for (const task of listTasks(db)) {
@@ -2979,7 +3029,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     async close() {
       if (closed) return
       closed = true
-      scheduler.stop()
+      await scheduler.stop()
       await telegram?.stop()
       for (const timer of quotaTimers.values()) clearTimeout(timer)
       await Promise.allSettled([...memoryJobs])

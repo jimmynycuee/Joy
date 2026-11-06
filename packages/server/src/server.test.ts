@@ -296,6 +296,44 @@ async function waitForEvent(
   throw new Error(`Task never emitted ${type}`)
 }
 
+/** One fake per backend that implements, reviews or judges depending on what it is asked. */
+function routing(kind: ProviderKind): AgentProvider & { calls: RunOptions[] } {
+  const calls: RunOptions[] = []
+  return {
+    ...scriptedProvider(kind, []).provider,
+    calls,
+    async *run(options: RunOptions) {
+      calls.push(options)
+      if (options.outputSchema === JUDGE_SCHEMA) {
+        yield {
+          type: 'done',
+          sessionId: 'j',
+          isError: false,
+          structured: {
+            winner: 'B',
+            reasons: 'B has tests',
+            attempts: [
+              { label: 'A', strengths: 'small', weaknesses: 'no tests' },
+              { label: 'B', strengths: 'tests', weaknesses: 'verbose' },
+            ],
+            merge_recommended: true,
+          },
+        }
+      } else if (options.outputSchema === REVIEW_SCHEMA) {
+        yield {
+          type: 'done',
+          sessionId: 'r',
+          isError: false,
+          structured: { approve: true, summary: 'fine', findings: [] },
+        }
+      } else {
+        yield { type: 'session_started', sessionId: `${kind}-impl` }
+        yield { type: 'done', sessionId: `${kind}-impl`, isError: false, finalMessage: 'done' }
+      }
+    },
+  }
+}
+
 async function waitForStatus(
   origin: string,
   id: string,
@@ -2431,43 +2469,6 @@ describe('Joy local server', () => {
   })
 
   it('compete: both models work in parallel, each is cross-reviewed, the judge compares, the owner merges or chooses', async () => {
-    /** One fake per backend that implements, reviews or judges depending on what it is asked. */
-    const routing = (kind: ProviderKind): AgentProvider & { calls: RunOptions[] } => {
-      const calls: RunOptions[] = []
-      return {
-        ...scriptedProvider(kind, []).provider,
-        calls,
-        async *run(options: RunOptions) {
-          calls.push(options)
-          if (options.outputSchema === JUDGE_SCHEMA) {
-            yield {
-              type: 'done',
-              sessionId: 'j',
-              isError: false,
-              structured: {
-                winner: 'B',
-                reasons: 'B has tests',
-                attempts: [
-                  { label: 'A', strengths: 'small', weaknesses: 'no tests' },
-                  { label: 'B', strengths: 'tests', weaknesses: 'verbose' },
-                ],
-                merge_recommended: true,
-              },
-            }
-          } else if (options.outputSchema === REVIEW_SCHEMA) {
-            yield {
-              type: 'done',
-              sessionId: 'r',
-              isError: false,
-              structured: { approve: true, summary: 'fine', findings: [] },
-            }
-          } else {
-            yield { type: 'session_started', sessionId: `${kind}-impl` }
-            yield { type: 'done', sessionId: `${kind}-impl`, isError: false, finalMessage: 'done' }
-          }
-        },
-      }
-    }
     const claude = routing('claude-cli')
     const codex = routing('codex-cli')
     const { serverPromise, db, executor, configStore } = fixture({
@@ -2540,6 +2541,52 @@ describe('Joy local server', () => {
     expect(((await chosen.json()) as { task: { status: string } }).task.status).toBe('done')
     expect(executor.cleaned.sort()).toEqual([byProvider('claude-cli'), byProvider('codex-cli')].sort())
     expect((await postJson(`${origin}/api/tasks/${id}/merge`, {})).status).toBe(409)
+  })
+
+  it('compete: refuses a second decision while one is in progress, and recovers judged attempts after a restart', async () => {
+    const claude = routing('claude-cli')
+    const codex = routing('codex-cli')
+    const { serverPromise, db, configStore, restart, executor } = fixture({
+      providers: { 'claude-cli': claude, 'codex-cli': codex },
+    })
+    await configStore.update((config) => ({
+      ...config,
+      roles: {
+        ...config.roles,
+        implementer: { provider: 'claude-cli', model: 'haiku', effort: 'low' },
+        reviewer: { provider: 'codex-cli', model: 'gpt-6-luna', effort: 'low' },
+        judge: { provider: 'claude-cli', model: 'haiku', effort: 'low' },
+      },
+    }))
+    createRepo(db, { id: rid('joy'), path: '/joy', defaultBranch: 'main' })
+    const first = await start(serverPromise)
+    const id = (
+      (await (
+        await postJson(`${first.origin}/api/tasks`, {
+          repoId: 'joy',
+          title: 'C',
+          prompt: 'x',
+          mode: 'compete',
+        })
+      ).json()) as { task: { id: string } }
+    ).task.id
+    await waitForStatus(first.origin, id, 'review_ready', 5_000)
+    await first.server.close()
+
+    // Joy died while a merge was running.
+    db.prepare("UPDATE tasks SET status = 'running' WHERE id = ?").run(id)
+    const second = await start(restart())
+    const details = (await waitForStatus(second.origin, id, 'review_ready', 5_000)) as unknown as {
+      attempts: Array<{ id: string; provider: string }>
+    }
+    const [a, b] = details.attempts
+    const responses = await Promise.all([
+      postJson(`${second.origin}/api/tasks/${id}/choose`, { attemptId: a?.id }),
+      postJson(`${second.origin}/api/tasks/${id}/choose`, { attemptId: b?.id }),
+    ])
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 409])
+    // Only the attempt that was not chosen lost its worktree.
+    expect(executor.cleaned).toHaveLength(1)
   })
 
   it('compete: the judge must be allowed for the repository', async () => {

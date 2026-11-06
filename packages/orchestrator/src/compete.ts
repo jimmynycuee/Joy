@@ -174,13 +174,18 @@ async function* interleave<T>(sources: Array<AsyncGenerator<T>>): AsyncGenerator
       )
   }
   sources.forEach((_, index) => pull(index))
-  while (pending.size) {
-    const { index, result } = await Promise.race(pending.values())
-    if (result.done) pending.delete(index)
-    else {
-      yield result.value
-      pull(index)
+  try {
+    while (pending.size) {
+      const { index, result } = await Promise.race(pending.values())
+      if (result.done) pending.delete(index)
+      else {
+        yield result.value
+        pull(index)
+      }
     }
+  } finally {
+    // A source failed or the consumer stopped: end the others instead of leaving them running unobserved.
+    for (const index of pending.keys()) void sources[index]?.return(undefined).catch(() => undefined)
   }
 }
 

@@ -148,4 +148,41 @@ describe('scheduler', () => {
     expect(errors).toEqual(['channel down'])
     expect(delivered).toEqual(['good'])
   })
+
+  it('never leaves a rejected pass unhandled, and stop waits for a pass under way', async () => {
+    const { db, time } = setup(at(10))
+    createReminder(db, { id: 'r1', text: 'x', dueAt: at(9).toISOString() })
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const delivered: string[] = []
+    const scheduler = createScheduler({
+      db,
+      clock: time.clock,
+      deliver: async (d) => {
+        await gate
+        if (d.kind === 'reminder') delivered.push(d.reminder.id)
+      },
+    })
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => unhandled.push(reason)
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const pass = scheduler.tick()
+      let stopped = false
+      const stopping = scheduler.stop().then(() => (stopped = true))
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(stopped).toBe(false)
+      release()
+      await pass
+      await stopping
+      expect(delivered).toEqual(['r1'])
+
+      db.close()
+      await expect(scheduler.tick()).rejects.toThrow()
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
 })
