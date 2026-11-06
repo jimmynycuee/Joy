@@ -48,6 +48,16 @@ export function policyEventTitle(type: string, payload: Payload): string | undef
     const reviewer = text(payload?.reviewerProvider) ?? 'reviewer'
     return `Policy pre-review (${reviewer}) ${verdict}: ${text(payload?.summary) ?? ''}`.trim()
   }
+  if (type === 'approval.requested') {
+    return `Waiting for your approval: ${text(payload?.summary) ?? KIND_LABELS[text(payload?.kind) ?? ''] ?? 'an action'}`
+  }
+  if (type === 'approval.decided') {
+    const status = text(payload?.status) ?? 'decided'
+    const via = text(payload?.via)
+    const label =
+      status === 'approved' ? 'Approved' : status === 'denied' ? 'Denied' : 'Expired without an answer'
+    return `${label}${via && status !== 'expired' ? ` (via ${via})` : ''}`
+  }
   return undefined
 }
 
@@ -55,5 +65,7 @@ export function policyEventTitle(type: string, payload: Payload): string | undef
 export function policyEventKind(type: string, payload: Payload): string | undefined {
   if (type === 'policy.action') return `policy-${text(payload?.tier) ?? 'approve'}`
   if (type === 'policy.pre_review') return 'policy-review'
+  if (type === 'approval.requested') return 'policy-approve'
+  if (type === 'approval.decided') return payload?.status === 'approved' ? 'policy-auto' : 'policy-approve'
   return undefined
 }

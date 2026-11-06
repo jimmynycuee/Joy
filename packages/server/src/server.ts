@@ -34,10 +34,12 @@ import {
   createRepo,
   createReview,
   createTask,
+  expirePendingApprovals,
   getRepo,
   getTask,
   interruptRunningWork,
   latestAttempt,
+  listApprovals,
   listAttempts,
   listRepos,
   listReviews,
@@ -49,7 +51,8 @@ import {
   updateAttempt,
   updateRepoAllowedProviders,
 } from '@joy/db'
-import type { AttemptRecord, Database, RepoRecord, StoredTask } from '@joy/db'
+import type { ApprovalStatus, AttemptRecord, Database, RepoRecord, StoredTask } from '@joy/db'
+import { ApprovalBroker } from './approvals.js'
 import { WorktreeExecutor } from '@joy/executor'
 import type { Executor, WorkspaceDiff } from '@joy/core'
 import { reviewLoop } from '@joy/orchestrator'
@@ -110,6 +113,8 @@ const taskInputSchema = z.strictObject({
 })
 const idSchema = z.string().min(1).max(128)
 const openAiSecretInputSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
+const approvalDecisionSchema = z.strictObject({ note: z.string().max(2_000).optional() })
+const approvalStatusSchema = z.enum(['pending', 'approved', 'denied', 'expired']).optional()
 const toolHubCallSchema = z.strictObject({ name: z.enum(TOOL_HUB_TOOL_NAMES), arguments: z.unknown() })
 const MAX_BODY_BYTES = 1_000_000
 const TOOL_HUB_PEER_TIMEOUT_MS = 55_000
@@ -148,10 +153,12 @@ export interface JoyServerOptions {
   /** Adds only the fixed Playwright E2E origins; this is never enabled by default. */
   allowPlaywrightOrigin?: boolean
   /**
-   * True once a person can actually answer approval requests (Telegram, T2.4). Until then red actions are denied
-   * straight away: a cross-model pre-review would spend quota on a request nobody can approve.
+   * Whether red actions wait for a person (web UI, Telegram). Default true. When false they are denied straight
+   * away without a cross-model pre-review, which would spend quota on a request nobody can approve.
    */
   ownerApprovalChannel?: boolean
+  /** Overrides `approvals.timeout_minutes` (tests). */
+  approvalTimeoutMs?: number
   /** Overrides for the built-in Codex app-server provider (tests and local development). */
   codexAppServer?: { command?: string; argsPrefix?: string[]; env?: NodeJS.ProcessEnv; timeoutMs?: number }
   /** Test seams for prerequisite checks; production uses the current process and OS services. */
@@ -267,6 +274,15 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     return event
   }
 
+  const approvals = new ApprovalBroker({
+    db,
+    redactor,
+    publish: (taskId, attemptId, type, payload) => {
+      publish(taskId, attemptId, type, payload)
+    },
+  })
+  // Nobody is waiting for approvals created before this process started.
+  expirePendingApprovals(db)
   const publishTaskFailure = (taskId: TaskId, message: string): TaskEvent => {
     const event = appendTaskFailureEvent(db, taskId, redactor.redact(message))
     sendEvent(taskId, event)
@@ -513,6 +529,31 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (!Number.isSafeInteger(after) || after < 0)
         throw new HttpError(400, 'after must be a non-negative integer')
       json(res, 200, { events: listTaskEvents(db, task.id, after) })
+      return
+    }
+    if (url.pathname === '/api/approvals' && method === 'GET') {
+      const status = approvalStatusSchema.parse(url.searchParams.get('status') ?? undefined)
+      const taskId = url.searchParams.get('taskId')
+      json(res, 200, {
+        approvals: listApprovals(db, {
+          ...(status ? { status } : {}),
+          ...(taskId ? { taskId: taskId as TaskId } : {}),
+        }),
+      })
+      return
+    }
+    const decisionMatch = /^\/api\/approvals\/([^/]+)\/(approve|deny)$/.exec(url.pathname)
+    if (decisionMatch && method === 'POST') {
+      const body = approvalDecisionSchema.parse(await readJson(req))
+      const id = decodePathSegment(decisionMatch[1] ?? '')
+      const decided = approvals.decide(
+        id,
+        decisionMatch[2] === 'approve' ? 'approved' : 'denied',
+        'web',
+        body.note,
+      )
+      if (!decided) throw new HttpError(409, 'Approval does not exist or was already decided')
+      json(res, 200, { approval: decided })
       return
     }
     const cancelMatch = /^\/api\/tasks\/([^/]+)\/cancel$/.exec(url.pathname)
@@ -862,9 +903,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         outcome: decision.outcome,
       })
       if (!decision.requiresPreReview) return { decision }
-      if (!(options.ownerApprovalChannel ?? false)) {
-        const reason =
-          'No owner approval channel is configured yet, so the action was denied without a pre-review'
+      if (!(options.ownerApprovalChannel ?? true)) {
+        const reason = 'Owner approvals are turned off, so the action was denied without a pre-review'
         publish(task.id, attempt.id, 'policy.pre_review', {
           kind: action.kind,
           status: 'skipped',
@@ -891,6 +931,37 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           message: redactor.redact(message),
         })
         return { decision, reviewError: redactor.redact(message) }
+      }
+    }
+    /** Holds a red action for the owner; undefined when owner approvals are turned off. */
+    const askOwner = async (
+      action: ProposedAction,
+      assessed: Awaited<ReturnType<typeof assessAction>>,
+    ): Promise<ApprovalStatus | undefined> => {
+      if (!(options.ownerApprovalChannel ?? true)) return undefined
+      setTaskStatus(db, task.id, 'awaiting_approval')
+      try {
+        return await approvals.request(
+          {
+            taskId: task.id,
+            attemptId: attempt.id,
+            action,
+            tier: 'approve',
+            ...(assessed.review
+              ? {
+                  preReview: {
+                    provider: assessed.review.provider,
+                    approve: assessed.review.approve,
+                    summary: assessed.review.summary,
+                  },
+                }
+              : {}),
+          },
+          AbortSignal.any([signal, sessionController.signal]),
+          options.approvalTimeoutMs ?? config.approvals.timeout_minutes * 60_000,
+        )
+      } finally {
+        if (getTask(db, task.id)?.status === 'awaiting_approval') setTaskStatus(db, task.id, 'running')
       }
     }
     const dispatch = createToolHubDispatcher({
@@ -937,12 +1008,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
             : classified
         const assessed = await assessAction(action)
         if (assessed.decision.tier === 'approve') {
+          const status = await askOwner(action, assessed)
+          if (status === 'approved') return { behavior: 'allow' as const, updatedInput: input.input }
           const reviewText = assessed.review
             ? ` Cross-model pre-review (${assessed.review.provider}) recommended ${assessed.review.approve ? 'allow' : 'deny'}: ${assessed.review.summary}`
             : ` ${assessed.reviewError ?? 'Cross-model pre-review was unavailable.'}`
           return {
             behavior: 'deny' as const,
-            message: `Red action ${action.kind} requires owner approval; the tool was not run.${reviewText}`,
+            message: `Red action ${action.kind} requires owner approval; the owner did not approve it (${status ?? 'approvals are off'}), so the tool was not run.${reviewText}`,
           }
         }
         return { behavior: 'allow' as const, updatedInput: input.input }
@@ -1030,8 +1103,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           ? { ...classified, provenance: 'external_content' as const }
           : classified
       const assessed = await assessAction(action)
+      if (assessed.decision.tier !== 'approve') return 'accept'
       // Re-ask every time (never acceptForSession) so each request is judged on its own.
-      return assessed.decision.tier === 'approve' ? 'decline' : 'accept'
+      return (await askOwner(action, assessed)) === 'approved' ? 'accept' : 'decline'
     }
     return {
       codexApproval,

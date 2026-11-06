@@ -40,6 +40,9 @@
 - [x] T1.14 本機 API 與 WebSocket token 認證（PR #73 已整合；**擁有者待審**）
 - [ ] T1.8 Codex 風格 Web UI（含設定頁；UI 主體已整合至 main，PR #58；首頁檢查已由 PR #62 整合；待擁有者本機驗收）
 - [x] T2.7b Codex app-server 審核接到 policy 與 UI（server 預設改用 app-server，`providers.codex.transport: exec` 可退回）
+- [x] T2.4a 核准中心與 UI（🔴 動作等擁有者在 UI 核准；逾時視為未核准）
+- [ ] T2.4b Telegram 通知與核准按鈕
+- [ ] T2.4c 逾時後任務停在「等待核准」，核准後以同一 session 接續
 - [ ] P2（T2.1–T2.8）、P3（T3.1–T3.9）、P4（T4.1–T4.9）、P5（T5.1–T5.7）：見 §6
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。

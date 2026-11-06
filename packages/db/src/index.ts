@@ -39,3 +39,11 @@ export type {
   UsageIncrement,
   UsageRecord,
 } from './repositories.js'
+export {
+  createApproval,
+  decideApproval,
+  expirePendingApprovals,
+  getApproval,
+  listApprovals,
+} from './approvals.js'
+export type { ApprovalRecord, ApprovalStatus, NewApproval } from './approvals.js'

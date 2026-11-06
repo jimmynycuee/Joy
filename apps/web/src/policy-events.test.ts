@@ -32,4 +32,17 @@ describe('policy event labels', () => {
     expect(policyEventTitle('result', {})).toBeUndefined()
     expect(policyEventKind('agent', {})).toBeUndefined()
   })
+
+  it('describes approval requests and decisions', () => {
+    expect(policyEventTitle('approval.requested', { summary: 'Claude requested the Bash tool.' })).toBe(
+      'Waiting for your approval: Claude requested the Bash tool.',
+    )
+    expect(policyEventTitle('approval.decided', { status: 'approved', via: 'telegram' })).toBe(
+      'Approved (via telegram)',
+    )
+    expect(policyEventTitle('approval.decided', { status: 'expired', via: 'timeout' })).toBe(
+      'Expired without an answer',
+    )
+    expect(policyEventKind('approval.decided', { status: 'approved' })).toBe('policy-auto')
+  })
 })

@@ -69,6 +69,17 @@ export const configSchema = z.strictObject({
       openai_api_usd_monthly_cap: 30,
       per_task: { max_rounds: 3, max_minutes: 60, max_api_usd: 1 },
     }),
+  approvals: z
+    .strictObject({
+      /** How long a red action waits for the owner before it counts as not approved. */
+      timeout_minutes: z
+        .number()
+        .int()
+        .min(1)
+        .max(24 * 60)
+        .default(30),
+    })
+    .default({ timeout_minutes: 30 }),
   autonomy_mode: z.enum(['careful', 'normal', 'hands-off']).default('normal'),
   tool_hub: z
     .strictObject({ max_ask_peer_calls: z.number().int().min(1).max(100).default(5) })

@@ -186,6 +186,91 @@ function splitDiff(patch: string): Map<string, string> {
   )
 }
 
+interface PendingApproval {
+  id: string
+  taskId: string
+  createdAt: string
+  action: { kind: string; summary: string; provenance: string }
+}
+
+/** Red actions waiting for the owner in this task, with Approve / Deny. Refreshes whenever new events arrive. */
+function ApprovalsPanel({ taskId, eventCount }: { taskId: string; eventCount: number }) {
+  const [pending, setPending] = useState<PendingApproval[]>([])
+  const [busy, setBusy] = useState('')
+  const [failure, setFailure] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    const load = () =>
+      request<{ approvals: PendingApproval[] }>(
+        `/api/approvals?status=pending&taskId=${encodeURIComponent(taskId)}`,
+      )
+        .then((body) => {
+          if (!cancelled) setPending(body.approvals)
+        })
+        .catch(() => undefined)
+    void load()
+    // Events usually trigger the refresh; the timer catches approvals that expire quietly.
+    const timer = window.setInterval(() => void load(), 5000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [taskId, eventCount])
+
+  async function decide(id: string, decision: 'approve' | 'deny') {
+    setBusy(id)
+    setFailure('')
+    try {
+      await request(`/api/approvals/${encodeURIComponent(id)}/${decision}`, { method: 'POST', body: '{}' })
+      setPending((current) => current.filter((approval) => approval.id !== id))
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : 'Could not record the decision')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  if (pending.length === 0) return null
+  return (
+    <section className="approvals-panel" aria-label="Pending approvals" data-testid="pending-approvals">
+      <h2>Waiting for your approval</h2>
+      {failure ? <p className="approvals-error">{failure}</p> : null}
+      {pending.map((approval) => (
+        <div className="approval-row" key={approval.id}>
+          <div>
+            <strong>
+              {policyEventTitle('policy.action', {
+                kind: approval.action.kind,
+                tier: 'approve',
+                provenance: approval.action.provenance,
+              })}
+            </strong>
+            <p>{approval.action.summary}</p>
+          </div>
+          <div className="approval-actions">
+            <button
+              type="button"
+              disabled={busy === approval.id}
+              onClick={() => void decide(approval.id, 'approve')}
+            >
+              Approve
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy === approval.id}
+              onClick={() => void decide(approval.id, 'deny')}
+            >
+              Deny
+            </button>
+          </div>
+        </div>
+      ))}
+    </section>
+  )
+}
+
 function App() {
   const [repos, setRepos] = useState<Repo[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
@@ -934,6 +1019,7 @@ function App() {
                     <span>{details.repo?.defaultBranch ?? 'main'}</span>
                   </div>
                 </div>
+                <ApprovalsPanel taskId={details.task.id} eventCount={details.events.length} />
                 <div className="event-stream" aria-label="Live event stream" data-testid="event-stream">
                   {details.events.length === 0 ? (
                     <div className="stream-empty">
