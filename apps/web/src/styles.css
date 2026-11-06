@@ -1480,3 +1480,63 @@ select {
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
+
+.compare-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.judge-box {
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.judge-box p {
+  margin: 2px 0;
+}
+
+.compare-columns {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(260px, 1fr);
+  gap: 10px;
+  overflow-x: auto;
+}
+
+.compare-column {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  min-width: 0;
+}
+
+.compare-column.chosen {
+  border-color: var(--green);
+}
+
+.compare-column .badge {
+  margin-left: 6px;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.compare-notes {
+  display: grid;
+  gap: 2px;
+  font-size: 12px;
+  margin: 0;
+}
+
+.compare-diff {
+  max-height: 320px;
+  overflow: auto;
+}

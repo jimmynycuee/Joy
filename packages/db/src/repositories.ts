@@ -276,14 +276,24 @@ export function appendTaskEvent(
 }
 
 export function appendTaskFailureEvent(db: Database, taskId: TaskId, message: string): TaskEventRecord {
+  return appendTaskLevelEvent(db, taskId, 'error', { message })
+}
+
+/** An event about the task as a whole rather than one attempt (e.g. a compete judgement). */
+export function appendTaskLevelEvent(
+  db: Database,
+  taskId: TaskId,
+  type: string,
+  payload: unknown,
+): TaskEventRecord {
   const seq = nextTaskEventSequence(db, taskId)
   const result = db
     .prepare('INSERT INTO task_events (task_id, seq, type, payload) VALUES (?, ?, ?, ?)')
-    .run(taskId, seq, 'error', JSON.stringify({ message }))
+    .run(taskId, seq, type, JSON.stringify(payload))
   const row = db
     .prepare('SELECT seq, type, payload, ts FROM task_events WHERE id = ?')
     .get(result.lastInsertRowid) as { seq: number; type: string; payload: string; ts: string } | undefined
-  if (!row) throw new Error(`Task error event for ${taskId} was not found after insert`)
+  if (!row) throw new Error(`Task event ${type} for ${taskId} was not found after insert`)
   return {
     taskId,
     seq: row.seq,

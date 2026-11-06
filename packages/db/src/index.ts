@@ -6,6 +6,7 @@ export {
   addUsage,
   appendTaskEvent,
   appendTaskFailureEvent,
+  appendTaskLevelEvent,
   createAttempt,
   createRepo,
   createReview,

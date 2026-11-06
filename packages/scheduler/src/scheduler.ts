@@ -43,7 +43,8 @@ export interface SchedulerOptions {
 
 export interface Scheduler {
   start(): void
-  stop(): void
+  /** Stops waking up and resolves once a pass that is under way has finished. */
+  stop(): Promise<void>
   /** Runs everything due now. Exposed for tests and for waking up early after a new item is added. */
   tick(): Promise<void>
 }
@@ -99,12 +100,16 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 
   function tick(): Promise<void> {
     // One pass at a time; a tick requested during a pass waits for it and then runs again.
-    const previous = ticking ?? Promise.resolve()
-    const next = previous.then(runDue, runDue)
-    ticking = next.finally(() => {
+    const next = (ticking ?? Promise.resolve()).then(runDue)
+    // The chain itself never rejects (callers get the error from `next`), so no rejection goes unhandled.
+    const settled: Promise<void> = next.then(
+      () => undefined,
+      () => undefined,
+    )
+    ticking = settled
+    void settled.then(() => {
       if (ticking === settled) ticking = undefined
     })
-    const settled = ticking
     return next
   }
 
@@ -125,10 +130,11 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
         .catch(() => undefined)
         .finally(schedule)
     },
-    stop() {
+    async stop() {
       running = false
       if (timer !== undefined) clock.clearTimeout(timer)
       timer = undefined
+      await ticking
     },
     tick,
   }

@@ -19,7 +19,15 @@ type Task = {
   roleOverrides?: Partial<RoleConfig>
   createdAt: string
 }
-type TaskEvent = { taskId: string; seq: number; eventId?: string; type: string; payload: unknown; ts: string }
+type TaskEvent = {
+  taskId: string
+  attemptId?: string
+  seq: number
+  eventId?: string
+  type: string
+  payload: unknown
+  ts: string
+}
 type DiffFile = { path: string; status: string; additions: number; deletions: number }
 type WorkspaceDiff = { files: DiffFile[]; patch: string }
 type TaskDetails = {
@@ -133,6 +141,15 @@ function taskAfterEvent(task: Task, event: TaskEvent): Task {
 }
 
 function diffFrom(events: TaskEvent[]): WorkspaceDiff | null {
+  // A decided compete task shows the attempt the owner chose.
+  const chosen = record(
+    [...events].reverse().find((event) => event.type === 'compete.chosen')?.payload,
+  )?.attemptId
+  if (typeof chosen === 'string') {
+    const result = [...events].reverse().find((e) => e.type === 'compete.result' && e.attemptId === chosen)
+    const diff = record(result?.payload)?.diff
+    if (record(diff) && Array.isArray((diff as WorkspaceDiff).files)) return diff as WorkspaceDiff
+  }
   for (const event of [...events].reverse()) {
     if (event.type !== 'result') continue
     const diff = record(event.payload)?.diff
@@ -389,6 +406,168 @@ function TelegramSettings({
 }
 
 /** "Open draft PR" for a finished task: sets the repository's GitHub remote first if needed. */
+type CompeteJudgement = {
+  winner: string | null
+  reasons: string
+  attempts: Array<{ attemptId: string; strengths: string; weaknesses: string }>
+  mergeRecommended: boolean
+}
+
+/** Compete mode (T2.1): the attempts side by side with their reviews and the judge's reasons. */
+function ComparePanel({ details, onChanged }: { details: TaskDetails; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [failure, setFailure] = useState('')
+  const events = details.events
+  const latest = (type: string) => record([...events].reverse().find((event) => event.type === type)?.payload)
+  const judged = latest('compete.judgement')
+  const judgement = record(judged?.judgement) as CompeteJudgement | undefined
+  const labels = new Map<string, string>()
+  for (const outcome of Array.isArray(judged?.outcomes) ? judged.outcomes : []) {
+    const item = record(outcome)
+    if (typeof item?.attemptId === 'string' && typeof item.label === 'string')
+      labels.set(item.attemptId, item.label)
+  }
+  const mergeId = latest('compete.merge_started')?.attemptId
+  const chosenId = latest('compete.chosen')?.attemptId
+  const results = new Map<string, Record<string, unknown>>()
+  for (const event of events)
+    if (event.type === 'compete.result' && event.attemptId) {
+      const payload = record(event.payload)
+      if (payload) results.set(event.attemptId, payload)
+    }
+  const attempts = details.attempts
+    .map((attempt) => record(attempt))
+    .filter((attempt): attempt is Record<string, unknown> => typeof attempt?.id === 'string')
+  const reviews = details.reviews.map((review) => record(review)).filter(Boolean) as Array<
+    Record<string, unknown>
+  >
+  const ready = details.task.status === 'review_ready'
+  const finishedCount = attempts.filter(
+    (a) => a.id !== mergeId && results.get(String(a.id))?.status === 'succeeded',
+  ).length
+  const mergeResult = typeof mergeId === 'string' ? results.get(mergeId) : undefined
+  const canMerge =
+    ready &&
+    judgement &&
+    finishedCount >= 2 &&
+    (!mergeId || (mergeResult && mergeResult.status !== 'succeeded'))
+
+  async function act(path: string, body: object) {
+    setBusy(true)
+    setFailure('')
+    try {
+      await request(`/api/tasks/${encodeURIComponent(details.task.id)}/${path}`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      })
+      onChanged()
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : 'Request failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="compare-panel" aria-label="Compare attempts" data-testid="compare-panel">
+      {judgement ? (
+        <div className="judge-box" aria-label="Judge">
+          <p className="eyebrow">JUDGE</p>
+          <p>
+            {judgement.winner ? (
+              <strong>Prefers {labels.get(judgement.winner) ?? 'an attempt'}.</strong>
+            ) : (
+              <strong>No attempt is acceptable.</strong>
+            )}{' '}
+            {judgement.reasons}
+          </p>
+          {judgement.mergeRecommended ? (
+            <p className="muted">The judge thinks a merged version would be better.</p>
+          ) : null}
+        </div>
+      ) : details.task.status === 'running' ? (
+        <p className="muted">The attempts are running; the judge compares them when both are reviewed.</p>
+      ) : null}
+      <div className="compare-columns">
+        {attempts.map((attempt) => {
+          const id = String(attempt.id)
+          const result = results.get(id)
+          const resultDiff = record(result?.diff) as WorkspaceDiff | undefined
+          const review = reviews.filter((r) => r.attemptId === id).at(-1)
+          const notes = judgement?.attempts.find((a) => a.attemptId === id)
+          const label = id === mergeId ? 'Merged' : (labels.get(id) ?? 'Attempt')
+          return (
+            <article
+              key={id}
+              className={id === chosenId ? 'compare-column chosen' : 'compare-column'}
+              aria-label={`Attempt ${label}`}
+            >
+              <header>
+                <strong>{label}</strong>
+                <span className="muted">
+                  {' '}
+                  {String(attempt.provider)} · {String(attempt.model)}
+                </span>
+                {judgement?.winner === id ? <span className="badge">judge's pick</span> : null}
+                {id === chosenId ? <span className="badge">chosen</span> : null}
+              </header>
+              <p className="muted">
+                {result
+                  ? result.status === 'succeeded'
+                    ? review
+                      ? `Review: ${review.approve ? 'approved' : 'changes requested'}${review.summary ? ` — ${String(review.summary)}` : ''}`
+                      : 'Finished'
+                    : `${String(result.status)}${result.reason ? `: ${String(result.reason)}` : ''}`
+                  : 'Running…'}
+              </p>
+              {notes ? (
+                <p className="compare-notes">
+                  <span>+ {notes.strengths}</span>
+                  <span>− {notes.weaknesses}</span>
+                </p>
+              ) : null}
+              {resultDiff ? (
+                <pre className="diff-code compare-diff" aria-label={`Diff ${label}`}>
+                  {resultDiff.patch.split('\n').map((line, index) => (
+                    <span
+                      key={index}
+                      className={
+                        line.startsWith('+') && !line.startsWith('+++')
+                          ? 'diff-line added'
+                          : line.startsWith('-') && !line.startsWith('---')
+                            ? 'diff-line removed'
+                            : 'diff-line'
+                      }
+                    >
+                      {line || ' '}
+                    </span>
+                  ))}
+                </pre>
+              ) : null}
+              {ready && result?.status === 'succeeded' && resultDiff ? (
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={busy}
+                  onClick={() => void act('choose', { attemptId: id })}
+                >
+                  Choose {label}
+                </button>
+              ) : null}
+            </article>
+          )
+        })}
+      </div>
+      {canMerge ? (
+        <button type="button" className="quiet-button" disabled={busy} onClick={() => void act('merge', {})}>
+          Merge: the judge re-implements the best of both
+        </button>
+      ) : null}
+      {failure ? <p className="approvals-error">{failure}</p> : null}
+    </section>
+  )
+}
+
 function PublishPanel({ details, onChanged }: { details: TaskDetails; onChanged: () => void }) {
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState('')
@@ -2001,6 +2180,9 @@ function App() {
               </div>
               <span className="diff-count">{diff?.files.length ?? 0}</span>
             </div>
+            {details?.task.mode === 'compete' && details.task.status !== 'done' ? (
+              <ComparePanel details={details} onChanged={() => void refreshSelectedTask()} />
+            ) : null}
             {details ? <PublishPanel details={details} onChanged={() => void refreshSelectedTask()} /> : null}
             {diff ? (
               <>
@@ -2179,9 +2361,7 @@ function App() {
                 <select name="mode" aria-label="Workflow">
                   <option value="review_loop">Implement + review</option>
                   <option value="single">Single agent</option>
-                  <option value="compete" disabled>
-                    Compete — not available yet
-                  </option>
+                  <option value="compete">Compete (both models, judge compares)</option>
                 </select>
               </label>
               <div className="task-model-grid">
