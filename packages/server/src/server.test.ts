@@ -39,6 +39,7 @@ import type { Database } from '@joy/db'
 import { MemoryBackend, Redactor, SecretStore } from '@joy/secrets'
 import { createJoyServer } from './server.js'
 import type { JoyServer, JoyServerOptions } from './server.js'
+import type { DoctorOptions } from './doctor.js'
 import WebSocket, { type RawData } from 'ws'
 
 const dirs: string[] = []
@@ -153,6 +154,7 @@ function fixture(
     secretEnv?: NodeJS.ProcessEnv
     allowPlaywrightOrigin?: boolean
     configStore?: ConfigStore
+    doctor?: Omit<DoctorOptions, 'home' | 'commands'>
     apiToken?: string
     generateApiToken?: boolean
     home?: string
@@ -186,7 +188,7 @@ function fixture(
   const secretBackend = options.secretBackend ?? new MemoryBackend()
   const configStore = options.configStore ?? new ConfigStore(join(dir, 'config.yaml'))
   const serverOptions: JoyServerOptions = {
-    home: dir,
+    home: options.home ?? dir,
     database: db,
     configStore,
     secretStore: new SecretStore({
@@ -197,6 +199,7 @@ function fixture(
     redactor,
     executor,
     ...(options.allowPlaywrightOrigin ? { allowPlaywrightOrigin: true } : {}),
+    ...(options.doctor ? { doctor: options.doctor } : {}),
     ...(options.generateApiToken ? {} : { apiToken: options.apiToken ?? TEST_API_TOKEN }),
     providers: {
       'claude-cli': implementer,
@@ -341,6 +344,54 @@ async function patchJson(url: string, body: unknown) {
 }
 
 describe('Joy local server', () => {
+  it('serves sanitized prerequisite checks for the homepage without running provider commands', async () => {
+    const commandCalls: string[] = []
+    const parent = mkdtempSync(join(tmpdir(), 'joy-first-run-test-'))
+    dirs.push(parent)
+    const home = join(parent, 'new-home')
+    const { serverPromise } = fixture({
+      home,
+      doctor: {
+        nodeVersion: '22.13.0',
+        runCommand: async (command, args, captureOutput) => {
+          commandCalls.push(`${command} ${args.join(' ')} capture=${captureOutput}`)
+          if (command === 'git') return { exitCode: 0, output: 'git version 2.48.1' }
+          if (command === 'gh') return { exitCode: 0, output: 'private-account and ghp_private-token' }
+          if (command === 'claude') return { exitCode: null, spawnErrorCode: 'ENOENT' }
+          return { exitCode: 0, output: 'codex-cli 0.104.0 (private-account)' }
+        },
+        keychainLookup: async () => 'private-keychain-value',
+      },
+    })
+    const { origin } = await start(serverPromise)
+    expect(existsSync(home)).toBe(true)
+    if (process.platform !== 'win32') expect(statSync(home).mode & 0o777).toBe(0o700)
+    expect((await fetch(`${origin}/api/health`)).status).toBe(200)
+    const response = await fetch(`${origin}/api/doctor`)
+    const body = (await response.json()) as {
+      doctor: { checks: Array<{ id: string; status: string; version?: string }> }
+    }
+
+    expect(response.status).toBe(200)
+    expect(body.doctor.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'node', status: 'ok' }),
+        expect.objectContaining({ id: 'git', status: 'ok', version: '2.48.1' }),
+        expect.objectContaining({ id: 'gh-auth', status: 'ok' }),
+        expect.objectContaining({ id: 'claude-cli', status: 'missing' }),
+        expect.objectContaining({ id: 'codex-cli', status: 'untested', version: '0.104.0' }),
+        expect.objectContaining({ id: 'keychain', status: 'ok' }),
+        expect.objectContaining({ id: 'data-directory', status: 'ok' }),
+      ]),
+    )
+    expect(JSON.stringify(body)).not.toContain('private-account')
+    expect(JSON.stringify(body)).not.toContain('ghp_private-token')
+    expect(JSON.stringify(body)).not.toContain('private-keychain-value')
+    expect(commandCalls).toContain('gh auth status --hostname github.com capture=false')
+    expect(commandCalls).toContain('claude --version capture=true')
+    expect(commandCalls).toContain('codex --version capture=true')
+  })
+
   it('requires a bearer token for HTTP mutations and a token protocol for WebSocket upgrades', async () => {
     const { db, serverPromise } = fixture()
     const { origin, websocket } = await start(serverPromise)
@@ -354,6 +405,14 @@ describe('Joy local server', () => {
       null,
     )
     const wrongToken = `${TEST_API_TOKEN}-wrong`
+    const unauthenticatedDoctor = await rawRequest(
+      origin,
+      '/api/doctor',
+      'GET',
+      { host: new URL(origin).host, origin: VITE_ORIGIN },
+      '',
+      null,
+    )
     const unauthenticatedRead = await rawRequest(
       origin,
       '/api/repos',
@@ -371,6 +430,7 @@ describe('Joy local server', () => {
       wrongToken,
     )
     expect(missing.status).toBe(403)
+    expect(unauthenticatedDoctor.status).toBe(403)
     expect(unauthenticatedRead.status).toBe(403)
     expect(wrong.status).toBe(403)
     const publicHealth = await rawRequest(

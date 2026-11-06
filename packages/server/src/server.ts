@@ -64,6 +64,8 @@ import {
 } from '@joy/tools'
 import type { ToolHubBudget, ToolHubDispatcher } from '@joy/tools'
 import { effortCompatibilityError } from '@joy/model-effort'
+import { runDoctor } from './doctor.js'
+import type { DoctorOptions } from './doctor.js'
 import { describeDisallowedRoleProvider, findDisallowedRoleProviders } from './provider-allowlist.js'
 
 const modelSchema = z.strictObject({
@@ -126,6 +128,8 @@ export interface JoyServerOptions {
   executor?: Executor
   /** Adds only the fixed Playwright E2E origins; this is never enabled by default. */
   allowPlaywrightOrigin?: boolean
+  /** Test seams for prerequisite checks; production uses the current process and OS services. */
+  doctor?: Omit<DoctorOptions, 'home' | 'commands'>
   /** Trusted runtime injection/testing only. Otherwise the token is persisted in <home>/api-token. */
   apiToken?: string
 }
@@ -177,6 +181,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const home = options.home ?? joyHome()
   const configStore = options.configStore ?? new ConfigStore(join(home, 'config.yaml'))
   const initialConfig = await configStore.get()
+  await mkdir(home, { recursive: true, mode: 0o700 })
   const paths = resolvePaths(initialConfig, home)
   const apiToken = options.apiToken ?? (await loadOrCreateApiToken(home))
   assertApiToken(apiToken)
@@ -364,6 +369,19 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       throw new HttpError(403, 'Authentication required')
     if (url.pathname === '/api/health' && method === 'GET') {
       json(res, 200, { ok: true })
+      return
+    }
+    if (url.pathname === '/api/doctor' && method === 'GET') {
+      const config = await configStore.get()
+      const doctor = await runDoctor({
+        ...options.doctor,
+        home,
+        commands: {
+          ...(config.providers.claude.command ? { claude: config.providers.claude.command } : {}),
+          ...(config.providers.codex.command ? { codex: config.providers.codex.command } : {}),
+        },
+      })
+      json(res, 200, { doctor })
       return
     }
     if (url.pathname === '/api/repos' && method === 'GET') {

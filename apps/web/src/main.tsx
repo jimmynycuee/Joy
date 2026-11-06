@@ -28,6 +28,16 @@ type TaskDetails = {
   events: TaskEvent[]
 }
 type SecretStatus = { set: boolean; source?: 'env' | 'keychain' }
+type DoctorStatus = 'ok' | 'missing' | 'untested'
+type DoctorCheck = {
+  id: string
+  label: string
+  status: DoctorStatus
+  summary: string
+  repair: string
+  version?: string
+}
+type DoctorReport = { checkedAt: string; checks: DoctorCheck[] }
 type ApiError = { error?: string }
 
 const ROLE_LABELS: Record<Role, string> = {
@@ -55,6 +65,10 @@ function providersForRole(role: Role): ProviderKind[] {
   return role === 'implementer'
     ? PROVIDER_KINDS.filter((provider) => provider !== 'openai-api')
     : [...PROVIDER_KINDS]
+}
+
+function doctorStatusLabel(status: DoctorStatus): string {
+  return status === 'ok' ? 'OK' : status === 'missing' ? 'Missing' : 'Untested'
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -173,6 +187,9 @@ function App() {
   const [secretStatus, setSecretStatus] = useState<SecretStatus | null>(null)
   const [secretStatusLoading, setSecretStatusLoading] = useState(true)
   const [secretStatusRetry, setSecretStatusRetry] = useState(0)
+  const [doctorReport, setDoctorReport] = useState<DoctorReport | null>(null)
+  const [doctorLoading, setDoctorLoading] = useState(true)
+  const [doctorRetry, setDoctorRetry] = useState(0)
   const [selectedTaskId, setSelectedTaskId] = useState('')
   const [details, setDetails] = useState<TaskDetails | null>(null)
   const [page, setPage] = useState<'tasks' | 'settings'>('tasks')
@@ -231,6 +248,24 @@ function App() {
       active = false
     }
   }, [secretStatusRetry])
+
+  useEffect(() => {
+    let active = true
+    setDoctorLoading(true)
+    void request<{ doctor: DoctorReport }>('/api/doctor')
+      .then(({ doctor }) => {
+        if (active) setDoctorReport(doctor)
+      })
+      .catch(() => {
+        if (active) setDoctorReport(null)
+      })
+      .finally(() => {
+        if (active) setDoctorLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [doctorRetry])
 
   useEffect(() => {
     if (!selectedTaskId) {
@@ -794,6 +829,49 @@ function App() {
                 )}
               </div>
             )}
+            <section className="doctor-panel" aria-labelledby="doctor-heading" data-testid="doctor-checks">
+              <div className="doctor-panel-heading">
+                <h2 id="doctor-heading">Environment checks</h2>
+                <button
+                  className="doctor-refresh"
+                  aria-label="Refresh environment checks"
+                  title="Refresh environment checks"
+                  disabled={doctorLoading}
+                  onClick={() => setDoctorRetry((retry) => retry + 1)}
+                >
+                  ↻
+                </button>
+              </div>
+              {doctorLoading ? (
+                <p className="doctor-message" role="status">
+                  Checking Joy's setup…
+                </p>
+              ) : doctorReport ? (
+                <ul className="doctor-check-list">
+                  {doctorReport.checks.map((check) => (
+                    <li className="doctor-check" key={check.id}>
+                      <div className="doctor-check-heading">
+                        <strong>{check.label}</strong>
+                        <span className={`doctor-state doctor-state-${check.status}`}>
+                          {doctorStatusLabel(check.status)}
+                        </span>
+                      </div>
+                      <p>{check.summary}</p>
+                      {check.repair !== 'No action needed.' && (
+                        <p className="doctor-repair">{check.repair}</p>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="doctor-message" role="status">
+                  <p>Setup checks are unavailable.</p>
+                  <button className="footer-link" onClick={() => setDoctorRetry((retry) => retry + 1)}>
+                    Retry checks
+                  </button>
+                </div>
+              )}
+            </section>
             <div className="sidebar-footer">
               <div className="local-badge">
                 <span className="connection-dot" /> Joy is running locally

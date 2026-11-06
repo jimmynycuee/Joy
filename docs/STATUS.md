@@ -51,7 +51,7 @@
 
 ## 已確認決策
 
-- T1.14 採用 PR #73；PR #74 以留言「改採 #73」關閉。PR #46、#70 已由 #71 取代；PR #66 是重複 PR。已留言請關閉，但目前 GitHub 工具不允許本 Session 關閉非本 Workspace Reason Session 建立的 PR。
+- T1.14 採用 PR #73；PR #74 以留言「改採 #73」關閉。PR #46、#70（由 #71 取代）與重複的 #66 已於 2026-11-06 關閉。
 - T1.12 allowlist 變更於新任務建立、resume 及 provider dispatch 前檢查；既有執行中任務不因設定變更而中途取消，避免在執行期間改變 provider 選擇。
 - T1.12 provider 預檢若在建立 attempt 前拒絕，寫成 task-level failure event，不建立假的 provider attempt；此事件共用 task-wide sequence，並用獨立資料表維持無 attempt 時的事件回放。此時沒有 provider session，task 不可 resume；錯誤訊息要求修正 provider 選擇／allowlist 後建立新 task。已有 attempt 的 resume 拒絕則提示原 provider 固定，須納入 allowlist 或改建新 task。
 - T1.9 真實驗收由擁有者在 Mac 使用 Joy 測試 repo 與既有 GitHub CLI 登入，建立 `[test] ` draft PR 並驗證 publisher 結果；驗收後關閉 PR、刪除測試分支，不提供或索取 PAT。
@@ -81,4 +81,4 @@
 
 ## 卡住
 
-- PR #66、#70、#46 仍 open：GitHub 工具拒絕本 Session 關閉非本 Workspace Reason Session 建立的 PR；PR #66 的重複說明及 #70/#46 已由 #71 取代的說明均已留言。需由 PR 作者或擁有者關閉。
+- 無。

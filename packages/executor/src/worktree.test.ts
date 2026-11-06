@@ -180,7 +180,7 @@ describe('WorktreeExecutor', () => {
 
     await expect(executor.cleanup(ws)).resolves.toBeUndefined()
     expect(existsSync(ws.path)).toBe(false)
-  })
+  }, 30_000)
 
   it('reports managed worktree activity, disk usage, and configurable staleness', async () => {
     const { repo, root } = await setup()

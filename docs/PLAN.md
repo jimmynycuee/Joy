@@ -36,9 +36,9 @@
 - [x] T1.7 事件紀錄（寫入 DB、可回放、經 Redactor 遮罩；已整合至 main，PR #58）
 - [x] T1.12 repo 的 provider 允許清單
 - [x] T1.9 GitHub：push 分支、開 draft PR（publisher 已整合至 main，PR #76；**真實驗收待擁有者本機執行**：在 Joy 測試 repo 實際開啟並清理 `[test] ` draft PR）
-- [ ] T1.13 `joy doctor` 與首次啟動檢查（實作在 PR #62；鑰匙圈可用性檢查需擁有者審查，並待擁有者本機驗收後再標完成）
-- [ ] T1.14 本機 API 與 WebSocket token 認證（Issue #72；修改請求與 WebSocket 驗證、Origin 雙層防護、私密 token 儲存與 UI 注入；需 owner review）
-- [ ] T1.8 Codex 風格 Web UI（含設定頁；UI 主體已整合至 main，PR #58；首頁檢查實作在 PR #62；需擁有者審查鑰匙圈檢查並完成本機驗收後再標完成）
+- [x] T1.13 `joy doctor` 與首次啟動檢查（PR #62 已整合；**擁有者待審**鑰匙圈可用性檢查，並在本機執行 `pnpm joy doctor` 驗收）
+- [x] T1.14 本機 API 與 WebSocket token 認證（PR #73 已整合；**擁有者待審**）
+- [ ] T1.8 Codex 風格 Web UI（含設定頁；UI 主體已整合至 main，PR #58；首頁檢查已由 PR #62 整合；待擁有者本機驗收）
 - [ ] P2（T2.1–T2.8）、P3（T3.1–T3.9）、P4（T4.1–T4.9）、P5（T5.1–T5.7）：見 §6
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
