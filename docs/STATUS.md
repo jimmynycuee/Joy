@@ -2,7 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-06（T4.6 CLI 版本管理）
+- 最後更新：2026-11-06（T4.9 使用者文件）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
@@ -92,6 +92,12 @@
 - T3.8 依 PLAN 清單評估維護狀況、權限範圍與資料是否送第三方，自行選一個 Gmail／Calendar MCP server；先唯讀，寄信與邀請他人一律 🔴。選型理由寫在本檔決策區。
 - 不呼叫真實模型；若測試確實需要真實模型，只能使用 haiku 或 gpt-6-luna、low effort，且必須是 opt-in。
 - 每個 ticket 從最新 main 開獨立分支，diff 只保留該 ticket。CI 失敗最多修 3 次；無法修復時記錄原因並繼續不相依工作。
+
+### T4.9 使用者文件（待擁有者驗收）
+
+- README 重寫：需要的工具與檢查指令、安裝、啟動、第一次設定、第一個任務、日常使用（助理、競賽、issue、Stats、worktree、備份）、疑難排解、隱私（依 PLAN §7.1）。
+- **補上實際啟動 Joy 的指令**：之前沒有任何指令會啟動真正的 server。新增 `pnpm joy start [--port N]`（127.0.0.1:4317，Ctrl+C／SIGTERM 正常關閉）與 `pnpm web`（Vite UI，讀同一個 token）。已在容器內實測：啟動、`/api/health`、log、備份、pid 檔與關閉後清理。
+- 驗收條件「新電腦照 README 15 分鐘內跑完第一個任務」需要擁有者實測，**PLAN 未打勾**。
 
 ### T4.6 CLI 版本管理
 
@@ -257,6 +263,7 @@
 - T1.9 真實驗收（擁有者 Mac）：使用該 Mac 上既有的 GitHub CLI 登入；啟動 Joy，對測試 repo 跑完一個小任務後按 Changes 欄的「Open draft PR」（第一次會要求填 GitHub repository URL），確認遠端測試分支、標題以 `[test] ` 開頭的 draft PR 與 review 摘要正確；驗收後關閉測試 PR 並刪除測試分支。不提供、不貼上或索取 PAT。
 - T1.13/T1.8（擁有者 Mac）：審查 PR #62 的鑰匙圈可用性探測後，在目標 Mac 執行 `pnpm joy doctor`，確認首頁顯示該機器的 CLI、鑰匙圈與資料目錄檢查；此驗收不讀取或提供已存憑證。
 - T2.4 Telegram（**擁有者決定暫緩**）：在 @BotFather 建 bot，對它傳一則訊息後用 `https://api.telegram.org/bot<token>/getUpdates` 查自己的 chat id；在 Joy 設定頁填入 chat id 與 bot token（或用環境變數 `JOY_TELEGRAM_BOT_TOKEN`），重啟 Joy。不要把 token 貼在對話、文件或程式碼中。
+- T4.9：在一台新電腦（或新使用者帳號）照 README 從 clone 到跑完第一個任務，記錄花了多久與卡住的地方。
 - T4.6：Claude Code 已更新到 2.1.319 以上時，在已登入的 Mac 依 `docs/cli-versions.md` 重錄 fixture 並更新測過範圍（用 haiku、low effort）。
 - T2.6 GitHub issue 真實驗收（擁有者 Mac）：確認 `gh auth status` 已登入；在測試 repo 建一個 issue 並加上 `joy` label，5 分鐘內 Joy 應建立 `#編號 標題` 的任務（標示 external content）；驗收後關閉 issue。不提供、不貼上或索取 PAT。
 - T3.8 Google：完成所選 MCP server 所需的 Google 登入；登入前保持唯讀功能未連線，登入指令依該 server 文件記錄於此。
