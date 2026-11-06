@@ -121,6 +121,17 @@ export async function startFakeJoyRuntime(port = 4317): Promise<FakeJoyRuntime> 
     secretStore,
     redactor,
     executor: new E2EFakeExecutor(),
+    doctor: {
+      nodeVersion: '22.13.0',
+      runCommand: async (command) => {
+        if (command === 'git') return { exitCode: 0, output: 'git version 2.48.1' }
+        if (command === 'gh') return { exitCode: 1 }
+        if (command === 'claude') return { exitCode: null, spawnErrorCode: 'ENOENT' }
+        if (command === 'codex') return { exitCode: 0, output: 'codex-cli 0.104.0' }
+        return { exitCode: null, spawnErrorCode: 'ENOENT' }
+      },
+      keychainLookup: async () => null,
+    },
     providers: {
       'openai-api': new E2EFakeProvider('openai-api'),
       'claude-cli': new E2EFakeProvider('claude-cli'),

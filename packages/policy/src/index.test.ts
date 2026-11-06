@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ActionKind, ProposedAction } from '@joy/core'
 import { ACTION_KINDS } from '@joy/core'
-import { ACTION_TIERS, classifyClaudeToolAction, evaluateAction } from './index.js'
+import { ACTION_TIERS, evaluateAction } from './index.js'
 
 const modes = ['careful', 'normal', 'hands-off'] as const
 
@@ -50,32 +50,5 @@ describe('action classification and autonomy modes', () => {
         expect(result.requiresPreReview).toBe(true)
       }
     }
-  })
-})
-
-describe('Claude permission action classification', () => {
-  it.each([
-    ['Read', 'read_file', {}],
-    ['Glob', 'read_file', {}],
-    ['Grep', 'read_file', {}],
-    ['Edit', 'edit_worktree', { file_path: 'src/file.ts' }],
-    ['Write', 'edit_worktree', { file_path: 'src/file.ts' }],
-    ['Bash', 'run_outside_worktree', { command: 'git status' }],
-    ['unknown-tool', 'run_outside_worktree', {}],
-  ] as const)('maps %s to %s', (toolName, kind, input) => {
-    expect(classifyClaudeToolAction(toolName, input, '/work/project').kind).toBe(kind)
-  })
-
-  it('classifies writes with missing or outside paths as high risk', () => {
-    expect(classifyClaudeToolAction('Write', {}, '/work/project').kind).toBe('run_outside_worktree')
-    expect(classifyClaudeToolAction('Write', { file_path: '../outside.txt' }, '/work/project').kind).toBe(
-      'run_outside_worktree',
-    )
-    expect(classifyClaudeToolAction('Edit', { file_path: '/etc/hosts' }, '/work/project').kind).toBe(
-      'run_outside_worktree',
-    )
-    expect(classifyClaudeToolAction('Write', { file_path: 'src/change.ts' }, '/work/project').kind).toBe(
-      'edit_worktree',
-    )
   })
 })

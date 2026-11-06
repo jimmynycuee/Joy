@@ -39,6 +39,7 @@ import type { Database } from '@joy/db'
 import { MemoryBackend, Redactor, SecretStore } from '@joy/secrets'
 import { createJoyServer } from './server.js'
 import type { JoyServer, JoyServerOptions } from './server.js'
+import type { DoctorOptions } from './doctor.js'
 import WebSocket, { type RawData } from 'ws'
 
 const dirs: string[] = []
@@ -152,7 +153,9 @@ function fixture(
     secretBackend?: MemoryBackend
     secretEnv?: NodeJS.ProcessEnv
     allowPlaywrightOrigin?: boolean
+    ownerApprovalChannel?: boolean
     configStore?: ConfigStore
+    doctor?: Omit<DoctorOptions, 'home' | 'commands'>
     apiToken?: string
     generateApiToken?: boolean
     home?: string
@@ -186,7 +189,7 @@ function fixture(
   const secretBackend = options.secretBackend ?? new MemoryBackend()
   const configStore = options.configStore ?? new ConfigStore(join(dir, 'config.yaml'))
   const serverOptions: JoyServerOptions = {
-    home: dir,
+    home: options.home ?? dir,
     database: db,
     configStore,
     secretStore: new SecretStore({
@@ -197,6 +200,8 @@ function fixture(
     redactor,
     executor,
     ...(options.allowPlaywrightOrigin ? { allowPlaywrightOrigin: true } : {}),
+    ...(options.ownerApprovalChannel ? { ownerApprovalChannel: true } : {}),
+    ...(options.doctor ? { doctor: options.doctor } : {}),
     ...(options.generateApiToken ? {} : { apiToken: options.apiToken ?? TEST_API_TOKEN }),
     providers: {
       'claude-cli': implementer,
@@ -341,6 +346,54 @@ async function patchJson(url: string, body: unknown) {
 }
 
 describe('Joy local server', () => {
+  it('serves sanitized prerequisite checks for the homepage without running provider commands', async () => {
+    const commandCalls: string[] = []
+    const parent = mkdtempSync(join(tmpdir(), 'joy-first-run-test-'))
+    dirs.push(parent)
+    const home = join(parent, 'new-home')
+    const { serverPromise } = fixture({
+      home,
+      doctor: {
+        nodeVersion: '22.13.0',
+        runCommand: async (command, args, captureOutput) => {
+          commandCalls.push(`${command} ${args.join(' ')} capture=${captureOutput}`)
+          if (command === 'git') return { exitCode: 0, output: 'git version 2.48.1' }
+          if (command === 'gh') return { exitCode: 0, output: 'private-account and ghp_private-token' }
+          if (command === 'claude') return { exitCode: null, spawnErrorCode: 'ENOENT' }
+          return { exitCode: 0, output: 'codex-cli 0.104.0 (private-account)' }
+        },
+        keychainLookup: async () => 'private-keychain-value',
+      },
+    })
+    const { origin } = await start(serverPromise)
+    expect(existsSync(home)).toBe(true)
+    if (process.platform !== 'win32') expect(statSync(home).mode & 0o777).toBe(0o700)
+    expect((await fetch(`${origin}/api/health`)).status).toBe(200)
+    const response = await fetch(`${origin}/api/doctor`)
+    const body = (await response.json()) as {
+      doctor: { checks: Array<{ id: string; status: string; version?: string }> }
+    }
+
+    expect(response.status).toBe(200)
+    expect(body.doctor.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'node', status: 'ok' }),
+        expect.objectContaining({ id: 'git', status: 'ok', version: '2.48.1' }),
+        expect.objectContaining({ id: 'gh-auth', status: 'ok' }),
+        expect.objectContaining({ id: 'claude-cli', status: 'missing' }),
+        expect.objectContaining({ id: 'codex-cli', status: 'untested', version: '0.104.0' }),
+        expect.objectContaining({ id: 'keychain', status: 'ok' }),
+        expect.objectContaining({ id: 'data-directory', status: 'ok' }),
+      ]),
+    )
+    expect(JSON.stringify(body)).not.toContain('private-account')
+    expect(JSON.stringify(body)).not.toContain('ghp_private-token')
+    expect(JSON.stringify(body)).not.toContain('private-keychain-value')
+    expect(commandCalls).toContain('gh auth status --hostname github.com capture=false')
+    expect(commandCalls).toContain('claude --version capture=true')
+    expect(commandCalls).toContain('codex --version capture=true')
+  })
+
   it('requires a bearer token for HTTP mutations and a token protocol for WebSocket upgrades', async () => {
     const { db, serverPromise } = fixture()
     const { origin, websocket } = await start(serverPromise)
@@ -354,6 +407,14 @@ describe('Joy local server', () => {
       null,
     )
     const wrongToken = `${TEST_API_TOKEN}-wrong`
+    const unauthenticatedDoctor = await rawRequest(
+      origin,
+      '/api/doctor',
+      'GET',
+      { host: new URL(origin).host, origin: VITE_ORIGIN },
+      '',
+      null,
+    )
     const unauthenticatedRead = await rawRequest(
       origin,
       '/api/repos',
@@ -371,6 +432,7 @@ describe('Joy local server', () => {
       wrongToken,
     )
     expect(missing.status).toBe(403)
+    expect(unauthenticatedDoctor.status).toBe(403)
     expect(unauthenticatedRead.status).toBe(403)
     expect(wrong.status).toBe(403)
     const publicHealth = await rawRequest(
@@ -1098,7 +1160,7 @@ describe('Joy local server', () => {
   it('exposes a task-scoped Tool Hub to CLI runs with authentication, shared read-only peers, and limits', async () => {
     const implementer = new FakeProvider('claude-cli')
     implementer.capabilities.delegatedApproval = true
-    const { reviewer, configStore, serverPromise } = fixture({ implementer })
+    const { reviewer, configStore, serverPromise } = fixture({ implementer, ownerApprovalChannel: true })
     await configStore.update((config) => ({ ...config, tool_hub: { max_ask_peer_calls: 1 } }))
     const { origin } = await start(serverPromise)
     const repoResponse = await postJson(`${origin}/api/repos`, {
@@ -1202,7 +1264,7 @@ describe('Joy local server', () => {
   it('forces external_content Claude actions through cross-model review and owner approval in hands-off mode', async () => {
     const implementer = new FakeProvider('claude-cli')
     implementer.capabilities.delegatedApproval = true
-    const { reviewer, configStore, serverPromise } = fixture({ implementer })
+    const { reviewer, configStore, serverPromise } = fixture({ implementer, ownerApprovalChannel: true })
     await configStore.update((config) => ({ ...config, autonomy_mode: 'hands-off' }))
     const { origin } = await start(serverPromise)
     const repoResponse = await postJson(`${origin}/api/repos`, {
@@ -1278,6 +1340,59 @@ describe('Joy local server', () => {
     expect(reviewer.calls).toHaveLength(2)
     expect(reviewer.calls.every((call) => call.prompt.includes('Provenance: external_content'))).toBe(true)
     expect(result.events.map((event) => (event as { type?: string }).type)).toContain('policy.pre_review')
+  })
+
+  it('denies red actions without a pre-review until an owner approval channel exists, and allows safe ones', async () => {
+    const implementer = new FakeProvider('claude-cli')
+    implementer.capabilities.delegatedApproval = true
+    const { reviewer, serverPromise } = fixture({ implementer })
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, {
+      path: '/tmp/no-channel-repo',
+      defaultBranch: 'main',
+    })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const taskResponse = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Policy without an approval channel',
+      prompt: 'Run the tests',
+      mode: 'single',
+    })
+    const { task } = (await taskResponse.json()) as { task: { id: string } }
+    const decisions: unknown[] = []
+    implementer.onRun = async (options) => {
+      const mcp = options.mcpServers?.[0]
+      if (!mcp || mcp.transport !== 'stdio')
+        throw new Error('CLI provider did not receive the stdio Tool Hub')
+      const approve = async (tool_name: string, input: unknown) => {
+        const response = await globalThis.fetch(mcp.env?.JOY_TOOL_HUB_ENDPOINT as string, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${mcp.env?.JOY_TOOL_HUB_TOKEN}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ name: 'approve', arguments: { tool_name, input, tool_use_id: tool_name } }),
+        })
+        decisions.push(((await response.json()) as { value: unknown }).value)
+      }
+      await approve('Bash', { command: 'pnpm test' })
+      await approve('Bash', { command: 'rm -rf node_modules' })
+      await approve('Read', { file_path: '/home/me/.ssh/id_rsa' })
+    }
+    const result = await waitForStatus(origin, task.id, 'done')
+    expect(decisions[0]).toMatchObject({ behavior: 'allow' })
+    expect(decisions[1]).toMatchObject({
+      behavior: 'deny',
+      message: expect.stringContaining('No owner approval channel'),
+    })
+    expect(decisions[2]).toMatchObject({ behavior: 'deny' })
+    expect(reviewer.calls).toHaveLength(0)
+    const skipped = result.events.filter(
+      (event) =>
+        (event as { type?: string }).type === 'policy.pre_review' &&
+        JSON.stringify(event).includes('skipped'),
+    )
+    expect(skipped).toHaveLength(2)
   })
 
   it('preserves the task ask_peer budget across a resumed provider session', async () => {

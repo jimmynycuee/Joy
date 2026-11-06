@@ -66,6 +66,8 @@ import {
 import type { ToolHubBudget, ToolHubDispatcher } from '@joy/tools'
 import { effortCompatibilityError } from '@joy/model-effort'
 import { classifyClaudeToolAction, evaluateAction } from '@joy/policy'
+import { runDoctor } from './doctor.js'
+import type { DoctorOptions } from './doctor.js'
 import { describeDisallowedRoleProvider, findDisallowedRoleProviders } from './provider-allowlist.js'
 
 const modelSchema = z.strictObject({
@@ -139,6 +141,13 @@ export interface JoyServerOptions {
   executor?: Executor
   /** Adds only the fixed Playwright E2E origins; this is never enabled by default. */
   allowPlaywrightOrigin?: boolean
+  /**
+   * True once a person can actually answer approval requests (Telegram, T2.4). Until then red actions are denied
+   * straight away: a cross-model pre-review would spend quota on a request nobody can approve.
+   */
+  ownerApprovalChannel?: boolean
+  /** Test seams for prerequisite checks; production uses the current process and OS services. */
+  doctor?: Omit<DoctorOptions, 'home' | 'commands'>
   /** Trusted runtime injection/testing only. Otherwise the token is persisted in <home>/api-token. */
   apiToken?: string
 }
@@ -190,6 +199,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const home = options.home ?? joyHome()
   const configStore = options.configStore ?? new ConfigStore(join(home, 'config.yaml'))
   const initialConfig = await configStore.get()
+  await mkdir(home, { recursive: true, mode: 0o700 })
   const paths = resolvePaths(initialConfig, home)
   const apiToken = options.apiToken ?? (await loadOrCreateApiToken(home))
   assertApiToken(apiToken)
@@ -377,6 +387,19 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       throw new HttpError(403, 'Authentication required')
     if (url.pathname === '/api/health' && method === 'GET') {
       json(res, 200, { ok: true })
+      return
+    }
+    if (url.pathname === '/api/doctor' && method === 'GET') {
+      const config = await configStore.get()
+      const doctor = await runDoctor({
+        ...options.doctor,
+        home,
+        commands: {
+          ...(config.providers.claude.command ? { claude: config.providers.claude.command } : {}),
+          ...(config.providers.codex.command ? { codex: config.providers.codex.command } : {}),
+        },
+      })
+      json(res, 200, { doctor })
       return
     }
     if (url.pathname === '/api/repos' && method === 'GET') {
@@ -810,6 +833,16 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         outcome: decision.outcome,
       })
       if (!decision.requiresPreReview) return { decision }
+      if (!(options.ownerApprovalChannel ?? false)) {
+        const reason =
+          'No owner approval channel is configured yet, so the action was denied without a pre-review'
+        publish(task.id, attempt.id, 'policy.pre_review', {
+          kind: action.kind,
+          status: 'skipped',
+          message: reason,
+        })
+        return { decision, reviewError: reason }
+      }
       try {
         const review = await preReviewAction(action)
         publish(task.id, attempt.id, 'policy.pre_review', {
@@ -877,7 +910,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         if (assessed.decision.tier === 'approve') {
           const reviewText = assessed.review
             ? ` Cross-model pre-review (${assessed.review.provider}) recommended ${assessed.review.approve ? 'allow' : 'deny'}: ${assessed.review.summary}`
-            : ` Cross-model pre-review was unavailable: ${assessed.reviewError ?? 'unknown error'}`
+            : ` ${assessed.reviewError ?? 'Cross-model pre-review was unavailable.'}`
           return {
             behavior: 'deny' as const,
             message: `Red action ${action.kind} requires owner approval; the tool was not run.${reviewText}`,
