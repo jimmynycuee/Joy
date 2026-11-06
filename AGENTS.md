@@ -52,7 +52,7 @@ docs/spikes/         what the Claude Code and Codex CLIs actually do; read befor
 packages/core        domain types and interfaces. No I/O, no dependencies on other packages
 packages/db          SQLite (node:sqlite) connection, schema, migrations
 packages/providers   Claude CLI, Codex CLI, OpenAI API → AgentEvent (the only place that spawns CLIs)
-packages/executor    git worktree per attempt
+packages/executor    git worktree per attempt; `docker run` command for container repos (T4.5)
 packages/orchestrator review loop (and later compete mode)
 packages/github     commit/push task branches and open draft pull requests
 packages/config      ~/.joy/config.yaml
@@ -60,7 +60,8 @@ packages/secrets     OS keychain + Redactor
 packages/memory      what the assistant remembers and the rules for writing it (owner review)
 packages/channels    Telegram (owner-only)
 packages/scheduler   reminders and cron jobs, catch-up after sleep (injectable clock for tests)
-scripts/             dev scripts (fixture recording)
+scripts/             `pnpm joy` CLI (start, doctor, backup, restore, container-*) and fixture recording
+docker/              agent image for container mode
 packages/*           one package per module (created by its ticket, see PLAN §3.1)
 apps/web             React + Vite UI (T1.8)
 apps/desktop         Tauri shell (T4.3)

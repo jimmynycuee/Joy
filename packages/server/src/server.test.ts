@@ -15,7 +15,7 @@ import { request as httpRequest } from 'node:http'
 import { syntheticCodexAppServerFixture } from '../../providers/test-support/codex-app-server-fixtures.js'
 import { fakeCodexAppServer } from '../../providers/test-support/fixtures.js'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type {
   AgentEvent,
   AgentProvider,
@@ -180,6 +180,9 @@ function fixture(
     executor?: Executor
     issueSource?: JoyServerOptions['issueSource']
     issuePollIntervalMs?: number
+    containerCommands?: JoyServerOptions['containerCommands']
+    /** Use the server's own Claude CLI provider (with its container wrapper) instead of the fake. */
+    realClaudeProvider?: boolean
     /** Use the server's real Codex app-server provider, driven by a fake app-server process. */
     codexAppServer?: JoyServerOptions['codexAppServer']
     /** Worktree path the fake executor hands out; must exist when a real child process runs in it. */
@@ -246,7 +249,7 @@ function fixture(
     cliVersionCheck: options.doctor?.runCommand !== undefined,
     ...(options.generateApiToken ? {} : { apiToken: options.apiToken ?? TEST_API_TOKEN }),
     providers: {
-      'claude-cli': implementer,
+      ...(options.realClaudeProvider ? {} : { 'claude-cli': implementer }),
       ...(options.codexAppServer ? {} : { 'codex-cli': reviewer }),
       'openai-api': api,
       ...options.providers,
@@ -259,6 +262,7 @@ function fixture(
     ...(options.assistantApiProvider ? { assistantApiProvider: options.assistantApiProvider } : {}),
     ...(options.schedulerClock ? { schedulerClock: options.schedulerClock } : {}),
     ...(options.issueSource ? { issueSource: options.issueSource } : {}),
+    ...(options.containerCommands ? { containerCommands: options.containerCommands } : {}),
     ...(options.issuePollIntervalMs !== undefined
       ? { issuePollIntervalMs: options.issuePollIntervalMs }
       : {}),
@@ -2892,6 +2896,94 @@ describe('Joy local server', () => {
     expect(readFileSync(join(dir, 'logs', `joy-${day}.log`), 'utf8')).not.toContain('log-secret-in-error-77')
     expect((await fetch(`${origin}/api/logs/2000-01-01`)).status).toBe(404)
     expect((await fetch(`${origin}/api/logs/..%2Fconfig.yaml`)).status).toBe(404)
+  })
+
+  // Needs a running Docker daemon and the node:22-alpine image; never runs in CI.
+  it.skipIf(process.env.JOY_E2E_DOCKER !== '1')(
+    "runs an untrusted repository's agent inside a container that cannot see the host",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'joy-container-'))
+      dirs.push(root)
+      const repoPath = join(root, 'repo')
+      const run = (cwd: string, ...args: string[]) =>
+        execFileSync('git', args, { cwd, stdio: 'pipe' }).toString()
+      mkdirSync(repoPath)
+      run(repoPath, 'init', '-q', '-b', 'main')
+      writeFileSync(join(repoPath, 'README.md'), 'hi\n')
+      run(repoPath, 'add', '.')
+      run(repoPath, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init')
+      const secret = join(root, 'host-only', 'secret.txt')
+      mkdirSync(dirname(secret))
+      writeFileSync(secret, 'host secret')
+      const fakeCli = join(
+        import.meta.dirname,
+        '..',
+        '..',
+        '..',
+        'tests',
+        'fake-cli',
+        'claude-in-container.mjs',
+      )
+      const { serverPromise, configStore, dir } = fixture({
+        executor: new WorktreeExecutor({ worktreesDir: join(root, 'worktrees') }),
+        realClaudeProvider: true,
+        containerCommands: { claude: ['node', fakeCli] },
+      })
+      await configStore.update((config) => ({
+        ...config,
+        container: { image: 'node:22-alpine', network: 'none' },
+        roles: { ...config.roles, implementer: { provider: 'claude-cli', model: 'haiku', effort: 'low' } },
+      }))
+      const { origin } = await start(serverPromise)
+      const repo = (await (
+        await postJson(`${origin}/api/repos`, { path: repoPath, defaultBranch: 'main', container: true })
+      ).json()) as { repo: { id: string; container?: boolean } }
+      expect(repo.repo.container).toBe(true)
+      const { task } = (await (
+        await postJson(`${origin}/api/tasks`, {
+          repoId: repo.repo.id,
+          title: 'Untrusted',
+          prompt: `Look around. SECRET_PATH=${secret}`,
+          mode: 'single',
+        })
+      ).json()) as { task: { id: string } }
+      const details = (await waitForStatus(origin, task.id, 'done', 120_000)) as unknown as {
+        attempts: Array<{ worktreePath: string }>
+      }
+      const proof = JSON.parse(
+        readFileSync(join(details.attempts[0]?.worktreePath ?? '', 'container-proof.json'), 'utf8'),
+      ) as { secretVisible: boolean; homeVisible: boolean; home: string; uid: number }
+      expect(proof).toMatchObject({
+        secretVisible: false,
+        homeVisible: false,
+        home: '/joy-home',
+        uid: process.getuid?.(),
+      })
+      expect(existsSync(join(dir, 'container-home', 'claude'))).toBe(true)
+    },
+    180_000,
+  )
+
+  it('refuses Codex app-server for a container repository, which it could not put in the container', async () => {
+    const { serverPromise, db } = fixture()
+    createRepo(db, { id: rid('untrusted'), path: '/untrusted', defaultBranch: 'main', container: true })
+    const { origin } = await start(serverPromise)
+    const response = await postJson(`${origin}/api/tasks`, {
+      repoId: 'untrusted',
+      title: 'x',
+      prompt: 'x',
+      mode: 'review_loop',
+    })
+    const body = (await response.json()) as { task?: { id: string }; error?: string }
+    const message =
+      body.error ?? JSON.stringify((await waitForStatus(origin, body.task?.id ?? '', 'failed', 5_000)).events)
+    expect(message).toMatch(/container.*providers\.codex\.transport to exec/)
+    const patched = await fetch(`${origin}/api/repos/untrusted`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', origin: VITE_ORIGIN },
+      body: JSON.stringify({ container: false }),
+    })
+    expect(((await patched.json()) as { repo: { container?: boolean } }).repo.container).toBeUndefined()
   })
 
   it('reports model stats filtered by period and repository', async () => {

@@ -9,6 +9,7 @@ import type {
   ProviderHealth,
   RunOptions,
 } from '@joy/core'
+import type { CommandWrapper } from '../cli-run.js'
 import { probeVersion, runCli } from '../cli-run.js'
 import { buildCodexArgs } from './args.js'
 import { CodexAppServerProvider, type CodexAppServerOptions } from './app-server.js'
@@ -19,6 +20,8 @@ export interface CodexCliOptions extends CodexAppServerOptions {
   mode?: 'app-server' | 'exec'
   /** On an app-server startup incompatibility, fall back to `codex exec --json` once. Defaults true. */
   fallbackToExec?: boolean
+  /** Runs `codex exec` another way, e.g. in a container for untrusted repositories (T4.5). Exec mode only. */
+  wrap?: CommandWrapper
 }
 
 /** Compatibility provider for the legacy one-turn `codex exec --json` protocol. */
@@ -38,12 +41,14 @@ export class CodexExecProvider implements AgentProvider {
   private readonly argsPrefix: string[]
   private readonly timeoutMs: number
   private readonly env: NodeJS.ProcessEnv | undefined
+  private readonly wrap: CommandWrapper | undefined
 
   constructor(options: CodexCliOptions = {}) {
     this.command = options.command ?? 'codex'
     this.argsPrefix = options.argsPrefix ?? []
     this.timeoutMs = options.timeoutMs ?? 60 * 60 * 1000
     this.env = options.env
+    this.wrap = options.wrap
   }
 
   async *run(opts: RunOptions, model: ModelRef): AsyncGenerator<AgentEvent> {
@@ -58,8 +63,10 @@ export class CodexExecProvider implements AgentProvider {
       yield* runCli({
         source: 'codex-cli',
         label: 'Codex',
-        command: this.command,
-        args: [...this.argsPrefix, ...buildCodexArgs(opts, model, schemaPath)],
+        ...(await this.commandLine(
+          [...this.argsPrefix, ...buildCodexArgs(opts, model, schemaPath)],
+          opts.cwd,
+        )),
         cwd: opts.cwd,
         signal: opts.signal,
         timeoutMs: this.timeoutMs,
@@ -69,6 +76,12 @@ export class CodexExecProvider implements AgentProvider {
     } finally {
       if (tmp) await rm(tmp, { recursive: true, force: true })
     }
+  }
+
+  private async commandLine(args: string[], cwd: string): Promise<{ command: string; args: string[] }> {
+    return this.wrap
+      ? this.wrap({ cli: 'codex', command: this.command, args, cwd })
+      : { command: this.command, args }
   }
 
   async healthCheck(): Promise<ProviderHealth> {

@@ -1880,6 +1880,7 @@ function App() {
         body: JSON.stringify({
           path: String(form.get('path') ?? '').trim(),
           defaultBranch: String(form.get('defaultBranch') ?? 'main').trim(),
+          ...(form.get('container') ? { container: true } : {}),
         }),
       })
       await refreshLists()
@@ -2547,6 +2548,10 @@ function App() {
               <label>
                 Default branch
                 <input name="defaultBranch" aria-label="Default branch" defaultValue="main" required />
+              </label>
+              <label className="checkbox-row">
+                <input type="checkbox" name="container" aria-label="Run agents in a container" />
+                Untrusted code: run agents in a container (needs Docker; see README)
               </label>
               <div className="form-actions">
                 <button className="quiet-button" type="button" onClick={() => setShowRepoForm(false)}>

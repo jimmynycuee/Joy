@@ -104,6 +104,17 @@ export const configSchema = z.strictObject({
       issue_poll_minutes: z.number().int().min(0).max(1440).default(5),
     })
     .default({ issue_label: 'joy', issue_poll_minutes: 5 }),
+  container: z
+    .strictObject({
+      /** Image with Claude Code, Codex, git and node (build it with `pnpm joy container-build`). */
+      image: z
+        .string()
+        .regex(/^[\w./:@-]+$/)
+        .default('joy-agent:latest'),
+      /** `host`: the CLI reaches its model and Joy's approvals. `none`: no network at all (the CLI cannot work). */
+      network: z.enum(['host', 'none']).default('host'),
+    })
+    .default({ image: 'joy-agent:latest', network: 'host' }),
   worktrees: z
     .strictObject({
       /** Idle worktrees older than this are offered for cleanup in the UI (never removed without the owner). */

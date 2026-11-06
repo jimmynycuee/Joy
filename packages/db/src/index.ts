@@ -25,6 +25,7 @@ export {
   setTaskStatus,
   updateAttempt,
   updateRepoAllowedProviders,
+  updateRepoContainer,
   updateRepoGithubRemote,
 } from './repositories.js'
 export type {

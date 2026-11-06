@@ -9,6 +9,7 @@ import type {
   ProviderHealth,
   RunOptions,
 } from '@joy/core'
+import type { CommandWrapper } from '../cli-run.js'
 import { probeVersion, runCli } from '../cli-run.js'
 import { buildClaudeArgs, mcpConfigJson } from './args.js'
 import { ClaudeStreamParser } from './parse.js'
@@ -21,6 +22,8 @@ export interface ClaudeCliOptions {
   /** Per-run limit. Default 60 minutes. */
   timeoutMs?: number
   env?: NodeJS.ProcessEnv
+  /** Runs the CLI another way, e.g. in a container for untrusted repositories (T4.5). */
+  wrap?: CommandWrapper
 }
 
 export class ClaudeCliProvider implements AgentProvider {
@@ -39,12 +42,14 @@ export class ClaudeCliProvider implements AgentProvider {
   private readonly argsPrefix: string[]
   private readonly timeoutMs: number
   private readonly env: NodeJS.ProcessEnv | undefined
+  private readonly wrap: CommandWrapper | undefined
 
   constructor(options: ClaudeCliOptions = {}) {
     this.command = options.command ?? 'claude'
     this.argsPrefix = options.argsPrefix ?? []
     this.timeoutMs = options.timeoutMs ?? 60 * 60 * 1000
     this.env = options.env
+    this.wrap = options.wrap
   }
 
   async *run(opts: RunOptions, model: ModelRef): AsyncGenerator<AgentEvent> {
@@ -60,8 +65,10 @@ export class ClaudeCliProvider implements AgentProvider {
       yield* runCli({
         source: 'claude-cli',
         label: 'Claude Code',
-        command: this.command,
-        args: [...this.argsPrefix, ...buildClaudeArgs(opts, model, mcpConfigPath)],
+        ...(await this.commandLine(
+          [...this.argsPrefix, ...buildClaudeArgs(opts, model, mcpConfigPath)],
+          opts.cwd,
+        )),
         cwd: opts.cwd,
         signal: opts.signal,
         timeoutMs: this.timeoutMs,
@@ -71,6 +78,12 @@ export class ClaudeCliProvider implements AgentProvider {
     } finally {
       if (tmp) await rm(tmp, { recursive: true, force: true })
     }
+  }
+
+  private async commandLine(args: string[], cwd: string): Promise<{ command: string; args: string[] }> {
+    return this.wrap
+      ? this.wrap({ cli: 'claude', command: this.command, args, cwd })
+      : { command: this.command, args }
   }
 
   async healthCheck(): Promise<ProviderHealth> {

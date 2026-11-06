@@ -1,10 +1,12 @@
-import { constants as fsConstants, realpathSync } from 'node:fs'
+import { existsSync as existsSyncFs, constants as fsConstants, realpathSync } from 'node:fs'
 import { createServer as createHttpServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { link, lstat, mkdir, open, readFile, rm, unlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { WebSocket, WebSocketServer } from 'ws'
 import { z, ZodError } from 'zod'
 import type {
@@ -12,6 +14,7 @@ import type {
   AgentProvider,
   AttemptId,
   AttemptStatus,
+  McpServerConfig,
   ModelRef,
   OutboundMessage,
   ProposedAction,
@@ -88,6 +91,7 @@ import {
   updateAttempt,
   updateConversationSession,
   updateRepoAllowedProviders,
+  updateRepoContainer,
   updateRepoGithubRemote,
 } from '@joy/db'
 import type {
@@ -140,7 +144,7 @@ import type {
 } from '@joy/github'
 import { TelegramChannel } from '@joy/channels'
 import type { WorktreeCleanupOptions, WorktreeInfo } from '@joy/executor'
-import { UnpushedCommitsError, WorktreeExecutor } from '@joy/executor'
+import { UnpushedCommitsError, WorktreeExecutor, containerRunCommand, gitCommonDir } from '@joy/executor'
 import type { Executor, WorkspaceDiff } from '@joy/core'
 import type { ContestantOutcome, Judgement, LoopEvent } from '@joy/orchestrator'
 import { compete, formatFindings, mergePrompt, reviewLoop } from '@joy/orchestrator'
@@ -189,16 +193,22 @@ const repoInputSchema = z.strictObject({
   defaultBranch: z.string().trim().min(1),
   githubRemote: z.string().trim().min(1).optional(),
   allowedProviders: allowedProvidersSchema.optional(),
+  container: z.boolean().optional(),
 })
 const repoAllowlistInputSchema = z
   .strictObject({
     allowedProviders: allowedProvidersSchema.optional(),
     /** null clears it. */
     githubRemote: z.string().trim().min(1).nullable().optional(),
+    container: z.boolean().optional(),
   })
-  .refine((input) => input.allowedProviders !== undefined || input.githubRemote !== undefined, {
-    message: 'Send allowedProviders, githubRemote, or both',
-  })
+  .refine(
+    (input) =>
+      input.allowedProviders !== undefined ||
+      input.githubRemote !== undefined ||
+      input.container !== undefined,
+    { message: 'Send allowedProviders, githubRemote or container' },
+  )
 const publishInputSchema = z.strictObject({
   title: z.string().trim().min(1).max(256).optional(),
   baseBranch: z.string().trim().min(1).max(255).optional(),
@@ -339,6 +349,8 @@ export interface JoyServerOptions {
   codexAppServer?: { command?: string; argsPrefix?: string[]; env?: NodeJS.ProcessEnv; timeoutMs?: number }
   /** Test seams for prerequisite checks; production uses the current process and OS services. */
   doctor?: Omit<DoctorOptions, 'home' | 'commands'>
+  /** The CLI inside the agent container, per CLI (tests run a fake CLI through node). Default the CLI's name. */
+  containerCommands?: Partial<Record<'claude' | 'codex', string[]>>
   /** Warn at startup about CLI versions Joy was not tested with (T4.6). Default true. */
   cliVersionCheck?: boolean
   /** Trusted runtime injection/testing only. Otherwise the token is persisted in <home>/api-token. */
@@ -419,6 +431,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const providers: Partial<Record<ProviderKind, AgentProvider>> = {
     'claude-cli': new ClaudeCliProvider({
       ...(initialConfig.providers.claude.command ? { command: initialConfig.providers.claude.command } : {}),
+      wrap: containerWrap,
     }),
     'codex-cli':
       initialConfig.providers.codex.transport === 'exec'
@@ -426,6 +439,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
             ...(initialConfig.providers.codex.command
               ? { command: initialConfig.providers.codex.command }
               : {}),
+            // `transport: exec` means exec only: the app-server could not be put in a container (T4.5).
+            mode: 'exec',
+            wrap: containerWrap,
           })
         : new CodexAppServerProvider({
             ...(initialConfig.providers.codex.command
@@ -678,6 +694,71 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       })
     })
   }
+  /** Only CLIs Joy can start inside the container may work on a container repository. */
+  function assertContainerProviders(models: Array<ModelRef | undefined>, config: JoyConfig): void {
+    for (const model of models) {
+      if (!model) continue
+      if (model.provider === 'codex-cli' && config.providers.codex.transport !== 'exec')
+        throw new ProviderAllowlistError(
+          'This repository runs agents in a container, which needs Codex in exec mode: set providers.codex.transport to exec (and restart Joy), or use Claude Code.',
+        )
+    }
+  }
+
+  /** The container repository a CLI run's working directory belongs to, if any (T4.5). */
+  function containerRepoFor(cwd: string): RepoRecord | undefined {
+    for (const repo of listRepos(db)) {
+      if (!repo.container) continue
+      if (samePath(repo.path, cwd)) return repo
+      for (const task of listTasks(db))
+        if (task.repoId === repo.id)
+          for (const attempt of listAttempts(db, task.id))
+            if (attempt.worktreePath && samePath(attempt.worktreePath, cwd)) return repo
+    }
+    return undefined
+  }
+
+  /**
+   * Runs a CLI inside the agent container when its working directory belongs to an untrusted repository (T4.5). The
+   * container sees the worktree, the repository's git data, Joy's own source (read-only, for the Tool Hub bridge),
+   * the run's temporary files and a login folder of its own; nothing else from this computer.
+   */
+  async function containerWrap(run: {
+    cli: 'claude' | 'codex'
+    command: string
+    args: string[]
+    cwd: string
+  }): Promise<{ command: string; args: string[] }> {
+    const repo = containerRepoFor(run.cwd)
+    if (!repo) return { command: run.command, args: run.args }
+    const config = await configStore.get()
+    const containerHome = join(home, 'container-home', run.cli)
+    await mkdir(containerHome, { recursive: true, mode: 0o700 })
+    const atRepo = samePath(repo.path, run.cwd)
+    const mounts = [
+      // The judge reads the repository itself; agents work in a worktree and need its git data to commit.
+      ...(atRepo ? [] : [{ host: await gitCommonDir(run.cwd), readOnly: false }]),
+      { host: JOY_SOURCE_ROOT },
+      // Files Joy wrote for this run (MCP config, output schema).
+      ...run.args
+        .filter((arg) => isAbsolute(arg) && arg.startsWith(tmpdir()) && existsSyncFs(arg))
+        .map((arg) => ({ host: arg })),
+    ]
+    log.info('running in container', { cli: run.cli, repoId: repo.id, image: config.container.image })
+    return containerRunCommand({
+      image: config.container.image,
+      network: config.container.network,
+      containerHome,
+      cwd: run.cwd,
+      mounts,
+      command: options.containerCommands?.[run.cli] ?? [run.cli],
+      args: run.args,
+      ...(typeof process.getuid === 'function' && typeof process.getgid === 'function'
+        ? { user: `${process.getuid()}:${process.getgid()}` }
+        : {}),
+    })
+  }
+
   const publishTaskFailure = (taskId: TaskId, message: string): TaskEvent => {
     const event = appendTaskFailureEvent(db, taskId, redactor.redact(message))
     sendEvent(taskId, event)
@@ -888,6 +969,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         defaultBranch: input.defaultBranch,
         ...(input.githubRemote ? { githubRemote: input.githubRemote } : {}),
         ...(input.allowedProviders ? { allowedProviders: input.allowedProviders } : {}),
+        ...(input.container ? { container: true } : {}),
       })
       json(res, 201, { repo })
       return
@@ -900,6 +982,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (!getRepo(db, repoId)) throw new HttpError(404, `Repository ${repoId} was not found`)
       if (input.allowedProviders) updateRepoAllowedProviders(db, repoId, input.allowedProviders)
       if (input.githubRemote !== undefined) updateRepoGithubRemote(db, repoId, input.githubRemote)
+      if (input.container !== undefined) updateRepoContainer(db, repoId, input.container)
       const repo = getRepo(db, repoId)
       if (!repo) throw new HttpError(404, `Repository ${repoId} was not found`)
       json(res, 200, { repo })
@@ -1415,6 +1498,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       const selectedRoles = selectActiveRoles(task.mode, roles, task.roleOverrides, implementer)
       const disallowed = findDisallowedRoleProviders(selectedRoles, repo.allowedProviders)[0]
       if (disallowed) throw new ProviderAllowlistError(describeDisallowedRoleProvider(disallowed))
+      if (repo.container) assertContainerProviders(Object.values(selectedRoles), config)
       if (!attempt) {
         attempt = createAttempt(db, {
           id: randomUUID() as AttemptId,
@@ -2277,7 +2361,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     return {
       codexApproval,
-      server: createToolHubMcpConfig(endpoint, token),
+      // Inside the agent container the host's node binary does not exist; the image's `node` runs the bridge.
+      server: inContainer(repo, createToolHubMcpConfig(endpoint, token)),
       close: () => {
         sessionController.abort()
         toolHubSessions.delete(sessionId)
@@ -3530,6 +3615,14 @@ function persistUsageEvent(db: Database, provider: ProviderKind, event: AgentEve
     addUsage(db, { provider, rateLimitHits: 1 })
   }
 }
+
+/** A stdio MCP server started inside the agent container uses the image's `node`, not this computer's. */
+function inContainer(repo: RepoRecord, server: McpServerConfig): McpServerConfig {
+  return repo.container && server.transport === 'stdio' ? { ...server, command: 'node' } : server
+}
+
+/** The Joy checkout (its node_modules hold the Tool Hub bridge's loader). */
+const JOY_SOURCE_ROOT = fileURLToPath(new URL('../../../', import.meta.url))
 
 /** Paths compare after resolving symlinks (macOS temp dirs live under /private/var; git reports the real path). */
 function samePath(a: string, b: string): boolean {
