@@ -58,6 +58,7 @@ packages/config      ~/.joy/config.yaml
 packages/secrets     OS keychain + Redactor
 packages/memory      what the assistant remembers and the rules for writing it (owner review)
 packages/channels    Telegram (owner-only)
+packages/scheduler   reminders and cron jobs, catch-up after sleep (injectable clock for tests)
 scripts/             dev scripts (fixture recording)
 packages/*           one package per module (created by its ticket, see PLAN §3.1)
 apps/web             React + Vite UI (T1.8)

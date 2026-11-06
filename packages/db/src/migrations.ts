@@ -372,6 +372,37 @@ export const MIGRATIONS: readonly Migration[] = [
       END;
     `,
   },
+  {
+    version: 13,
+    name: 'reminders and recurring schedules',
+    sql: /* sql */ `
+      CREATE TABLE reminders (
+        id              TEXT PRIMARY KEY,
+        text            TEXT NOT NULL,
+        due_at          TEXT NOT NULL,
+        conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+        status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'cancelled')),
+        sent_at         TEXT,
+        created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      ) STRICT;
+      CREATE INDEX reminders_due ON reminders(status, due_at);
+      -- The v1 placeholder was never written by any code; replace it with the shape the scheduler needs.
+      DROP TABLE schedules;
+      CREATE TABLE schedules (
+        id              TEXT PRIMARY KEY,
+        cron            TEXT NOT NULL,
+        action          TEXT NOT NULL CHECK (action IN ('reminder', 'task')),
+        -- reminder: {"text"}; task: {"repoId","title","prompt","mode"}
+        payload         TEXT NOT NULL CHECK (json_valid(payload)),
+        conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+        enabled         INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        next_run_at     TEXT NOT NULL,
+        last_run_at     TEXT,
+        created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      ) STRICT;
+      CREATE INDEX schedules_due ON schedules(enabled, next_run_at);
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
