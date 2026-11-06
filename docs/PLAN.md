@@ -45,6 +45,7 @@
 - [x] T1.9b 把 publisher 接到 server API 與 UI「開 PR」按鈕（審查發現 T1.9 的 publisher 從未接線，擁有者無法本機驗收）
 - [x] T2.4c 逾時後任務停在「等待核准」，核准後以同一 session 接續（`approvals.on_timeout`）
 - [x] T2.5 額度交接、排隊、單一任務花費與時間上限、月預算（單一模式；review loop 與競賽模式的交接留待之後）
+- [x] T4.6 CLI 版本管理：測過範圍與 fixture 版本綁定；啟動與 doctor 警告未測版本；每週 CI 只跑 `--version` 與 contract test；重錄流程見 `docs/cli-versions.md`
 - [x] T4.8 除錯 log：JSON 行、依天輪替保留 14 天、整筆經 Redactor；設定頁可下載
 - [x] T4.7 備份與匯出：每天備份保留 7 份、`pnpm joy restore`（先停 Joy）、匯出 JSON 經 Redactor
 - [x] T2.6 GitHub issue → 任務：label 輪詢（每個 issue 一個任務）與助理「do #N」；任務一律 external_content，提出的動作都要核准

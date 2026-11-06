@@ -1,3 +1,4 @@
+import { checkCliVersion } from '@joy/providers'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import type { ChildProcess, SpawnOptions } from 'node:child_process'
@@ -196,19 +197,45 @@ async function checkOptionalCli(
       repair: `Install ${label} CLI or set its executable path in Joy's provider settings.`,
     }
   }
-  const version = result.exitCode === 0 ? parseVersionText(result.output ?? '') : undefined
+  const output = result.exitCode === 0 ? (result.output ?? '') : ''
+  const check = output ? checkCliVersion(label === 'Claude Code' ? 'claude' : 'codex', output) : undefined
+  if (check?.status === 'tested')
+    return {
+      id,
+      label: `${label} CLI`,
+      status: 'ok',
+      version: check.version,
+      summary: check.message,
+      repair: 'No action needed.',
+    }
+  if (check?.status === 'untested')
+    return {
+      id,
+      label: `${label} CLI`,
+      status: 'untested',
+      version: check.version,
+      summary: check.message,
+      repair: check.repair,
+    }
   return {
     id,
     label: `${label} CLI`,
     status: 'untested',
-    ...(version ? { version } : {}),
-    summary: version
-      ? `${label} CLI ${version} is installed; Joy has not validated compatibility with this version.`
-      : `${label} CLI installation or version could not be verified.`,
-    repair: version
-      ? 'No installation repair is needed; CLI version compatibility remains untested.'
-      : `Install or repair ${label} CLI, then confirm its \`--version\` command succeeds.`,
+    summary: `${label} CLI installation or version could not be verified.`,
+    repair: `Install or repair ${label} CLI, then confirm its \`--version\` command succeeds.`,
   }
+}
+
+/** The CLI checks only, for the warning Joy logs at startup (T4.6). Returns the checks that need attention. */
+export async function cliVersionWarnings(
+  options: Pick<DoctorOptions, 'commands' | 'runCommand'> = {},
+): Promise<DoctorCheck[]> {
+  const runCommand = options.runCommand ?? createSystemCommandRunner()
+  const checks = await Promise.all([
+    checkOptionalCli('Claude Code', options.commands?.claude ?? 'claude', runCommand),
+    checkOptionalCli('Codex', options.commands?.codex ?? 'codex', runCommand),
+  ])
+  return checks.filter((check) => check.status === 'untested' && check.version)
 }
 
 async function checkKeychain(
@@ -310,11 +337,6 @@ function keychainGuidance(platform: NodeJS.Platform): string {
 
 function parseGitVersion(output: string): string | undefined {
   const match = /\bgit version\s+(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)/i.exec(output)
-  return match?.[1]
-}
-
-function parseVersionText(output: string): string | undefined {
-  const match = /(?:^|[\s(])v?(\d+\.\d+\.\d+(?:-[\w.-]+)?)(?=$|[\s)])/m.exec(output)
   return match?.[1]
 }
 

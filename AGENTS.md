@@ -40,7 +40,8 @@ Run one package's tests: `pnpm vitest run --project core`.
 Real-CLI e2e tests are opt-in (`JOY_E2E_CLAUDE=1`) and never run in CI.
 
 Re-record CLI fixtures (uses the logged-in account's quota, macOS/Linux/WSL only):
-`node scripts/record-fixtures.mjs claude` or `node scripts/record-fixtures.mjs codex`.
+`node scripts/record-fixtures.mjs claude` or `node scripts/record-fixtures.mjs codex`. Then update
+`TESTED_CLI_VERSIONS` in `packages/providers/src/versions.ts` (a test enforces it); see `docs/cli-versions.md`.
 
 ## Repository layout
 
