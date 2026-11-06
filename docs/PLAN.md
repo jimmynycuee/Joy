@@ -22,7 +22,7 @@
 - [x] T0.1 monorepo、TypeScript strict、ESLint、Prettier、Vitest、三平台 CI
 - [x] T0.2 `AGENTS.md` / `CLAUDE.md`
 - [x] T0.3 Spike：Claude Code headless（`docs/spikes/claude-code.md`）
-- [ ] T0.4 Spike：Codex（方式已決定，見 `docs/spikes/codex.md`；**缺真實執行的 fixture**，需在已登入的電腦上錄）
+- [ ] T0.4 Spike：Codex（方式已決定，見 `docs/spikes/codex.md`；需在已登入的電腦上錄製真實 fixture，並與已整合的 app-server adapter 完成真實聯調）
 - [x] T0.5 定稿 `packages/core` 介面
 - [x] T0.6 `packages/db`
 - [x] T1.1 `providers/claude-cli`
@@ -35,10 +35,10 @@
 - [x] T1.6 server（HTTP + WebSocket、任務 CRUD、重啟恢復；已整合至 main，PR #58）
 - [x] T1.7 事件紀錄（寫入 DB、可回放、經 Redactor 遮罩；已整合至 main，PR #58）
 - [x] T1.12 repo 的 provider 允許清單
-- [ ] T1.9 GitHub：push 分支、開 draft PR（publisher 實作已整合至 main 並完成安全與歷史掃描補強；本機測試 35/35、完整 `pnpm check` 通過；依驗收條件仍待在 Joy 測試 repo 實際開啟並清理 `[test] ` draft PR）
-- [ ] T1.13 `joy doctor` 與首次啟動檢查（實作在 open/draft PR #62；最新 head `348593b` 與 `main` 衝突，尚無該 head checks；等待既定 owner 流程處理與驗收後再標完成）
+- [x] T1.9 GitHub：push 分支、開 draft PR（publisher 已整合至 main，PR #76；**真實驗收待擁有者本機執行**：在 Joy 測試 repo 實際開啟並清理 `[test] ` draft PR）
+- [ ] T1.13 `joy doctor` 與首次啟動檢查（實作在 PR #62；鑰匙圈可用性檢查需擁有者審查，並待擁有者本機驗收後再標完成）
 - [ ] T1.14 本機 API 與 WebSocket token 認證（Issue #72；修改請求與 WebSocket 驗證、Origin 雙層防護、私密 token 儲存與 UI 注入；需 owner review）
-- [ ] T1.8 Codex 風格 Web UI（含設定頁；UI 主體已整合至 main，PR #58；首頁檢查實作在 open/draft PR #62，但最新 head `348593b` 與 `main` 衝突且尚無 checks；整合及驗收前保持未勾選）
+- [ ] T1.8 Codex 風格 Web UI（含設定頁；UI 主體已整合至 main，PR #58；首頁檢查實作在 PR #62；需擁有者審查鑰匙圈檢查並完成本機驗收後再標完成）
 - [ ] P2（T2.1–T2.8）、P3（T3.1–T3.9）、P4（T4.1–T4.9）、P5（T5.1–T5.7）：見 §6
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。
@@ -325,15 +325,18 @@ tool_hub:
 
 ### P2 — 更多分工模式、審核、手機（第 9–12 週）
 
+依本輪指定順序執行：T2.3 → T2.7b → T2.4 → T2.5 → T2.1，接著依 T3.1–T3.9 順序進入 P3。
+
 | ticket | 內容 | 驗收條件 |
 |---|---|---|
 | T2.1 | `orchestrator/compete`：多個 provider 在各自 worktree 平行做同一任務 → 各自通過一次交叉審查 → 裁判比較並給理由 → 你選一個，或選「合併」：**裁判在第三個 worktree 重新實作合併版**，再走一次審查 | UI 並排比較 diff 與裁判理由；合併版有自己的分支與審查結果；裁判 provider 遵守 T1.12 允許清單；放棄的 worktree 依 T2.8 清理（假 provider 測試） |
 | T2.2 | `tools`：Tool Hub MCP server（stdio），第一批工具 `ask_peer`、`task_status`、`request_approval`、`approve`（權限委派用） | Claude 任務中 `ask_peer` 得到另一家的回答；`ask_peer` 遵守 T1.12 允許清單；**被問的一方唯讀、可看同一個 worktree**；每個任務預設最多 5 次（設定可改），超過時工具回傳錯誤而非靜默失敗；Joy 自己的工具預設放行 |
 | T2.3 | `policy`：三級權限、動作分類、全域模式切換；🔴 動作先跨模型預審。Claude 透過 `approve` 工具接入 | 每種 `ActionKind` 都有測試覆蓋其等級與三種模式；來自標記為 `external_content` 內容所提出的動作一律不得自動執行 |
+| T2.7b | 把 Codex app-server 的審核請求接到 policy 和 UI；將 `item/*/requestApproval` 轉成 Joy 的分級審核與使用者可見的核准／拒絕流程 | 紅色動作不得自動核准；policy 判定與核准結果能反映在 UI；來自 `external_content` 的請求保持拒絕或等待人工，不得自動執行 |
 | T2.4 | `channels/telegram`：綁定擁有者（只接受設定的 chat id）、通知、Approve / Deny 按鈕、審核逾時 | 陌生帳號的訊息被丟棄並記錄；在手機核准後任務繼續；逾時預設拒絕 |
 | T2.5 | **額度感知與交接**：偵測 `quota: limited`（Claude `rate_limit_event`、OpenAI 429、Codex 錯誤訊息）→ **交接給另一家**：把任務說明、目前 diff、計畫、未解決的審查意見整理成交接摘要，另一家在同一個 worktree 以新 session 接手；兩家都沒額度時排隊，到 `resetsAt` 自動繼續。UI 顯示額度與 API 花費；成本保險絲 | 模擬額度用完時任務改由另一家完成；交接摘要存進事件紀錄；交接不違反 T1.12 的允許清單（不允許時改為排隊）；超過每任務 API 上限時停止並通知 |
 | T2.6 | GitHub Issue → 任務（label 觸發或助理指令觸發） | 加 label 後自動建立任務；issue 內容標為 `external_content`，由該內容提出的動作一律不得自動執行 |
-| T2.7 | **Codex 改用 `app-server`**：常駐 JSON-RPC client，取代 `exec --json`；接上互動式審核（`item/*/requestApproval` → policy）與額度（`account/rateLimits/*` → `quota` 事件） | 同一組 contract test 通過；Codex 的 🔴 動作會跳出審核；`capabilities.delegatedApproval`、`quotaEvents` 改為 true；`exec` 版本保留為備援 |
+| T2.7 | **Codex app-server adapter**：常駐 JSON-RPC client，預設取代 `exec --json`；支援 session resume、事件解析、MCP、額度事件，並保留 `exec` 備援（adapter 已由 PR #81 整合） | 同一組 contract test 通過；`capabilities.quotaEvents` 為 true；真實 fixture／聯調列入 T0.4；審核請求接線列入 T2.7b |
 | T2.8 | **worktree 清理**：開完 PR 或丟棄後立即清理；閒置超過 14 天（設定可改）的 worktree 在 UI 提示，你確認後清除 | 不會刪除有未推送 commit 的 worktree，除非你確認；磁碟用量顯示在 UI |
 
 ### P3 — 個人助理與記憶（第 13–18 週）
