@@ -3,7 +3,7 @@ import { createServer as createHttpServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { link, lstat, mkdir, open, unlink } from 'node:fs/promises'
+import { link, lstat, mkdir, open, rm, unlink, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import { z, ZodError } from 'zod'
@@ -47,6 +47,8 @@ import {
   decideProjectNote,
   getProjectNote,
   claimIssueImport,
+  dailyBackup,
+  listBackups,
   createReminder,
   getIssueImport,
   releaseIssueImport,
@@ -321,6 +323,8 @@ export interface JoyServerOptions {
   issueSource?: GitHubIssueSource
   /** Overrides github.issue_poll_minutes (tests). */
   issuePollIntervalMs?: number
+  /** Daily database backups into <home>/backups (T4.7). Default true. */
+  backups?: boolean
   /** Summarize conversations for history search (T3.6). Default true. */
   conversationSummaries?: boolean
   /** Overrides budget.per_task.max_minutes (tests). */
@@ -1010,6 +1014,27 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (cancelMatch && method === 'POST') {
       const task = cancelTaskById(decodePathSegment(cancelMatch[1] ?? '') as TaskId)
       json(res, 200, { task })
+      return
+    }
+    if (url.pathname === '/api/backups' && method === 'GET') {
+      json(res, 200, { backups: await listBackups(backupsDir), directory: backupsDir })
+      return
+    }
+    if (url.pathname === '/api/backups' && method === 'POST') {
+      assertJsonContentType(req)
+      z.strictObject({}).parse(await readJson(req))
+      const created = await dailyBackup(db, backupsDir)
+      json(res, 200, { created: created ?? null, backups: await listBackups(backupsDir) })
+      return
+    }
+    if (url.pathname === '/api/export' && method === 'GET') {
+      const body = JSON.stringify(exportAll(), null, 2)
+      res.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'content-disposition': `attachment; filename="joy-export-${new Date().toISOString().slice(0, 10)}.json"`,
+        'cache-control': 'no-store',
+      })
+      res.end(body)
       return
     }
     if (url.pathname === '/api/worktrees' && method === 'GET') {
@@ -2644,6 +2669,56 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     issuePollTimer.unref?.()
   }
 
+  const backupsDir = join(home, 'backups')
+  let backupTimer: ReturnType<typeof setInterval> | undefined
+
+  /** Takes today's backup if it is missing; checked hourly so a Joy that runs for days still backs up daily. */
+  let backupRunning: Promise<unknown> | undefined
+  function backupIfDue(): Promise<unknown> {
+    if (closed) return Promise.resolve()
+    backupRunning ??= dailyBackup(db, backupsDir)
+      .catch((error: unknown) =>
+        console.warn(
+          redactor.redact(`[joy] backup failed: ${error instanceof Error ? error.message : String(error)}`),
+        ),
+      )
+      .finally(() => {
+        backupRunning = undefined
+      })
+    return backupRunning
+  }
+
+  /** Everything Joy recorded, as JSON for the owner to keep (T4.7). Passed through the Redactor. */
+  function exportAll() {
+    const tasks = listTasks(db).map((task) => {
+      const attempts = listAttempts(db, task.id)
+      return {
+        ...task,
+        attempts,
+        reviews: attempts.flatMap((attempt) => listReviews(db, attempt.id)),
+        events: listTaskEvents(db, task.id),
+      }
+    })
+    return redactor.redactValue({
+      format: 'joy-export',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      repos: listRepos(db),
+      tasks,
+      memories: (['user', 'project', 'episode'] as const).flatMap((scope) => listAllMemories(db, scope)),
+      conversations: listConversations(db).map((conversation) => ({
+        ...conversation,
+        messages: listMessages(db, conversation.id),
+      })),
+      projectNotes: listProjectNotes(db),
+      reminders: listReminders(db),
+      schedules: listSchedules(db),
+    })
+  }
+
+  /** Lets `pnpm joy restore` refuse to replace the database while this server is using it. */
+  const pidFile = join(home, 'server.pid')
+
   const REMINDERS_CONVERSATION = 'joy-reminders'
 
   /** Where a reminder is said: its own conversation if it still exists, else the shared Reminders conversation. */
@@ -3354,6 +3429,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           httpServer.off('error', onError)
           telegram?.start()
           scheduler.start()
+          if (options.backups ?? true) {
+            void backupIfDue()
+            backupTimer = setInterval(() => void backupIfDue(), 60 * 60_000)
+            backupTimer.unref?.()
+          }
+          void writeFile(pidFile, String(process.pid), { mode: 0o600 }).catch(() => undefined)
           scheduleIssuePoll(issuePollDelay(initialConfig.github.issue_poll_minutes))
           resolve(httpServer.address() as AddressInfo)
         })
@@ -3363,6 +3444,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (closed) return
       closed = true
       await scheduler.stop()
+      clearInterval(backupTimer)
+      await backupRunning
       clearTimeout(issuePollTimer)
       await issuePolling?.catch(() => undefined)
       await telegram?.stop()
@@ -3377,6 +3460,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         await new Promise<void>((resolve, reject) =>
           httpServer.close((error) => (error ? reject(error) : resolve())),
         )
+      await rm(pidFile, { force: true }).catch(() => undefined)
       if (ownsDatabase && db.isOpen) db.close()
     },
   }

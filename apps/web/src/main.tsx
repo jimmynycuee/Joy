@@ -679,6 +679,76 @@ function WorktreesPanel() {
   )
 }
 
+/** Backups and export (T4.7). Restoring replaces the database, so it is a command run while Joy is stopped. */
+function BackupsPanel() {
+  const [backups, setBackups] = useState<Array<{ day: string; bytes: number }>>([])
+  const [message, setMessage] = useState('')
+
+  async function load() {
+    const body = await request<{ backups?: Array<{ day: string; bytes: number }> }>('/api/backups')
+    setBackups(Array.isArray(body.backups) ? body.backups : [])
+  }
+
+  useEffect(() => {
+    void load().catch(() => undefined)
+  }, [])
+
+  async function backupNow() {
+    try {
+      const body = await request<{ created?: string | null }>('/api/backups', { method: 'POST', body: '{}' })
+      setMessage(body.created ? 'Backup taken.' : "Today's backup already exists.")
+      await load()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Backup failed')
+    }
+  }
+
+  async function exportJson() {
+    try {
+      const response = await fetch('/api/export', {
+        headers: { authorization: `Bearer ${__JOY_API_TOKEN__}` },
+      })
+      if (!response.ok) throw new Error(`Export failed (${response.status})`)
+      const url = URL.createObjectURL(await response.blob())
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `joy-export-${new Date().toISOString().slice(0, 10)}.json`
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Export failed')
+    }
+  }
+
+  return (
+    <section className="settings-card" aria-label="Backups" data-testid="backups-panel">
+      <h2>Backups &amp; export</h2>
+      <p className="muted">Joy backs up its database once a day and keeps the last 7.</p>
+      <ul className="worktree-list">
+        {backups.map((backup) => (
+          <li key={backup.day} className="worktree-item">
+            <span>
+              {backup.day} <span className="muted">· {formatBytes(backup.bytes)}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+      <div className="project-note-actions">
+        <button type="button" className="quiet-button" onClick={() => void backupNow()}>
+          Back up now
+        </button>
+        <button type="button" className="quiet-button" onClick={() => void exportJson()}>
+          Export tasks and memories (JSON)
+        </button>
+      </div>
+      <p className="muted">
+        To restore: stop Joy, then run <code>pnpm joy restore 2026-11-06</code> (a day from the list).
+      </p>
+      {message ? <p className="muted">{message}</p> : null}
+    </section>
+  )
+}
+
 /** Throws away a finished task's worktrees (T2.8). */
 function DiscardButton({ details, onChanged }: { details: TaskDetails; onChanged: () => void }) {
   const [failure, setFailure] = useState('')
@@ -2117,6 +2187,7 @@ function App() {
               </section>
               {config ? <TelegramSettings config={config} onConfig={setConfig} /> : null}
               <WorktreesPanel />
+              <BackupsPanel />
             </div>
           ) : (
             <div className="loading-card">Loading settings…</div>
