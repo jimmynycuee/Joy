@@ -346,6 +346,32 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX project_notes_status ON project_notes(status, created_at);
     `,
   },
+  {
+    version: 12,
+    name: 'full-text search over past conversations and their summaries',
+    sql: /* sql */ `
+      -- messages has an INTEGER PRIMARY KEY, so the index can follow it safely (see issue 39).
+      CREATE VIRTUAL TABLE messages_fts USING fts5(content, content='messages', content_rowid='id');
+      INSERT INTO messages_fts(messages_fts) VALUES ('rebuild');
+      CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
+        INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+      END;
+      CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
+        INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+      END;
+      CREATE TRIGGER messages_au AFTER UPDATE OF content ON messages BEGIN
+        INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+        INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+      END;
+      -- conversations.summary exists since v1; record which message it covers up to.
+      ALTER TABLE conversations ADD COLUMN summary_through INTEGER;
+      -- Conversations have TEXT keys, so their summaries get a self-contained index keyed by conversation id.
+      CREATE VIRTUAL TABLE conversation_summaries_fts USING fts5(conversation_id UNINDEXED, summary);
+      CREATE TRIGGER conversations_ad_summary AFTER DELETE ON conversations BEGIN
+        DELETE FROM conversation_summaries_fts WHERE conversation_id = old.id;
+      END;
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

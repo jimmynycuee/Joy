@@ -6,6 +6,8 @@ import {
   listConversations,
   listMessages,
   resetSessionsUsingMemory,
+  searchHistory,
+  setConversationSummary,
   setConversationTitle,
   updateConversationSession,
 } from './conversations.js'
@@ -101,5 +103,40 @@ describe('conversations', () => {
     const db = fresh()
     createConversation(db, { id: 'a', channel: 'web' })
     expect(() => db.prepare("UPDATE conversations SET memory_ids = 'nope' WHERE id = 'a'").run()).toThrow()
+  })
+
+  it('finds a decision from a month ago in messages and summaries', () => {
+    const db = fresh()
+    createConversation(db, { id: 'old', channel: 'web', title: 'Database choice' })
+    const decision = appendMessage(db, 'old', 'user', "Let's go with SQLite instead of Postgres for Joy")
+    db.prepare("UPDATE messages SET ts = '2026-10-06T09:00:00.000Z' WHERE id = ?").run(decision.id)
+    appendMessage(db, 'old', 'system', 'Postgres error that is not part of the conversation')
+    createConversation(db, { id: 'new', channel: 'web' })
+    appendMessage(db, 'new', 'user', 'unrelated')
+
+    const hits = searchHistory(db, 'postgres')
+    expect(hits).toEqual([
+      expect.objectContaining({
+        conversationId: 'old',
+        title: 'Database choice',
+        kind: 'message',
+        role: 'user',
+        snippet: expect.stringContaining('[Postgres]'),
+        ts: '2026-10-06T09:00:00.000Z',
+      }),
+    ])
+
+    setConversationSummary(db, 'old', 'Decided: SQLite (node:sqlite), not a database server.', decision.id)
+    setConversationSummary(db, 'old', 'Decided: SQLite via node:sqlite; no database server.', decision.id)
+    expect(getConversation(db, 'old')).toMatchObject({
+      summaryThrough: decision.id,
+      summary: expect.stringContaining('via'),
+    })
+    const summaryHits = searchHistory(db, 'database serv').filter((hit) => hit.kind === 'summary')
+    expect(summaryHits).toHaveLength(1)
+    expect(searchHistory(db, '"*(')).toEqual([])
+
+    db.prepare("DELETE FROM conversations WHERE id = 'old'").run()
+    expect(searchHistory(db, 'sqlite')).toEqual([])
   })
 })

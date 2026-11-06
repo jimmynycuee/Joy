@@ -2243,6 +2243,7 @@ describe('Joy local server', () => {
       'list_repos',
       'list_tasks',
       'create_task',
+      'search_history',
       'propose_project_note',
       'cancel_task',
       'task_status',
@@ -2312,6 +2313,7 @@ describe('Joy local server', () => {
       'list_repos',
       'list_tasks',
       'create_task',
+      'search_history',
       'propose_project_note',
       'cancel_task',
       'task_status',
@@ -2420,6 +2422,80 @@ describe('Joy local server', () => {
     expect(cancelResult).toMatchObject({ id: task.id })
     await waitForStatus(origin, task.id, 'cancelled', 5_000)
     expect(badInput).toBeTruthy()
+  })
+
+  it('summarizes conversations and finds a decision from a month ago', async () => {
+    const searches: unknown[] = []
+    const assistantApiProvider = (tools: ApiTool[]): AgentProvider => ({
+      ...scriptedProvider('openai-api', []).provider,
+      async *run(options: RunOptions) {
+        if (options.prompt.includes('what did we decide')) {
+          searches.push(
+            await tools.find((t) => t.name === 'search_history')?.run({ query: 'postgres' }, options.signal),
+          )
+        }
+        yield { type: 'done', sessionId: 's', isError: false, finalMessage: 'ok' }
+      },
+    })
+    const summaryPrompts: string[] = []
+    // The background role also runs memory extraction; answer each kind of request in turn.
+    const backgroundStep = (options: RunOptions): AgentEvent[] => {
+      if (!options.prompt.startsWith('Summarize'))
+        return [{ type: 'done', sessionId: 'm', isError: false, structured: { memories: [] } }]
+      summaryPrompts.push(options.prompt)
+      return [
+        {
+          type: 'done',
+          sessionId: 'x',
+          isError: false,
+          structured: { summary: 'Chose SQLite over Postgres.' },
+        },
+      ]
+    }
+    const background = scriptedProvider(
+      'openai-api',
+      Array.from({ length: 10 }, () => backgroundStep),
+    )
+    const { serverPromise, db } = fixture({
+      assistantApiProvider,
+      providers: { 'openai-api': background.provider },
+    })
+    const { origin } = await start(serverPromise)
+    const newConversation = async () =>
+      ((await (await postJson(`${origin}/api/conversations`, {})).json()) as { conversation: { id: string } })
+        .conversation.id
+    const old = await newConversation()
+    await postJson(`${origin}/api/conversations/${old}/messages`, { text: 'Should Joy use Postgres?' })
+    expect(summaryPrompts).toEqual([])
+    await postJson(`${origin}/api/conversations/${old}/messages`, { text: 'Then SQLite it is' })
+    for (let i = 0; i < 100 && summaryPrompts.length === 0; i++) await new Promise((r) => setTimeout(r, 10))
+    expect(summaryPrompts[0]).toContain('Owner: Should Joy use Postgres?')
+    // Pretend that conversation happened a month ago.
+    db.prepare("UPDATE messages SET ts = '2026-10-06T09:00:00.000Z' WHERE conversation_id = ?").run(old)
+
+    type Hit = { conversationId: string; kind: string; snippet: string }
+    let hits: Hit[] = []
+    for (let i = 0; i < 100 && !hits.some((h) => h.kind === 'summary'); i++) {
+      hits = ((await (await fetch(`${origin}/api/history?q=postgres`)).json()) as { results: Hit[] }).results
+      await new Promise((r) => setTimeout(r, 10))
+    }
+    expect(hits).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          conversationId: old,
+          kind: 'summary',
+          snippet: expect.stringContaining('[Postgres]'),
+        }),
+        expect.objectContaining({ conversationId: old, kind: 'message' }),
+      ]),
+    )
+
+    await postJson(`${origin}/api/conversations/${await newConversation()}/messages`, {
+      text: 'what did we decide about the database?',
+    })
+    expect(searches).toEqual([
+      { results: expect.arrayContaining([expect.objectContaining({ conversationId: old })]) },
+    ])
   })
 
   it('only proposes AGENTS.md notes; the file changes only when the owner applies the diff', async () => {

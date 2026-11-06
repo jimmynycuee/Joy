@@ -59,6 +59,8 @@ import {
   listConversations,
   listMessages,
   resetSessionsUsingMemory,
+  searchHistory,
+  setConversationSummary,
   listRepos,
   listReviews,
   listTaskEvents,
@@ -90,6 +92,8 @@ import {
   applyExtraction,
   extractionPrompt,
   PROJECT_FILE,
+  SUMMARY_EVERY,
+  SUMMARY_SCHEMA,
   addProjectNote,
   applyProjectFile,
   cleanNote,
@@ -99,6 +103,8 @@ import {
   readProjectFile,
   sha256,
   parseExtraction,
+  parseSummary,
+  summaryPrompt,
 } from '@joy/memory'
 import type { AssistantTool } from './assistant.js'
 import { GitHubPublisher } from '@joy/github'
@@ -266,6 +272,8 @@ export interface JoyServerOptions {
   assistantApiProvider?: (tools: ApiTool[]) => AgentProvider
   /** Learn memories from the owner's chat messages (T3.3). Default true. */
   memoryExtraction?: boolean
+  /** Summarize conversations for history search (T3.6). Default true. */
+  conversationSummaries?: boolean
   /** Overrides budget.per_task.max_minutes (tests). */
   taskTimeLimitMs?: number
   /** Replaces the GitHub publisher (tests). */
@@ -963,6 +971,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       deleteMemory(db, id)
       forgetMemoryInSessions(id)
       res.writeHead(204).end()
+      return
+    }
+    if (url.pathname === '/api/history' && method === 'GET') {
+      json(res, 200, { results: searchHistory(db, url.searchParams.get('q') ?? '', 30) })
       return
     }
     if (url.pathname === '/api/project-notes' && method === 'GET') {
@@ -1724,6 +1736,18 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         },
       },
       {
+        name: 'search_history',
+        description:
+          'Search earlier conversations with the owner (messages and summaries), newest first. Use it when the owner ' +
+          'refers to something discussed before, e.g. "what did we decide about the database last month?".',
+        inputSchema: {
+          type: 'object',
+          properties: { query: { type: 'string', description: 'Key words' } },
+          required: ['query'],
+        },
+        run: async (args) => ({ results: searchHistory(db, String(args.query ?? ''), 10) }),
+      },
+      {
         name: 'propose_project_note',
         description:
           `Propose a short, lasting rule or fact for a repository's ${'AGENTS.md'} (how to build, test, conventions). ` +
@@ -1793,6 +1817,59 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   }
 
   const memoryJobs = new Set<Promise<unknown>>()
+  function backgroundJob(label: string, run: () => Promise<void>): void {
+    const job = run().catch((error: unknown) =>
+      console.warn(
+        redactor.redact(`[joy] ${label}: ${error instanceof Error ? error.message : String(error)}`),
+      ),
+    )
+    memoryJobs.add(job)
+    void job.finally(() => memoryJobs.delete(job))
+  }
+
+  const summarizing = new Set<string>()
+
+  /** Keeps a short, searchable summary of the conversation once enough new messages have arrived (T3.6). */
+  async function summarizeConversation(conversationId: string): Promise<void> {
+    const conversation = getConversation(db, conversationId)
+    if (!conversation || summarizing.has(conversationId)) return
+    const fresh = listMessages(db, conversationId).filter(
+      (m) => (m.role === 'user' || m.role === 'assistant') && m.id > (conversation.summaryThrough ?? 0),
+    )
+    const last = fresh.at(-1)
+    if (fresh.length < SUMMARY_EVERY || !last) return
+    const config = await configStore.get()
+    const model = resolveRole('background', config.roles as RoleConfig, {})
+    const provider = providers[model.provider]
+    if (!provider) return
+    summarizing.add(conversationId)
+    try {
+      const cwd = join(home, 'assistant')
+      await mkdir(cwd, { recursive: true, mode: 0o700 })
+      const transcript = fresh
+        .slice(-40)
+        .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+      let done: Extract<AgentEvent, { type: 'done' }> | undefined
+      for await (const event of provider.run(
+        {
+          cwd,
+          prompt: summaryPrompt(transcript, conversation.summary),
+          autonomy: 'read-only',
+          outputSchema: SUMMARY_SCHEMA,
+          signal: AbortSignal.timeout(5 * 60_000),
+        },
+        model,
+      )) {
+        persistUsageEvent(db, model.provider, event)
+        if (event.type === 'done') done = event
+      }
+      const summary = done && !done.isError ? parseSummary(done.structured) : undefined
+      if (summary) setConversationSummary(db, conversationId, redactor.redact(summary), last.id)
+    } finally {
+      summarizing.delete(conversationId)
+    }
+  }
+
   /** Bumped on every memory edit or delete, so a turn that was running at the time can tell. */
   let memoryEpoch = 0
   const staleMemories = new Set<string>()
@@ -1994,15 +2071,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         memoryIds,
       })
       if (!conversation.title) setConversationTitle(db, conversationId, redactor.redact(text).slice(0, 60))
-      if (options.memoryExtraction ?? true) {
-        const job = learnFromOwner(redactor.redact(text)).catch((error: unknown) =>
-          console.warn(
-            redactor.redact(`[joy] memory: ${error instanceof Error ? error.message : String(error)}`),
-          ),
-        )
-        memoryJobs.add(job)
-        void job.finally(() => memoryJobs.delete(job))
-      }
+      if (options.conversationSummaries ?? true)
+        backgroundJob('summary', () => summarizeConversation(conversationId))
+      if (options.memoryExtraction ?? true)
+        backgroundJob('memory', () => learnFromOwner(redactor.redact(text)))
       return { message: reply, conversation: getConversation(db, conversationId) }
     } finally {
       closeBridge()

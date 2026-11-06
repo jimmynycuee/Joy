@@ -56,10 +56,12 @@ export {
   listConversations,
   listMessages,
   resetSessionsUsingMemory,
+  searchHistory,
+  setConversationSummary,
   setConversationTitle,
   updateConversationSession,
 } from './conversations.js'
-export type { ConversationRecord, MessageRecord, MessageRole } from './conversations.js'
+export type { ConversationRecord, HistoryHit, MessageRecord, MessageRole } from './conversations.js'
 export {
   createMemory,
   deleteMemory,

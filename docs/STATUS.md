@@ -2,7 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-06（T3.5 專案記憶）
+- 最後更新：2026-11-06（T3.6 事件記憶）
 - 擁有者 Codex 額度用完：T2.1 平行競賽延後，先做 P3（不含需要 Google 登入的 T3.8）。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
@@ -92,6 +92,15 @@
 - T3.8 依 PLAN 清單評估維護狀況、權限範圍與資料是否送第三方，自行選一個 Gmail／Calendar MCP server；先唯讀，寄信與邀請他人一律 🔴。選型理由寫在本檔決策區。
 - 不呼叫真實模型；若測試確實需要真實模型，只能使用 haiku 或 gpt-6-luna、low effort，且必須是 opt-in。
 - 每個 ticket 從最新 main 開獨立分支，diff 只保留該 ticket。CI 失敗最多修 3 次；無法修復時記錄原因並繼續不相依工作。
+
+### T3.6 事件記憶
+
+- 每段對話累積 4 則新的擁有者／Joy 訊息後，背景模型（`roles.background`）更新該對話的摘要（最多 1500 字，經 Redactor），存在 `conversations.summary`。
+- migration 12：`messages_fts`（綁 `messages.id` 整數主鍵）與 `conversation_summaries_fts`（以對話 id 為欄位、刪除對話時一起刪）。只搜尋擁有者與 Joy 的訊息，不含錯誤訊息。
+- 摘要**只供搜尋**，不會自動放進助理的指示，也不寫入 memories（摘要含助理回覆與工具結果，不符合 T3.3「只採用擁有者本人的話」的規則）。
+- 助理工具 `search_history(query)`；`GET /api/history?q=`；助理頁左側搜尋框，點結果開啟該對話。
+- 驗收：db 測試（一個月前的訊息與摘要都找得到、刪除對話後找不到）、server 測試（摘要觸發與助理透過工具找回一個月前的決策）、Playwright `apps/web/e2e/history.spec.ts`。
+- 未做：OpenAI embedding 語意搜尋（PLAN 標為選配；需花 API 額度，先不做）。
 
 ### T3.5 專案記憶
 
