@@ -93,6 +93,14 @@
 - 不呼叫真實模型；若測試確實需要真實模型，只能使用 haiku 或 gpt-6-luna、low effort，且必須是 opt-in。
 - 每個 ticket 從最新 main 開獨立分支，diff 只保留該 ticket。CI 失敗最多修 3 次；無法修復時記錄原因並繼續不相依工作。
 
+### T4.2 PWA 與 Web Push（程式部分；手機驗收待擁有者）
+
+- 網頁可安裝（`manifest.webmanifest`、圖示），service worker 只負責顯示通知與點通知開到該任務（`/?task=…`），**不做離線快取**（舊 UI 接新 server 比沒有 UI 更糟）。
+- 任務結束（✅／🟡／❌）與需要核准（🔴）時，Joy 用自己的 VAPID 金鑰直接送到各瀏覽器的推播服務；內容先經 Redactor 再加密。金鑰第一次使用時產生，存在**鑰匙圈**（新 secret 名稱 `web_push_vapid_keys`，列入待審）。推播服務回 404／410 的訂閱自動刪除。沒有任何訂閱時完全不碰鑰匙圈。
+- 設定頁「Notifications」：開啟（要求權限、訂閱、送到 `POST /api/push/subscriptions`）、送測試、關閉。不支援時說明原因（需要 HTTPS 或 localhost；iPhone 要先加到主畫面）。
+- 驗收：push 測試（金鑰只產生一次；**用瀏覽器的方式解密**確認內容正確且已遮罩；410 時刪除訂閱）、server 測試（任務完成時對訂閱裝置送出帶 VAPID 的請求；拒絕非 https 端點）、Playwright：manifest、service worker 註冊、**透過 Chromium DevTools 真的推一則訊息，service worker 顯示通知**、開啟流程送出訂閱。
+- 手機上要能用：Joy 要能從手機以 HTTPS 開啟（依賴 T4.1 #110 與 `tailscale serve` 之類的 HTTPS；`tailscale serve` 轉送時的 Host 是否被 Joy 接受還沒實測）。「手機加到主畫面後收得到通知」**需擁有者實測，PLAN 未打勾**。
+
 ### T4.4 Windows：`.cmd` shim 與 WSL（程式部分；實機驗收待擁有者）
 
 - **修正**：provider 一律不經 shell 啟動 CLI，但 Windows 上 npm／pnpm 裝的 `claude.cmd`、`codex.cmd` 不經 shell 無法啟動，之前任務在 Windows 會直接失敗（只有 doctor 的 `--version` 有繞過）。現在 `packages/providers/src/windows.ts` 會在 PATH 找 `.exe`，否則讀 shim 內容找出它執行的 JavaScript（`cli.js`、`codex.js`），用目前的 Node 直接執行；兩個 spawn 點（JSONL CLI 與 Codex app-server）都套用。讀不懂的 shim 會說明要在設定填 `.exe` 或 `cli.js` 路徑。
@@ -259,18 +267,19 @@
 
 2026-11-06 由 agent 代為審查（擁有者授權）。下表為結論；擁有者可只看「發現」欄。
 
-| 項目                                                  | 審查方式                 | 結論       | 發現                                                                                                                                                                        |
-| ----------------------------------------------------- | ------------------------ | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| #73 本機 API／WebSocket token                         | 獨立審查（非作者）       | 通過       | Windows 上 token 檔只依賴使用者資料夾的預設 ACL，T4.4 實機確認                                                                                                              |
-| #54 GitHub publisher                                  | 獨立審查                 | 已修       | 內容掃描認不得私鑰與 AWS／Slack／Google／Stripe／GitLab 憑證 → 已加入 Redactor；**publisher 從未接到 server/UI → 新增 T1.9b**                                               |
-| #57 provider 允許清單                                 | 獨立審查                 | 通過       | —                                                                                                                                                                           |
-| #58 core 介面、機密遮罩                               | 獨立審查                 | 通過       | —                                                                                                                                                                           |
-| #62 `joy doctor` 鑰匙圈                               | 獨立審查                 | 通過       | 只查詢隨機、不存在的帳號                                                                                                                                                    |
-| #84 權限規則                                          | 擁有者已審（2026-11-06） | 通過       | —                                                                                                                                                                           |
-| T2.7b、T2.4a、T2.4b                                   | `/code-review`（high）   | 已修 9／10 | 見下                                                                                                                                                                        |
-| T3.3 記憶寫入規則（`packages/memory`）                | **待擁有者審**           | —          | 什麼會被記住、什麼一定擋下；agent 不審自己訂的規則                                                                                                                          |
-| T3.5 專案記憶寫入（`packages/memory/src/project.ts`） | **待擁有者審**           | —          | Joy 會寫進 repo 的內容與衝突處理；issue #36 的兩點已照驗收條件實作                                                                                                          |
-| T3.6、T3.7、T3.9、T2.1                                | `/code-review`（high）   | 已修 9／10 | compete 同時選擇／合併的競態、合併中重啟卡住、合併無時間上限、通知誤寫成審查未過、排程器關閉時未處理的 rejection；**未修：cron 補跑逐次計算（只在啟動時跑一次，成本有限）** |
+| 項目                                                        | 審查方式                   | 結論       | 發現                                                                                                                                                                        |
+| ----------------------------------------------------------- | -------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #73 本機 API／WebSocket token                               | 獨立審查（非作者）         | 通過       | Windows 上 token 檔只依賴使用者資料夾的預設 ACL，T4.4 實機確認                                                                                                              |
+| #54 GitHub publisher                                        | 獨立審查                   | 已修       | 內容掃描認不得私鑰與 AWS／Slack／Google／Stripe／GitLab 憑證 → 已加入 Redactor；**publisher 從未接到 server/UI → 新增 T1.9b**                                               |
+| #57 provider 允許清單                                       | 獨立審查                   | 通過       | —                                                                                                                                                                           |
+| #58 core 介面、機密遮罩                                     | 獨立審查                   | 通過       | —                                                                                                                                                                           |
+| #62 `joy doctor` 鑰匙圈                                     | 獨立審查                   | 通過       | 只查詢隨機、不存在的帳號                                                                                                                                                    |
+| #84 權限規則                                                | 擁有者已審（2026-11-06）   | 通過       | —                                                                                                                                                                           |
+| T2.7b、T2.4a、T2.4b                                         | `/code-review`（high）     | 已修 9／10 | 見下                                                                                                                                                                        |
+| T3.3 記憶寫入規則（`packages/memory`）                      | **待擁有者審**             | —          | 什麼會被記住、什麼一定擋下；agent 不審自己訂的規則                                                                                                                          |
+| T3.5 專案記憶寫入（`packages/memory/src/project.ts`）       | **待擁有者審**             | —          | Joy 會寫進 repo 的內容與衝突處理；issue #36 的兩點已照驗收條件實作                                                                                                          |
+| T4.2 Web Push 金鑰（鑰匙圈新 secret `web_push_vapid_keys`） | **待擁有者審**（機密處理） | —          | 金鑰只在本機產生、存鑰匙圈；推播內容經遮罩與加密                                                                                                                            |
+| T3.6、T3.7、T3.9、T2.1                                      | `/code-review`（high）     | 已修 9／10 | compete 同時選擇／合併的競態、合併中重啟卡住、合併無時間上限、通知誤寫成審查未過、排程器關閉時未處理的 rejection；**未修：cron 補跑逐次計算（只在啟動時跑一次，成本有限）** |
 
 `/code-review` 的發現與處理：重啟時等待核准的任務會卡住（已修）；核准紀錄的 detail 未遮罩（已修）；同任務多個待核准時狀態被提早改回（已修）；Telegram 群組中任何人可按核准（已修，只接受擁有者本人的私訊）；同步決定要等到逾時才生效（已修）；UI 每個事件都重抓待核准清單（已修）；沒有 token 時每分鐘警告（已修，只警告一次）；完成通知未遮罩（已修）；命名與重複程式（已修）；**Telegram 設定要重啟才生效（未修，留待之後）**。
 

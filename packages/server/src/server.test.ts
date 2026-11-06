@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
+import { createECDH, randomBytes } from 'node:crypto'
 import {
   chmodSync,
   existsSync,
@@ -181,6 +181,7 @@ function fixture(
     issueSource?: JoyServerOptions['issueSource']
     issuePollIntervalMs?: number
     containerCommands?: JoyServerOptions['containerCommands']
+    pushFetch?: JoyServerOptions['pushFetch']
     /** Use the server's own Claude CLI provider (with its container wrapper) instead of the fake. */
     realClaudeProvider?: boolean
     /** Use the server's real Codex app-server provider, driven by a fake app-server process. */
@@ -263,6 +264,7 @@ function fixture(
     ...(options.schedulerClock ? { schedulerClock: options.schedulerClock } : {}),
     ...(options.issueSource ? { issueSource: options.issueSource } : {}),
     ...(options.containerCommands ? { containerCommands: options.containerCommands } : {}),
+    ...(options.pushFetch ? { pushFetch: options.pushFetch } : {}),
     ...(options.issuePollIntervalMs !== undefined
       ? { issuePollIntervalMs: options.issuePollIntervalMs }
       : {}),
@@ -2984,6 +2986,52 @@ describe('Joy local server', () => {
       body: JSON.stringify({ container: false }),
     })
     expect(((await patched.json()) as { repo: { container?: boolean } }).repo.container).toBeUndefined()
+  })
+
+  it('sends a Web Push to subscribed devices when a task finishes', async () => {
+    const pushed: Array<{ url: string; headers: Record<string, string> }> = []
+    const pushFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      pushed.push({ url: String(url), headers: init?.headers as Record<string, string> })
+      return new Response(null, { status: 201 })
+    }) as typeof globalThis.fetch
+    const { serverPromise } = fixture({ pushFetch })
+    const { origin } = await start(serverPromise)
+    const { publicKey } = (await (await fetch(`${origin}/api/push/key`)).json()) as { publicKey: string }
+    expect(publicKey).toMatch(/^[A-Za-z0-9_-]{80,}$/)
+    expect(
+      (
+        await postJson(`${origin}/api/push/subscriptions`, {
+          endpoint: 'http://evil.example/x',
+          keys: { p256dh: 'a', auth: 'b' },
+        })
+      ).status,
+    ).toBe(400)
+    const browser = createECDH('prime256v1')
+    browser.generateKeys()
+    const subscribed = await postJson(`${origin}/api/push/subscriptions`, {
+      endpoint: 'https://push.example.test/send/abc',
+      keys: {
+        p256dh: browser.getPublicKey().toString('base64url'),
+        auth: randomBytes(16).toString('base64url'),
+      },
+    })
+    expect(subscribed.status).toBe(201)
+
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/tmp/push-repo', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    const { task } = (await (
+      await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: 'Push me',
+        prompt: 'p',
+        mode: 'single',
+      })
+    ).json()) as { task: { id: string } }
+    await waitForStatus(origin, task.id, 'done', 5_000)
+    for (let i = 0; i < 100 && pushed.length === 0; i++) await new Promise((r) => setTimeout(r, 10))
+    expect(pushed[0]?.url).toBe('https://push.example.test/send/abc')
+    expect(pushed[0]?.headers.Authorization ?? pushed[0]?.headers.authorization).toMatch(/^vapid /)
   })
 
   it('reports model stats filtered by period and repository', async () => {

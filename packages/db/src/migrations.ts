@@ -425,6 +425,19 @@ export const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE repos ADD COLUMN container INTEGER NOT NULL DEFAULT 0 CHECK (container IN (0, 1));
     `,
   },
+  {
+    version: 16,
+    name: 'web push subscriptions',
+    sql: /* sql */ `
+      -- One row per browser or phone the owner turned notifications on for (T4.2).
+      CREATE TABLE push_subscriptions (
+        endpoint    TEXT PRIMARY KEY CHECK (endpoint LIKE 'https://%' OR endpoint LIKE 'http://127.0.0.1:%'),
+        p256dh      TEXT NOT NULL,
+        auth        TEXT NOT NULL,
+        created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      ) STRICT;
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
