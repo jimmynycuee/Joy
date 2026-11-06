@@ -170,3 +170,5 @@ export function memoryContext(memories: Pick<MemoryRecord, 'id' | 'content'>[]):
     ...memories.map((m) => `- ${m.content}`),
   ].join('\n')
 }
+
+export * from './project.js'

@@ -1388,3 +1388,37 @@ select {
 .memory-chip.deleted {
   text-decoration: line-through;
 }
+
+.project-notes {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.project-notes h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.project-note pre.diff {
+  margin: 6px 0;
+  padding: 8px;
+  overflow-x: auto;
+  background: var(--surface-muted);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.diff-add {
+  color: var(--green);
+}
+
+.diff-remove {
+  color: var(--red);
+}
+
+.project-note-actions {
+  display: flex;
+  gap: 8px;
+}

@@ -2239,7 +2239,14 @@ describe('Joy local server', () => {
     expect(((await first.json()) as { message: { content: string } }).message.content).toBe(
       'You have 1 repo(s).',
     )
-    expect(seen[0]?.tools).toEqual(['list_repos', 'list_tasks', 'create_task', 'cancel_task', 'task_status'])
+    expect(seen[0]?.tools).toEqual([
+      'list_repos',
+      'list_tasks',
+      'create_task',
+      'propose_project_note',
+      'cancel_task',
+      'task_status',
+    ])
     expect(seen[0]?.prompt).toContain('You are Joy')
     expect(seen[0]?.resume).toBeUndefined()
 
@@ -2305,6 +2312,7 @@ describe('Joy local server', () => {
       'list_repos',
       'list_tasks',
       'create_task',
+      'propose_project_note',
       'cancel_task',
       'task_status',
     ])
@@ -2412,6 +2420,75 @@ describe('Joy local server', () => {
     expect(cancelResult).toMatchObject({ id: task.id })
     await waitForStatus(origin, task.id, 'cancelled', 5_000)
     expect(badInput).toBeTruthy()
+  })
+
+  it('only proposes AGENTS.md notes; the file changes only when the owner applies the diff', async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'joy-project-note-'))
+    dirs.push(repoDir)
+    writeFileSync(join(repoDir, 'AGENTS.md'), '# Rules\n')
+    const toolNames: string[] = []
+    const assistantApiProvider = (tools: ApiTool[]): AgentProvider => ({
+      ...scriptedProvider('openai-api', []).provider,
+      async *run(options: RunOptions) {
+        toolNames.push(...tools.map((t) => t.name))
+        const note = options.prompt.includes('second')
+          ? 'Prefer small commits'
+          : 'Run pnpm check before committing'
+        const result = await tools
+          .find((t) => t.name === 'propose_project_note')
+          ?.run({ repo_id: 'r1', note }, options.signal)
+        yield { type: 'done', sessionId: 's', isError: false, finalMessage: JSON.stringify(result) }
+      },
+    })
+    const { serverPromise, db } = fixture({ assistantApiProvider })
+    createRepo(db, { id: 'r1' as RepoId, path: repoDir, defaultBranch: 'main' })
+    const { origin } = await start(serverPromise)
+    const conversation = (
+      (await (await postJson(`${origin}/api/conversations`, {})).json()) as { conversation: { id: string } }
+    ).conversation.id
+    await postJson(`${origin}/api/conversations/${conversation}/messages`, {
+      text: 'remember to run pnpm check',
+    })
+    // The assistant can propose but has no way to apply.
+    expect(toolNames).toContain('propose_project_note')
+    expect(toolNames.filter((name) => /apply|write|approve/.test(name))).toEqual([])
+    expect(readFileSync(join(repoDir, 'AGENTS.md'), 'utf8')).toBe('# Rules\n')
+
+    type Note = { id: string; status: string; stale?: boolean; diff?: Array<{ kind: string; text: string }> }
+    const pending = async () =>
+      ((await (await fetch(`${origin}/api/project-notes?status=pending`)).json()) as { notes: Note[] }).notes
+    const [first] = await pending()
+    const added = first?.diff?.filter((line) => line.kind === 'add').map((line) => line.text)
+    expect(added).toEqual(expect.arrayContaining(['## Notes from Joy', '- Run pnpm check before committing']))
+    expect(first?.diff?.filter((line) => line.kind === 'remove')).toEqual([])
+
+    // No request field stands in for the owner's approval.
+    expect(
+      (await postJson(`${origin}/api/project-notes/${first?.id}/apply`, { userApproved: true })).status,
+    ).toBe(400)
+    expect(readFileSync(join(repoDir, 'AGENTS.md'), 'utf8')).toBe('# Rules\n')
+
+    expect((await postJson(`${origin}/api/project-notes/${first?.id}/apply`, {})).status).toBe(200)
+    expect(readFileSync(join(repoDir, 'AGENTS.md'), 'utf8')).toBe(
+      '# Rules\n\n## Notes from Joy\n\n- Run pnpm check before committing\n',
+    )
+    expect((await postJson(`${origin}/api/project-notes/${first?.id}/apply`, {})).status).toBe(409)
+
+    // A proposal whose file was edited afterwards is shown as stale and is never applied over the edit.
+    await postJson(`${origin}/api/conversations/${conversation}/messages`, { text: 'second' })
+    writeFileSync(join(repoDir, 'AGENTS.md'), 'edited by hand\n')
+    const [second] = await pending()
+    expect(second).toMatchObject({ stale: true, diff: [] })
+    const conflict = await postJson(`${origin}/api/project-notes/${second?.id}/apply`, {})
+    expect(conflict.status).toBe(409)
+    expect(readFileSync(join(repoDir, 'AGENTS.md'), 'utf8')).toBe('edited by hand\n')
+    expect(await pending()).toEqual([])
+
+    await postJson(`${origin}/api/conversations/${conversation}/messages`, { text: 'second' })
+    const [third] = await pending()
+    expect((await postJson(`${origin}/api/project-notes/${third?.id}/reject`, {})).status).toBe(200)
+    expect((await postJson(`${origin}/api/project-notes/${third?.id}/apply`, {})).status).toBe(409)
+    expect(readFileSync(join(repoDir, 'AGENTS.md'), 'utf8')).toBe('edited by hand\n')
   })
 
   it('lets the owner edit and delete memories, and a deleted memory is never used again', async () => {

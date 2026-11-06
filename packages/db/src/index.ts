@@ -72,3 +72,5 @@ export {
   updateMemoryContent,
 } from './memories.js'
 export type { MemoryRecord, MemoryScope, MemorySource, NewMemory } from './memories.js'
+export { createProjectNote, decideProjectNote, getProjectNote, listProjectNotes } from './project-notes.js'
+export type { ProjectNoteRecord, ProjectNoteStatus } from './project-notes.js'
