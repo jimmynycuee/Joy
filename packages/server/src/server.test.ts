@@ -2434,6 +2434,37 @@ describe('Joy local server', () => {
     expect(badInput).toBeTruthy()
   })
 
+  it('reports model stats filtered by period and repository', async () => {
+    const { serverPromise, db } = fixture()
+    createRepo(db, { id: rid('joy'), path: '/joy', defaultBranch: 'main' })
+    createTask(db, { id: 't1' as TaskId, repoId: rid('joy'), title: 't', prompt: 'p', mode: 'single' })
+    createAttempt(db, {
+      id: 'a1' as AttemptId,
+      taskId: 't1' as TaskId,
+      provider: 'claude-cli',
+      model: 'opus',
+      status: 'succeeded',
+    })
+    db.prepare(
+      "UPDATE attempts SET created_at = '2026-11-05T23:30:00.000Z', updated_at = '2026-11-05T23:40:00.000Z'",
+    ).run()
+    const { origin } = await start(serverPromise)
+    const get = async (query: string) => {
+      const response = await fetch(`${origin}/api/stats${query}`)
+      return {
+        status: response.status,
+        body: (await response.json()) as { stats?: { implementers: unknown[] } },
+      }
+    }
+    // `to` includes its whole day.
+    expect((await get('?from=2026-11-05&to=2026-11-05&repoId=joy')).body.stats?.implementers).toEqual([
+      expect.objectContaining({ provider: 'claude-cli', attempts: 1, passRate: 1, avgDurationMs: 600_000 }),
+    ])
+    expect((await get('?from=2026-11-06')).body.stats?.implementers).toEqual([])
+    expect((await get('?repoId=elsewhere')).body.stats?.implementers).toEqual([])
+    expect((await get('?from=last-week')).status).toBe(400)
+  })
+
   it('keeps reminders and schedules across a restart and catches up once after sleeping', async () => {
     let now = new Date(2026, 10, 6, 9, 30)
     const schedulerClock = { now: () => new Date(now), setTimeout: () => 0, clearTimeout: () => undefined }

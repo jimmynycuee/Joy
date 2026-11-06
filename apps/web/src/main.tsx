@@ -1003,6 +1003,166 @@ function AssistantPage() {
   )
 }
 
+interface ImplementerStat {
+  provider: string
+  model: string
+  mode: string
+  attempts: number
+  finished: number
+  passed: number
+  passRate: number | null
+  findingsAgainst: number
+  avgDurationMs: number | null
+  handoffs: number
+}
+
+interface ReviewerStat {
+  provider: string
+  model: string
+  reviews: number
+  approvals: number
+  findings: number
+}
+
+function formatDuration(ms: number | null): string {
+  if (ms === null) return '—'
+  const minutes = ms / 60_000
+  return minutes >= 60 ? `${(minutes / 60).toFixed(1)} h` : `${Math.max(1, Math.round(minutes))} min`
+}
+
+/** How each provider and model has done (T3.9), filtered by period and repository. */
+function StatsPage(props: { repos: Repo[] }) {
+  const [filter, setFilter] = useState({ from: '', to: '', repoId: '' })
+  const [stats, setStats] = useState<{ implementers: ImplementerStat[]; reviewers: ReviewerStat[] } | null>(
+    null,
+  )
+  const [failure, setFailure] = useState('')
+
+  useEffect(() => {
+    const query = new URLSearchParams(Object.entries(filter).filter(([, value]) => value))
+    let cancelled = false
+    request<{ stats?: { implementers?: ImplementerStat[]; reviewers?: ReviewerStat[] } }>(
+      `/api/stats?${query}`,
+    )
+      .then((body) => {
+        if (cancelled) return
+        setFailure('')
+        setStats({
+          implementers: Array.isArray(body.stats?.implementers) ? body.stats.implementers : [],
+          reviewers: Array.isArray(body.stats?.reviewers) ? body.stats.reviewers : [],
+        })
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setFailure(error instanceof Error ? error.message : 'Could not load stats')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [filter])
+
+  return (
+    <main className="settings-page stats-page" data-testid="stats-page">
+      <div className="page-heading">
+        <h1>Model stats</h1>
+      </div>
+      <form className="stats-filter" onSubmit={(event) => event.preventDefault()}>
+        <label>
+          From
+          <input
+            type="date"
+            value={filter.from}
+            onChange={(e) => setFilter({ ...filter, from: e.target.value })}
+          />
+        </label>
+        <label>
+          To
+          <input
+            type="date"
+            value={filter.to}
+            onChange={(e) => setFilter({ ...filter, to: e.target.value })}
+          />
+        </label>
+        <label>
+          Repository
+          <select value={filter.repoId} onChange={(e) => setFilter({ ...filter, repoId: e.target.value })}>
+            <option value="">All</option>
+            {props.repos.map((repo) => (
+              <option key={repo.id} value={repo.id}>
+                {repo.path}
+              </option>
+            ))}
+          </select>
+        </label>
+      </form>
+      {failure ? <p className="approvals-error">{failure}</p> : null}
+      <h2>As implementer</h2>
+      {stats && stats.implementers.length === 0 ? <p className="muted">No attempts in this period.</p> : null}
+      {stats && stats.implementers.length ? (
+        <table className="stats-table" aria-label="Implementer stats">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Mode</th>
+              <th>Attempts</th>
+              <th>Pass rate</th>
+              <th>Problems found by review</th>
+              <th>Avg time</th>
+              <th>Handoffs</th>
+            </tr>
+          </thead>
+          <tbody>
+            {stats.implementers.map((row) => (
+              <tr key={`${row.provider}/${row.model}/${row.mode}`}>
+                <td>
+                  {row.provider} · {row.model}
+                </td>
+                <td>{row.mode}</td>
+                <td>{row.attempts}</td>
+                <td>
+                  {row.passRate === null ? '—' : `${Math.round(row.passRate * 100)}%`}
+                  <span className="muted">
+                    {' '}
+                    ({row.passed}/{row.finished})
+                  </span>
+                </td>
+                <td>{row.findingsAgainst}</td>
+                <td>{formatDuration(row.avgDurationMs)}</td>
+                <td>{row.handoffs}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
+      <h2>As reviewer</h2>
+      {stats && stats.reviewers.length === 0 ? <p className="muted">No reviews in this period.</p> : null}
+      {stats && stats.reviewers.length ? (
+        <table className="stats-table" aria-label="Reviewer stats">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Reviews</th>
+              <th>Approved</th>
+              <th>Problems found</th>
+            </tr>
+          </thead>
+          <tbody>
+            {stats.reviewers.map((row) => (
+              <tr key={`${row.provider}/${row.model}`}>
+                <td>
+                  {row.provider} · {row.model}
+                </td>
+                <td>{row.reviews}</td>
+                <td>{row.approvals}</td>
+                <td>{row.findings}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
+    </main>
+  )
+}
+
 function App() {
   const [repos, setRepos] = useState<Repo[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
@@ -1015,7 +1175,7 @@ function App() {
   const [doctorRetry, setDoctorRetry] = useState(0)
   const [selectedTaskId, setSelectedTaskId] = useState('')
   const [details, setDetails] = useState<TaskDetails | null>(null)
-  const [page, setPage] = useState<'tasks' | 'assistant' | 'settings'>('tasks')
+  const [page, setPage] = useState<'tasks' | 'assistant' | 'stats' | 'settings'>('tasks')
   const [showTaskForm, setShowTaskForm] = useState(false)
   const [showRepoForm, setShowRepoForm] = useState(false)
   const [error, setError] = useState('')
@@ -1414,6 +1574,12 @@ function App() {
             Assistant
           </button>
           <button
+            className={page === 'stats' ? 'nav-button active' : 'nav-button'}
+            onClick={() => setPage('stats')}
+          >
+            Stats
+          </button>
+          <button
             className={page === 'settings' ? 'nav-button active' : 'nav-button'}
             onClick={() => setPage('settings')}
           >
@@ -1435,6 +1601,8 @@ function App() {
 
       {page === 'assistant' ? (
         <AssistantPage />
+      ) : page === 'stats' ? (
+        <StatsPage repos={repos} />
       ) : page === 'settings' ? (
         <main className="settings-page">
           <div className="page-heading">

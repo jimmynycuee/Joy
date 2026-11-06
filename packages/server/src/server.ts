@@ -72,6 +72,7 @@ import {
   listTaskEvents,
   listTasks,
   listUsage,
+  modelStats,
   markMemoriesUsed,
   updateMemoryContent,
   openDatabase,
@@ -217,6 +218,11 @@ function actionFingerprint(action: { kind: string; detail: unknown }): string {
 const conversationInputSchema = z.strictObject({ title: z.string().trim().min(1).max(200).optional() })
 const messageInputSchema = z.strictObject({ text: z.string().trim().min(1).max(20_000) })
 const projectNoteStatusSchema = z.enum(['pending', 'applied', 'rejected', 'conflict']).optional()
+const statsDay = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a date like 2026-11-06')
+  .optional()
+const statsQuerySchema = z.object({ from: statsDay, to: statsDay, repoId: z.string().min(1).optional() })
 const reminderTextSchema = z.string().trim().min(1, 'The reminder needs some text').max(500)
 const scheduleInputSchema = z.strictObject({
   cron: z.string().trim().min(1).max(100),
@@ -991,6 +997,23 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       deleteMemory(db, id)
       forgetMemoryInSessions(id)
       res.writeHead(204).end()
+      return
+    }
+    if (url.pathname === '/api/stats' && method === 'GET') {
+      const filter = statsQuerySchema.parse({
+        from: url.searchParams.get('from') ?? undefined,
+        to: url.searchParams.get('to') ?? undefined,
+        repoId: url.searchParams.get('repoId') ?? undefined,
+      })
+      // Whole days in UTC; `to` includes its day.
+      const nextDay = (day: string) => new Date(Date.parse(`${day}T00:00:00.000Z`) + 86_400_000).toISOString()
+      json(res, 200, {
+        stats: modelStats(db, {
+          ...(filter.from ? { from: `${filter.from}T00:00:00.000Z` } : {}),
+          ...(filter.to ? { to: nextDay(filter.to) } : {}),
+          ...(filter.repoId ? { repoId: filter.repoId } : {}),
+        }),
+      })
       return
     }
     if (url.pathname === '/api/schedules' && method === 'GET') {
