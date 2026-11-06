@@ -26,6 +26,13 @@
 - task-level `external_content` 來源經 DB 持久化並由 server 套用到 action policy；即使 hands-off，外部內容來源的動作仍需人工核准。Settings 提供模式選擇。
 - identity-sanitized Linux `pnpm check` 通過（PR implementation 的格式、lint、workspace typechecks、346 passed、2 skipped）；`pnpm test:e2e` 通過（4/4），包括 Settings 模式儲存與 startup 可用性。mainline checkout 首輪 E2E 發現舊按鈕名稱 locator，PR 分支改正後全套重跑通過。政策測試使用 fake providers；未呼叫真實 CLI 或模型。
 
+### T2.4b Telegram
+
+- `packages/channels` 的 `TelegramChannel`：長輪詢 `getUpdates`，只接受設定的 chat id；其他 chat 的訊息與按鈕一律丟棄並寫 warning log（已遮罩）。按鈕一律回 `answerCallbackQuery`。錯誤訊息不含 token（token 在 URL 裡）。
+- 設定：`channels.telegram.owner_chat_id`（設定頁可填），bot token 存鑰匙圈（`/api/secrets/telegram-bot-token`）或環境變數 `JOY_TELEGRAM_BOT_TOKEN`。**目前在 server 啟動時建立連線，改設定後要重啟 Joy。**
+- 待核准時傳附 Approve／Deny 按鈕的訊息（含預審結論）；按下後回覆結果。任務結束時通知（✅／🟡 輪數用完待你決定／❌／⏹）。
+- 驗證：channels 單元測試（假 Bot API）與 server 端到端測試（陌生帳號按鈕被丟棄、擁有者核准後工具執行、任務完成通知、訊息不含 token）。尚未用真的 Telegram bot 測試，需擁有者提供 token。
+
 ### T2.4a 核准中心與 UI
 
 - 擁有者決定 T2.4 採用方案 A，分三個 PR：核准中心與 UI（本 PR）→ Telegram → 逾時暫停與接續。
@@ -94,6 +101,7 @@
 - [PR #62](https://github.com/jimmynycuee/Joy/pull/62)：審核 `joy doctor` 的 OS 鑰匙圈可用性檢查；只探測可用性、不讀取已存憑證。
 - [PR #84](https://github.com/jimmynycuee/Joy/pull/84)：審核 `packages/policy` 分級與全域模式、跨模型預審、task provenance DB/core 介面及 Claude delegated approval 接線；紅色動作在人工核准通道尚未完成前保持不執行。
 
+- T2.4b：Telegram 的擁有者驗證（只認 chat id）、按鈕資料格式與 token 處理。
 - T2.4a：核准中心（`packages/server/src/approvals.ts`）與 approvals API；確認第一個決定生效、記錄經過遮罩。
 - T2.7b（PR #86）：審核 `packages/policy` 的 `classifyCodexApproval` 規則，以及 server 預設改用 Codex app-server。
 
@@ -102,7 +110,7 @@
 - T0.4 Codex 真實 fixture／app-server 聯調：在擁有者已登入且可執行 Codex CLI 的 Mac 錄製，指令 `node scripts/record-fixtures.mjs codex`；以真實 fixture 重跑 contract test，並在 Joy 上驗證 app-server 連線及事件／額度互通。不要在一般測試或 CI 呼叫真實模型。
 - T1.9 真實驗收（擁有者 Mac）：使用該 Mac 上既有的 GitHub CLI 登入；啟動 Joy 並對測試 repo 執行 publisher，確認遠端測試分支、標題以 `[test] ` 開頭的 draft PR 與 review 摘要正確；驗收後關閉測試 PR 並刪除測試分支。不提供、不貼上或索取 PAT。
 - T1.13/T1.8（擁有者 Mac）：審查 PR #62 的鑰匙圈可用性探測後，在目標 Mac 執行 `pnpm joy doctor`，確認首頁顯示該機器的 CLI、鑰匙圈與資料目錄檢查；此驗收不讀取或提供已存憑證。
-- T2.4 Telegram：日後透過支援的 Secret 入口提供 `JOY_TELEGRAM_BOT_TOKEN`；不要把 token 貼在對話、文件或程式碼中。
+- T2.4 Telegram：在 @BotFather 建 bot，對它傳一則訊息後用 `https://api.telegram.org/bot<token>/getUpdates` 查自己的 chat id；在 Joy 設定頁填入 chat id 與 bot token（或用環境變數 `JOY_TELEGRAM_BOT_TOKEN`），重啟 Joy。不要把 token 貼在對話、文件或程式碼中。
 - T3.8 Google：完成所選 MCP server 所需的 Google 登入；登入前保持唯讀功能未連線，登入指令依該 server 文件記錄於此。
 - Windows 實機驗收（P4）：在 Windows 電腦執行 `pnpm install --frozen-lockfile` 與 `pnpm check`，並依 T4.4 完成一次跨模型任務；不以 CI 取代實機驗收。
 

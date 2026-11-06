@@ -272,6 +272,106 @@ function ApprovalsPanel({ taskId, eventCount }: { taskId: string; eventCount: nu
   )
 }
 
+/** Telegram settings: owner chat id (config) and bot token (OS keychain). Applies after Joy restarts. */
+function TelegramSettings({
+  config,
+  onConfig,
+}: {
+  config: JoyConfig
+  onConfig: (config: JoyConfig) => void
+}) {
+  const [tokenStatus, setTokenStatus] = useState<SecretStatus | null>(null)
+  const [message, setMessage] = useState('')
+
+  useEffect(() => {
+    request<SecretStatus>('/api/secrets/telegram-bot-token')
+      .then(setTokenStatus)
+      .catch(() => setTokenStatus(null))
+  }, [])
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    // currentTarget is cleared once the handler awaits, so keep the element.
+    const formElement = event.currentTarget
+    const form = new FormData(formElement)
+    const chatId = String(form.get('telegram-chat-id') ?? '').trim()
+    const token = String(form.get('telegram-token') ?? '').trim()
+    setMessage('')
+    try {
+      const next = { ...config, channels: { telegram: chatId ? { owner_chat_id: chatId } : {} } }
+      const saved = await request<{ config: JoyConfig }>('/api/config', {
+        method: 'PUT',
+        body: JSON.stringify(next),
+      })
+      onConfig(saved.config)
+      if (token) {
+        setTokenStatus(
+          await request<SecretStatus>('/api/secrets/telegram-bot-token', {
+            method: 'PUT',
+            body: JSON.stringify({ value: token }),
+          }),
+        )
+      }
+      formElement.reset()
+      setMessage('Saved. Restart Joy to connect Telegram.')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not save Telegram settings')
+    }
+  }
+
+  return (
+    <section className="settings-card" aria-labelledby="telegram-heading">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">CHANNELS</p>
+          <h2 id="telegram-heading">Telegram</h2>
+        </div>
+        <span
+          className={
+            tokenStatus?.set && config.channels.telegram.owner_chat_id
+              ? 'status-pill configured'
+              : 'status-pill'
+          }
+        >
+          {tokenStatus?.set && config.channels.telegram.owner_chat_id ? 'Configured' : 'Not configured'}
+        </span>
+      </div>
+      <p className="muted secret-description">
+        Joy sends approval requests and task results to your chat and only accepts button presses from it.
+        Create a bot with @BotFather; the token is stored in the OS keychain.
+      </p>
+      <form className="secret-form" onSubmit={(event) => void save(event)}>
+        <label htmlFor="telegram-chat-id">Your chat id</label>
+        <input
+          id="telegram-chat-id"
+          name="telegram-chat-id"
+          inputMode="numeric"
+          pattern="-?[0-9]+"
+          defaultValue={config.channels.telegram.owner_chat_id ?? ''}
+        />
+        {tokenStatus?.source === 'env' ? (
+          <div className="env-managed" role="status">
+            Managed by the JOY_TELEGRAM_BOT_TOKEN environment variable.
+          </div>
+        ) : (
+          <>
+            <label htmlFor="telegram-token">{tokenStatus?.set ? 'Replace bot token' : 'Bot token'}</label>
+            <input id="telegram-token" name="telegram-token" type="password" autoComplete="new-password" />
+          </>
+        )}
+        <button className="primary-button" type="submit">
+          Save Telegram settings
+        </button>
+        {message ? (
+          <p className="muted" role="status">
+            {message}
+          </p>
+        ) : null}
+      </form>
+    </section>
+  )
+}
+
 function App() {
   const [repos, setRepos] = useState<Repo[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
@@ -882,6 +982,7 @@ function App() {
                   </form>
                 )}
               </section>
+              {config ? <TelegramSettings config={config} onConfig={setConfig} /> : null}
             </div>
           ) : (
             <div className="loading-card">Loading settings…</div>

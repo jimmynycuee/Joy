@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@joy/channels": "workspace:*",
     "@joy/config": "workspace:*",
     "@joy/core": "workspace:*",
     "@joy/db": "workspace:*",

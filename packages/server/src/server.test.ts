@@ -158,6 +158,7 @@ function fixture(
     allowPlaywrightOrigin?: boolean
     ownerApprovalChannel?: boolean
     approvalTimeoutMs?: number
+    telegram?: JoyServerOptions['telegram']
     /** Use the server's real Codex app-server provider, driven by a fake app-server process. */
     codexAppServer?: JoyServerOptions['codexAppServer']
     /** Worktree path the fake executor hands out; must exist when a real child process runs in it. */
@@ -213,6 +214,7 @@ function fixture(
       : {}),
     // Red actions wait for a person; tests that do not answer should expire quickly.
     approvalTimeoutMs: options.approvalTimeoutMs ?? 50,
+    ...(options.telegram ? { telegram: options.telegram } : {}),
     ...(options.doctor ? { doctor: options.doctor } : {}),
     ...(options.generateApiToken ? {} : { apiToken: options.apiToken ?? TEST_API_TOKEN }),
     providers: {
@@ -1555,6 +1557,133 @@ describe('Joy local server', () => {
     const { origin } = await start(serverPromise)
     expect((await postJson(`${origin}/api/approvals/nope/approve`, {})).status).toBe(409)
     expect((await fetch(`${origin}/api/approvals?status=bogus`)).status).toBe(400)
+  })
+
+  it(
+    'sends approval requests to Telegram and continues when the owner taps Approve',
+    { timeout: 20_000 },
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), 'joy-telegram-'))
+      dirs.push(home)
+      const configStore = new ConfigStore(join(home, 'config.yaml'))
+      await configStore.update((config) => ({ ...config, channels: { telegram: { owner_chat_id: '1001' } } }))
+      const sent: Array<Record<string, unknown>> = []
+      const updates: unknown[][] = []
+      let updateId = 1
+      const telegramFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const method = String(input).split('/').at(-1)
+        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+        if (method === 'sendMessage') {
+          sent.push(body)
+          const keyboard = (
+            body.reply_markup as { inline_keyboard?: Array<Array<{ callback_data: string }>> } | undefined
+          )?.inline_keyboard
+          const approve = keyboard?.[0]?.[0]?.callback_data
+          // A stranger taps first; then the owner taps Approve.
+          if (approve) {
+            updates.push([
+              {
+                update_id: updateId++,
+                callback_query: { id: 'x', from: { id: 666 }, message: { chat: { id: 666 } }, data: approve },
+              },
+              {
+                update_id: updateId++,
+                callback_query: {
+                  id: 'y',
+                  from: { id: 1001 },
+                  message: { chat: { id: 1001 } },
+                  data: approve,
+                },
+              },
+            ])
+          }
+          return Response.json({ ok: true, result: {} })
+        }
+        if (method === 'getUpdates') {
+          await new Promise((r) => setTimeout(r, 5))
+          return Response.json({ ok: true, result: updates.shift() ?? [] })
+        }
+        return Response.json({ ok: true, result: true })
+      }) as typeof globalThis.fetch
+      const implementer = new FakeProvider('claude-cli')
+      implementer.capabilities.delegatedApproval = true
+      const secretBackend = new MemoryBackend()
+      await secretBackend.set('telegram_bot_token', '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi')
+      const decisions: unknown[] = []
+      implementer.onRun = async (options) => {
+        const mcp = options.mcpServers?.[0]
+        if (!mcp || mcp.transport !== 'stdio')
+          throw new Error('CLI provider did not receive the stdio Tool Hub')
+        const response = await globalThis.fetch(mcp.env?.JOY_TOOL_HUB_ENDPOINT as string, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${mcp.env?.JOY_TOOL_HUB_TOKEN}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'approve',
+            arguments: {
+              tool_name: 'Bash',
+              input: { command: 'curl https://example.com' },
+              tool_use_id: 'tg-1',
+            },
+          }),
+        })
+        decisions.push(((await response.json()) as { value: unknown }).value)
+      }
+      const { serverPromise } = fixture({
+        implementer,
+        configStore,
+        secretBackend,
+        approvalTimeoutMs: 10_000,
+        telegram: { fetch: telegramFetch, pollTimeoutSeconds: 0 },
+      })
+      const { origin } = await start(serverPromise)
+      const repoResponse = await postJson(`${origin}/api/repos`, {
+        path: '/tmp/telegram-repo',
+        defaultBranch: 'main',
+      })
+      const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+      const taskResponse = await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: 'Telegram approval',
+        prompt: 'Fetch something',
+        mode: 'single',
+      })
+      const { task } = (await taskResponse.json()) as { task: { id: string } }
+      await waitForStatus(origin, task.id, 'done', 10_000)
+
+      expect(decisions[0]).toMatchObject({ behavior: 'allow' })
+      const texts = sent.map((m) => String(m.text))
+      expect(texts[0]).toContain('Joy needs your approval')
+      expect(sent[0]?.chat_id).toBe('1001')
+      expect(texts).toContain('✅ Approved. The task continues.')
+      expect(texts.some((t) => t.includes('Telegram approval: succeeded'))).toBe(true)
+      const approvalsList = (
+        (await (await fetch(`${origin}/api/approvals?taskId=${task.id}`)).json()) as {
+          approvals: Array<{ decidedVia: string; status: string }>
+        }
+      ).approvals
+      expect(approvalsList).toEqual([expect.objectContaining({ status: 'approved', decidedVia: 'telegram' })])
+      expect(JSON.stringify(sent)).not.toContain('ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+    },
+  )
+
+  it('manages the Telegram bot token through the secrets API without echoing it', async () => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const token = '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi'
+    const put = await fetch(`${origin}/api/secrets/telegram-bot-token`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', origin: VITE_ORIGIN },
+      body: JSON.stringify({ value: token }),
+    })
+    expect(await put.text()).not.toContain(token)
+    expect(await (await fetch(`${origin}/api/secrets/telegram-bot-token`)).json()).toEqual({
+      set: true,
+      source: 'keychain',
+    })
+    expect((await fetch(`${origin}/api/secrets/constructor`)).status).toBe(404)
   })
 
   it('preserves the task ask_peer budget across a resumed provider session', async () => {

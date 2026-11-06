@@ -80,6 +80,19 @@ export const configSchema = z.strictObject({
         .default(30),
     })
     .default({ timeout_minutes: 30 }),
+  channels: z
+    .strictObject({
+      telegram: z
+        .strictObject({
+          /** Your own chat id with the bot. Joy ignores every other chat. The bot token lives in the keychain. */
+          owner_chat_id: z
+            .string()
+            .regex(/^-?\d+$/, 'must be a numeric Telegram chat id')
+            .optional(),
+        })
+        .default({}),
+    })
+    .default({ telegram: {} }),
   autonomy_mode: z.enum(['careful', 'normal', 'hands-off']).default('normal'),
   tool_hub: z
     .strictObject({ max_ask_peer_calls: z.number().int().min(1).max(100).default(5) })

@@ -79,6 +79,12 @@ importers:
         specifier: ^7.0.0
         version: 7.3.7(@types/node@22.20.5)(lightningcss@1.33.0)(tsx@4.23.15)(yaml@2.9.1)
 
+  packages/channels:
+    dependencies:
+      '@joy/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/config:
     dependencies:
       '@joy/core':
@@ -152,6 +158,9 @@ importers:
 
   packages/server:
     dependencies:
+      '@joy/channels':
+        specifier: workspace:*
+        version: link:../channels
       '@joy/config':
         specifier: workspace:*
         version: link:../config
