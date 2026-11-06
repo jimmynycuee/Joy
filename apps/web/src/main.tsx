@@ -615,6 +615,63 @@ function MemoryPanel(props: {
   )
 }
 
+interface HistoryHit {
+  conversationId: string
+  title?: string
+  kind: 'summary' | 'message'
+  role?: string
+  snippet: string
+  ts: string
+}
+
+/** Search past conversations (T3.6); picking a result opens that conversation. */
+function HistorySearch(props: { onOpen: (conversationId: string) => void }) {
+  const [hits, setHits] = useState<HistoryHit[] | null>(null)
+
+  async function search(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const query = String(new FormData(event.currentTarget).get('q') ?? '').trim()
+    if (!query) {
+      setHits(null)
+      return
+    }
+    const body = await request<{ results?: HistoryHit[] }>(
+      `/api/history?q=${encodeURIComponent(query)}`,
+    ).catch(() => ({ results: [] }))
+    setHits(Array.isArray(body.results) ? body.results : [])
+  }
+
+  return (
+    <div className="history-search">
+      <form role="search" onSubmit={(event) => void search(event)}>
+        <input
+          name="q"
+          type="search"
+          placeholder="Search past conversations"
+          aria-label="Search past conversations"
+        />
+      </form>
+      {hits === null ? null : hits.length === 0 ? (
+        <p className="muted">No matches.</p>
+      ) : (
+        <ul aria-label="Search results">
+          {hits.map((hit, index) => (
+            <li key={`${hit.conversationId}-${index}`}>
+              <button type="button" className="task-row" onClick={() => props.onOpen(hit.conversationId)}>
+                <span className="muted">
+                  {hit.ts.slice(0, 10)} · {hit.title ?? 'Conversation'}
+                  {hit.kind === 'summary' ? ' · summary' : ''}
+                </span>
+                <span>{hit.snippet}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 interface ProjectNote {
   id: string
   note: string
@@ -807,6 +864,7 @@ function AssistantPage() {
         <button className="primary-button" type="button" onClick={() => void newConversation()}>
           New conversation
         </button>
+        <HistorySearch onOpen={setSelected} />
         {conversations.map((conversation) => (
           <button
             type="button"
