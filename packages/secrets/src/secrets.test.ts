@@ -67,6 +67,28 @@ describe('SecretStore', () => {
 })
 
 describe('Redactor', () => {
+  it('scrubs private keys and other common provider credentials', () => {
+    const r = new Redactor()
+    const pem = [
+      '-----BEGIN OPENSSH PRIVATE KEY-----',
+      'b3BlbnNzaC1rZXktdjEAAAAA',
+      '-----END OPENSSH PRIVATE KEY-----',
+    ].join('\n')
+    expect(r.redact(`const key = \`${pem}\``)).toBe(`const key = \`${REDACTED}\``)
+    expect(r.redact('-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA')).toBe(REDACTED)
+    const samples = [
+      'AKIA' + 'A'.repeat(16),
+      'xoxb-' + '1'.repeat(12) + '-abcdef',
+      'AIza' + 'b'.repeat(35),
+      'sk_live_' + 'c'.repeat(24),
+      'glpat-' + 'd'.repeat(20),
+    ]
+    for (const sample of samples) expect(r.redact(`value=${sample};`)).toBe(`value=${REDACTED};`)
+    // Public keys and ordinary words stay.
+    expect(r.redact('-----BEGIN PUBLIC KEY-----')).toBe('-----BEGIN PUBLIC KEY-----')
+    expect(r.redact('AKIAshort and xoxo')).toBe('AKIAshort and xoxo')
+  })
+
   it('removes registered secrets from text and nested values', () => {
     const r = new Redactor()
     r.add('my-very-secret-value')

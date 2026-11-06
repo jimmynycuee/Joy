@@ -8,6 +8,13 @@ const PATTERNS: RegExp[] = [
   /\bgh[pousr]_[A-Za-z0-9]{30,}\b/g, // GitHub tokens
   /\bgithub_pat_[A-Za-z0-9_]{30,}\b/g,
   /\b\d{8,10}:[A-Za-z0-9_-]{35}\b/g, // Telegram bot tokens
+  // Whole PEM private key blocks; a BEGIN line without its END is still redacted from there on.
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g,
+  /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, // AWS access key ids
+  /\bxox[abposr]-[A-Za-z0-9-]{10,}\b/g, // Slack tokens
+  /\bAIza[0-9A-Za-z_-]{35}\b/g, // Google API keys
+  /\b(?:sk|rk)_live_[0-9A-Za-z]{24,}\b/g, // Stripe live keys
+  /\bglpat-[0-9A-Za-z_-]{20,}\b/g, // GitLab personal access tokens
 ]
 
 /**
