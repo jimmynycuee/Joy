@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import { ACTION_KINDS, EFFORTS, PROVIDER_KINDS, ROLES, TASK_MODES } from '@joy/core'
 import type { ModelRef, Role } from '@joy/core'
 import { effortCompatibilityError } from '@joy/model-effort'
@@ -106,6 +107,23 @@ export const configSchema = z.strictObject({
       issue_poll_minutes: z.number().int().min(0).max(1440).default(5),
     })
     .default({ issue_label: 'joy', issue_poll_minutes: 5 }),
+  remote: z
+    .strictObject({
+      /**
+       * Also listen on `address` (e.g. this computer's Tailscale IP) so other devices can use Joy with the access
+       * token. Off by default; Joy otherwise listens on 127.0.0.1 only. Restart Joy after changing it.
+       */
+      enabled: z.boolean().default(false),
+      address: z
+        .string()
+        .refine((value) => value === '' || isIP(value) !== 0, 'must be an IP address')
+        .default(''),
+      port: z.number().int().min(0).max(65535).default(4317),
+    })
+    .refine((remote) => !remote.enabled || remote.address !== '', {
+      message: 'remote.address is required when remote.enabled is true',
+    })
+    .default({ enabled: false, address: '', port: 4317 }),
   container: z
     .strictObject({
       /** Image with Claude Code, Codex, git and node (build it with `pnpm joy container-build`). */

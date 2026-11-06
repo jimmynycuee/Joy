@@ -58,18 +58,19 @@ test('Vite proxy preserves origin checks and requires API tokens for HTTP writes
     headers: { origin: devOrigin },
     data: mutation,
   })
-  expect(missingToken.status()).toBe(403)
+  // T4.1: missing or wrong token is 401; a forbidden origin stays 403.
+  expect(missingToken.status()).toBe(401)
   expect((await missingToken.text()).includes(E2E_API_TOKEN)).toBe(false)
   const wrongToken = await request.post('/api/repos', {
     headers: { origin: devOrigin, authorization: 'Bearer wrong-e2e-token' },
     data: mutation,
   })
-  expect(wrongToken.status()).toBe(403)
+  expect(wrongToken.status()).toBe(401)
   expect((await wrongToken.text()).includes(E2E_API_TOKEN)).toBe(false)
 
   const missingTaskId = 'nonexistent-auth-check'
-  expect(await websocketHandshake(missingTaskId, devOrigin)).toMatchObject({ status: 403 })
-  expect(await websocketHandshake(missingTaskId, devOrigin, 'wrong-e2e-token')).toMatchObject({ status: 403 })
+  expect(await websocketHandshake(missingTaskId, devOrigin)).toMatchObject({ status: 401 })
+  expect(await websocketHandshake(missingTaskId, devOrigin, 'wrong-e2e-token')).toMatchObject({ status: 401 })
   expect(await websocketHandshake(missingTaskId, devOrigin, E2E_API_TOKEN)).toMatchObject({ status: 404 })
   expect(await websocketHandshake(missingTaskId, crossPortOrigin, E2E_API_TOKEN)).toMatchObject({
     status: 403,

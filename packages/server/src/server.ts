@@ -3,9 +3,9 @@ import { createServer as createHttpServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { link, lstat, mkdir, open, readFile, rm, unlink, writeFile } from 'node:fs/promises'
+import { link, lstat, mkdir, open, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { isAbsolute, join, resolve } from 'node:path'
+import { extname, isAbsolute, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WebSocket, WebSocketServer } from 'ws'
 import { z, ZodError } from 'zod'
@@ -395,6 +395,8 @@ export interface JoyServerOptions {
 export interface JoyServer {
   readonly httpServer: Server
   listen(port?: number): Promise<AddressInfo>
+  /** The remote-access listener's address, when remote.enabled (T4.1). */
+  remoteAddress(): AddressInfo | undefined
   close(): Promise<void>
 }
 
@@ -448,9 +450,19 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const home = options.home ?? joyHome()
   const configStore = options.configStore ?? new ConfigStore(join(home, 'config.yaml'))
   const initialConfig = await configStore.get()
+  // Remote access (T4.1) is read once at start: the extra listener, its Host and Origin are fixed until restart.
+  const remoteConfig = initialConfig.remote
+  const remoteHosts = new Set<string>()
+  if (remoteConfig.enabled) {
+    const hostPart = remoteConfig.address.includes(':') ? `[${remoteConfig.address}]` : remoteConfig.address
+    remoteHosts.add(`${hostPart}:${remoteConfig.port}`.toLowerCase())
+    allowedOrigins.add(`http://${hostPart}:${remoteConfig.port}`.toLowerCase())
+  }
+  const isAllowedHost = (host: string | undefined) =>
+    isLoopbackHost(host) || (host !== undefined && remoteHosts.has(host.toLowerCase()))
   await mkdir(home, { recursive: true, mode: 0o700 })
   const paths = resolvePaths(initialConfig, home)
-  const apiToken = options.apiToken ?? (await loadOrCreateApiToken(home))
+  let apiToken = options.apiToken ?? (await loadOrCreateApiToken(home))
   assertApiToken(apiToken)
   const ownsDatabase = !options.database
   const db = options.database ?? openDatabase(paths.database)
@@ -957,12 +969,16 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   httpServer.on('upgrade', (req, socket, head) => {
     try {
       if (
-        !isLoopbackHost(req.headers.host) ||
+        !isAllowedHost(req.headers.host) ||
         req.headers['sec-fetch-site']?.toLowerCase() === 'cross-site' ||
-        !isAllowedOrigin(req, allowedOrigins, false) ||
-        !hasValidWebSocketAuth(req, apiToken)
+        !isAllowedOrigin(req, allowedOrigins, false)
       ) {
         socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+        socket.destroy()
+        return
+      }
+      if (!hasValidWebSocketAuth(req, apiToken)) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
         socket.destroy()
         return
       }
@@ -1010,7 +1026,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   })
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!isLoopbackHost(req.headers.host)) throw new HttpError(403, 'Host is not allowed')
+    if (!isAllowedHost(req.headers.host)) throw new HttpError(403, 'Host is not allowed')
     const method = req.method ?? 'GET'
     const url = requestUrl(req)
     const assistantRoute = /^\/internal\/assistant\/([A-Za-z0-9_-]{32,})$/.exec(url.pathname)
@@ -1099,7 +1115,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       (isApiRoute || !['GET', 'HEAD', 'OPTIONS'].includes(method)) &&
       !hasValidBearerToken(req, apiToken)
     )
-      throw new HttpError(403, 'Authentication required')
+      throw new HttpError(401, 'Authentication required: send the Joy access token')
     if (url.pathname === '/api/health' && method === 'GET') {
       json(res, 200, { ok: true })
       return
@@ -1644,7 +1660,69 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       json(res, 200, { providers: health })
       return
     }
+    if (url.pathname === '/api/token/rotate' && method === 'POST') {
+      assertJsonContentType(req)
+      z.strictObject({}).parse(await readJson(req))
+      const token = await rotateApiToken()
+      json(res, 200, { token })
+      return
+    }
+    if (
+      (method === 'GET' || method === 'HEAD') &&
+      !url.pathname.startsWith('/api/') &&
+      (await serveUi(url, res))
+    )
+      return
     json(res, 404, { error: 'Not found' })
+  }
+
+  /**
+   * Replaces the access token: the old one stops working at once and its live connections are closed (T4.1). The
+   * new token is written to <home>/api-token (owner-only) and returned once to the caller.
+   */
+  async function rotateApiToken(): Promise<string> {
+    const token = randomBytes(32).toString('base64url')
+    const temporary = join(home, `.api-token-${randomUUID()}.tmp`)
+    const file = await open(temporary, 'wx', 0o600)
+    try {
+      await file.writeFile(token, 'utf8')
+    } finally {
+      await file.close()
+    }
+    await rename(temporary, join(home, 'api-token'))
+    redactor.add(token)
+    apiToken = token
+    for (const socket of wsServer.clients) socket.terminate()
+    log.info('access token regenerated')
+    return token
+  }
+
+  /** The built web UI (apps/web/dist), so a phone or another computer can open Joy over remote access. */
+  async function serveUi(url: URL, res: ServerResponse): Promise<boolean> {
+    const root = join(JOY_SOURCE_ROOT, 'apps', 'web', 'dist')
+    let relativePath: string
+    try {
+      relativePath = decodeURIComponent(url.pathname).replace(/^\/+/, '') || 'index.html'
+    } catch {
+      return false
+    }
+    const file = resolve(root, relativePath)
+    if (file !== root && !file.startsWith(root + sep)) return false
+    const target = existsSyncFs(file) && !file.endsWith(sep) ? file : join(root, 'index.html')
+    if (!existsSyncFs(target)) return false
+    let body: Buffer
+    try {
+      body = await readFile(target)
+    } catch {
+      return false
+    }
+    res.writeHead(200, {
+      'content-type': UI_TYPES[extname(target)] ?? 'application/octet-stream',
+      'cache-control': target.endsWith('index.html') ? 'no-store' : 'public, max-age=3600',
+      'x-content-type-options': 'nosniff',
+    })
+    res.end(body)
+    return true
   }
 
   function requireTask(id: string): StoredTask {
@@ -3822,8 +3900,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (Number.isFinite(resumeAt)) scheduleQuotaResume(task.id, resumeAt)
   }
 
+  let remoteServer: Server | undefined
+
   return {
     httpServer,
+    remoteAddress: () => (remoteServer?.listening ? (remoteServer.address() as AddressInfo) : undefined),
     listen(port = 0) {
       if (closed) return Promise.reject(new Error('Server is closed'))
       if (httpServer.listening) return Promise.reject(new Error('Server is already listening'))
@@ -3862,7 +3943,25 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           }
           void writeFile(pidFile, String(process.pid), { mode: 0o600 }).catch(() => undefined)
           scheduleIssuePoll(issuePollDelay(initialConfig.github.issue_poll_minutes))
-          resolve(httpServer.address() as AddressInfo)
+          if (!remoteConfig.enabled) {
+            resolve(httpServer.address() as AddressInfo)
+            return
+          }
+          // Same handlers on a second listener; internal endpoints still require a loopback peer.
+          remoteServer = createHttpServer((request, response) =>
+            httpServer.emit('request', request, response),
+          )
+          remoteServer.on('upgrade', (request, socket, head) =>
+            httpServer.emit('upgrade', request, socket, head),
+          )
+          remoteServer.once('error', (error) => reject(error))
+          remoteServer.listen(remoteConfig.port, remoteConfig.address, () => {
+            const remote = remoteServer?.address() as AddressInfo
+            log.warn(
+              `Remote access is on: http://${remoteConfig.address}:${remote.port} (access token required)`,
+            )
+            resolve(httpServer.address() as AddressInfo)
+          })
         })
       })
     },
@@ -3883,6 +3982,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       await Promise.all(activeTasks.map((active) => active.promise))
       for (const socket of wsServer.clients) socket.terminate()
       await new Promise<void>((resolve) => wsServer.close(() => resolve()))
+      if (remoteServer?.listening) {
+        remoteServer.closeAllConnections()
+        await new Promise<void>((resolve) => remoteServer?.close(() => resolve()))
+      }
       if (httpServer.listening)
         await new Promise<void>((resolve, reject) =>
           httpServer.close((error) => (error ? reject(error) : resolve())),
@@ -3911,6 +4014,17 @@ function persistUsageEvent(db: Database, provider: ProviderKind, event: AgentEve
 /** A stdio MCP server started inside the agent container uses the image's `node`, not this computer's. */
 function inContainer(repo: RepoRecord, server: McpServerConfig): McpServerConfig {
   return repo.container && server.transport === 'stdio' ? { ...server, command: 'node' } : server
+}
+
+const UI_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.json': 'application/json',
+  '.webmanifest': 'application/manifest+json',
 }
 
 /** The Joy checkout (its node_modules hold the Tool Hub bridge's loader). */
