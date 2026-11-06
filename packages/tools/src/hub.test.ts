@@ -147,6 +147,32 @@ describe('Tool Hub dispatcher', () => {
     ).rejects.toThrow()
   })
 
+  it('preserves a trusted external_content marker so policy can force approval', async () => {
+    const requestApproval = vi.fn(async (action) => ({ status: 'awaiting_approval', action }))
+    const dispatch = createToolHubDispatcher(runtime({ requestApproval }))
+    await dispatch({
+      name: 'request_approval',
+      arguments: {
+        kind: 'read_file',
+        summary: 'Read issue-provided path',
+        detail: { path: 'src/index.ts' },
+        provenance: 'external_content',
+      },
+    })
+    expect(requestApproval).toHaveBeenCalledWith({
+      kind: 'read_file',
+      summary: 'Read issue-provided path',
+      detail: { path: 'src/index.ts' },
+      provenance: 'external_content',
+    })
+    await expect(
+      dispatch({
+        name: 'request_approval',
+        arguments: { kind: 'read_file', summary: 'Read', detail: {}, provenance: 'user' },
+      }),
+    ).rejects.toThrow()
+  })
+
   it('does not accept malformed peer input', async () => {
     const dispatch = createToolHubDispatcher(runtime())
     await expect(

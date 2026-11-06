@@ -11,7 +11,7 @@ const task = {
   status: 'running',
   createdAt: '2025-01-01T00:00:00.000Z',
 }
-const config = { roles: {} }
+const config = { autonomy_mode: 'normal', roles: {} }
 type Frame = { type: string; [key: string]: unknown }
 const event = (seq: number, type: string, payload: unknown, ts = `2025-01-01T00:00:0${seq}.000Z`) => ({
   taskId: task.id,

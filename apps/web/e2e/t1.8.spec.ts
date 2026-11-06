@@ -61,12 +61,15 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
     await expect(page.getByLabel(`${role} provider`)).toBeVisible()
     await expect(page.getByLabel(`${role} model`)).toBeVisible()
   }
+  const autonomyMode = page.getByLabel('Global autonomy mode')
+  await expect(autonomyMode).toHaveValue('normal')
+  await autonomyMode.selectOption('careful')
   const settingsImplementerProvider = page.getByLabel('Implementer provider')
   await expect(settingsImplementerProvider.locator('option[value="openai-api"]')).toHaveCount(0)
   await settingsImplementerProvider.selectOption('claude-cli')
   await page.getByLabel('Implementer model').fill('claude-opus-4-6')
-  await page.getByRole('button', { name: 'Save role settings' }).click()
-  await expect(page.getByRole('status').filter({ hasText: 'Role and model settings saved' })).toBeVisible()
+  await page.getByRole('button', { name: 'Save settings' }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Settings saved' })).toBeVisible()
 
   const secret = 'fake-openai-key-must-never-return-41'
   const responsePromise = page.waitForResponse(
@@ -84,7 +87,9 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   const configResponse = await request.get('/api/config', {
     headers: { authorization: `Bearer ${E2E_API_TOKEN}` },
   })
-  expect(await configResponse.text()).not.toContain(secret)
+  const savedConfig = (await configResponse.json()) as { config: { autonomy_mode: string } }
+  expect(savedConfig.config.autonomy_mode).toBe('careful')
+  expect(JSON.stringify(savedConfig)).not.toContain(secret)
   await page.waitForTimeout(4100)
   await page.screenshot({ path: 'test-results/t1.8-settings.png', fullPage: true })
 

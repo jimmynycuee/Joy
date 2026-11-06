@@ -11,6 +11,7 @@ const task = {
   createdAt: '2025-01-01T00:00:00.000Z',
 }
 const config = {
+  autonomy_mode: 'normal',
   roles: Object.fromEntries(
     ['assistant_brain', 'background', 'orchestrator', 'implementer', 'reviewer', 'judge'].map((role) => [
       role,
@@ -54,7 +55,7 @@ test('workspace and settings remain usable while key status is unavailable and c
   await expect(page.getByRole('alert')).toHaveCount(0)
 
   await page.getByRole('button', { name: 'Settings' }).click()
-  await expect(page.getByRole('button', { name: 'Save role settings' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Save settings' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'OpenAI API key' })).toBeVisible()
   await expect(page.getByRole('status').filter({ hasText: 'Unavailable' })).toBeVisible()
   await page.getByRole('button', { name: 'Retry key status' }).click()

@@ -16,6 +16,7 @@ const requestApprovalInput = z.strictObject({
   kind: z.enum(ACTION_KINDS),
   summary: z.string().trim().min(1).max(2_000),
   detail: z.unknown(),
+  provenance: z.enum(['agent', 'external_content']).optional(),
 })
 const approveInput = z.strictObject({
   tool_name: z.string().trim().min(1).max(256),
@@ -103,7 +104,7 @@ export function createToolHubDispatcher(runtime: ToolHubRuntime): ToolHubDispatc
         kind: input.kind as ActionKind,
         summary: input.summary,
         detail: input.detail,
-        provenance: 'agent',
+        provenance: input.provenance ?? 'agent',
       }
       return runtime.requestApproval(action)
     }

@@ -12,6 +12,7 @@ type Task = {
   repoId: string
   title: string
   prompt: string
+  provenance?: 'user' | 'agent' | 'external_content'
   mode: string
   status: string
   roleOverrides?: Partial<RoleConfig>
@@ -478,7 +479,7 @@ function App() {
         body: JSON.stringify({ ...config, roles }),
       })
       setConfig(saved)
-      setNotice('Role and model settings saved.')
+      setNotice('Settings saved.')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not save settings')
     }
@@ -568,7 +569,7 @@ function App() {
             <div>
               <p className="eyebrow">PREFERENCES</p>
               <h1>Settings</h1>
-              <p className="subheading">Choose a provider and model for each Joy role.</p>
+              <p className="subheading">Configure model routing and global action permissions.</p>
             </div>
             <button className="quiet-button" onClick={() => setPage('tasks')}>
               Back to workspace
@@ -582,9 +583,31 @@ function App() {
                   <div className="section-heading">
                     <div>
                       <p className="eyebrow">MODEL ROUTING</p>
-                      <h2>Roles</h2>
+                      <h2>Roles and autonomy</h2>
                     </div>
                     <span className="muted">Changes apply to new tasks</span>
+                  </div>
+                  <div className="mode-setting">
+                    <label htmlFor="autonomy-mode">Global autonomy mode</label>
+                    <select
+                      id="autonomy-mode"
+                      aria-label="Global autonomy mode"
+                      value={config.autonomy_mode}
+                      onChange={(event) =>
+                        setConfig({
+                          ...config,
+                          autonomy_mode: event.target.value as JoyConfig['autonomy_mode'],
+                        })
+                      }
+                    >
+                      <option value="careful">Careful — raise actions by one tier</option>
+                      <option value="normal">Normal — use each action’s default tier</option>
+                      <option value="hands-off">Hands-off — lower notifications, keep red approvals</option>
+                    </select>
+                    <p className="muted">
+                      Red actions always need owner approval and cross-model pre-review. Actions derived from
+                      external content are never auto-executed.
+                    </p>
                   </div>
                   <div className="role-grid">
                     {ROLES.map((role) => (
@@ -651,7 +674,7 @@ function App() {
                   </div>
                   <div className="form-actions">
                     <button className="primary-button" type="submit">
-                      Save role settings
+                      Save settings
                     </button>
                   </div>
                 </form>

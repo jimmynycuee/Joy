@@ -18,6 +18,7 @@
     "@joy/executor": "workspace:*",
     "@joy/model-effort": "workspace:*",
     "@joy/orchestrator": "workspace:*",
+    "@joy/policy": "workspace:*",
     "@joy/providers": "workspace:*",
     "@joy/secrets": "workspace:*",
     "@joy/tools": "workspace:*",

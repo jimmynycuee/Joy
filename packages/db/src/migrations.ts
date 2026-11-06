@@ -221,6 +221,14 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX task_events_task ON task_events(task_id, seq);
     `,
   },
+  {
+    version: 5,
+    name: 'preserve task provenance for action policy',
+    sql: /* sql */ `
+      ALTER TABLE tasks ADD COLUMN provenance TEXT NOT NULL DEFAULT 'user'
+        CHECK (provenance IN ('user', 'agent', 'external_content'));
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

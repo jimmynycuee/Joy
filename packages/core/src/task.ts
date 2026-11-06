@@ -1,3 +1,4 @@
+import type { Provenance } from './policy.js'
 import type { RoleConfig } from './roles.js'
 
 declare const brand: unique symbol
@@ -45,6 +46,8 @@ export interface Task {
   repoId: RepoId
   title: string
   prompt: string
+  /** Origin of the task request; external content may never trigger automatic actions. */
+  provenance: Provenance
   mode: TaskMode
   roleOverrides: Partial<RoleConfig>
   /** Plan-then-review before implementing (review_loop only). */

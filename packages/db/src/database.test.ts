@@ -106,6 +106,20 @@ describe('openDatabase', () => {
     }
   })
 
+  it('adds a safe user provenance default while retaining the new external_content marker', () => {
+    const db = openDatabase(':memory:', { migrations: MIGRATIONS.slice(0, 4) })
+    open.push(db)
+    seedTask(db)
+    migrate(db, MIGRATIONS)
+    expect(db.prepare('SELECT provenance FROM tasks WHERE id = ?').get('t1')).toEqual({ provenance: 'user' })
+    expect(() =>
+      db.prepare("UPDATE tasks SET provenance = 'external_content' WHERE id = 't1'").run(),
+    ).not.toThrow()
+    expect(() => db.prepare("UPDATE tasks SET provenance = 'untrusted' WHERE id = 't1'").run()).toThrow(
+      /CHECK/,
+    )
+  })
+
   it('refuses a database from a newer Joy', () => {
     const dir = mkdtempSync(join(tmpdir(), 'joy-db-'))
     dirs.push(dir)

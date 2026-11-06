@@ -2,6 +2,7 @@ import type {
   AttemptId,
   AttemptStatus,
   ProviderKind,
+  Provenance,
   RepoId,
   RepoRef,
   ReviewFinding,
@@ -99,6 +100,7 @@ interface TaskRow {
   title: string
   prompt: string
   mode: TaskMode
+  provenance: Provenance
   role_overrides: string
   plan_first: number
   max_rounds: number
@@ -180,6 +182,7 @@ export interface NewTask {
   title: string
   prompt: string
   mode: TaskMode
+  provenance?: Provenance
   roleOverrides?: Partial<RoleConfig>
   planFirst?: boolean
   maxRounds?: number
@@ -187,14 +190,15 @@ export interface NewTask {
 
 export function createTask(db: Database, input: NewTask): StoredTask {
   db.prepare(
-    `INSERT INTO tasks (id, repo_id, title, prompt, mode, role_overrides, plan_first, max_rounds, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued')`,
+    `INSERT INTO tasks (id, repo_id, title, prompt, mode, provenance, role_overrides, plan_first, max_rounds, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`,
   ).run(
     input.id,
     input.repoId,
     input.title,
     input.prompt,
     input.mode,
+    input.provenance ?? 'user',
     JSON.stringify(input.roleOverrides ?? {}),
     input.planFirst ? 1 : 0,
     input.maxRounds ?? 3,
@@ -534,6 +538,7 @@ function mapTask(row: TaskRow): StoredTask {
     title: row.title,
     prompt: row.prompt,
     mode: row.mode,
+    provenance: row.provenance,
     roleOverrides: JSON.parse(row.role_overrides) as Partial<RoleConfig>,
     planFirst: row.plan_first === 1,
     maxRounds: row.max_rounds,
