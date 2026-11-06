@@ -159,6 +159,7 @@ function fixture(
     ownerApprovalChannel?: boolean
     approvalTimeoutMs?: number
     telegram?: JoyServerOptions['telegram']
+    publisher?: JoyServerOptions['publisher']
     /** Use the server's real Codex app-server provider, driven by a fake app-server process. */
     codexAppServer?: JoyServerOptions['codexAppServer']
     /** Worktree path the fake executor hands out; must exist when a real child process runs in it. */
@@ -215,6 +216,7 @@ function fixture(
     // Red actions wait for a person; tests that do not answer should expire quickly.
     approvalTimeoutMs: options.approvalTimeoutMs ?? 50,
     ...(options.telegram ? { telegram: options.telegram } : {}),
+    ...(options.publisher ? { publisher: options.publisher } : {}),
     ...(options.doctor ? { doctor: options.doctor } : {}),
     ...(options.generateApiToken ? {} : { apiToken: options.apiToken ?? TEST_API_TOKEN }),
     providers: {
@@ -1684,6 +1686,111 @@ describe('Joy local server', () => {
       source: 'keychain',
     })
     expect((await fetch(`${origin}/api/secrets/constructor`)).status).toBe(404)
+  })
+
+  it('publishes a finished task as a draft PR with its review summary', async () => {
+    const calls: Array<{
+      workspace: Workspace
+      input: { title: string; baseBranch: string; summary: string; reviewSummary: string }
+    }> = []
+    const behaviour: { fail?: string } = {}
+    const publisher = {
+      async publish(
+        workspace: Workspace,
+        input: { title: string; baseBranch: string; summary: string; reviewSummary: string },
+      ) {
+        calls.push({ workspace, input })
+        if (behaviour.fail) throw new Error(behaviour.fail)
+        return { commitSha: 'c'.repeat(40), pullRequestUrl: 'https://github.com/o/r/pull/7', body: 'b' }
+      },
+    }
+    const redactor = new Redactor()
+    redactor.add('publish-secret-value')
+    const { serverPromise } = fixture({ publisher, redactor })
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, {
+      path: '/tmp/publish-repo',
+      defaultBranch: 'main',
+    })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const taskResponse = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Fix the bug',
+      prompt: 'Fix add()',
+      mode: 'single',
+    })
+    const { task } = (await taskResponse.json()) as { task: { id: string } }
+    await waitForStatus(origin, task.id, 'done')
+
+    const noRemote = await postJson(`${origin}/api/tasks/${task.id}/publish`, {})
+    expect(noRemote.status).toBe(409)
+    expect(await noRemote.text()).toContain('GitHub remote')
+
+    const patch = await fetch(`${origin}/api/repos/${repo.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', origin: VITE_ORIGIN },
+      body: JSON.stringify({ githubRemote: 'https://github.com/o/r.git' }),
+    })
+    expect(((await patch.json()) as { repo: { githubRemote: string } }).repo.githubRemote).toBe(
+      'https://github.com/o/r.git',
+    )
+
+    const published = await postJson(`${origin}/api/tasks/${task.id}/publish`, { baseBranch: 'develop' })
+    expect(published.status).toBe(200)
+    expect(await published.json()).toEqual({
+      pullRequestUrl: 'https://github.com/o/r/pull/7',
+      commitSha: 'c'.repeat(40),
+    })
+    expect(calls[0]?.workspace).toMatchObject({
+      path: '/fake/worktree',
+      branch: 'joy/t1/a1',
+      baseCommit: 'base-sha',
+    })
+    expect(calls[0]?.input).toMatchObject({
+      title: 'Fix the bug',
+      baseBranch: 'develop',
+      summary: 'Fix add()',
+    })
+
+    behaviour.fail = 'push rejected for publish-secret-value'
+    const failed = await postJson(`${origin}/api/tasks/${task.id}/publish`, {})
+    expect(failed.status).toBe(422)
+    const failedText = await failed.text()
+    expect(failedText).toContain('push rejected')
+    expect(failedText).not.toContain('publish-secret-value')
+
+    const details = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
+    const types = details.events.map((event) => (event as { type?: string }).type)
+    expect(types.filter((t) => t === 'publish.done')).toHaveLength(1)
+    expect(types.filter((t) => t === 'publish.failed')).toHaveLength(1)
+  })
+
+  it('refuses to publish a task that has not finished', async () => {
+    const implementer = new FakeProvider('claude-cli')
+    // Keep the run going until the server shuts it down.
+    implementer.onRun = (options) =>
+      new Promise<void>((resolve) =>
+        options.signal.addEventListener('abort', () => resolve(), { once: true }),
+      )
+    const { serverPromise } = fixture({ implementer })
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, {
+      path: '/tmp/publish-running',
+      defaultBranch: 'main',
+      githubRemote: 'https://github.com/o/r.git',
+    })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const taskResponse = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 't',
+      prompt: 'p',
+      mode: 'single',
+    })
+    const { task } = (await taskResponse.json()) as { task: { id: string } }
+    await waitForStatus(origin, task.id, 'running')
+    const response = await postJson(`${origin}/api/tasks/${task.id}/publish`, {})
+    expect(response.status).toBe(409)
+    expect(await response.text()).toContain('Only finished tasks')
   })
 
   it('preserves the task ask_peer budget across a resumed provider session', async () => {

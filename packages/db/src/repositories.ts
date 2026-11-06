@@ -176,6 +176,16 @@ export function updateRepoAllowedProviders(
   return getRepo(db, id)
 }
 
+/** Sets or clears the GitHub remote the publisher pushes to and opens pull requests against. */
+export function updateRepoGithubRemote(
+  db: Database,
+  id: RepoId,
+  githubRemote: string | null,
+): RepoRecord | undefined {
+  db.prepare('UPDATE repos SET github_remote = ? WHERE id = ?').run(githubRemote, id)
+  return getRepo(db, id)
+}
+
 export interface NewTask {
   id: TaskId
   repoId: RepoId

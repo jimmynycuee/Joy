@@ -177,6 +177,9 @@ importers:
       '@joy/executor':
         specifier: workspace:*
         version: link:../executor
+      '@joy/github':
+        specifier: workspace:*
+        version: link:../github
       '@joy/model-effort':
         specifier: workspace:*
         version: link:../model-effort

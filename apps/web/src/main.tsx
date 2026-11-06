@@ -368,6 +368,79 @@ function TelegramSettings({
   )
 }
 
+/** "Open draft PR" for a finished task: sets the repository's GitHub remote first if needed. */
+function PublishPanel({ details, onChanged }: { details: TaskDetails; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [failure, setFailure] = useState('')
+  const published = [...details.events].reverse().find((event) => event.type === 'publish.done')
+  const prUrl = record(published?.payload)?.pullRequestUrl
+  const remote = details.repo?.githubRemote
+
+  if (details.task.status !== 'done' || !details.repo) return null
+
+  async function setRemote(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const value = String(new FormData(event.currentTarget).get('github-remote') ?? '').trim()
+    if (!value || !details.repo) return
+    setFailure('')
+    try {
+      await request(`/api/repos/${encodeURIComponent(details.repo.id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ githubRemote: value }),
+      })
+      onChanged()
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : 'Could not save the remote')
+    }
+  }
+
+  async function publishTask() {
+    setBusy(true)
+    setFailure('')
+    try {
+      await request(`/api/tasks/${encodeURIComponent(details.task.id)}/publish`, {
+        method: 'POST',
+        body: '{}',
+      })
+      onChanged()
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : 'Publishing failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="publish-panel" data-testid="publish-panel">
+      {typeof prUrl === 'string' ? (
+        <a href={prUrl} target="_blank" rel="noreferrer">
+          Draft PR opened ↗
+        </a>
+      ) : remote ? (
+        <button className="primary-button" type="button" disabled={busy} onClick={() => void publishTask()}>
+          {busy ? 'Opening draft PR…' : 'Open draft PR'}
+        </button>
+      ) : (
+        <form className="secret-form" onSubmit={(event) => void setRemote(event)}>
+          <label htmlFor="github-remote">GitHub repository URL</label>
+          <div className="secret-input-row">
+            <input
+              id="github-remote"
+              name="github-remote"
+              placeholder="https://github.com/owner/repo.git"
+              required
+            />
+            <button className="outline-button" type="submit">
+              Save
+            </button>
+          </div>
+        </form>
+      )}
+      {failure ? <p className="approvals-error">{failure}</p> : null}
+    </div>
+  )
+}
+
 function App() {
   const [repos, setRepos] = useState<Repo[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
@@ -386,6 +459,13 @@ function App() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [activeDiffFile, setActiveDiffFile] = useState('')
+
+  async function refreshSelectedTask() {
+    if (!selectedTaskId) return
+    const next = await request<TaskDetails>(`/api/tasks/${encodeURIComponent(selectedTaskId)}`)
+    setDetails((current) => (current && current.task.id === next.task.id ? next : current))
+    await refreshLists()
+  }
 
   async function refreshLists() {
     const [repoResponse, taskResponse] = await Promise.all([
@@ -1181,6 +1261,7 @@ function App() {
               </div>
               <span className="diff-count">{diff?.files.length ?? 0}</span>
             </div>
+            {details ? <PublishPanel details={details} onChanged={() => void refreshSelectedTask()} /> : null}
             {diff ? (
               <>
                 <div className="diff-summary">

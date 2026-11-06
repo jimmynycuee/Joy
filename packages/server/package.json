@@ -17,6 +17,7 @@
     "@joy/core": "workspace:*",
     "@joy/db": "workspace:*",
     "@joy/executor": "workspace:*",
+    "@joy/github": "workspace:*",
     "@joy/model-effort": "workspace:*",
     "@joy/orchestrator": "workspace:*",
     "@joy/policy": "workspace:*",
