@@ -90,6 +90,25 @@ export function decideApproval(
   return Number(result.changes) === 1 ? getApproval(db, id) : undefined
 }
 
+/**
+ * Approves a request that expired because nobody answered in time (decided_via 'timeout'), so its paused task can
+ * be resumed. Approvals expired by a cancelled run or a restart cannot be revived. Returns undefined otherwise.
+ */
+export function approveTimedOutApproval(
+  db: Database,
+  id: string,
+  decidedVia: string,
+  note?: string,
+): ApprovalRecord | undefined {
+  const result = db
+    .prepare(
+      `UPDATE approvals SET status = 'approved', decided_via = ?, note = ?, decided_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE id = ? AND status = 'expired' AND decided_via = 'timeout'`,
+    )
+    .run(decidedVia, note ?? null, id)
+  return Number(result.changes) === 1 ? getApproval(db, id) : undefined
+}
+
 /** Pending approvals cannot survive a restart (nobody is waiting for them): mark them expired. */
 export function expirePendingApprovals(db: Database): number {
   const result = db

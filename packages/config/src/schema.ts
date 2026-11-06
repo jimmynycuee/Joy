@@ -78,8 +78,10 @@ export const configSchema = z.strictObject({
         .min(1)
         .max(24 * 60)
         .default(30),
+      /** After the timeout: pause the task until you approve later ('pause'), or deny and let the agent go on. */
+      on_timeout: z.enum(['pause', 'deny']).default('pause'),
     })
-    .default({ timeout_minutes: 30 }),
+    .default({ timeout_minutes: 30, on_timeout: 'pause' }),
   channels: z
     .strictObject({
       telegram: z

@@ -59,7 +59,7 @@ describe('ApprovalBroker', () => {
     expect(pending?.action.summary).toBe('Send token [REDACTED]')
     expect(JSON.stringify(pending?.action.detail)).not.toContain('sk-secret-value-123')
     broker.decide(pending?.id ?? '', 'approved', 'telegram')
-    expect(await waiting).toBe('approved')
+    expect((await waiting).status).toBe('approved')
     expect(getApproval(db, pending?.id ?? '')?.decidedVia).toBe('telegram')
     expect(JSON.stringify(events)).not.toContain('sk-secret-value-123')
     expect(events.map((e) => e.type)).toEqual(['approval.requested', 'approval.decided'])
@@ -67,11 +67,11 @@ describe('ApprovalBroker', () => {
 
   it('expires on timeout and when the run is cancelled', async () => {
     const { broker } = setup()
-    expect(await broker.request(input, new AbortController().signal, 10)).toBe('expired')
+    expect((await broker.request(input, new AbortController().signal, 10)).status).toBe('expired')
     const controller = new AbortController()
     const waiting = broker.request(input, controller.signal, 10_000)
     controller.abort()
-    expect(await waiting).toBe('expired')
+    expect((await waiting).status).toBe('expired')
     expect(broker.pending()).toHaveLength(0)
   })
 
@@ -85,14 +85,14 @@ describe('ApprovalBroker', () => {
     const waiting = broker.request(input, new AbortController().signal, 10_000)
     expect(seen).toHaveLength(1)
     broker.decide(seen[0] ?? '', 'denied', 'web')
-    expect(await waiting).toBe('denied')
+    expect((await waiting).status).toBe('denied')
   })
 
   it('resolves at once when a channel decides synchronously while being notified', async () => {
     const { broker } = setup()
     broker.onRequested((approval) => broker.decide(approval.id, 'approved', 'auto-test'))
     const started = Date.now()
-    expect(await broker.request(input, new AbortController().signal, 10_000)).toBe('approved')
+    expect((await broker.request(input, new AbortController().signal, 10_000)).status).toBe('approved')
     expect(Date.now() - started).toBeLessThan(1_000)
   })
 })

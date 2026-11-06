@@ -1,6 +1,7 @@
 import type { AttemptId, ProposedAction, RepoId, TaskId } from '@joy/core'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  approveTimedOutApproval,
   createApproval,
   decideApproval,
   expirePendingApprovals,
@@ -98,5 +99,19 @@ describe('approvals', () => {
     setTaskStatus(db, 't1' as TaskId, 'awaiting_approval')
     expect(interruptRunningWork(db)).toEqual(['t1'])
     expect(getTask(db, 't1' as TaskId)?.status).toBe('failed')
+  })
+
+  it('revives only approvals that timed out', () => {
+    const db = seed()
+    createApproval(db, { id: 'late', attemptId: 'a-t1' as AttemptId, action, tier: 'approve' })
+    decideApproval(db, 'late', 'expired', 'timeout')
+    createApproval(db, { id: 'cancelled', attemptId: 'a-t1' as AttemptId, action, tier: 'approve' })
+    decideApproval(db, 'cancelled', 'expired', 'cancelled')
+    expect(approveTimedOutApproval(db, 'late', 'web')).toMatchObject({
+      status: 'approved',
+      decidedVia: 'web',
+    })
+    expect(approveTimedOutApproval(db, 'late', 'web')).toBeUndefined()
+    expect(approveTimedOutApproval(db, 'cancelled', 'web')).toBeUndefined()
   })
 })

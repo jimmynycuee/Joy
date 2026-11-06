@@ -197,6 +197,10 @@ function fixture(
   const api = new FakeProvider('openai-api')
   const redactor = options.redactor ?? new Redactor()
   const secretBackend = options.secretBackend ?? new MemoryBackend()
+  if (!options.configStore && !options.home) {
+    // Tests that do not answer approvals expect the agent to be told 'no' and carry on, not a paused task.
+    writeFileSync(join(dir, 'config.yaml'), 'approvals:\n  on_timeout: deny\n')
+  }
   const configStore = options.configStore ?? new ConfigStore(join(dir, 'config.yaml'))
   const serverOptions: JoyServerOptions = {
     home: options.home ?? dir,
@@ -255,6 +259,21 @@ interface TaskDetails {
   attempts: Array<Record<string, unknown>>
   reviews: unknown[]
   events: unknown[]
+}
+
+async function waitForEvent(
+  origin: string,
+  id: string,
+  type: string,
+  timeoutMs = 5_000,
+): Promise<TaskDetails> {
+  const deadline = Date.now() + timeoutMs
+  do {
+    const details = (await (await fetch(`${origin}/api/tasks/${id}`)).json()) as TaskDetails
+    if (details.events.some((event) => (event as { type?: string }).type === type)) return details
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  } while (Date.now() < deadline)
+  throw new Error(`Task never emitted ${type}`)
 }
 
 async function waitForStatus(
@@ -1791,6 +1810,155 @@ describe('Joy local server', () => {
     const response = await postJson(`${origin}/api/tasks/${task.id}/publish`, {})
     expect(response.status).toBe(409)
     expect(await response.text()).toContain('Only finished tasks')
+  })
+
+  it(
+    'pauses a task when an approval times out and resumes the same session after a late approval',
+    { timeout: 20_000 },
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), 'joy-pause-'))
+      dirs.push(home)
+      const configStore = new ConfigStore(join(home, 'config.yaml'))
+      await configStore.update((config) => ({
+        ...config,
+        approvals: { timeout_minutes: 30, on_timeout: 'pause' },
+      }))
+      const implementer = new FakeProvider('claude-cli')
+      implementer.capabilities.delegatedApproval = true
+      const decisions: unknown[] = []
+      const prompts: string[] = []
+      implementer.onRun = async (options) => {
+        prompts.push(options.prompt)
+        const mcp = options.mcpServers?.[0]
+        if (!mcp || mcp.transport !== 'stdio')
+          throw new Error('CLI provider did not receive the stdio Tool Hub')
+        const response = await globalThis.fetch(mcp.env?.JOY_TOOL_HUB_ENDPOINT as string, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${mcp.env?.JOY_TOOL_HUB_TOKEN}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'approve',
+            arguments: {
+              tool_name: 'Bash',
+              input: { command: 'curl https://example.com/late' },
+              tool_use_id: 'late',
+            },
+          }),
+        })
+        decisions.push(((await response.json()) as { value: unknown }).value)
+      }
+      const { serverPromise } = fixture({ implementer, configStore, approvalTimeoutMs: 50 })
+      const { origin } = await start(serverPromise)
+      const repoResponse = await postJson(`${origin}/api/repos`, {
+        path: '/tmp/pause-repo',
+        defaultBranch: 'main',
+      })
+      const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+      const taskResponse = await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: 'Pause me',
+        prompt: 'Fetch it',
+        mode: 'single',
+      })
+      const { task } = (await taskResponse.json()) as { task: { id: string } }
+
+      // The run is stopped while it waits, so the first request never gets an answer back.
+      const paused = await waitForEvent(origin, task.id, 'task.paused')
+      expect(
+        ((await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails).task.status,
+      ).toBe('awaiting_approval')
+      expect(paused.events.some((event) => (event as { type?: string }).type === 'approval.requested')).toBe(
+        true,
+      )
+      const [expired] = (
+        (await (await fetch(`${origin}/api/approvals?taskId=${task.id}&status=expired`)).json()) as {
+          approvals: Array<{ id: string; decidedVia: string }>
+        }
+      ).approvals
+      expect(expired?.decidedVia).toBe('timeout')
+
+      const late = await postJson(`${origin}/api/approvals/${expired?.id}/approve`, {})
+      expect(late.status).toBe(200)
+      expect(await late.json()).toMatchObject({ resumed: true, approval: { status: 'approved' } })
+
+      const done = await waitForStatus(origin, task.id, 'done', 5_000)
+      expect(prompts[1]).toContain('The owner approved the action you asked for earlier')
+      // The resumed run's identical request is let through once without asking again.
+      expect(decisions.at(-1)).toMatchObject({ behavior: 'allow' })
+      const types = done.events.map((event) => (event as { type?: string }).type)
+      expect(types).toContain('task.paused')
+      expect(types).toContain('approval.granted')
+      expect(types.filter((t) => t === 'approval.requested')).toHaveLength(1)
+
+      // A second late answer is refused.
+      expect((await postJson(`${origin}/api/approvals/${expired?.id}/approve`, {})).status).toBe(409)
+    },
+  )
+
+  it('cancels a paused task and lets a late deny fail it', { timeout: 20_000 }, async () => {
+    const home = mkdtempSync(join(tmpdir(), 'joy-pause-deny-'))
+    dirs.push(home)
+    const configStore = new ConfigStore(join(home, 'config.yaml'))
+    await configStore.update((config) => ({
+      ...config,
+      approvals: { timeout_minutes: 30, on_timeout: 'pause' },
+    }))
+    const implementer = new FakeProvider('claude-cli')
+    implementer.capabilities.delegatedApproval = true
+    implementer.onRun = async (options) => {
+      const mcp = options.mcpServers?.[0]
+      if (!mcp || mcp.transport !== 'stdio') throw new Error('no tool hub')
+      await globalThis.fetch(mcp.env?.JOY_TOOL_HUB_ENDPOINT as string, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${mcp.env?.JOY_TOOL_HUB_TOKEN}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: 'approve',
+          arguments: {
+            tool_name: 'Bash',
+            input: { command: 'curl https://example.com/x' },
+            tool_use_id: 'x',
+          },
+        }),
+      })
+    }
+    const { serverPromise } = fixture({ implementer, configStore, approvalTimeoutMs: 50 })
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, {
+      path: '/tmp/pause-deny',
+      defaultBranch: 'main',
+    })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const create = async () =>
+      (
+        (await (
+          await postJson(`${origin}/api/tasks`, { repoId: repo.id, title: 't', prompt: 'p', mode: 'single' })
+        ).json()) as {
+          task: { id: string }
+        }
+      ).task.id
+    const first = await create()
+    await waitForEvent(origin, first, 'task.paused')
+    const [approval] = (
+      (await (await fetch(`${origin}/api/approvals?taskId=${first}&status=expired`)).json()) as {
+        approvals: Array<{ id: string }>
+      }
+    ).approvals
+    expect((await postJson(`${origin}/api/approvals/${approval?.id}/deny`, {})).status).toBe(200)
+    expect(((await (await fetch(`${origin}/api/tasks/${first}`)).json()) as TaskDetails).task.status).toBe(
+      'failed',
+    )
+
+    const second = await create()
+    await waitForEvent(origin, second, 'task.paused')
+    expect((await postJson(`${origin}/api/tasks/${second}/cancel`, {})).status).toBe(200)
+    expect(((await (await fetch(`${origin}/api/tasks/${second}`)).json()) as TaskDetails).task.status).toBe(
+      'cancelled',
+    )
   })
 
   it('preserves the task ask_peer budget across a resumed provider session', async () => {

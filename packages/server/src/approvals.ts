@@ -41,7 +41,11 @@ export class ApprovalBroker {
    * Waits for a decision. Resolves 'approved', 'denied' or 'expired' (no answer within `timeoutMs`, or the run
    * was cancelled).
    */
-  request(input: ApprovalRequestInput, signal: AbortSignal, timeoutMs: number): Promise<ApprovalStatus> {
+  request(
+    input: ApprovalRequestInput,
+    signal: AbortSignal,
+    timeoutMs: number,
+  ): Promise<{ approvalId: string; status: ApprovalStatus }> {
     const { db, redactor, publish } = this.options
     // The detail holds raw tool input (commands, paths); it is stored and shown, so redact all of it.
     const action: ProposedAction = redactor.redactValue(input.action)
@@ -58,12 +62,12 @@ export class ApprovalBroker {
       provenance: action.provenance,
       ...(input.preReview ? { preReview: input.preReview } : {}),
     })
-    return new Promise<ApprovalStatus>((resolve) => {
+    return new Promise((resolve) => {
       const finish = (status: ApprovalStatus) => {
         clearTimeout(timer)
         signal.removeEventListener('abort', onAbort)
         this.waiters.delete(record.id)
-        resolve(status)
+        resolve({ approvalId: record.id, status })
       }
       const expire = (via: string) => {
         const decided = decideApproval(db, record.id, 'expired', via)
