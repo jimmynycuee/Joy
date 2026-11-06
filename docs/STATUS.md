@@ -2,7 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-06（T4.7 備份與匯出）
+- 最後更新：2026-11-06（T4.8 除錯 log）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
@@ -92,6 +92,14 @@
 - T3.8 依 PLAN 清單評估維護狀況、權限範圍與資料是否送第三方，自行選一個 Gmail／Calendar MCP server；先唯讀，寄信與邀請他人一律 🔴。選型理由寫在本檔決策區。
 - 不呼叫真實模型；若測試確實需要真實模型，只能使用 haiku 或 gpt-6-luna、low effort，且必須是 opt-in。
 - 每個 ticket 從最新 main 開獨立分支，diff 只保留該 ticket。CI 失敗最多修 3 次；無法修復時記錄原因並繼續不相依工作。
+
+### T4.8 除錯 log
+
+- `~/.joy/logs/joy-YYYY-MM-DD.log`（UTC 日），每行一筆 JSON（`ts`、`level`、`msg` 與欄位），**保留 14 天**，換日時刪舊檔；只刪符合檔名格式的檔案。
+- **每一筆寫入前整筆經過 Redactor**（訊息與巢狀欄位都會），下載時再遮一次（之後才加入的 secret 也會遮掉）。寫入失敗不影響 Joy，只在主控台警告一次。
+- server 原本的 `console.warn` 全部改走 log（警告與錯誤仍印到主控台）；另記錄啟動、任務開始與結束（狀態、原因）。
+- `GET /api/logs`、`GET /api/logs/:day`（只接受日期格式）；設定頁「Debug logs」可下載。
+- 驗收：log 測試（訊息、巢狀欄位、OpenAI key 格式都找不到 secret；換日與保留 14 天）、server 測試（任務錯誤訊息含 secret，log 檔與下載內容都找不到；非日期路徑 404）、Playwright（下載）。
 
 ### T4.7 備份與匯出
 

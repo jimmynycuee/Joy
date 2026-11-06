@@ -679,6 +679,61 @@ function WorktreesPanel() {
   )
 }
 
+/** Downloads an authenticated API response as a file. */
+async function downloadFile(path: string, filename: string): Promise<void> {
+  const response = await fetch(path, { headers: { authorization: `Bearer ${__JOY_API_TOKEN__}` } })
+  if (!response.ok) throw new Error(`Download failed (${response.status})`)
+  const url = URL.createObjectURL(await response.blob())
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+/** Debug logs (T4.8): the last 14 days, secrets already removed, for attaching to a bug report. */
+function LogsPanel() {
+  const [logs, setLogs] = useState<Array<{ day: string; name: string; bytes: number }>>([])
+  const [failure, setFailure] = useState('')
+
+  useEffect(() => {
+    request<{ logs?: Array<{ day: string; name: string; bytes: number }> }>('/api/logs')
+      .then((body) => setLogs(Array.isArray(body.logs) ? body.logs : []))
+      .catch(() => undefined)
+  }, [])
+
+  return (
+    <section className="settings-card" aria-label="Debug logs" data-testid="logs-panel">
+      <h2>Debug logs</h2>
+      <p className="muted">
+        One file per day, kept 14 days. Known secrets are removed before anything is written.
+      </p>
+      <ul className="worktree-list">
+        {logs.map((log) => (
+          <li key={log.day} className="worktree-item">
+            <span>
+              {log.day} <span className="muted">· {formatBytes(log.bytes)}</span>
+            </span>
+            <button
+              type="button"
+              className="quiet-button"
+              onClick={() =>
+                void downloadFile(`/api/logs/${log.day}`, log.name).catch((error: unknown) =>
+                  setFailure(error instanceof Error ? error.message : 'Download failed'),
+                )
+              }
+            >
+              Download
+            </button>
+          </li>
+        ))}
+      </ul>
+      {logs.length === 0 ? <p className="muted">No logs yet.</p> : null}
+      {failure ? <p className="approvals-error">{failure}</p> : null}
+    </section>
+  )
+}
+
 /** Backups and export (T4.7). Restoring replaces the database, so it is a command run while Joy is stopped. */
 function BackupsPanel() {
   const [backups, setBackups] = useState<Array<{ day: string; bytes: number }>>([])
@@ -705,16 +760,7 @@ function BackupsPanel() {
 
   async function exportJson() {
     try {
-      const response = await fetch('/api/export', {
-        headers: { authorization: `Bearer ${__JOY_API_TOKEN__}` },
-      })
-      if (!response.ok) throw new Error(`Export failed (${response.status})`)
-      const url = URL.createObjectURL(await response.blob())
-      const link = document.createElement('a')
-      link.href = url
-      link.download = `joy-export-${new Date().toISOString().slice(0, 10)}.json`
-      link.click()
-      URL.revokeObjectURL(url)
+      await downloadFile('/api/export', `joy-export-${new Date().toISOString().slice(0, 10)}.json`)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Export failed')
     }
@@ -2188,6 +2234,7 @@ function App() {
               {config ? <TelegramSettings config={config} onConfig={setConfig} /> : null}
               <WorktreesPanel />
               <BackupsPanel />
+              <LogsPanel />
             </div>
           ) : (
             <div className="loading-card">Loading settings…</div>
