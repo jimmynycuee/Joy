@@ -515,6 +515,113 @@ interface ChatMessage {
   id: number
   role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
+  memoryIds?: string[]
+}
+
+interface MemoryItem {
+  id: string
+  content: string
+  expiresAt?: string
+  supersededBy?: string
+}
+
+function memoryInactive(memory: MemoryItem): boolean {
+  return (
+    Boolean(memory.supersededBy) ||
+    (memory.expiresAt !== undefined && Date.parse(memory.expiresAt) <= Date.now())
+  )
+}
+
+/** What Joy remembers about the owner (T3.4): every memory can be corrected or deleted. */
+function MemoryPanel(props: {
+  memories: MemoryItem[]
+  onChange: () => Promise<void>
+  onError: (message: string) => void
+}) {
+  const [editing, setEditing] = useState('')
+  const [draft, setDraft] = useState('')
+
+  async function save(id: string) {
+    try {
+      await request(`/api/memories/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ content: draft }),
+      })
+      setEditing('')
+      await props.onChange()
+    } catch (error) {
+      props.onError(error instanceof Error ? error.message : 'Could not save the memory')
+    }
+  }
+
+  return (
+    <section className="memory-panel" aria-label="Memories" data-testid="memory-panel">
+      <h3>What Joy remembers</h3>
+      {props.memories.length === 0 ? <p className="muted">Nothing yet.</p> : null}
+      <ul>
+        {props.memories.map((memory) => (
+          <li key={memory.id} className={memoryInactive(memory) ? 'memory-item inactive' : 'memory-item'}>
+            {editing === memory.id ? (
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  void save(memory.id)
+                }}
+              >
+                <input
+                  aria-label="Memory text"
+                  value={draft}
+                  maxLength={500}
+                  onChange={(event) => setDraft(event.target.value)}
+                />
+                <button type="submit" className="quiet-button">
+                  Save
+                </button>
+                <button type="button" className="quiet-button" onClick={() => setEditing('')}>
+                  Cancel
+                </button>
+              </form>
+            ) : (
+              <>
+                <span>{memory.content}</span>
+                {memory.supersededBy ? <span className="muted"> (replaced)</span> : null}
+                {!memory.supersededBy && memoryInactive(memory) ? (
+                  <span className="muted"> (expired)</span>
+                ) : null}
+                <button
+                  type="button"
+                  className="quiet-button"
+                  onClick={() => {
+                    setEditing(memory.id)
+                    setDraft(memory.content)
+                  }}
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  className="quiet-button"
+                  aria-label={`Delete memory: ${memory.content}`}
+                  onClick={() => void deleteMemory(memory.id, props.onChange, props.onError)}
+                >
+                  Delete
+                </button>
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
+async function deleteMemory(id: string, onChange: () => Promise<void>, onError: (message: string) => void) {
+  try {
+    await request(`/api/memories/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    await onChange()
+  } catch (error) {
+    onError(error instanceof Error ? error.message : 'Could not delete the memory')
+  }
 }
 
 /** Chat with the assistant (T3.1). Conversations are listed on the left, the selected one on the right. */
@@ -524,6 +631,12 @@ function AssistantPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [sending, setSending] = useState(false)
   const [failure, setFailure] = useState('')
+  const [memories, setMemories] = useState<MemoryItem[]>([])
+
+  async function loadMemories(): Promise<void> {
+    const body = await request<{ memories?: MemoryItem[] }>('/api/memories')
+    setMemories(Array.isArray(body.memories) ? body.memories : [])
+  }
 
   async function loadList(): Promise<ConversationSummary[]> {
     const body = await request<{ conversations?: ConversationSummary[] }>('/api/conversations')
@@ -533,6 +646,7 @@ function AssistantPage() {
   }
 
   useEffect(() => {
+    void loadMemories().catch(() => undefined)
     void loadList()
       .then((list) => {
         if (list[0]) setSelected((current) => current || list[0]?.id || '')
@@ -604,6 +718,8 @@ function AssistantPage() {
         if (Array.isArray(body.messages)) setMessages(body.messages)
       }
       void loadList().catch(() => undefined)
+      // Joy may have learned something from this message; extraction runs in the background.
+      window.setTimeout(() => void loadMemories().catch(() => undefined), 3000)
     }
   }
 
@@ -623,6 +739,7 @@ function AssistantPage() {
             {conversation.title ?? 'New conversation'}
           </button>
         ))}
+        <MemoryPanel memories={memories} onChange={loadMemories} onError={setFailure} />
       </aside>
       <section className="assistant-chat" aria-label="Chat">
         <div className="chat-messages">
@@ -637,6 +754,29 @@ function AssistantPage() {
                   {message.role === 'user' ? 'You' : message.role === 'assistant' ? 'Joy' : 'Error'}
                 </span>
                 <p>{message.content}</p>
+                {message.role === 'assistant' && message.memoryIds?.length ? (
+                  <div className="memory-chips" aria-label="Memories used">
+                    {message.memoryIds.map((id) => {
+                      const memory = memories.find((m) => m.id === id)
+                      return memory ? (
+                        <span key={id} className="memory-chip">
+                          {memory.content}
+                          <button
+                            type="button"
+                            aria-label={`Forget: ${memory.content}`}
+                            onClick={() => void deleteMemory(id, loadMemories, setFailure)}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ) : (
+                        <span key={id} className="memory-chip deleted">
+                          deleted memory
+                        </span>
+                      )
+                    })}
+                  </div>
+                ) : null}
               </div>
             ))
           )}

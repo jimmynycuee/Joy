@@ -315,6 +315,17 @@ export const MIGRATIONS: readonly Migration[] = [
       END;
     `,
   },
+  {
+    version: 10,
+    name: 'memories used by each assistant session and reply',
+    sql: /* sql */ `
+      -- The memories given to the conversation's current brain session: deleting or editing one of them must end
+      -- that session so the next turn starts without it.
+      ALTER TABLE conversations ADD COLUMN memory_ids TEXT CHECK (memory_ids IS NULL OR json_valid(memory_ids));
+      -- The memories in play when the assistant wrote this reply (shown next to the reply).
+      ALTER TABLE messages ADD COLUMN memory_ids TEXT CHECK (memory_ids IS NULL OR json_valid(memory_ids));
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

@@ -32,6 +32,7 @@ import {
   addUsage,
   appendTaskEvent,
   createAttempt,
+  createMemory,
   createRepo,
   createTask,
   openDatabase,
@@ -2411,6 +2412,62 @@ describe('Joy local server', () => {
     expect(cancelResult).toMatchObject({ id: task.id })
     await waitForStatus(origin, task.id, 'cancelled', 5_000)
     expect(badInput).toBeTruthy()
+  })
+
+  it('lets the owner edit and delete memories, and a deleted memory is never used again', async () => {
+    const prompts: Array<{ prompt: string; resumed: boolean }> = []
+    const assistantApiProvider = (): AgentProvider => ({
+      ...scriptedProvider('openai-api', []).provider,
+      async *run(options: RunOptions) {
+        prompts.push({ prompt: options.prompt, resumed: Boolean(options.resumeSessionId) })
+        yield { type: 'done', sessionId: `s${prompts.length}`, isError: false, finalMessage: 'ok' }
+      },
+    })
+    const { serverPromise, db } = fixture({ assistantApiProvider })
+    createMemory(db, { id: 'm1', scope: 'user', content: 'Likes tabs', source: 'user_utterance' })
+    createMemory(db, { id: 'm2', scope: 'user', content: 'Works in Taipei', source: 'user_utterance' })
+    const { origin } = await start(serverPromise)
+    const send = (id: string, text: string) =>
+      postJson(`${origin}/api/conversations/${id}/messages`, { text })
+    const memoryRequest = (id: string, method: string, body?: unknown) =>
+      fetch(`${origin}/api/memories/${id}`, {
+        method,
+        headers: { 'content-type': 'application/json', origin: VITE_ORIGIN },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      })
+    const newConversation = async () =>
+      ((await (await postJson(`${origin}/api/conversations`, {})).json()) as { conversation: { id: string } })
+        .conversation.id
+
+    const a = await newConversation()
+    const first = (await (await send(a, 'hi')).json()) as { message: { memoryIds: string[] } }
+    expect(prompts[0]?.prompt).toContain('- Likes tabs')
+    expect(first.message.memoryIds.sort()).toEqual(['m1', 'm2'])
+    await send(a, 'again')
+    expect(prompts[1]?.resumed).toBe(true)
+
+    expect((await memoryRequest('m1', 'DELETE')).status).toBe(204)
+    await send(a, 'third')
+    // The session that was told about m1 is gone: a new one starts, without it.
+    expect(prompts[2]?.resumed).toBe(false)
+    expect(prompts[2]?.prompt).not.toContain('Likes tabs')
+    expect(prompts[2]?.prompt).toContain('- Works in Taipei')
+    await send(await newConversation(), 'fresh')
+    expect(prompts[3]?.prompt).not.toContain('Likes tabs')
+
+    const edited = await memoryRequest('m2', 'PATCH', { content: 'Works in Tainan' })
+    expect(edited.status).toBe(200)
+    await send(a, 'fourth')
+    expect(prompts[4]).toMatchObject({ resumed: false })
+    expect(prompts[4]?.prompt).toContain('- Works in Tainan')
+    expect(prompts[4]?.prompt).not.toContain('Taipei')
+
+    expect((await memoryRequest('m2', 'PATCH', { content: 'My password is swordfish' })).status).toBe(422)
+    expect((await memoryRequest('m1', 'DELETE')).status).toBe(404)
+    const listed = (await (await fetch(`${origin}/api/memories`)).json()) as {
+      memories: Array<{ content: string }>
+    }
+    expect(listed.memories.map((m) => m.content)).toEqual(['Works in Tainan'])
   })
 
   it("learns memories only from the owner's words and uses them in new conversations", async () => {

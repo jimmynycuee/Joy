@@ -48,16 +48,20 @@ import {
   latestAttempt,
   listApprovals,
   listAttempts,
+  deleteMemory,
+  getMemory,
   listActiveMemories,
   listAllMemories,
   listConversations,
   listMessages,
+  resetSessionsUsingMemory,
   listRepos,
   listReviews,
   listTaskEvents,
   listTasks,
   listUsage,
   markMemoriesUsed,
+  updateMemoryContent,
   openDatabase,
   setConversationTitle,
   setTaskStatus,
@@ -73,6 +77,7 @@ import {
   EXTRACTION_SCHEMA,
   applyExtraction,
   extractionPrompt,
+  isSensitive,
   memoryContext,
   parseExtraction,
 } from '@joy/memory'
@@ -178,6 +183,7 @@ function actionFingerprint(action: { kind: string; detail: unknown }): string {
 
 const conversationInputSchema = z.strictObject({ title: z.string().trim().min(1).max(200).optional() })
 const messageInputSchema = z.strictObject({ text: z.string().trim().min(1).max(20_000) })
+const memoryInputSchema = z.strictObject({ content: z.string().trim().min(1).max(500) })
 const assistantCallSchema = z.discriminatedUnion('op', [
   z.strictObject({ op: z.literal('list') }),
   z.strictObject({
@@ -913,6 +919,30 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     if (url.pathname === '/api/memories' && method === 'GET') {
       json(res, 200, { memories: listAllMemories(db, 'user') })
+      return
+    }
+    const memoryMatch = /^\/api\/memories\/([^/]+)$/.exec(url.pathname)
+    if (memoryMatch && method === 'PATCH') {
+      assertJsonContentType(req)
+      const { content } = memoryInputSchema.parse(await readJson(req))
+      const id = decodePathSegment(memoryMatch[1] ?? '')
+      const memory = getMemory(db, id)
+      if (!memory || memory.scope !== 'user') throw new HttpError(404, 'Memory not found')
+      // The same write rule as learned memories: no secrets or sensitive details, even typed by the owner.
+      if (isSensitive(content, redactor))
+        throw new HttpError(422, 'Joy does not store passwords, ID numbers, health or financial details')
+      const updated = updateMemoryContent(db, id, content.trim())
+      forgetMemoryInSessions(id)
+      json(res, 200, { memory: updated })
+      return
+    }
+    if (memoryMatch && method === 'DELETE') {
+      const id = decodePathSegment(memoryMatch[1] ?? '')
+      const memory = getMemory(db, id)
+      if (!memory || memory.scope !== 'user') throw new HttpError(404, 'Memory not found')
+      deleteMemory(db, id)
+      forgetMemoryInSessions(id)
+      res.writeHead(204).end()
       return
     }
     if (url.pathname === '/api/conversations' && method === 'GET') {
@@ -1692,6 +1722,16 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   }
 
   const memoryJobs = new Set<Promise<unknown>>()
+  /** Bumped on every memory edit or delete, so a turn that was running at the time can tell. */
+  let memoryEpoch = 0
+  const staleMemories = new Set<string>()
+
+  /** The owner changed or removed a memory: no brain session may keep using the old text. */
+  function forgetMemoryInSessions(id: string): void {
+    memoryEpoch++
+    staleMemories.add(id)
+    resetSessionsUsingMemory(db, id)
+  }
 
   /**
    * Asks the background model what is worth remembering from the owner's own message, then stores it under the
@@ -1721,6 +1761,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     if (!done || done.isError) return
     applyExtraction(db, parseExtraction(done.structured), { ownerMessage, redactor })
+    // A corrected fact replaces the old one; sessions that were told the old one start over.
+    for (const memory of existing)
+      if (getMemory(db, memory.id)?.supersededBy) forgetMemoryInSessions(memory.id)
   }
 
   /** One assistant turn: store the owner's message, ask the configured brain, store and return its reply. */
@@ -1781,6 +1824,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       await mkdir(cwd, { recursive: true, mode: 0o700 })
       // A new session gets what Joy remembers; a resumed one already has it.
       const remembered = canResume ? [] : listActiveMemories(db, 'user', 20)
+      const memoryIds = canResume ? conversation.memoryIds : remembered.map((m) => m.id)
+      const epochAtStart = memoryEpoch
       if (remembered.length)
         markMemoriesUsed(
           db,
@@ -1807,11 +1852,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         throw new HttpError(502, message)
       }
       for (const event of result.events) persistUsageEvent(db, brain.provider, event)
-      const reply = appendMessage(db, conversationId, 'assistant', redactor.redact(result.reply))
+      const reply = appendMessage(db, conversationId, 'assistant', redactor.redact(result.reply), memoryIds)
+      // A memory this session holds was edited or deleted while the brain answered: do not keep the session.
+      const stale = memoryEpoch !== epochAtStart && memoryIds.some((id) => staleMemories.has(id))
       updateConversationSession(db, conversationId, {
         provider: brain.provider,
         model: brain.model,
-        sessionId: result.sessionId ?? null,
+        sessionId: stale ? null : (result.sessionId ?? null),
+        memoryIds,
       })
       if (!conversation.title) setConversationTitle(db, conversationId, redactor.redact(text).slice(0, 60))
       if (options.memoryExtraction ?? true) {
