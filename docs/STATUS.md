@@ -3,7 +3,7 @@
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
 - 最後更新：2026-11-05
-- 目前階段：P1 依指定順序收尾；完成後再進 P2、P3。
+- 目前階段：P1 的驗收／owner gate 受阻時推進不相依的 P2；P3 僅在 T2.2、T2.3、T2.4 合併後開始。
 
 ## 驗證結果
 
@@ -14,11 +14,16 @@
 - 本機 Linux：`pnpm exec vitest run --project github packages/github/src/publisher.test.ts` 通過（17/17）；清除 runner 注入的 Git 身分後 `pnpm check` 通過（197 passed、2 skipped）。`git diff --check` 通過。
 - Windows 實際行為需以 GitHub Actions 驗證；本機沒有 Windows 執行環境。
 
+### T2.2 Tool Hub
+
+- 新增 `packages/tools` 的 stdio MCP server，註冊 `ask_peer`、`task_status`、`request_approval`、`approve`；Claude／Codex single task 收到每次執行獨立的 loopback bearer endpoint，peer 以 read-only autonomy 在同一 worktree 執行，並遵守 repo provider allowlist。
+- `tool_hub.max_ask_peer_calls` 預設 5、可設 1–100；ask_peer 呼叫寫入 task events，讓同一 task 的額度在 resume 後保留。Claude 的 delegated `approve` 僅自動放行精確匹配的已註冊 `mcp__joy__*` 工具；其他 CLI 權限提示一律拒絕。`request_approval` 的 ActionKind 分級與審核流程留待 T2.3 接線。
+- Linux `env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 通過（格式、lint、workspace typecheck、266 passed、2 skipped）；stdio child、allowlist、read-only peer 與額度以 synthetic fixture 測試，尚未用登入中的真實 Claude/Codex CLI 驗收。
+
 ### T1.9 GitHub publisher
 
-- 已把 T1.9 publisher 改動重放至最新 main；程式檢查推送／抓取目標與 base ancestry，逐一掃描將推送 commits 的敏感檔名、二進位變更、secret-like 新增內容、commit message；先批次查詢變更 blob 大小，只讀取不超過 1 KiB 的 blob 阻擋 Git LFS pointer（含只變更 oid／size 的更新），避免讀取大型文字 blob；重用既有 PR 時使用 `headRepositoryOwner.login` 與 `headRepository.name` 比對完整 repo identity，並遮罩 body。
-- 獨立審查指出 fetch URL rewrite、Git LFS payload、PR head repo identity 與既有 body 遮罩風險，均已修正並新增回歸測試；後續複審補捉編輯 LFS pointer、較舊 gh JSON 欄位相容性、signed size／前置 extension、大型文字 blob 小修改，以及 Git LFS 的 U+0085 空白語意，均已補上修正與回歸測試。head `7aa7a66` 的獨立複審已 approve、無 blocker；其非阻塞建議的舊版 git-lfs alphanumeric／帶尾綴 OID 偵測與批次 stdin EPIPE 處理，已提交至同一 PR #76，最新 head `fc629c4` 的 GitHub Actions 與新一輪獨立複核進行中。
-- 本機 `env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 通過：Prettier、ESLint、workspace typecheck 均成功，269 tests passed、2 skipped；publisher 測試 50/50 通過。`git diff --check` 通過。
+- 已把 T1.9 publisher 改動重放至最新 main；程式檢查上游 repo／fork 與 base ancestry，逐一掃描將推送的 commits（敏感檔名、二進位變更、secret-like 新增內容與 commit message），並限制 Git／gh 子程序時間及診斷輸出。
+- 本機 `pnpm exec vitest run --project github packages/github/src/publisher.test.ts` 通過（35/35）；`env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_COUNT=0 pnpm check` 通過（格式、lint、typecheck；254 passed、2 skipped）。
 - PLAN 的真實驗收仍未完成：本機 `gh auth status` 顯示未登入，尚未建立 `[test] ` draft PR。已透過存取卡請求 `GITHUB_PAT`；取得後先用 `GH_TOKEN="$GITHUB_PAT" gh auth status` 驗證 CLI 登入，再開測試 PR，驗收後立即關閉並刪除測試分支。
 
 ### T1.14 本機 API 與 WebSocket token 認證
@@ -49,7 +54,7 @@
 - [PR #58](https://github.com/jimmynycuee/Joy/pull/58)：審核 `packages/core` 公開介面與 `packages/secrets` OS keychain／機密遮罩處理。
 - [PR #73](https://github.com/jimmynycuee/Joy/pull/73)：審核本機 API／WebSocket token 認證、token 檔案權限與 Windows ACL 邊界。
 - [PR #57](https://github.com/jimmynycuee/Joy/pull/57)：審核 repo provider allowlist 的政策／執行時檢查，以及無 attempt 預檢失敗事件的資料庫與事件格式。
-- [PR #76](https://github.com/jimmynycuee/Joy/pull/76)：審核 T1.9 publisher 安全性後續修正：先驗證 Git URL rewrite 後的有效 fetch destination、阻擋 Git LFS pointer commits、以完整 head repository identity／branch／base 比對可重用 PR，並遮罩既有 PR body。針對最新複審指出的 signed size、前置 extension 與大型文字 blob 小修改均已補回歸測試並修正；更新後 head 仍待新一輪獨立審查與 `[test] ` draft PR 真實驗收，尚未核准。
+- [PR #54](https://github.com/jimmynycuee/Joy/pull/54)：審核 GitHub publisher 對 push target、提交歷史與 secret-like 內容的安全限制。
 
 ## 需要擁有者處理
 

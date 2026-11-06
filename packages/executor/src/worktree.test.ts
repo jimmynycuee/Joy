@@ -8,13 +8,21 @@ import {
   unlinkSync,
   writeFileSync,
   renameSync,
+  symlinkSync,
 } from 'node:fs'
+import { realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AttemptId, RepoId, RepoRef, TaskId } from '@joy/core'
 import { afterEach, describe, expect, it } from 'vitest'
 import { git } from './git.js'
-import { WorktreeExecutor, assertSafeId, parseNameStatus, parseNumstat } from './worktree.js'
+import {
+  WorktreeExecutor,
+  assertSafeId,
+  parseNameStatus,
+  parseNumstat,
+  parseWorktreeList,
+} from './worktree.js'
 
 const dirs: string[] = []
 afterEach(() => {
@@ -143,6 +151,63 @@ describe('WorktreeExecutor', () => {
     await expect(executor.cleanup(ws)).resolves.toBeUndefined()
   })
 
+  it('requires confirmation before deleting a worktree with unpushed commits', async () => {
+    const { repo, executor } = await setup()
+    const ws = await executor.prepare(repo, tid('t1'), aid('a1'))
+    writeFileSync(join(ws.path, 'b.txt'), 'first\n')
+    await executor.commit(ws, 'Add b')
+    writeFileSync(join(ws.path, 'c.txt'), 'second\n')
+    await executor.commit(ws, 'Add c')
+
+    await expect(executor.cleanup(ws)).rejects.toThrow(/2 unpushed commits/)
+    expect(existsSync(ws.path)).toBe(true)
+    expect((await git(repo.path, ['branch', '--list', ws.branch])).trim()).not.toBe('')
+
+    await executor.cleanup(ws, { confirmedUnpushedCommits: true })
+    expect(existsSync(ws.path)).toBe(false)
+  })
+
+  it('allows cleanup once the worktree commits are pushed to a remote', async () => {
+    const { repo, executor, root } = await setup()
+    const remotePath = join(root, 'remote.git')
+    await git(root, ['init', '--bare', '-q', remotePath])
+    await git(repo.path, ['remote', 'add', 'origin', remotePath])
+    await git(repo.path, ['push', '-q', 'origin', 'main'])
+    const ws = await executor.prepare(repo, tid('t1'), aid('a1'))
+    writeFileSync(join(ws.path, 'b.txt'), 'pushed\n')
+    await executor.commit(ws, 'Add b')
+    await git(ws.path, ['push', '-q', '-u', 'origin', ws.branch])
+
+    await expect(executor.cleanup(ws)).resolves.toBeUndefined()
+    expect(existsSync(ws.path)).toBe(false)
+  })
+
+  it('reports managed worktree activity, disk usage, and configurable staleness', async () => {
+    const { repo, root } = await setup()
+    const executor = new WorktreeExecutor({ worktreesDir: join(root, 'worktrees'), staleAfterDays: 0 })
+    const ws = await executor.prepare(repo, tid('t1'), aid('a1'))
+    writeFileSync(join(ws.path, 'payload.bin'), Buffer.alloc(1024))
+
+    const worktrees = await executor.listWorktrees(repo)
+    expect(worktrees).toHaveLength(1)
+    expect(worktrees[0]).toMatchObject({ path: await realpath(ws.path), branch: ws.branch, stale: true })
+    expect(worktrees[0]?.headCommit).toBe(ws.baseCommit)
+    expect(worktrees[0]?.lastActivityAt).toBeInstanceOf(Date)
+    expect(worktrees[0]?.diskUsageBytes).toBeGreaterThanOrEqual(1024)
+  })
+
+  it('lists worktrees when the managed worktree directory resolves through a junction', async () => {
+    const { repo, root } = await setup()
+    const actualDir = join(root, 'actual-worktrees')
+    const linkedDir = join(root, 'worktrees')
+    mkdirSync(actualDir)
+    symlinkSync(actualDir, linkedDir, 'junction')
+    const executor = new WorktreeExecutor({ worktreesDir: linkedDir })
+    await executor.prepare(repo, tid('t1'), aid('a1'))
+
+    await expect(executor.listWorktrees(repo)).resolves.toHaveLength(1)
+  })
+
   it('rejects ids that could escape the worktrees directory', async () => {
     const { repo, executor } = await setup()
     await expect(executor.prepare(repo, tid('../evil'), aid('a1'))).rejects.toThrow(/Unsafe task id/)
@@ -170,6 +235,20 @@ describe('assertSafeId', () => {
 })
 
 describe('git output parsers', () => {
+  it.each(['\0', '\0\0', '\0\n'])('parses worktree records separated by %j', (separator) => {
+    const main = ['worktree C:\\repo', 'HEAD abc123', 'branch refs/heads/main'].join('\0')
+    const managed = [
+      'worktree C:\\repo\\worktrees\\r1\\t1-a1',
+      'HEAD def456',
+      'branch refs/heads/joy/t1/a1',
+    ].join('\0')
+
+    expect(parseWorktreeList(`${main}${separator}${managed}`)).toEqual([
+      { path: 'C:\\repo', branch: 'main', headCommit: 'abc123' },
+      { path: 'C:\\repo\\worktrees\\r1\\t1-a1', branch: 'joy/t1/a1', headCommit: 'def456' },
+    ])
+  })
+
   it('parses -z name-status including renames', () => {
     expect(parseNameStatus('M\0a.txt\0R087\0old.txt\0new.txt\0A\0b c.txt\0')).toEqual([
       { path: 'a.txt', status: 'modified' },

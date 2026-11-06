@@ -1,0 +1,20 @@
+{
+  "name": "@joy/tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Joy Tool Hub MCP server and task-scoped tools.",
+  "license": "BUSL-1.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@joy/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "tsx": "^4.23.15",
+    "zod": "^4.6.7"
+  }
+}
