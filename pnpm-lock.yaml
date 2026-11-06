@@ -124,6 +124,18 @@ importers:
         specifier: workspace:*
         version: link:../secrets
 
+  packages/memory:
+    dependencies:
+      '@joy/core':
+        specifier: workspace:*
+        version: link:../core
+      '@joy/db':
+        specifier: workspace:*
+        version: link:../db
+      '@joy/secrets':
+        specifier: workspace:*
+        version: link:../secrets
+
   packages/model-effort:
     dependencies:
       '@joy/core':
@@ -180,6 +192,9 @@ importers:
       '@joy/github':
         specifier: workspace:*
         version: link:../github
+      '@joy/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@joy/model-effort':
         specifier: workspace:*
         version: link:../model-effort

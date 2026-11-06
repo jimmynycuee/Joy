@@ -270,6 +270,51 @@ export const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE tasks ADD COLUMN origin_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL;
     `,
   },
+  {
+    version: 9,
+    name: 'stable memory keys for full-text search (issue 39) and superseded memories',
+    sql: /* sql */ `
+      -- FTS was tied to the hidden rowid of a table with a TEXT primary key; VACUUM may renumber that rowid and
+      -- point index rows at the wrong memory. Rebuild with an explicit INTEGER PRIMARY KEY the index can rely on.
+      DROP TRIGGER memories_ai;
+      DROP TRIGGER memories_ad;
+      DROP TRIGGER memories_au;
+      DROP TABLE memories_fts;
+      ALTER TABLE memories RENAME TO memories_old;
+      CREATE TABLE memories (
+        seq             INTEGER PRIMARY KEY,
+        id              TEXT NOT NULL UNIQUE,
+        scope           TEXT NOT NULL CHECK (scope IN ('user', 'project', 'episode')),
+        repo_id         TEXT REFERENCES repos(id) ON DELETE CASCADE,
+        content         TEXT NOT NULL,
+        -- Only 'user_utterance' may create user-scope memories (enforced in packages/memory).
+        source          TEXT NOT NULL CHECK (source IN ('user_utterance', 'agent', 'summary', 'manual')),
+        confidence      REAL NOT NULL DEFAULT 1.0 CHECK (confidence BETWEEN 0 AND 1),
+        sensitive       INTEGER NOT NULL DEFAULT 0 CHECK (sensitive IN (0, 1)),
+        expires_at      TEXT,
+        last_used_at    TEXT,
+        -- Set when a newer memory contradicted this one; kept for the record, never used again.
+        superseded_by   TEXT,
+        created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      ) STRICT;
+      INSERT INTO memories (id, scope, repo_id, content, source, confidence, sensitive, expires_at, last_used_at, created_at)
+        SELECT id, scope, repo_id, content, source, confidence, sensitive, expires_at, last_used_at, created_at
+        FROM memories_old;
+      DROP TABLE memories_old;
+      CREATE VIRTUAL TABLE memories_fts USING fts5(content, content='memories', content_rowid='seq');
+      INSERT INTO memories_fts(memories_fts) VALUES ('rebuild');
+      CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
+        INSERT INTO memories_fts(rowid, content) VALUES (new.seq, new.content);
+      END;
+      CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
+        INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.seq, old.content);
+      END;
+      CREATE TRIGGER memories_au AFTER UPDATE OF content ON memories BEGIN
+        INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.seq, old.content);
+        INSERT INTO memories_fts(rowid, content) VALUES (new.seq, new.content);
+      END;
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
