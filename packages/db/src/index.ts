@@ -96,3 +96,12 @@ export { modelStats } from './stats.js'
 export type { ImplementerStats, ModelStats, ReviewerStats, StatsFilter } from './stats.js'
 export { claimIssueImport, getIssueImport, releaseIssueImport, setIssueImportTask } from './issue-imports.js'
 export type { IssueImportRecord } from './issue-imports.js'
+export {
+  BACKUPS_KEPT,
+  backupDatabase,
+  dailyBackup,
+  listBackups,
+  restoreDatabase,
+  verifyBackup,
+} from './backup.js'
+export type { BackupFile } from './backup.js'

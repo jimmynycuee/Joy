@@ -2,7 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-06（T2.6 GitHub issue → 任務）
+- 最後更新：2026-11-06（T4.7 備份與匯出）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
@@ -92,6 +92,13 @@
 - T3.8 依 PLAN 清單評估維護狀況、權限範圍與資料是否送第三方，自行選一個 Gmail／Calendar MCP server；先唯讀，寄信與邀請他人一律 🔴。選型理由寫在本檔決策區。
 - 不呼叫真實模型；若測試確實需要真實模型，只能使用 haiku 或 gpt-6-luna、low effort，且必須是 opt-in。
 - 每個 ticket 從最新 main 開獨立分支，diff 只保留該 ticket。CI 失敗最多修 3 次；無法修復時記錄原因並繼續不相依工作。
+
+### T4.7 備份與匯出
+
+- Joy 啟動時與之後每小時檢查一次：當天（UTC）沒有備份就用 `VACUUM INTO` 寫到 `~/.joy/backups/joy-YYYY-MM-DD.sqlite`（先寫暫存名再改名，不會留下半份），**只保留最新 7 份**。
+- 還原：**先停 Joy**，再 `pnpm joy restore 2026-11-06`（或備份檔路徑）。會先檢查檔案完整且是 Joy 資料庫、版本不比目前新；被取代的資料庫另存成 `joy.sqlite.before-restore-<時間>.sqlite`；舊的 WAL 檔會刪掉以免套到還原檔上。Joy 執行中（`~/.joy/server.pid` 的程序還活著）就拒絕。`pnpm joy backup` 手動備份。
+- `GET /api/export` 下載 JSON：repo、任務（含嘗試、審查、事件）、所有記憶、對話與訊息、專案筆記、提醒與排程，**整份經過 Redactor**。設定頁「Backups & export」：備份清單、立即備份、下載匯出、還原指令。
+- 驗收：db 測試（一天一份、保留 7 份、還原後資料與備份一致且保留被取代的版本、拒絕非 Joy 檔案）、CLI 測試（Joy 執行中拒絕、過期 pid 不擋）、server 測試（啟動即備份、匯出看不到已知 secret）、Playwright `apps/web/e2e/backups.spec.ts`。
 
 ### T2.6 GitHub issue → 任務
 

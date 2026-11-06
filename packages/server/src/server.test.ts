@@ -2781,6 +2781,55 @@ describe('Joy local server', () => {
     expect((await tasks()).find((t) => t.title === '#8 Docs typo')?.provenance).toBe('external_content')
   })
 
+  it('backs up the database daily and exports everything through the Redactor', async () => {
+    const redactor = new Redactor()
+    redactor.add('export-secret-value-123')
+    const { serverPromise, db, dir } = fixture({ redactor })
+    createRepo(db, { id: rid('joy'), path: '/joy', defaultBranch: 'main' })
+    // Raw rows that never passed through the Redactor on the way in.
+    createTask(db, {
+      id: 't1' as TaskId,
+      repoId: rid('joy'),
+      title: 'Rotate export-secret-value-123',
+      prompt: 'p',
+      mode: 'single',
+    })
+    createMemory(db, {
+      id: 'm1',
+      scope: 'user',
+      content: 'Token export-secret-value-123',
+      source: 'user_utterance',
+    })
+    const { origin, server } = await start(serverPromise)
+
+    let backups: Array<{ day: string }> = []
+    for (let i = 0; i < 100 && backups.length === 0; i++) {
+      backups = ((await (await fetch(`${origin}/api/backups`)).json()) as { backups: typeof backups }).backups
+      if (backups.length === 0) await new Promise((r) => setTimeout(r, 10))
+    }
+    expect(backups.map((b) => b.day)).toEqual([new Date().toISOString().slice(0, 10)])
+    expect(existsSync(join(dir, 'backups', `joy-${backups[0]?.day}.sqlite`))).toBe(true)
+    const again = (await (await postJson(`${origin}/api/backups`, {})).json()) as { created: string | null }
+    expect(again.created).toBeNull()
+
+    const response = await fetch(`${origin}/api/export`)
+    expect(response.headers.get('content-disposition')).toMatch(/attachment; filename="joy-export-/)
+    const text = await response.text()
+    expect(text).not.toContain('export-secret-value-123')
+    const exported = JSON.parse(text) as {
+      format: string
+      tasks: Array<{ id: string; title: string }>
+      memories: Array<{ id: string }>
+    }
+    expect(exported.format).toBe('joy-export')
+    expect(exported.tasks.map((t) => t.id)).toEqual(['t1'])
+    expect(exported.memories.map((m) => m.id)).toEqual(['m1'])
+
+    expect(readFileSync(join(dir, 'server.pid'), 'utf8')).toBe(String(process.pid))
+    await server.close()
+    expect(existsSync(join(dir, 'server.pid'))).toBe(false)
+  })
+
   it('reports model stats filtered by period and repository', async () => {
     const { serverPromise, db } = fixture()
     createRepo(db, { id: rid('joy'), path: '/joy', defaultBranch: 'main' })
