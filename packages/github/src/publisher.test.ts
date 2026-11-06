@@ -741,19 +741,25 @@ describe('GitHubPublisher', () => {
     await expect(createPublisher(fixture).publish(fixture.workspace, input())).resolves.toBeDefined()
   }, 30_000)
 
-  it('reports a failed batch-size query without crashing when git closes stdin early', async () => {
-    const fixture = await createFixture({ fakeGitMode: 'exit-batch-check' })
-    await Promise.all(
-      Array.from({ length: 2_000 }, (_, index) =>
-        writeFile(join(fixture.workspace.path, `changed-${index}.txt`), `change ${index}\n`),
-      ),
-    )
-    await commitAll(fixture.workspace.path, 'Add many small files')
+  // 2,000 files make the batch input larger than a pipe buffer, which is what reproduces the early stdin close.
+  // Creating, committing and cleaning them up through the fake-git wrapper takes ~40 s on Windows runners.
+  it(
+    'reports a failed batch-size query without crashing when git closes stdin early',
+    { timeout: 120_000 },
+    async () => {
+      const fixture = await createFixture({ fakeGitMode: 'exit-batch-check' })
+      await Promise.all(
+        Array.from({ length: 2_000 }, (_, index) =>
+          writeFile(join(fixture.workspace.path, `changed-${index}.txt`), `change ${index}\n`),
+        ),
+      )
+      await commitAll(fixture.workspace.path, 'Add many small files')
 
-    await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
-      /Git changed blob size list failed/,
-    )
-  })
+      await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+        /Git changed blob size list failed/,
+      )
+    },
+  )
 
   it('reports an actionable error when a pushed commit patch exceeds the scan limit', async () => {
     const fixture = await createFixture()
