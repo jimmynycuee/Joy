@@ -20,6 +20,10 @@ test('backups are listed, can be taken now, and the export downloads as JSON', a
       await route.fulfill({ json: { created: '/home/.joy/backups/joy-2026-11-06.sqlite', backups } })
     } else if (path === '/api/backups') {
       await route.fulfill({ json: { backups } })
+    } else if (path === '/api/logs') {
+      await route.fulfill({ json: { logs: [{ day: '2026-11-06', name: 'joy-2026-11-06.log', bytes: 512 }] } })
+    } else if (path === '/api/logs/2026-11-06') {
+      await route.fulfill({ contentType: 'text/plain', body: '{"msg":"task finished"}\n' })
     } else if (path === '/api/export') {
       await route.fulfill({ contentType: 'application/json', body: '{"format":"joy-export"}' })
     } else if (path === '/api/config') {
@@ -45,4 +49,10 @@ test('backups are listed, can be taken now, and the export downloads as JSON', a
   const download = page.waitForEvent('download')
   await panel.getByRole('button', { name: /Export tasks and memories/ }).click()
   expect((await download).suggestedFilename()).toMatch(/^joy-export-\d{4}-\d{2}-\d{2}\.json$/)
+
+  const logs = page.getByTestId('logs-panel')
+  await expect(logs).toContainText('2026-11-06 · 512 B')
+  const logDownload = page.waitForEvent('download')
+  await logs.getByRole('button', { name: 'Download' }).click()
+  expect((await logDownload).suggestedFilename()).toBe('joy-2026-11-06.log')
 })

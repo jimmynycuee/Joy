@@ -3,7 +3,7 @@ import { createServer as createHttpServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { link, lstat, mkdir, open, rm, unlink, writeFile } from 'node:fs/promises'
+import { link, lstat, mkdir, open, readFile, rm, unlink, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import { z, ZodError } from 'zod'
@@ -101,6 +101,8 @@ import type {
 } from '@joy/db'
 import { ApprovalBroker } from './approvals.js'
 import { runAssistantTurn, toApiTools } from './assistant.js'
+import type { Logger } from './log.js'
+import { createFileLogger, listLogFiles } from './log.js'
 import type { Clock, Delivery } from '@joy/scheduler'
 import { createScheduler, firstRun } from '@joy/scheduler'
 import {
@@ -325,6 +327,8 @@ export interface JoyServerOptions {
   issuePollIntervalMs?: number
   /** Daily database backups into <home>/backups (T4.7). Default true. */
   backups?: boolean
+  /** Where debug log entries go (tests); defaults to <home>/logs (T4.8). */
+  logger?: Logger
   /** Summarize conversations for history search (T3.6). Default true. */
   conversationSummaries?: boolean
   /** Overrides budget.per_task.max_minutes (tests). */
@@ -402,6 +406,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const ownsDatabase = !options.database
   const db = options.database ?? openDatabase(paths.database)
   const redactor = options.redactor ?? new Redactor()
+  const logsDir = join(home, 'logs')
+  const log = options.logger ?? createFileLogger({ dir: logsDir, redactor })
   redactor.add(apiToken)
   const secretStore = options.secretStore ?? new SecretStore({ onSecret: (secret) => redactor.add(secret) })
   const codexApprovalHandlers = new Map<
@@ -467,7 +473,16 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const safe = redactor.redactValue(payload)
     const event = appendTaskEvent(db, attemptId, type, safe)
     sendEvent(taskId, event)
+    if (type === 'started') log.info('task started', { taskId, attemptId })
     if (type === 'result') {
+      const result = safe as { status?: string; approved?: boolean; reason?: string }
+      log.info('task finished', {
+        taskId,
+        attemptId,
+        status: result.status,
+        approved: result.approved,
+        reason: result.reason,
+      })
       notifyResult(taskId, safe)
       reportToConversation(taskId, safe)
     }
@@ -581,15 +596,15 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           ? { pollTimeoutSeconds: options.telegram.pollTimeoutSeconds }
           : {}),
         onRejected: (reason, detail) =>
-          console.warn(redactor.redact(`[joy] Telegram: dropped ${reason} ${JSON.stringify(detail)}`)),
-        onError: (error) => console.warn(redactor.redact(`[joy] Telegram: ${error.message}`)),
+          log.warn(redactor.redact(`[joy] Telegram: dropped ${reason} ${JSON.stringify(detail)}`)),
+        onError: (error) => log.warn(redactor.redact(`[joy] Telegram: ${error.message}`)),
       })
     : undefined
   /** Every outbound Telegram message goes through here: redacted, and failures only logged. */
   const sendTelegram = (message: OutboundMessage) => {
     void telegram
       ?.send({ ...message, text: redactor.redact(message.text) })
-      .catch((error: Error) => console.warn(redactor.redact(`[joy] Telegram: ${error.message}`)))
+      .catch((error: Error) => log.warn(redactor.redact(`[joy] Telegram: ${error.message}`)))
   }
   if (telegram) {
     notifyResult = (taskId, payload) => {
@@ -995,7 +1010,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         })
         // The branch is on GitHub now; the local worktree is no longer needed (T2.8).
         const cleaned = await removeWorktree(repo, attempt).catch((error: unknown) => {
-          console.warn(redactor.redact(`[joy] could not remove worktree after publishing: ${String(error)}`))
+          log.warn(redactor.redact(`[joy] could not remove worktree after publishing: ${String(error)}`))
           return false
         })
         if (cleaned)
@@ -1014,6 +1029,24 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (cancelMatch && method === 'POST') {
       const task = cancelTaskById(decodePathSegment(cancelMatch[1] ?? '') as TaskId)
       json(res, 200, { task })
+      return
+    }
+    if (url.pathname === '/api/logs' && method === 'GET') {
+      json(res, 200, { logs: listLogFiles(logsDir) })
+      return
+    }
+    const logMatch = /^\/api\/logs\/(\d{4}-\d{2}-\d{2})$/.exec(url.pathname)
+    if (logMatch && method === 'GET') {
+      const file = listLogFiles(logsDir).find((entry) => entry.day === logMatch[1])
+      if (!file) throw new HttpError(404, 'No log for that day')
+      // Written through the Redactor already; redacted again in case a secret was added since.
+      const text = redactor.redact(await readFile(join(logsDir, file.name), 'utf8'))
+      res.writeHead(200, {
+        'content-type': 'text/plain; charset=utf-8',
+        'content-disposition': `attachment; filename="${file.name}"`,
+        'cache-control': 'no-store',
+      })
+      res.end(text)
       return
     }
     if (url.pathname === '/api/backups' && method === 'GET') {
@@ -1486,7 +1519,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       try {
         infos = await worktreeManager.listWorktrees(repo)
       } catch (error) {
-        console.warn(redactor.redact(`[joy] could not list worktrees of ${repo.path}: ${String(error)}`))
+        log.warn(redactor.redact(`[joy] could not list worktrees of ${repo.path}: ${String(error)}`))
         continue
       }
       const attempts = listTasks(db)
@@ -1892,9 +1925,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         })
         discarded.push(attempt.id)
       } catch (error) {
-        console.warn(
-          redactor.redact(`[joy] could not remove worktree ${attempt.worktreePath}: ${String(error)}`),
-        )
+        log.warn(redactor.redact(`[joy] could not remove worktree ${attempt.worktreePath}: ${String(error)}`))
       }
     }
     publishTaskLevel(task.id, 'compete.chosen', { attemptId: chosen.id, discarded })
@@ -2644,7 +2675,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         const message = redactor.redact(error instanceof Error ? error.message : String(error))
         // One warning per repository until the problem changes, not one every poll.
         if (issuePollWarnings.get(repo.id) !== message)
-          console.warn(`[joy] GitHub issues for ${repo.path}: ${message}`)
+          log.warn(`[joy] GitHub issues for ${repo.path}: ${message}`)
         issuePollWarnings.set(repo.id, message)
       }
     }
@@ -2656,7 +2687,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     issuePollTimer = setTimeout(() => {
       issuePolling = pollIssues()
         .catch((error: unknown) => {
-          console.warn(
+          log.warn(
             redactor.redact(`[joy] GitHub issues: ${error instanceof Error ? error.message : String(error)}`),
           )
           return issuePollDelay(initialConfig.github.issue_poll_minutes)
@@ -2678,7 +2709,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (closed) return Promise.resolve()
     backupRunning ??= dailyBackup(db, backupsDir)
       .catch((error: unknown) =>
-        console.warn(
+        log.warn(
           redactor.redact(`[joy] backup failed: ${error instanceof Error ? error.message : String(error)}`),
         ),
       )
@@ -2779,9 +2810,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     deliver: deliverScheduled,
     ...(options.schedulerClock ? { clock: options.schedulerClock } : {}),
     onError: (error) =>
-      console.warn(
-        redactor.redact(`[joy] scheduler: ${error instanceof Error ? error.message : String(error)}`),
-      ),
+      log.warn(redactor.redact(`[joy] scheduler: ${error instanceof Error ? error.message : String(error)}`)),
   })
 
   function addReminder(text: string, at: string, conversationId?: string) {
@@ -2840,9 +2869,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   function backgroundJob(label: string, run: () => Promise<void>): void {
     const job = run().catch((error: unknown) =>
-      console.warn(
-        redactor.redact(`[joy] ${label}: ${error instanceof Error ? error.message : String(error)}`),
-      ),
+      log.warn(redactor.redact(`[joy] ${label}: ${error instanceof Error ? error.message : String(error)}`)),
     )
     memoryJobs.add(job)
     void job.finally(() => memoryJobs.delete(job))
@@ -3429,6 +3456,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           httpServer.off('error', onError)
           telegram?.start()
           scheduler.start()
+          log.info('Joy is listening', {
+            address: '127.0.0.1',
+            port: (httpServer.address() as AddressInfo).port,
+          })
           if (options.backups ?? true) {
             void backupIfDue()
             backupTimer = setInterval(() => void backupIfDue(), 60 * 60_000)

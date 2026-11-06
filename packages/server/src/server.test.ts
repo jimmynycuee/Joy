@@ -2830,6 +2830,37 @@ describe('Joy local server', () => {
     expect(existsSync(join(dir, 'server.pid'))).toBe(false)
   })
 
+  it('writes a debug log without any known secret and serves it for download', async () => {
+    const redactor = new Redactor()
+    redactor.add('log-secret-in-error-77')
+    const implementer = new FakeProvider('claude-cli', [
+      { type: 'error', message: 'login failed for log-secret-in-error-77', recoverable: false },
+      { type: 'done', sessionId: 's', isError: true },
+    ])
+    const { serverPromise, dir } = fixture({ implementer, redactor })
+    const { origin } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/tmp/log-repo', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    const { task } = (await (
+      await postJson(`${origin}/api/tasks`, { repoId: repo.id, title: 'Fails', prompt: 'p', mode: 'single' })
+    ).json()) as { task: { id: string } }
+    await waitForStatus(origin, task.id, 'failed', 5_000)
+
+    const { logs } = (await (await fetch(`${origin}/api/logs`)).json()) as { logs: Array<{ day: string }> }
+    const day = new Date().toISOString().slice(0, 10)
+    expect(logs.map((l) => l.day)).toEqual([day])
+    const response = await fetch(`${origin}/api/logs/${day}`)
+    expect(response.headers.get('content-disposition')).toContain(`joy-${day}.log`)
+    const text = await response.text()
+    expect(text).toContain('"msg":"task finished"')
+    expect(text).toContain('"status":"failed"')
+    expect(text).not.toContain('log-secret-in-error-77')
+    expect(readFileSync(join(dir, 'logs', `joy-${day}.log`), 'utf8')).not.toContain('log-secret-in-error-77')
+    expect((await fetch(`${origin}/api/logs/2000-01-01`)).status).toBe(404)
+    expect((await fetch(`${origin}/api/logs/..%2Fconfig.yaml`)).status).toBe(404)
+  })
+
   it('reports model stats filtered by period and repository', async () => {
     const { serverPromise, db } = fixture()
     createRepo(db, { id: rid('joy'), path: '/joy', defaultBranch: 'main' })
