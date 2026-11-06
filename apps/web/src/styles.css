@@ -1540,3 +1540,28 @@ select {
   max-height: 320px;
   overflow: auto;
 }
+
+.worktree-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.worktree-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.worktree-item.stale strong {
+  color: var(--muted);
+}
+
+.discard-row {
+  margin: 8px 0;
+}

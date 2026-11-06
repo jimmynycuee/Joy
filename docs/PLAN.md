@@ -45,6 +45,7 @@
 - [x] T1.9b 把 publisher 接到 server API 與 UI「開 PR」按鈕（審查發現 T1.9 的 publisher 從未接線，擁有者無法本機驗收）
 - [x] T2.4c 逾時後任務停在「等待核准」，核准後以同一 session 接續（`approvals.on_timeout`）
 - [x] T2.5 額度交接、排隊、單一任務花費與時間上限、月預算（單一模式；review loop 與競賽模式的交接留待之後）
+- [x] T2.8 worktree 清理：開 PR 後立即清除；設定頁顯示磁碟用量與閒置 worktree，擁有者確認後清除；未推送 commit 須再確認
 - [x] T2.1 平行競賽：兩個模型並行、各審一次、裁判比較；擁有者選一個或請裁判在第三個 worktree 重做合併版（假 provider 測試；真實 CLI 待額度恢復）
 - [x] T3.9 模型表現統計：通過率、審查抓到的問題數、耗時、交接次數；可依期間與 repo 篩選
 - [x] T3.7 排程：提醒與 cron 工作存在 SQLite；睡醒後錯過的提醒標延遲送出、定時工作只補跑最近一次

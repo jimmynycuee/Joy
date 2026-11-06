@@ -96,6 +96,12 @@ export const configSchema = z.strictObject({
     })
     .default({ telegram: {} }),
   autonomy_mode: z.enum(['careful', 'normal', 'hands-off']).default('normal'),
+  worktrees: z
+    .strictObject({
+      /** Idle worktrees older than this are offered for cleanup in the UI (never removed without the owner). */
+      stale_after_days: z.number().int().min(1).max(365).default(14),
+    })
+    .default({ stale_after_days: 14 }),
   tool_hub: z
     .strictObject({ max_ask_peer_calls: z.number().int().min(1).max(100).default(5) })
     .default({ max_ask_peer_calls: 5 }),

@@ -2,7 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-06（T2.1 平行競賽）
+- 最後更新：2026-11-06（T2.8 worktree 清理）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
@@ -93,11 +93,20 @@
 - 不呼叫真實模型；若測試確實需要真實模型，只能使用 haiku 或 gpt-6-luna、low effort，且必須是 opt-in。
 - 每個 ticket 從最新 main 開獨立分支，diff 只保留該 ticket。CI 失敗最多修 3 次；無法修復時記錄原因並繼續不相依工作。
 
+### T2.8 worktree 清理
+
+- 開 PR 成功後立即刪除該嘗試的 worktree（分支已在 GitHub），記為 `worktree.removed`；之後再按「開 PR」回 409。compete 選定後其他嘗試照舊立即清除。
+- 設定頁「Worktrees」：每個 Joy worktree 的任務、大小、閒置天數、未推送 commit 數與總磁碟用量；閒置超過 `worktrees.stale_after_days`（預設 14，可改）標成 idle。**只在擁有者按 Remove 時刪除**，不會自動刪。
+- 任務完成（done／review_ready／failed／cancelled）且未開 PR 時有「Discard worktree」。
+- **有未推送 commit 的 worktree 一律先回 409**，UI 再問一次，確認後才帶 `confirmUnpushedCommits: true` 刪除；執行中的任務不能刪；只接受 Joy 自己列出的路徑（`POST /api/worktrees/remove`、`POST /api/tasks/:id/discard`）。
+- 沿用 `packages/executor` 既有的 `listWorktrees`／`cleanup` 守門（未改 core 介面）。比對路徑時先解析 symlink（macOS 暫存目錄在 `/private/var`）。
+- 驗收：server 測試用真的 git repo 與 worktree（未推送 commit 未確認不刪、執行中不刪、非 Joy 路徑 404、確認後刪除、discard）；開 PR 後清除；Playwright `apps/web/e2e/worktrees.spec.ts`。
+
 ### T2.1 平行競賽
 
 - 任務模式 `compete`：`roles.implementer` 與 `roles.reviewer` 兩個模型各在自己的 worktree **同時**做同一件事（兩者都必須能改程式碼），各自被另一個模型審查一次；兩個都有成果時，`roles.judge` 唯讀比較並給理由（選誰、各自優缺點、是否建議合併）。只有一個有成果就不叫裁判。
 - 任務停在 `review_ready`，UI 並排顯示兩個嘗試的 diff、審查結果與裁判理由：
-  - 「Choose A/B」：`POST /api/tasks/:id/choose {attemptId}`，任務變 `done`，**其他嘗試的 worktree 立即清除**（擁有者的選擇就是確認；T2.8 的閒置清理尚未做）。開 PR（T1.9b）用選中的嘗試。
+  - 「Choose A/B」：`POST /api/tasks/:id/choose {attemptId}`，任務變 `done`，**其他嘗試的 worktree 立即清除**（擁有者的選擇就是確認；有未推送 commit 的不會被刪，只記警告）。開 PR（T1.9b）用選中的嘗試。
   - 「Merge」：`POST /api/tasks/:id/merge {}`，裁判在**第三個 worktree** 參考兩份 diff 與自己的比較重新實作，再由和裁判不同家的參賽模型審查一次；合併版有自己的分支與審查紀錄，之後一樣用 Choose 選。裁判必須能改程式碼（設成 Claude Code 或 Codex）。
 - 允許清單：建立任務時檢查實作者、審查者、裁判三個 provider（T1.12）；合併時再查一次裁判與合併審查者。
 - 參賽者各自的結束事件記為 `compete.result`（不是任務結束）；裁判結論 `compete.judgement`、合併 `compete.merge_started`/`compete.merged`、選擇 `compete.chosen` 都是任務層級事件。審查寫進 `reviews`，所以 T3.9 統計也算得到。

@@ -1,4 +1,4 @@
-import { constants as fsConstants } from 'node:fs'
+import { constants as fsConstants, realpathSync } from 'node:fs'
 import { createServer as createHttpServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -120,7 +120,8 @@ import type { AssistantTool } from './assistant.js'
 import { GitHubPublisher } from '@joy/github'
 import type { DraftPullRequestInput, PublishedPullRequest } from '@joy/github'
 import { TelegramChannel } from '@joy/channels'
-import { WorktreeExecutor } from '@joy/executor'
+import type { WorktreeCleanupOptions, WorktreeInfo } from '@joy/executor'
+import { UnpushedCommitsError, WorktreeExecutor } from '@joy/executor'
 import type { Executor, WorkspaceDiff } from '@joy/core'
 import type { ContestantOutcome, Judgement, LoopEvent } from '@joy/orchestrator'
 import { compete, formatFindings, mergePrompt, reviewLoop } from '@joy/orchestrator'
@@ -938,6 +939,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       const attempt = task.mode === 'compete' ? chosenAttempt(task) : latestAttempt(db, task.id)
       if (!attempt?.worktreePath || !attempt.branch || !attempt.baseCommit)
         throw new HttpError(409, 'This task has no worktree to publish')
+      if (removedWorktrees(task.id).has(attempt.id))
+        throw new HttpError(
+          409,
+          'This worktree was already removed (published or discarded); start a new task',
+        )
       if (publishing.has(task.id)) throw new HttpError(409, 'This task is already being published')
       publishing.add(task.id)
       try {
@@ -964,6 +970,13 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           pullRequestUrl: result.pullRequestUrl,
           commitSha: result.commitSha,
         })
+        // The branch is on GitHub now; the local worktree is no longer needed (T2.8).
+        const cleaned = await removeWorktree(repo, attempt).catch((error: unknown) => {
+          console.warn(redactor.redact(`[joy] could not remove worktree after publishing: ${String(error)}`))
+          return false
+        })
+        if (cleaned)
+          publishTaskLevel(task.id, 'worktree.removed', { attemptIds: [attempt.id], published: true })
         json(res, 200, { pullRequestUrl: result.pullRequestUrl, commitSha: result.commitSha })
       } catch (error) {
         const message = redactor.redact(error instanceof Error ? error.message : 'Publishing failed')
@@ -978,6 +991,44 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (cancelMatch && method === 'POST') {
       const task = cancelTaskById(decodePathSegment(cancelMatch[1] ?? '') as TaskId)
       json(res, 200, { task })
+      return
+    }
+    if (url.pathname === '/api/worktrees' && method === 'GET') {
+      json(res, 200, await listJoyWorktrees())
+      return
+    }
+    if (url.pathname === '/api/worktrees/remove' && method === 'POST') {
+      assertJsonContentType(req)
+      const input = z
+        .strictObject({ path: z.string().min(1), confirmUnpushedCommits: z.boolean().optional() })
+        .parse(await readJson(req))
+      // Only paths Joy itself lists can be removed; nothing outside its worktrees directory.
+      const row = (await listJoyWorktrees()).worktrees.find((w) => samePath(w.path, input.path))
+      if (!row) throw new HttpError(404, 'That is not a Joy worktree')
+      if (!('taskId' in row) || !row.taskId)
+        throw new HttpError(409, 'This worktree has no task record; remove it with git')
+      const task = requireTask(row.taskId)
+      const attemptId = row.attemptId
+      const attempt = listAttempts(db, task.id).find((a) => a.id === attemptId)
+      if (!attempt) throw new HttpError(404, 'Attempt not found')
+      const removed = await removeWorktrees([{ task, attempt }], input.confirmUnpushedCommits ?? false)
+      publishTaskLevel(task.id, 'worktree.removed', { attemptIds: removed })
+      json(res, 200, { removed })
+      return
+    }
+    const discardMatch = /^\/api\/tasks\/([^/]+)\/discard$/.exec(url.pathname)
+    if (discardMatch && method === 'POST') {
+      assertJsonContentType(req)
+      const input = z
+        .strictObject({ confirmUnpushedCommits: z.boolean().optional() })
+        .parse(await readJson(req))
+      const task = requireTask(decodePathSegment(discardMatch[1] ?? ''))
+      const removed = await removeWorktrees(
+        listAttempts(db, task.id).map((attempt) => ({ task, attempt })),
+        input.confirmUnpushedCommits ?? false,
+      )
+      publishTaskLevel(task.id, 'worktree.removed', { attemptIds: removed, discarded: true })
+      json(res, 200, { removed })
       return
     }
     const competeMatch = /^\/api\/tasks\/([^/]+)\/(choose|merge)$/.exec(url.pathname)
@@ -1340,6 +1391,121 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       setTaskStatus(db, task.id, status)
       publish(task.id, attempt.id, 'error', { message })
     }
+  }
+
+  /** The executor's worktree listing, when it has one (the real git executor does; test fakes may not). */
+  const worktreeManager = ('listWorktrees' in executor ? executor : undefined) as
+    | (Executor & {
+        listWorktrees(repo: RepoRecord): Promise<WorktreeInfo[]>
+        cleanup(ws: Workspace, options?: WorktreeCleanupOptions): Promise<void>
+      })
+    | undefined
+
+  const ACTIVE_TASK_STATUSES = new Set(['queued', 'running', 'awaiting_approval'])
+
+  /** Attempts whose worktree Joy already removed. */
+  function removedWorktrees(taskId: TaskId): Set<string> {
+    return new Set(
+      listTaskEvents(db, taskId)
+        .filter((event) => event.type === 'worktree.removed')
+        .flatMap((event) => {
+          const ids = (event.payload as { attemptIds?: unknown }).attemptIds
+          return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : []
+        }),
+    )
+  }
+
+  /** Removes an attempt's worktree. Throws UnpushedCommitsError unless the owner confirmed losing local commits. */
+  async function removeWorktree(repo: RepoRecord, attempt: AttemptRecord, confirmedUnpushedCommits = false) {
+    if (!attempt.worktreePath || !attempt.branch || !attempt.baseCommit) return false
+    const ws: Workspace = {
+      repo,
+      taskId: attempt.taskId,
+      attemptId: attempt.id,
+      path: attempt.worktreePath,
+      branch: attempt.branch,
+      baseCommit: attempt.baseCommit,
+    }
+    if (worktreeManager) await worktreeManager.cleanup(ws, { confirmedUnpushedCommits })
+    else await executor.cleanup(ws)
+    return true
+  }
+
+  /** Every Joy worktree with its task, size and unpushed commits, for the cleanup page. */
+  async function listJoyWorktrees() {
+    if (!worktreeManager) return { worktrees: [], totalBytes: 0, staleAfterDays: 0 }
+    const config = await configStore.get()
+    const staleAfterDays = config.worktrees.stale_after_days
+    const rows = []
+    for (const repo of listRepos(db)) {
+      let infos: WorktreeInfo[]
+      try {
+        infos = await worktreeManager.listWorktrees(repo)
+      } catch (error) {
+        console.warn(redactor.redact(`[joy] could not list worktrees of ${repo.path}: ${String(error)}`))
+        continue
+      }
+      const attempts = listTasks(db)
+        .filter((task) => task.repoId === repo.id)
+        .flatMap((task) => listAttempts(db, task.id).map((attempt) => ({ task, attempt })))
+      for (const info of infos) {
+        const owner = attempts.find(
+          ({ attempt }) => attempt.worktreePath !== undefined && samePath(attempt.worktreePath, info.path),
+        )
+        rows.push({
+          repoId: repo.id,
+          repoPath: repo.path,
+          path: info.path,
+          branch: info.branch,
+          diskUsageBytes: info.diskUsageBytes,
+          unpushedCommitCount: info.unpushedCommitCount,
+          ageDays: info.ageDays,
+          stale: info.ageDays >= staleAfterDays,
+          ...(owner
+            ? {
+                taskId: owner.task.id,
+                taskTitle: owner.task.title,
+                taskStatus: owner.task.status,
+                attemptId: owner.attempt.id,
+                active: ACTIVE_TASK_STATUSES.has(owner.task.status),
+              }
+            : { active: false }),
+        })
+      }
+    }
+    return {
+      worktrees: rows,
+      totalBytes: rows.reduce((sum, row) => sum + row.diskUsageBytes, 0),
+      staleAfterDays,
+    }
+  }
+
+  /** The owner removes a worktree from the cleanup page or discards a task's changes. */
+  async function removeWorktrees(
+    attempts: Array<{ task: StoredTask; attempt: AttemptRecord }>,
+    confirm: boolean,
+  ) {
+    const removed: string[] = []
+    for (const { task, attempt } of attempts) {
+      if (ACTIVE_TASK_STATUSES.has(task.status) || running.has(task.id))
+        throw new HttpError(
+          409,
+          `Task "${task.title}" is still running; cancel it before removing its worktree`,
+        )
+      const repo = getRepo(db, task.repoId)
+      if (!repo) continue
+      try {
+        if (await removeWorktree(repo, attempt, confirm)) removed.push(attempt.id)
+      } catch (error) {
+        if (error instanceof UnpushedCommitsError)
+          throw new HttpError(
+            409,
+            `${error.message}. Nothing was removed${removed.length ? ' after the first worktree(s)' : ''}.`,
+          )
+        throw error
+      }
+    }
+    return removed
   }
 
   /** Stores what a review-loop event says about its attempt (workspace, status, session, reviews, usage). */
@@ -3060,6 +3226,18 @@ function persistUsageEvent(db: Database, provider: ProviderKind, event: AgentEve
   } else if (event.type === 'quota' && event.status === 'limited') {
     addUsage(db, { provider, rateLimitHits: 1 })
   }
+}
+
+/** Paths compare after resolving symlinks (macOS temp dirs live under /private/var; git reports the real path). */
+function samePath(a: string, b: string): boolean {
+  const real = (path: string) => {
+    try {
+      return realpathSync.native(path)
+    } catch {
+      return resolve(path)
+    }
+  }
+  return real(a) === real(b)
 }
 
 function phaseStatus(phase: string): AttemptStatus {
