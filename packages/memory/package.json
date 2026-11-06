@@ -1,0 +1,19 @@
+{
+  "name": "@joy/memory",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Assistant memory: what to remember from the owner, and the rules that keep it safe.",
+  "license": "BUSL-1.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@joy/core": "workspace:*",
+    "@joy/db": "workspace:*",
+    "@joy/secrets": "workspace:*"
+  }
+}

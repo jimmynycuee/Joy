@@ -59,3 +59,15 @@ export {
   updateConversationSession,
 } from './conversations.js'
 export type { ConversationRecord, MessageRecord, MessageRole } from './conversations.js'
+export {
+  createMemory,
+  deleteMemory,
+  getMemory,
+  listActiveMemories,
+  listAllMemories,
+  markMemoriesUsed,
+  searchMemories,
+  supersedeMemory,
+  updateMemoryContent,
+} from './memories.js'
+export type { MemoryRecord, MemoryScope, MemorySource, NewMemory } from './memories.js'

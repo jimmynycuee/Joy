@@ -13,6 +13,8 @@ export interface AssistantTurnInput {
   /** The provider for a CLI brain; the API brain is built per turn with the tools (see `apiProviderFor`). */
   provider: AgentProvider
   userText: string
+  /** Extra instructions for a new session (e.g. what Joy remembers about the owner). */
+  context?: string
   /** Earlier messages, used only when the stored session cannot be resumed (first turn or a different brain). */
   history: Array<{ role: 'user' | 'assistant'; content: string }>
   resumeSessionId?: string
@@ -38,7 +40,7 @@ export const ASSISTANT_INSTRUCTIONS = [
 
 /** Builds the text sent to the brain for this turn. */
 export function assistantPrompt(
-  input: Pick<AssistantTurnInput, 'userText' | 'history' | 'resumeSessionId'>,
+  input: Pick<AssistantTurnInput, 'userText' | 'history' | 'resumeSessionId' | 'context'>,
 ): string {
   if (input.resumeSessionId) return input.userText
   const transcript = input.history
@@ -47,6 +49,7 @@ export function assistantPrompt(
     .join('\n\n')
   return [
     ASSISTANT_INSTRUCTIONS,
+    ...(input.context ? ['', input.context] : []),
     ...(transcript ? ['', 'Conversation so far:', transcript] : []),
     '',
     `Owner: ${input.userText}`,

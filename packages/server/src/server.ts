@@ -48,6 +48,8 @@ import {
   latestAttempt,
   listApprovals,
   listAttempts,
+  listActiveMemories,
+  listAllMemories,
   listConversations,
   listMessages,
   listRepos,
@@ -55,6 +57,7 @@ import {
   listTaskEvents,
   listTasks,
   listUsage,
+  markMemoriesUsed,
   openDatabase,
   setConversationTitle,
   setTaskStatus,
@@ -66,6 +69,13 @@ import {
 import type { ApprovalRecord, ApprovalStatus, AttemptRecord, Database, RepoRecord, StoredTask } from '@joy/db'
 import { ApprovalBroker } from './approvals.js'
 import { runAssistantTurn, toApiTools } from './assistant.js'
+import {
+  EXTRACTION_SCHEMA,
+  applyExtraction,
+  extractionPrompt,
+  memoryContext,
+  parseExtraction,
+} from '@joy/memory'
 import type { AssistantTool } from './assistant.js'
 import { GitHubPublisher } from '@joy/github'
 import type { DraftPullRequestInput, PublishedPullRequest } from '@joy/github'
@@ -228,6 +238,8 @@ export interface JoyServerOptions {
   quotaResumeBufferMs?: number
   /** Builds the OpenAI API brain for one assistant turn with that turn's tools (tests use a fake). */
   assistantApiProvider?: (tools: ApiTool[]) => AgentProvider
+  /** Learn memories from the owner's chat messages (T3.3). Default true. */
+  memoryExtraction?: boolean
   /** Overrides budget.per_task.max_minutes (tests). */
   taskTimeLimitMs?: number
   /** Replaces the GitHub publisher (tests). */
@@ -897,6 +909,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       setTaskStatus(db, task.id, 'queued')
       scheduleTask({ ...task, status: 'queued' }, state)
       json(res, 202, { task: getTask(db, task.id), resumed: true })
+      return
+    }
+    if (url.pathname === '/api/memories' && method === 'GET') {
+      json(res, 200, { memories: listAllMemories(db, 'user') })
       return
     }
     if (url.pathname === '/api/conversations' && method === 'GET') {
@@ -1675,6 +1691,38 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     ]
   }
 
+  const memoryJobs = new Set<Promise<unknown>>()
+
+  /**
+   * Asks the background model what is worth remembering from the owner's own message, then stores it under the
+   * memory rules (packages/memory). Only the owner's words reach this: never tool output, mail or task content.
+   */
+  async function learnFromOwner(ownerMessage: string): Promise<void> {
+    const config = await configStore.get()
+    const model = resolveRole('background', config.roles as RoleConfig, {})
+    const provider = providers[model.provider]
+    if (!provider) return
+    const cwd = join(home, 'assistant')
+    await mkdir(cwd, { recursive: true, mode: 0o700 })
+    const existing = listActiveMemories(db, 'user', 50)
+    let done: Extract<AgentEvent, { type: 'done' }> | undefined
+    for await (const event of provider.run(
+      {
+        cwd,
+        prompt: extractionPrompt(ownerMessage, existing),
+        autonomy: 'read-only',
+        outputSchema: EXTRACTION_SCHEMA,
+        signal: AbortSignal.timeout(5 * 60_000),
+      },
+      model,
+    )) {
+      persistUsageEvent(db, model.provider, event)
+      if (event.type === 'done') done = event
+    }
+    if (!done || done.isError) return
+    applyExtraction(db, parseExtraction(done.structured), { ownerMessage, redactor })
+  }
+
   /** One assistant turn: store the owner's message, ask the configured brain, store and return its reply. */
   async function assistantReply(conversationId: string, text: string) {
     const conversation = getConversation(db, conversationId)
@@ -1731,6 +1779,13 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         throw new HttpError(409, `No provider is configured for the assistant brain (${brain.provider})`)
       const cwd = join(home, 'assistant')
       await mkdir(cwd, { recursive: true, mode: 0o700 })
+      // A new session gets what Joy remembers; a resumed one already has it.
+      const remembered = canResume ? [] : listActiveMemories(db, 'user', 20)
+      if (remembered.length)
+        markMemoriesUsed(
+          db,
+          remembered.map((m) => m.id),
+        )
       let result
       try {
         result = await runAssistantTurn({
@@ -1739,6 +1794,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           userText: text,
           history,
           cwd,
+          ...(remembered.length ? { context: memoryContext(remembered) } : {}),
           signal: AbortSignal.timeout(10 * 60_000),
           ...(canResume && conversation.sessionId ? { resumeSessionId: conversation.sessionId } : {}),
           ...(mcpServer ? { mcpServer } : {}),
@@ -1758,6 +1814,15 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         sessionId: result.sessionId ?? null,
       })
       if (!conversation.title) setConversationTitle(db, conversationId, redactor.redact(text).slice(0, 60))
+      if (options.memoryExtraction ?? true) {
+        const job = learnFromOwner(redactor.redact(text)).catch((error: unknown) =>
+          console.warn(
+            redactor.redact(`[joy] memory: ${error instanceof Error ? error.message : String(error)}`),
+          ),
+        )
+        memoryJobs.add(job)
+        void job.finally(() => memoryJobs.delete(job))
+      }
       return { message: reply, conversation: getConversation(db, conversationId) }
     } finally {
       closeBridge()
@@ -2091,6 +2156,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       closed = true
       await telegram?.stop()
       for (const timer of quotaTimers.values()) clearTimeout(timer)
+      await Promise.allSettled([...memoryJobs])
       const activeTasks = [...running.values()]
       for (const active of activeTasks) active.controller.abort()
       await Promise.all(activeTasks.map((active) => active.promise))
