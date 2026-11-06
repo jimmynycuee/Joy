@@ -80,7 +80,7 @@ describe('GitHubPublisher', () => {
       '--state',
       'all',
       '--json',
-      'url,state,isDraft,headRefName,headRepositoryOwner,baseRefName,body',
+      'url,state,isDraft,headRefName,headRepositoryOwner,headRepository,baseRefName,body',
     ])
     expect(calls[1]?.args).toEqual([
       'pr',
@@ -159,7 +159,7 @@ describe('GitHubPublisher', () => {
     expect(calls.filter((call) => call.args[1] === 'list')).toHaveLength(2)
   }, 20_000)
 
-  it('matches an existing draft only when its head repository owner matches the selected push remote', async () => {
+  it('does not reuse an existing PR from a different repository under the same owner', async () => {
     const fixture = await createFixture()
     await writeFile(
       fixture.ghState,
@@ -169,7 +169,8 @@ describe('GitHubPublisher', () => {
           state: 'OPEN',
           isDraft: true,
           headRefName: fixture.workspace.branch,
-          headRepositoryOwner: { login: 'another-contributor' },
+          headRepositoryOwner: { login: 'example' },
+          headRepository: { name: 'other-joy' },
           baseRefName: 'main',
           body: 'another fork body',
         },
@@ -184,9 +185,8 @@ describe('GitHubPublisher', () => {
     expect(calls.some((call) => call.args[1] === 'create')).toBe(true)
   })
 
-  it('returns the saved body when reusing the matching open draft', async () => {
+  it('reuses a matching PR using fields returned by older gh versions', async () => {
     const fixture = await createFixture()
-    const existingBody = 'Original PR body and provenance.'
     await writeFile(
       fixture.ghState,
       JSON.stringify([
@@ -196,6 +196,33 @@ describe('GitHubPublisher', () => {
           isDraft: true,
           headRefName: fixture.workspace.branch,
           headRepositoryOwner: { login: 'example' },
+          headRepository: { name: 'joy' },
+          baseRefName: 'main',
+          body: 'Existing draft.',
+        },
+      ]),
+    )
+    await writeFile(join(fixture.workspace.path, 'change.txt'), 'published change\n')
+
+    const result = await createPublisher(fixture).publish(fixture.workspace, input())
+
+    expect(result.pullRequestUrl).toBe('https://github.com/example/joy/pull/41')
+    expect((await readCalls(fixture)).some((call) => call.args[1] === 'create')).toBe(false)
+  })
+
+  it('returns the saved body when reusing the matching open draft', async () => {
+    const fixture = await createFixture()
+    const existingBody = 'Original PR body includes test-secret-value.'
+    await writeFile(
+      fixture.ghState,
+      JSON.stringify([
+        {
+          url: 'https://github.com/example/joy/pull/41',
+          state: 'OPEN',
+          isDraft: true,
+          headRefName: fixture.workspace.branch,
+          headRepositoryOwner: { login: 'example' },
+          headRepository: { name: 'joy' },
           baseRefName: 'main',
           body: existingBody,
         },
@@ -206,7 +233,8 @@ describe('GitHubPublisher', () => {
     const result = await createPublisher(fixture).publish(fixture.workspace, input())
 
     expect(result.pullRequestUrl).toBe('https://github.com/example/joy/pull/41')
-    expect(result.body).toBe(existingBody)
+    expect(result.body).toBe('Original PR body includes [REDACTED].')
+    expect(result.body).not.toContain('test-secret-value')
     expect((await readCalls(fixture)).some((call) => call.args[1] === 'create')).toBe(false)
   })
 
@@ -221,6 +249,7 @@ describe('GitHubPublisher', () => {
           isDraft: true,
           headRefName: fixture.workspace.branch,
           headRepositoryOwner: { login: 'example' },
+          headRepository: { name: 'joy' },
           baseRefName: 'main',
           body: 'Existing closed PR.',
         },
@@ -428,6 +457,40 @@ describe('GitHubPublisher', () => {
     expect(calls[1]?.args).toContain(`contributor:${fixture.workspace.branch}`)
   }, 20_000)
 
+  it('rejects a rewritten base fetch target even when the push URL points to the validated repository', async () => {
+    const fixture = await createFixture()
+    const attackerBare = join(fixture.root, 'attacker.git')
+    const pushUrl = 'ssh://git@github.com/example/joy.git'
+    await git(fixture.root, ['clone', '--bare', fixture.bareRepo, attackerBare])
+    await git(fixture.workspace.path, [
+      'config',
+      '--unset-all',
+      `url.${pathToFileURL(fixture.bareRepo).href}.insteadOf`,
+    ])
+    await git(fixture.workspace.path, [
+      'config',
+      '--add',
+      `url.${pathToFileURL(attackerBare).href}.insteadOf`,
+      configuredRemote,
+    ])
+    await git(fixture.workspace.path, ['remote', 'set-url', 'origin', pushUrl])
+    await git(fixture.workspace.path, [
+      'config',
+      '--add',
+      `url.${pathToFileURL(fixture.bareRepo).href}.pushInsteadOf`,
+      pushUrl,
+    ])
+    await writeFile(join(fixture.workspace.path, 'change.txt'), 'published change\n')
+
+    await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+      /effective base fetch URL/i,
+    )
+    expect(await readCalls(fixture)).toHaveLength(0)
+    await expect(
+      git(fixture.bareRepo, ['show-ref', '--verify', `refs/heads/${fixture.workspace.branch}`]),
+    ).rejects.toBeDefined()
+  })
+
   it('rejects an unrelated local base commit not contained by the remote base branch', async () => {
     const fixture = await createFixture()
     await git(fixture.workspace.path, ['switch', 'main'])
@@ -552,6 +615,146 @@ describe('GitHubPublisher', () => {
     ).resolves.toBeDefined()
   }, 20_000)
 
+  it('blocks Git LFS pointers because their external payload is not scanned', async () => {
+    const fixture = await createFixture()
+    const pointer = [
+      'version https://git-lfs.github.com/spec/v1',
+      `oid sha256:${'a'.repeat(64)}`,
+      'size 12345',
+      '',
+    ].join('\n')
+    await writeFile(join(fixture.workspace.path, 'model.bin'), pointer)
+
+    await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+      /Git LFS pointer changes because their external payload cannot be safely scanned/,
+    )
+    expect(await readCalls(fixture)).toHaveLength(0)
+    await expect(
+      git(fixture.bareRepo, ['show-ref', '--verify', `refs/heads/${fixture.workspace.branch}`]),
+    ).rejects.toBeDefined()
+  })
+
+  it('blocks edited Git LFS pointers when only the oid and size lines change', async () => {
+    const fixture = await createFixture()
+    const pointer = [
+      'version https://git-lfs.github.com/spec/v1',
+      `oid sha256:${'a'.repeat(64)}`,
+      'size 12345',
+      '',
+    ].join('\n')
+    await addBaseFile(fixture, 'model.bin', pointer)
+    await writeFile(
+      join(fixture.workspace.path, 'model.bin'),
+      pointer.replace('a'.repeat(64), 'b'.repeat(64)).replace('size 12345', 'size 54321'),
+    )
+    await commitAll(fixture.workspace.path, 'Update LFS object')
+
+    await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+      /Git LFS pointer changes because their external payload cannot be safely scanned/,
+    )
+    expect(await readCalls(fixture)).toHaveLength(0)
+  })
+
+  it.each(['https://hawser.github.com/spec/v1', 'http://git-media.io/v/2'])(
+    'blocks accepted Git LFS pointer version %s with surrounding whitespace',
+    async (version) => {
+      const fixture = await createFixture()
+      const pointer = [`  version ${version}`, `oid sha256:${'c'.repeat(64)}`, 'size 23456', ''].join('\n')
+      await writeFile(join(fixture.workspace.path, 'model.bin'), pointer)
+
+      await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+        /Git LFS pointer changes because their external payload cannot be safely scanned/,
+      )
+      expect(await readCalls(fixture)).toHaveLength(0)
+    },
+  )
+
+  it.each([
+    [
+      'a signed size',
+      [`version https://git-lfs.github.com/spec/v1`, `oid sha256:${'d'.repeat(64)}`, 'size +12345', ''].join(
+        '\n',
+      ),
+    ],
+    [
+      'a negative zero size',
+      [`version https://git-lfs.github.com/spec/v1`, `oid sha256:${'d'.repeat(64)}`, 'size -0', ''].join(
+        '\n',
+      ),
+    ],
+    [
+      'leading U+0085 whitespace',
+      `\u0085${[
+        'version https://git-lfs.github.com/spec/v1',
+        `oid sha256:${'d'.repeat(64)}`,
+        'size 12345',
+        '',
+      ].join('\n')}`,
+    ],
+    [
+      'trailing U+0085 whitespace',
+      `${['version https://git-lfs.github.com/spec/v1', `oid sha256:${'d'.repeat(64)}`, 'size 12345'].join(
+        '\n',
+      )}\u0085`,
+    ],
+    [
+      'an extension before the version',
+      [
+        `ext-0-foo sha256:${'e'.repeat(64)}`,
+        'version https://git-lfs.github.com/spec/v1',
+        `oid sha256:${'f'.repeat(64)}`,
+        'size 12345',
+        '',
+      ].join('\n'),
+    ],
+  ])('blocks Git LFS pointers with %s', async (_description, pointer) => {
+    const fixture = await createFixture()
+    await writeFile(join(fixture.workspace.path, 'model.bin'), pointer)
+
+    await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+      /Git LFS pointer changes because their external payload cannot be safely scanned/,
+    )
+    expect(await readCalls(fixture)).toHaveLength(0)
+  })
+
+  it.each([
+    ['an alphanumeric oid accepted by older git-lfs', `oid sha256:${'g'.repeat(64)}`],
+    ['an oid followed by trailing text accepted by older git-lfs', `oid sha256:${'a'.repeat(64)}suffix`],
+  ])('blocks Git LFS pointers with %s', async (_description, oidLine) => {
+    const fixture = await createFixture()
+    const pointer = ['version https://git-lfs.github.com/spec/v1', oidLine, 'size 12345', ''].join('\n')
+    await writeFile(join(fixture.workspace.path, 'model.bin'), pointer)
+
+    await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+      /Git LFS pointer changes because their external payload cannot be safely scanned/,
+    )
+    expect(await readCalls(fixture)).toHaveLength(0)
+  })
+
+  it('publishes a small edit to an existing text blob larger than the LFS pointer limit', async () => {
+    const fixture = await createFixture()
+    const baseText = 'a\n'.repeat(5_600_000)
+    await addBaseFile(fixture, 'large.txt', baseText)
+    await writeFile(join(fixture.workspace.path, 'large.txt'), baseText.replace('a\n', 'b\n'))
+    await commitAll(fixture.workspace.path, 'Edit one line in a large text file')
+
+    await expect(createPublisher(fixture).publish(fixture.workspace, input())).resolves.toBeDefined()
+  }, 30_000)
+
+  it('reports a failed batch-size query without crashing when git closes stdin early', async () => {
+    const fixture = await createFixture({ fakeGitMode: 'exit-batch-check' })
+    await Promise.all(
+      Array.from({ length: 2_000 }, (_, index) =>
+        writeFile(join(fixture.workspace.path, `changed-${index}.txt`), `change ${index}\n`),
+      ),
+    )
+    await commitAll(fixture.workspace.path, 'Add many small files')
+
+    await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+      /Git changed blob size list failed/,
+    )
+  })
+
   it('reports an actionable error when a pushed commit patch exceeds the scan limit', async () => {
     const fixture = await createFixture()
     await writeFile(join(fixture.workspace.path, 'large.txt'), Buffer.alloc(10 * 1024 * 1024 + 1024, 97))
@@ -667,7 +870,7 @@ function createPublisher(
   })
 }
 
-async function createFixture(options: { ghMode?: string } = {}): Promise<Fixture> {
+async function createFixture(options: { ghMode?: string; fakeGitMode?: string } = {}): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), 'joy-github-publisher-'))
   roots.push(root)
   const bareRepo = join(root, 'origin.git')
@@ -706,7 +909,7 @@ async function createFixture(options: { ghMode?: string } = {}): Promise<Fixture
     baseCommit: await git(repoPath, ['rev-parse', 'main']),
   }
   await writeFakeGh(fakeGh)
-  await writeFakeGit(fakeGit)
+  await writeFakeGit(fakeGit, bareRepo, options.fakeGitMode)
   return { root, bareRepo, workspace, fakeGh, fakeGit, ghCapture, ghState, ghMode }
 }
 
@@ -740,7 +943,9 @@ async function writeFakeGh(path: string): Promise<void> {
       "  const target = option('--repo').split('/').slice(-2).join('/')",
       "  const branch = option('--head').split(':').at(-1)",
       "  const head = option('--head')",
-      "  const pr = { url: `https://github.com/${target}/pull/42`, state: 'OPEN', isDraft: true, headRefName: branch, headRepositoryOwner: { login: head.split(':')[0] }, baseRefName: option('--base'), body: await readFile(option('--body-file'), 'utf8') }",
+      "  const headRepositoryOwner = { login: head.split(':')[0] }",
+      "  const headRepository = { name: target.split('/').at(-1) }",
+      "  const pr = { url: `https://github.com/${target}/pull/42`, state: 'OPEN', isDraft: true, headRefName: branch, headRepositoryOwner, headRepository, baseRefName: option('--base'), body: await readFile(option('--body-file'), 'utf8') }",
       "  if (mode === 'partial') {",
       '    let previous = false',
       '    try { await access(statePath); previous = true } catch {}',
@@ -765,15 +970,26 @@ async function writeFakeGh(path: string): Promise<void> {
   )
 }
 
-async function writeFakeGit(path: string): Promise<void> {
+async function writeFakeGit(path: string, bareRepo: string, mode = ''): Promise<void> {
   await writeFile(
     path,
     [
       "import { spawnSync } from 'node:child_process'",
+      "import { readFileSync } from 'node:fs'",
       'const args = process.argv.slice(2)',
-      "const run = (items) => spawnSync('git', items, { cwd: process.cwd(), encoding: 'utf8', windowsHide: true, maxBuffer: 32 * 1024 * 1024 })",
-      'const result = run(args)',
-      "if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === '--push' && args[3] === '--all') {",
+      `const mode = ${JSON.stringify(mode)}`,
+      "if (mode === 'exit-batch-check' && args[0] === 'cat-file' && args[1]?.startsWith('--batch-check=')) process.exit(1)",
+      "const run = (items, input = undefined) => spawnSync('git', items, { cwd: process.cwd(), encoding: 'utf8', windowsHide: true, maxBuffer: 32 * 1024 * 1024, input })",
+      `const expectedMirrorUrl = ${JSON.stringify(pathToFileURL(bareRepo).href)}`,
+      `const canonicalRemote = ${JSON.stringify(configuredRemote)}`,
+      "const batchInput = args[0] === 'cat-file' && args[1]?.startsWith('--batch-check=') ? readFileSync(0, 'utf8') : undefined",
+      'const result = run(args, batchInput)',
+      "if (args[0] === 'ls-remote' && args[1] === '--get-url') {",
+      "  const url = (result.stdout ?? '').trim()",
+      "  process.stdout.write((url === expectedMirrorUrl ? canonicalRemote : url) + '\\n')",
+      '  if (result.stderr) process.stderr.write(result.stderr)',
+      '  process.exitCode = result.status ?? 1',
+      "} else if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === '--push' && args[3] === '--all') {",
       '  const remote = args[4]',
       "  const effectiveUrls = (result.stdout ?? '').trim().split(/\\r?\\n/).filter(Boolean)",
       "  const pushUrls = run(['config', '--get-all', `remote.${remote}.pushurl`])",
