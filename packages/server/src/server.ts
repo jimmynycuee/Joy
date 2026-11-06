@@ -32,6 +32,7 @@ import {
   appendMessage,
   appendTaskEvent,
   appendTaskFailureEvent,
+  appendTaskLevelEvent,
   createAttempt,
   createConversation,
   createRepo,
@@ -121,7 +122,9 @@ import type { DraftPullRequestInput, PublishedPullRequest } from '@joy/github'
 import { TelegramChannel } from '@joy/channels'
 import { WorktreeExecutor } from '@joy/executor'
 import type { Executor, WorkspaceDiff } from '@joy/core'
-import { formatFindings, reviewLoop } from '@joy/orchestrator'
+import type { ContestantOutcome, Judgement, LoopEvent } from '@joy/orchestrator'
+import { compete, formatFindings, mergePrompt, reviewLoop } from '@joy/orchestrator'
+import { sameBackend } from '@joy/core'
 import {
   ClaudeCliProvider,
   CodexAppServerProvider,
@@ -356,7 +359,9 @@ function selectActiveRoles(
   const selected: Partial<RoleConfig> = {
     implementer: implementer ?? resolveRole('implementer', config, overrides),
   }
-  if (mode === 'review_loop') selected.reviewer = resolveRole('reviewer', config, overrides)
+  if (mode === 'review_loop' || mode === 'compete')
+    selected.reviewer = resolveRole('reviewer', config, overrides)
+  if (mode === 'compete') selected.judge = resolveRole('judge', config, overrides)
   return selected
 }
 
@@ -914,7 +919,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           409,
           'Set the repository GitHub remote first (PATCH /api/repos/{repoId} with githubRemote)',
         )
-      const attempt = latestAttempt(db, task.id)
+      const attempt = task.mode === 'compete' ? chosenAttempt(task) : latestAttempt(db, task.id)
       if (!attempt?.worktreePath || !attempt.branch || !attempt.baseCommit)
         throw new HttpError(409, 'This task has no worktree to publish')
       if (publishing.has(task.id)) throw new HttpError(409, 'This task is already being published')
@@ -959,9 +964,25 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       json(res, 200, { task })
       return
     }
+    const competeMatch = /^\/api\/tasks\/([^/]+)\/(choose|merge)$/.exec(url.pathname)
+    if (competeMatch && method === 'POST') {
+      assertJsonContentType(req)
+      const task = requireTask(decodePathSegment(competeMatch[1] ?? ''))
+      if (competeMatch[2] === 'choose') {
+        const { attemptId } = z.strictObject({ attemptId: idSchema }).parse(await readJson(req))
+        json(res, 200, { task: await chooseCompeteAttempt(task, attemptId) })
+      } else {
+        z.strictObject({}).parse(await readJson(req))
+        const attempt = await startCompeteMerge(task)
+        json(res, 202, { task: getTask(db, task.id), attempt })
+      }
+      return
+    }
     const resumeMatch = /^\/api\/tasks\/([^/]+)\/resume$/.exec(url.pathname)
     if (resumeMatch && method === 'POST') {
       const task = requireTask(decodePathSegment(resumeMatch[1] ?? ''))
+      if (task.mode === 'compete')
+        throw new HttpError(409, 'Compete tasks cannot be resumed; start a new compete task instead')
       if (task.status !== 'failed' && task.status !== 'cancelled')
         throw new HttpError(409, `Task cannot be resumed from ${task.status}`)
       const state = await resumeState(task)
@@ -1266,6 +1287,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       } else if (task.mode === 'review_loop') {
         const reviewer = resolveRole('reviewer', roles, task.roleOverrides)
         await runReviewLoop(task, repo, attempt, implementer, reviewer, controller, resume)
+      } else if (task.mode === 'compete') {
+        await runCompete(task, repo, attempt, implementer, roles, controller)
       } else {
         throw new Error(`Task mode ${task.mode} is not supported`)
       }
@@ -1303,6 +1326,332 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
   }
 
+  /** Stores what a review-loop event says about its attempt (workspace, status, session, reviews, usage). */
+  function recordLoopEvent(
+    attempt: AttemptRecord,
+    implementer: ModelRef,
+    reviewer: ModelRef,
+    event: LoopEvent,
+  ): void {
+    if (event.type === 'workspace') {
+      updateAttempt(db, attempt.id, {
+        worktreePath: event.workspace.path,
+        branch: event.workspace.branch,
+        baseCommit: event.workspace.baseCommit,
+      })
+    } else if (event.type === 'phase') {
+      updateAttempt(db, attempt.id, { status: phaseStatus(event.phase) })
+    } else if (event.type === 'agent') {
+      const model = event.role === 'reviewer' ? reviewer : implementer
+      persistUsageEvent(db, model.provider, event.event)
+      if (event.role === 'implementer' && event.event.type === 'session_started') {
+        updateAttempt(db, attempt.id, { sessionId: event.event.sessionId })
+      }
+    } else if (event.type === 'review') {
+      const verdict = redactor.redactValue(event.verdict)
+      createReview(db, {
+        id: randomUUID(),
+        attemptId: attempt.id,
+        reviewerProvider: reviewer.provider,
+        reviewerModel: reviewer.model,
+        round: event.round,
+        approve: verdict.approve,
+        summary: verdict.summary,
+        findings: verdict.findings,
+      })
+    } else if (event.type === 'result') {
+      const attemptStatus: AttemptStatus =
+        event.status === 'cancelled' ? 'cancelled' : event.status === 'failed' ? 'failed' : 'succeeded'
+      updateAttempt(db, attempt.id, {
+        status: attemptStatus,
+        ...(event.diff ? { diffStats: summarizeDiff(event.diff) } : {}),
+      })
+    }
+  }
+
+  const publishTaskLevel = (taskId: TaskId, type: string, payload: unknown): TaskEvent => {
+    const event = appendTaskLevelEvent(db, taskId, type, redactor.redactValue(payload))
+    sendEvent(taskId, event)
+    return event
+  }
+
+  /** The end of a compete phase: the owner now compares and decides. */
+  function finishCompetePhase(task: StoredTask, attempt: AttemptRecord, reason: string): void {
+    setTaskStatus(db, task.id, 'review_ready')
+    publish(task.id, attempt.id, 'result', {
+      type: 'result',
+      status: 'succeeded',
+      approved: false,
+      rounds: 1,
+      reason,
+    })
+  }
+
+  /**
+   * Compete (T2.1): the implementer and reviewer roles both implement, each reviewed once by the other, then the judge
+   * compares. The owner chooses (POST /choose) or has the judge write a merged version (POST /merge).
+   */
+  async function runCompete(
+    task: StoredTask,
+    repo: RepoRecord,
+    first: AttemptRecord,
+    implementer: ModelRef,
+    roles: RoleConfig,
+    controller: AbortController,
+  ): Promise<void> {
+    const second = resolveRole('reviewer', roles, task.roleOverrides)
+    const judge = resolveRole('judge', roles, task.roleOverrides)
+    for (const model of [implementer, second])
+      if (!providers[model.provider]?.capabilities.codeEdit)
+        throw new Error(
+          `Compete needs two models that can edit code; ${model.provider} cannot. Set roles.implementer and roles.reviewer to Claude Code or Codex.`,
+        )
+    const other = createAttempt(db, {
+      id: randomUUID() as AttemptId,
+      taskId: task.id,
+      provider: second.provider,
+      model: second.model,
+      status: 'preparing',
+    })
+    publish(task.id, other.id, 'started', { taskId: task.id, attemptId: other.id })
+    const contestants = new Map([
+      [first.id, { attempt: first, implementer, reviewer: second }],
+      [other.id, { attempt: other, implementer: second, reviewer: implementer }],
+    ])
+    let finished = false
+    for await (const event of compete(
+      {
+        taskId: task.id,
+        repo,
+        prompt: task.prompt,
+        contestants: [...contestants.values()].map((c) => ({
+          attemptId: c.attempt.id,
+          implementer: c.implementer,
+          reviewer: c.reviewer,
+        })),
+        judge,
+        signal: controller.signal,
+      },
+      { providers, executor },
+    )) {
+      if (event.type === 'contestant') {
+        const contestant = contestants.get(event.attemptId)
+        if (!contestant) continue
+        recordLoopEvent(contestant.attempt, contestant.implementer, contestant.reviewer, event.event)
+        // A contestant's own result is not the task's result: the task waits for the judge and the owner.
+        const type = event.event.type === 'result' ? 'compete.result' : event.event.type
+        publish(task.id, event.attemptId, type, event.event)
+      } else if (event.type === 'judging') {
+        publishTaskLevel(task.id, 'compete.judging', { model: event.model })
+      } else if (event.type === 'judge_agent') {
+        persistUsageEvent(db, judge.provider, event.event)
+      } else if (event.type === 'judgement') {
+        publishTaskLevel(task.id, 'compete.judgement', {
+          judgement: event.judgement,
+          outcomes: event.outcomes.map(({ diff, ...outcome }) => ({
+            ...outcome,
+            ...(diff ? { files: diff.files } : {}),
+          })),
+        })
+      } else if (event.type === 'result') {
+        finished = true
+        if (event.status === 'succeeded') {
+          finishCompetePhase(
+            task,
+            first,
+            'Compare the attempts and choose one, or ask the judge to merge them.',
+          )
+        } else {
+          setTaskStatus(db, task.id, event.status)
+          publish(task.id, first.id, 'result', {
+            type: 'result',
+            status: event.status,
+            approved: false,
+            rounds: 1,
+            ...(event.reason ? { reason: event.reason } : {}),
+          })
+        }
+      }
+    }
+    if (!finished) throw new Error('Compete stopped without a result')
+  }
+
+  /** Each attempt's outcome as the judge saw it, with its diff from the attempt's own result event. */
+  function competeOutcomes(
+    task: StoredTask,
+  ): { judgement: Judgement; outcomes: ContestantOutcome[] } | undefined {
+    const events = listTaskEvents(db, task.id)
+    const judged = events.filter((event) => event.type === 'compete.judgement').at(-1)?.payload as
+      { judgement: Judgement; outcomes: Array<Omit<ContestantOutcome, 'diff'>> } | undefined
+    if (!judged) return undefined
+    const diffs = new Map<string, WorkspaceDiff>()
+    for (const event of events)
+      if (event.type === 'compete.result' && event.attemptId) {
+        const diff = (event.payload as { diff?: WorkspaceDiff }).diff
+        if (diff) diffs.set(event.attemptId, diff)
+      }
+    return {
+      judgement: judged.judgement,
+      outcomes: judged.outcomes.map((outcome) => {
+        const diff = diffs.get(outcome.attemptId)
+        return { ...outcome, ...(diff ? { diff } : {}) }
+      }),
+    }
+  }
+
+  /** The judge writes a merged version in a new worktree; the result gets one cross-model review. */
+  async function startCompeteMerge(task: StoredTask): Promise<AttemptRecord> {
+    if (task.mode !== 'compete') throw new HttpError(409, 'Only compete tasks can be merged')
+    if (task.status !== 'review_ready' || running.has(task.id))
+      throw new HttpError(409, `The comparison is not ready to merge (task is ${task.status})`)
+    const compared = competeOutcomes(task)
+    if (!compared) throw new HttpError(409, 'The judge has not compared the attempts yet')
+    const succeeded = compared.outcomes.filter((outcome) => outcome.status === 'succeeded' && outcome.diff)
+    if (succeeded.length < 2) throw new HttpError(409, 'Merging needs at least two finished attempts')
+    const repo = getRepo(db, task.repoId)
+    if (!repo) throw new HttpError(404, `Repository ${task.repoId} was not found`)
+    const config = await configStore.get()
+    const judge = resolveRole('judge', config.roles as RoleConfig, task.roleOverrides)
+    if (!providers[judge.provider]?.capabilities.codeEdit)
+      throw new HttpError(
+        409,
+        `The judge (${judge.provider}) cannot edit code, so it cannot write the merged version. Set roles.judge to Claude Code or Codex.`,
+      )
+    // Reviewed by a contestant on a different backend from the judge whenever there is one.
+    const reviewer =
+      succeeded.map((outcome) => outcome.implementer).find((model) => !sameBackend(model, judge)) ??
+      (succeeded[0] as ContestantOutcome).implementer
+    const disallowed = findDisallowedRoleProviders({ judge, reviewer }, repo.allowedProviders)[0]
+    if (disallowed) throw new HttpError(409, describeDisallowedRoleProvider(disallowed))
+    const attempt = createAttempt(db, {
+      id: randomUUID() as AttemptId,
+      taskId: task.id,
+      provider: judge.provider,
+      model: judge.model,
+      status: 'preparing',
+    })
+    publishTaskLevel(task.id, 'compete.merge_started', { attemptId: attempt.id, judge, reviewer })
+    setTaskStatus(db, task.id, 'running')
+    const controller = new AbortController()
+    const active: ActiveTask = { controller, promise: Promise.resolve() }
+    running.set(task.id, active)
+    active.promise = runCompeteMerge(
+      task,
+      repo,
+      attempt,
+      judge,
+      reviewer,
+      succeeded,
+      compared.judgement,
+      controller,
+    )
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : 'The merge failed'
+        updateAttempt(db, attempt.id, { status: 'failed' })
+        finishCompetePhase(
+          task,
+          attempt,
+          `The merge failed: ${message}. You can still choose one of the original attempts.`,
+        )
+      })
+      .finally(() => {
+        if (running.get(task.id) === active) running.delete(task.id)
+      })
+    return attempt
+  }
+
+  async function runCompeteMerge(
+    task: StoredTask,
+    repo: RepoRecord,
+    attempt: AttemptRecord,
+    judge: ModelRef,
+    reviewer: ModelRef,
+    outcomes: ContestantOutcome[],
+    judgement: Judgement,
+    controller: AbortController,
+  ): Promise<void> {
+    let result: Extract<LoopEvent, { type: 'result' }> | undefined
+    for await (const event of reviewLoop(
+      {
+        taskId: task.id,
+        attemptId: attempt.id,
+        repo,
+        prompt: mergePrompt(task.prompt, outcomes, judgement),
+        implementer: judge,
+        reviewer,
+        planFirst: false,
+        maxRounds: 1,
+        signal: controller.signal,
+      },
+      { providers, executor },
+    )) {
+      recordLoopEvent(attempt, judge, reviewer, event)
+      if (event.type === 'result') result = event
+      publish(task.id, attempt.id, event.type === 'result' ? 'compete.result' : event.type, event)
+    }
+    publishTaskLevel(task.id, 'compete.merged', {
+      attemptId: attempt.id,
+      status: result?.status ?? 'failed',
+      approved: result?.approved ?? false,
+    })
+    finishCompetePhase(
+      task,
+      attempt,
+      result?.status === 'succeeded'
+        ? 'The merged version is ready: choose it or one of the original attempts.'
+        : `The merge did not finish (${result?.reason ?? 'no result'}). You can still choose one of the original attempts.`,
+    )
+  }
+
+  /** The attempt the owner chose in a compete task. */
+  function chosenAttempt(task: StoredTask): AttemptRecord | undefined {
+    const chosen = listTaskEvents(db, task.id)
+      .filter((event) => event.type === 'compete.chosen')
+      .at(-1)?.payload as { attemptId?: string } | undefined
+    return listAttempts(db, task.id).find((attempt) => attempt.id === chosen?.attemptId)
+  }
+
+  /** The owner keeps one attempt; the others' worktrees are removed (the owner's choice is the confirmation). */
+  async function chooseCompeteAttempt(task: StoredTask, attemptId: string): Promise<StoredTask | undefined> {
+    if (task.mode !== 'compete') throw new HttpError(409, 'Only compete tasks have attempts to choose from')
+    if (task.status !== 'review_ready' || running.has(task.id))
+      throw new HttpError(409, `Wait until the comparison is ready (task is ${task.status})`)
+    const attempts = listAttempts(db, task.id)
+    const chosen = attempts.find((attempt) => attempt.id === attemptId)
+    if (!chosen || chosen.status !== 'succeeded' || !chosen.diffStats)
+      throw new HttpError(409, 'Choose an attempt that finished with a change')
+    const repo = getRepo(db, task.repoId)
+    const discarded: string[] = []
+    for (const attempt of attempts) {
+      if (
+        attempt.id === chosen.id ||
+        !repo ||
+        !attempt.worktreePath ||
+        !attempt.branch ||
+        !attempt.baseCommit
+      )
+        continue
+      try {
+        await executor.cleanup({
+          repo,
+          taskId: task.id,
+          attemptId: attempt.id,
+          path: attempt.worktreePath,
+          branch: attempt.branch,
+          baseCommit: attempt.baseCommit,
+        })
+        discarded.push(attempt.id)
+      } catch (error) {
+        console.warn(
+          redactor.redact(`[joy] could not remove worktree ${attempt.worktreePath}: ${String(error)}`),
+        )
+      }
+    }
+    publishTaskLevel(task.id, 'compete.chosen', { attemptId: chosen.id, discarded })
+    setTaskStatus(db, task.id, 'done')
+    return getTask(db, task.id)
+  }
+
   async function runReviewLoop(
     task: StoredTask,
     repo: RepoRecord,
@@ -1328,34 +1677,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       },
       { providers, executor },
     )) {
-      if (event.type === 'workspace') {
-        updateAttempt(db, attempt.id, {
-          worktreePath: event.workspace.path,
-          branch: event.workspace.branch,
-          baseCommit: event.workspace.baseCommit,
-        })
-      } else if (event.type === 'phase') {
-        const status: AttemptStatus = phaseStatus(event.phase)
-        updateAttempt(db, attempt.id, { status })
-      } else if (event.type === 'agent') {
-        const model = event.role === 'reviewer' ? reviewer : implementer
-        persistUsageEvent(db, model.provider, event.event)
-        if (event.role === 'implementer' && event.event.type === 'session_started') {
-          updateAttempt(db, attempt.id, { sessionId: event.event.sessionId })
-        }
-      } else if (event.type === 'review') {
-        const verdict = redactor.redactValue(event.verdict)
-        createReview(db, {
-          id: randomUUID(),
-          attemptId: attempt.id,
-          reviewerProvider: reviewer.provider,
-          reviewerModel: reviewer.model,
-          round: event.round,
-          approve: verdict.approve,
-          summary: verdict.summary,
-          findings: verdict.findings,
-        })
-      } else if (event.type === 'result') {
+      recordLoopEvent(attempt, implementer, reviewer, event)
+      if (event.type === 'result') {
         finished = true
         const taskStatus: TaskStatus =
           event.status === 'cancelled'
@@ -1365,12 +1688,6 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
               : event.approved
                 ? 'done'
                 : 'review_ready'
-        const attemptStatus: AttemptStatus =
-          event.status === 'cancelled' ? 'cancelled' : event.status === 'failed' ? 'failed' : 'succeeded'
-        updateAttempt(db, attempt.id, {
-          status: attemptStatus,
-          ...(event.diff ? { diffStats: summarizeDiff(event.diff) } : {}),
-        })
         setTaskStatus(db, task.id, taskStatus)
       }
       publish(task.id, attempt.id, event.type, event)
@@ -1690,7 +2007,6 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     input: z.infer<typeof taskInputSchema>,
     originConversationId?: string,
   ): Promise<StoredTask> {
-    if (input.mode === 'compete') throw new HttpError(422, 'Compete mode is not available in P1 yet')
     const roleOverrides = input.roleOverrides as Partial<RoleConfig> | undefined
     const config = await configStore.get()
     const implementer = resolveRole('implementer', config.roles as RoleConfig, roleOverrides)

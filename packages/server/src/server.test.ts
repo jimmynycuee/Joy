@@ -46,6 +46,7 @@ import type { JoyServer, JoyServerOptions } from './server.js'
 import type { DoctorOptions } from './doctor.js'
 import WebSocket, { type RawData } from 'ws'
 import type { ApiTool } from '@joy/providers'
+import { JUDGE_SCHEMA, REVIEW_SCHEMA } from '@joy/orchestrator'
 
 const dirs: string[] = []
 const servers: JoyServer[] = []
@@ -137,6 +138,7 @@ class FakeProvider implements AgentProvider {
 
 class FakeExecutor implements Executor {
   prepareCalls = 0
+  readonly cleaned: string[] = []
   constructor(private readonly path = '/fake/worktree') {}
   async prepare(repo: Workspace['repo'], taskId: TaskId, attemptId: AttemptId): Promise<Workspace> {
     this.prepareCalls++
@@ -148,7 +150,9 @@ class FakeExecutor implements Executor {
   async commit() {
     return null
   }
-  async cleanup() {}
+  async cleanup(ws: Workspace) {
+    this.cleaned.push(ws.attemptId)
+  }
 }
 
 function fixture(
@@ -1245,14 +1249,6 @@ describe('Joy local server', () => {
     const tauriSocket = await tryWebSocket(`${websocket}/ws?taskId=${task.id}`, 'tauri://localhost')
     expect(tauriSocket.status).toBe(101)
     expect(tauriSocket.messages[0]).toMatchObject({ type: 'snapshot', task: { id: task.id } })
-
-    const compete = await postJson(`${origin}/api/tasks`, {
-      repoId: repo.id,
-      title: 'Compare implementations',
-      prompt: 'Do it',
-      mode: 'compete',
-    })
-    expect(compete.status).toBe(422)
   })
 
   it('exposes a task-scoped Tool Hub to CLI runs with authentication, shared read-only peers, and limits', async () => {
@@ -2432,6 +2428,141 @@ describe('Joy local server', () => {
     expect(cancelResult).toMatchObject({ id: task.id })
     await waitForStatus(origin, task.id, 'cancelled', 5_000)
     expect(badInput).toBeTruthy()
+  })
+
+  it('compete: both models work in parallel, each is cross-reviewed, the judge compares, the owner merges or chooses', async () => {
+    /** One fake per backend that implements, reviews or judges depending on what it is asked. */
+    const routing = (kind: ProviderKind): AgentProvider & { calls: RunOptions[] } => {
+      const calls: RunOptions[] = []
+      return {
+        ...scriptedProvider(kind, []).provider,
+        calls,
+        async *run(options: RunOptions) {
+          calls.push(options)
+          if (options.outputSchema === JUDGE_SCHEMA) {
+            yield {
+              type: 'done',
+              sessionId: 'j',
+              isError: false,
+              structured: {
+                winner: 'B',
+                reasons: 'B has tests',
+                attempts: [
+                  { label: 'A', strengths: 'small', weaknesses: 'no tests' },
+                  { label: 'B', strengths: 'tests', weaknesses: 'verbose' },
+                ],
+                merge_recommended: true,
+              },
+            }
+          } else if (options.outputSchema === REVIEW_SCHEMA) {
+            yield {
+              type: 'done',
+              sessionId: 'r',
+              isError: false,
+              structured: { approve: true, summary: 'fine', findings: [] },
+            }
+          } else {
+            yield { type: 'session_started', sessionId: `${kind}-impl` }
+            yield { type: 'done', sessionId: `${kind}-impl`, isError: false, finalMessage: 'done' }
+          }
+        },
+      }
+    }
+    const claude = routing('claude-cli')
+    const codex = routing('codex-cli')
+    const { serverPromise, db, executor, configStore } = fixture({
+      providers: { 'claude-cli': claude, 'codex-cli': codex },
+    })
+    await configStore.update((config) => ({
+      ...config,
+      roles: {
+        ...config.roles,
+        implementer: { provider: 'claude-cli', model: 'haiku', effort: 'low' },
+        reviewer: { provider: 'codex-cli', model: 'gpt-6-luna', effort: 'low' },
+        judge: { provider: 'claude-cli', model: 'haiku', effort: 'low' },
+      },
+    }))
+    createRepo(db, { id: rid('joy'), path: '/joy', defaultBranch: 'main' })
+    const { origin } = await start(serverPromise)
+    const created = (await (
+      await postJson(`${origin}/api/tasks`, {
+        repoId: 'joy',
+        title: 'Compare',
+        prompt: 'Fix add()',
+        mode: 'compete',
+      })
+    ).json()) as { task: { id: string } }
+    const id = created.task.id
+    type Details = Omit<TaskDetails, 'attempts' | 'reviews' | 'events'> & {
+      attempts: Array<{ id: string; provider: string; status: string }>
+      reviews: Array<{ attemptId: string; reviewerProvider: string }>
+      events: Array<{ type: string; attemptId?: string; payload: unknown }>
+    }
+    let details = (await waitForStatus(origin, id, 'review_ready', 5_000)) as unknown as Details
+    expect(details.attempts.map((a) => [a.provider, a.status]).sort()).toEqual([
+      ['claude-cli', 'succeeded'],
+      ['codex-cli', 'succeeded'],
+    ])
+    const byProvider = (provider: string) => details.attempts.find((a) => a.provider === provider)?.id
+    // Each attempt was reviewed once, by the other model.
+    expect(details.reviews.map((r) => [r.attemptId, r.reviewerProvider]).sort()).toEqual(
+      [
+        [byProvider('claude-cli'), 'codex-cli'],
+        [byProvider('codex-cli'), 'claude-cli'],
+      ].sort(),
+    )
+    const judged = details.events.find((e) => e.type === 'compete.judgement')?.payload as {
+      judgement: { winner: string; reasons: string }
+    }
+    expect(judged.judgement).toMatchObject({ winner: byProvider('codex-cli'), reasons: 'B has tests' })
+    expect(details.events.filter((e) => e.type === 'compete.result')).toHaveLength(2)
+    expect(claude.calls.filter((c) => c.outputSchema === JUDGE_SCHEMA)).toHaveLength(1)
+
+    // A compete task cannot be resumed, and only finished attempts can be chosen.
+    expect((await postJson(`${origin}/api/tasks/${id}/resume`, {})).status).toBe(409)
+    expect((await postJson(`${origin}/api/tasks/${id}/choose`, { attemptId: 'nope' })).status).toBe(409)
+
+    const merge = await postJson(`${origin}/api/tasks/${id}/merge`, {})
+    expect(merge.status).toBe(202)
+    const mergedId = ((await merge.json()) as { attempt: { id: string } }).attempt.id
+    details = (await waitForEvent(origin, id, 'compete.merged', 5_000)) as unknown as Details
+    details = (await waitForStatus(origin, id, 'review_ready', 5_000)) as unknown as Details
+    expect(details.attempts).toHaveLength(3)
+    // The judge wrote the merged version in its own worktree, with both patches in its prompt; a different backend reviewed it.
+    const mergeRun = claude.calls.find((c) => c.prompt.includes('combining the best parts of the attempts'))
+    expect(mergeRun?.autonomy).toBe('workspace-write')
+    expect(details.reviews.filter((r) => r.attemptId === mergedId).map((r) => r.reviewerProvider)).toEqual([
+      'codex-cli',
+    ])
+
+    const chosen = await postJson(`${origin}/api/tasks/${id}/choose`, { attemptId: mergedId })
+    expect(chosen.status).toBe(200)
+    expect(((await chosen.json()) as { task: { status: string } }).task.status).toBe('done')
+    expect(executor.cleaned.sort()).toEqual([byProvider('claude-cli'), byProvider('codex-cli')].sort())
+    expect((await postJson(`${origin}/api/tasks/${id}/merge`, {})).status).toBe(409)
+  })
+
+  it('compete: the judge must be allowed for the repository', async () => {
+    const { serverPromise, db, configStore } = fixture()
+    await configStore.update((config) => ({
+      ...config,
+      roles: { ...config.roles, judge: { provider: 'openai-api', model: 'gpt-6-luna', effort: 'low' } },
+    }))
+    createRepo(db, {
+      id: rid('joy'),
+      path: '/joy',
+      defaultBranch: 'main',
+      allowedProviders: ['claude-cli', 'codex-cli'],
+    })
+    const { origin } = await start(serverPromise)
+    const response = await postJson(`${origin}/api/tasks`, {
+      repoId: 'joy',
+      title: 'Compare',
+      prompt: 'x',
+      mode: 'compete',
+    })
+    expect(response.status).toBeGreaterThanOrEqual(400)
+    expect(((await response.json()) as { error: string }).error).toMatch(/judge.*openai-api/i)
   })
 
   it('reports model stats filtered by period and repository', async () => {

@@ -109,7 +109,7 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   await taskDialog.getByLabel('Task repository').selectOption({ index: 1 })
   await taskDialog.getByLabel('Task title').fill('Show the fake diff')
   await taskDialog.getByLabel('Task instructions').fill('Update the greeting and explain the result.')
-  expect(await taskDialog.locator('option[value="compete"]').getAttribute('disabled')).toBe('')
+  expect(await taskDialog.locator('option[value="compete"]').getAttribute('disabled')).toBeNull()
   await taskDialog.getByRole('button', { name: 'Start task' }).click()
 
   await expect(page.getByRole('heading', { name: 'Show the fake diff' })).toBeVisible()

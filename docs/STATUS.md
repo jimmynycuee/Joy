@@ -2,8 +2,8 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-06（T3.9 模型表現統計）
-- 擁有者 Codex 額度用完：T2.1 平行競賽延後，先做 P3（不含需要 Google 登入的 T3.8）。
+- 最後更新：2026-11-06（T2.1 平行競賽）
+- T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
 ## 驗證結果
@@ -92,6 +92,17 @@
 - T3.8 依 PLAN 清單評估維護狀況、權限範圍與資料是否送第三方，自行選一個 Gmail／Calendar MCP server；先唯讀，寄信與邀請他人一律 🔴。選型理由寫在本檔決策區。
 - 不呼叫真實模型；若測試確實需要真實模型，只能使用 haiku 或 gpt-6-luna、low effort，且必須是 opt-in。
 - 每個 ticket 從最新 main 開獨立分支，diff 只保留該 ticket。CI 失敗最多修 3 次；無法修復時記錄原因並繼續不相依工作。
+
+### T2.1 平行競賽
+
+- 任務模式 `compete`：`roles.implementer` 與 `roles.reviewer` 兩個模型各在自己的 worktree **同時**做同一件事（兩者都必須能改程式碼），各自被另一個模型審查一次；兩個都有成果時，`roles.judge` 唯讀比較並給理由（選誰、各自優缺點、是否建議合併）。只有一個有成果就不叫裁判。
+- 任務停在 `review_ready`，UI 並排顯示兩個嘗試的 diff、審查結果與裁判理由：
+  - 「Choose A/B」：`POST /api/tasks/:id/choose {attemptId}`，任務變 `done`，**其他嘗試的 worktree 立即清除**（擁有者的選擇就是確認；T2.8 的閒置清理尚未做）。開 PR（T1.9b）用選中的嘗試。
+  - 「Merge」：`POST /api/tasks/:id/merge {}`，裁判在**第三個 worktree** 參考兩份 diff 與自己的比較重新實作，再由和裁判不同家的參賽模型審查一次；合併版有自己的分支與審查紀錄，之後一樣用 Choose 選。裁判必須能改程式碼（設成 Claude Code 或 Codex）。
+- 允許清單：建立任務時檢查實作者、審查者、裁判三個 provider（T1.12）；合併時再查一次裁判與合併審查者。
+- 參賽者各自的結束事件記為 `compete.result`（不是任務結束）；裁判結論 `compete.judgement`、合併 `compete.merge_started`/`compete.merged`、選擇 `compete.chosen` 都是任務層級事件。審查寫進 `reviews`，所以 T3.9 統計也算得到。
+- 限制：compete 任務不能 resume（重啟中斷就重開一個）；額度交接（T2.5）只用在單一模式；合併執行沒有套用每任務時間上限。
+- 驗收：`packages/orchestrator` 測試（兩個嘗試真的並行、各審一次、裁判輸出驗證、只有一個成果時跳過裁判）、server 測試（並行→審查→裁判→合併→選擇→清理；裁判不在允許清單時拒絕）、Playwright `apps/web/e2e/compete.spec.ts`。
 
 ### T3.9 模型表現統計
 
