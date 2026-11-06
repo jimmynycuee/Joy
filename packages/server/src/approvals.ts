@@ -43,7 +43,8 @@ export class ApprovalBroker {
    */
   request(input: ApprovalRequestInput, signal: AbortSignal, timeoutMs: number): Promise<ApprovalStatus> {
     const { db, redactor, publish } = this.options
-    const action: ProposedAction = { ...input.action, summary: redactor.redact(input.action.summary) }
+    // The detail holds raw tool input (commands, paths); it is stored and shown, so redact all of it.
+    const action: ProposedAction = redactor.redactValue(input.action)
     const record = createApproval(db, {
       id: randomUUID(),
       attemptId: input.attemptId,
@@ -57,14 +58,6 @@ export class ApprovalBroker {
       provenance: action.provenance,
       ...(input.preReview ? { preReview: input.preReview } : {}),
     })
-    for (const listener of this.listeners) {
-      try {
-        listener(record, input.preReview)
-      } catch {
-        // A failing channel must not block the others or the request itself.
-      }
-    }
-
     return new Promise<ApprovalStatus>((resolve) => {
       const finish = (status: ApprovalStatus) => {
         clearTimeout(timer)
@@ -80,9 +73,20 @@ export class ApprovalBroker {
       const onAbort = () => expire('cancelled')
       const timer = setTimeout(() => expire('timeout'), timeoutMs)
       timer.unref?.()
+      // Register the waiter before telling channels, so even a synchronous decision resolves this request.
       this.waiters.set(record.id, finish)
-      if (signal.aborted) onAbort()
-      else signal.addEventListener('abort', onAbort, { once: true })
+      if (signal.aborted) {
+        onAbort()
+        return
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      for (const listener of this.listeners) {
+        try {
+          listener(record, input.preReview)
+        } catch {
+          // A failing channel must not block the others or the request itself.
+        }
+      }
     })
   }
 

@@ -9,7 +9,14 @@ import {
 } from './approvals.js'
 import type { Database } from './database.js'
 import { openDatabase } from './database.js'
-import { createAttempt, createRepo, createTask } from './repositories.js'
+import {
+  createAttempt,
+  createRepo,
+  createTask,
+  getTask,
+  interruptRunningWork,
+  setTaskStatus,
+} from './repositories.js'
 
 const databases: Database[] = []
 afterEach(() => {
@@ -84,5 +91,12 @@ describe('approvals', () => {
     expect(expirePendingApprovals(db)).toBe(1)
     expect(getApproval(db, 'ap1')).toMatchObject({ status: 'expired', decidedVia: 'restart' })
     expect(expirePendingApprovals(db)).toBe(0)
+  })
+
+  it('fails tasks that were waiting for approval when Joy restarts, so they can be resumed', () => {
+    const db = seed()
+    setTaskStatus(db, 't1' as TaskId, 'awaiting_approval')
+    expect(interruptRunningWork(db)).toEqual(['t1'])
+    expect(getTask(db, 't1' as TaskId)?.status).toBe('failed')
   })
 })

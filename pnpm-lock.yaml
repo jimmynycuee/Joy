@@ -119,6 +119,10 @@ importers:
       '@joy/core':
         specifier: workspace:*
         version: link:../core
+    devDependencies:
+      '@joy/secrets':
+        specifier: workspace:*
+        version: link:../secrets
 
   packages/model-effort:
     dependencies:

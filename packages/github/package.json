@@ -13,5 +13,8 @@
   },
   "dependencies": {
     "@joy/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@joy/secrets": "workspace:*"
   }
 }

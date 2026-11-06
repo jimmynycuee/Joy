@@ -193,8 +193,8 @@ interface PendingApproval {
   action: { kind: string; summary: string; provenance: string }
 }
 
-/** Red actions waiting for the owner in this task, with Approve / Deny. Refreshes whenever new events arrive. */
-function ApprovalsPanel({ taskId, eventCount }: { taskId: string; eventCount: number }) {
+/** Red actions waiting for the owner in this task, with Approve / Deny. Refreshes on approval events. */
+function ApprovalsPanel({ taskId, approvalEvents }: { taskId: string; approvalEvents: number }) {
   const [pending, setPending] = useState<PendingApproval[]>([])
   const [busy, setBusy] = useState('')
   const [failure, setFailure] = useState('')
@@ -217,7 +217,7 @@ function ApprovalsPanel({ taskId, eventCount }: { taskId: string; eventCount: nu
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [taskId, eventCount])
+  }, [taskId, approvalEvents])
 
   async function decide(id: string, decision: 'approve' | 'deny') {
     setBusy(id)
@@ -1117,7 +1117,10 @@ function App() {
                     <span>{details.repo?.defaultBranch ?? 'main'}</span>
                   </div>
                 </div>
-                <ApprovalsPanel taskId={details.task.id} eventCount={details.events.length} />
+                <ApprovalsPanel
+                  taskId={details.task.id}
+                  approvalEvents={details.events.filter((event) => event.type.startsWith('approval.')).length}
+                />
                 <div className="event-stream" aria-label="Live event stream" data-testid="event-stream">
                   {details.events.length === 0 ? (
                     <div className="stream-empty">

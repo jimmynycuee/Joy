@@ -94,16 +94,19 @@
 
 ## 擁有者待審
 
-- [PR #58](https://github.com/jimmynycuee/Joy/pull/58)：審核 `packages/core` 公開介面與 `packages/secrets` OS keychain／機密遮罩處理。
-- [PR #73](https://github.com/jimmynycuee/Joy/pull/73)：審核本機 API／WebSocket token 認證、token 檔案權限與 Windows ACL 邊界。
-- [PR #57](https://github.com/jimmynycuee/Joy/pull/57)：審核 repo provider allowlist 的政策／執行時檢查，以及無 attempt 預檢失敗事件的資料庫與事件格式。
-- [PR #54](https://github.com/jimmynycuee/Joy/pull/54)：審核 GitHub publisher 對 push target、提交歷史與 secret-like 內容的安全限制。
-- [PR #62](https://github.com/jimmynycuee/Joy/pull/62)：審核 `joy doctor` 的 OS 鑰匙圈可用性檢查；只探測可用性、不讀取已存憑證。
-- [PR #84](https://github.com/jimmynycuee/Joy/pull/84)：審核 `packages/policy` 分級與全域模式、跨模型預審、task provenance DB/core 介面及 Claude delegated approval 接線；紅色動作在人工核准通道尚未完成前保持不執行。
+2026-11-06 由 agent 代為審查（擁有者授權）。下表為結論；擁有者可只看「發現」欄。
 
-- T2.4b：Telegram 的擁有者驗證（只認 chat id）、按鈕資料格式與 token 處理。
-- T2.4a：核准中心（`packages/server/src/approvals.ts`）與 approvals API；確認第一個決定生效、記錄經過遮罩。
-- T2.7b（PR #86）：審核 `packages/policy` 的 `classifyCodexApproval` 規則，以及 server 預設改用 Codex app-server。
+| 項目                          | 審查方式                 | 結論       | 發現                                                                                                                          |
+| ----------------------------- | ------------------------ | ---------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| #73 本機 API／WebSocket token | 獨立審查（非作者）       | 通過       | Windows 上 token 檔只依賴使用者資料夾的預設 ACL，T4.4 實機確認                                                                |
+| #54 GitHub publisher          | 獨立審查                 | 已修       | 內容掃描認不得私鑰與 AWS／Slack／Google／Stripe／GitLab 憑證 → 已加入 Redactor；**publisher 從未接到 server/UI → 新增 T1.9b** |
+| #57 provider 允許清單         | 獨立審查                 | 通過       | —                                                                                                                             |
+| #58 core 介面、機密遮罩       | 獨立審查                 | 通過       | —                                                                                                                             |
+| #62 `joy doctor` 鑰匙圈       | 獨立審查                 | 通過       | 只查詢隨機、不存在的帳號                                                                                                      |
+| #84 權限規則                  | 擁有者已審（2026-11-06） | 通過       | —                                                                                                                             |
+| T2.7b、T2.4a、T2.4b           | `/code-review`（high）   | 已修 9／10 | 見下                                                                                                                          |
+
+`/code-review` 的發現與處理：重啟時等待核准的任務會卡住（已修）；核准紀錄的 detail 未遮罩（已修）；同任務多個待核准時狀態被提早改回（已修）；Telegram 群組中任何人可按核准（已修，只接受擁有者本人的私訊）；同步決定要等到逾時才生效（已修）；UI 每個事件都重抓待核准清單（已修）；沒有 token 時每分鐘警告（已修，只警告一次）；完成通知未遮罩（已修）；命名與重複程式（已修）；**Telegram 設定要重啟才生效（未修，留待之後）**。
 
 ## 需要擁有者處理
 

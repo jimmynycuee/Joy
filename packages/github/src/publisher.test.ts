@@ -7,6 +7,7 @@ import { promisify } from 'node:util'
 import type { AttemptId, RepoId, RepoRef, TaskId, Workspace } from '@joy/core'
 import { afterEach, describe, expect, it } from 'vitest'
 import { GitHubPublisher } from './publisher.js'
+import { Redactor } from '@joy/secrets'
 
 const execFileAsync = promisify(execFile)
 const roots: string[] = []
@@ -510,6 +511,20 @@ describe('GitHubPublisher', () => {
     ).rejects.toBeDefined()
   })
 
+  it('blocks private keys and cloud credentials pasted into ordinary source files', async () => {
+    for (const content of [
+      'export const key = `-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE KEY-----`\n',
+      `const aws = '${'AKIA' + 'Q'.repeat(16)}'\n`,
+    ]) {
+      const fixture = await createFixture()
+      await writeFile(join(fixture.workspace.path, 'deploy.ts'), content)
+      await expect(createPublisher(fixture).publish(fixture.workspace, input())).rejects.toThrow(
+        /secret-like added content/,
+      )
+      expect(await readCalls(fixture)).toHaveLength(0)
+    }
+  })
+
   it('blocks credential files and secret-like committed diffs before push', async () => {
     const credentialFixture = await createFixture()
     await writeFile(join(credentialFixture.workspace.path, '.env'), 'API_TOKEN=unsafe\n')
@@ -839,6 +854,9 @@ function input() {
   }
 }
 
+const testRedactor = new Redactor()
+testRedactor.add('test-secret-value')
+
 function createPublisher(
   fixture: Fixture,
   overrides: {
@@ -868,7 +886,8 @@ function createPublisher(
     },
     ...(overrides.remote === undefined ? {} : { remote: overrides.remote }),
     ...(overrides.commandTimeoutMs === undefined ? {} : { commandTimeoutMs: overrides.commandTimeoutMs }),
-    redact: (value) => value.replaceAll('test-secret-value', '[REDACTED]'),
+    // The production Redactor: registered secrets plus the well-known credential shapes.
+    redact: (value) => testRedactor.redact(value),
     gitExecutable: process.execPath,
     gitPrefixArgs: [fixture.fakeGit],
     ghExecutable: process.execPath,

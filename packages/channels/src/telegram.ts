@@ -5,7 +5,10 @@ import type { Channel, InboundMessage, OutboundMessage } from '@joy/core'
 export interface TelegramChannelOptions {
   /** Read on every request, so a token changed in settings applies without a restart. */
   token: () => Promise<string | null>
-  /** The only chat whose messages and button presses are accepted. */
+  /**
+   * Your private chat with the bot (it equals your Telegram user id). Only messages and button presses from you in
+   * that chat are accepted; group chats are not supported.
+   */
   ownerChatId: string
   baseUrl?: string
   fetch?: typeof fetch
@@ -19,6 +22,8 @@ export interface TelegramChannelOptions {
 
 type Handler = (msg: InboundMessage) => Promise<void>
 
+const TOKEN_MISSING = 'Telegram bot token is not set'
+
 /** Telegram limits callback_data to 64 bytes. */
 const MAX_CALLBACK_DATA = 64
 
@@ -30,6 +35,7 @@ export class TelegramChannel implements Channel {
   private offset = 0
   private controller: AbortController | undefined
   private loop: Promise<void> | undefined
+  private reportedMissingToken = false
 
   constructor(private readonly options: TelegramChannelOptions) {
     if (!/^-?\d+$/.test(options.ownerChatId)) throw new Error('Telegram owner chat id must be a number')
@@ -105,9 +111,12 @@ export class TelegramChannel implements Channel {
         if (received === 0) await sleep(200, signal)
       } catch (error) {
         if (signal.aborted) return
-        this.options.onError?.(error as Error)
-        await sleep(delay, signal)
-        delay = Math.min(delay * 2, 60_000)
+        // A missing token is a setup state, not an outage: say so once, then keep checking quietly.
+        const missingToken = (error as Error).message === TOKEN_MISSING
+        if (!missingToken || !this.reportedMissingToken) this.options.onError?.(error as Error)
+        this.reportedMissingToken = missingToken
+        await sleep(missingToken ? 60_000 : delay, signal)
+        if (!missingToken) delay = Math.min(delay * 2, 60_000)
       }
     }
   }
@@ -122,8 +131,9 @@ export class TelegramChannel implements Channel {
       if (typeof callback.id === 'string') {
         await this.call('answerCallbackQuery', { callback_query_id: callback.id }).catch(() => undefined)
       }
-      if (chatId !== this.options.ownerChatId) {
-        this.options.onRejected?.('callback from a chat that is not the owner', { chatId, fromId })
+      // Both the chat and the person pressing must be the owner: in a group chat, anyone could press otherwise.
+      if (chatId !== this.options.ownerChatId || fromId !== this.options.ownerChatId) {
+        this.options.onRejected?.('callback from someone who is not the owner', { chatId, fromId })
         return
       }
       const data = typeof callback.data === 'string' ? callback.data : ''
@@ -144,14 +154,15 @@ export class TelegramChannel implements Channel {
     const message = u.message as Record<string, unknown> | undefined
     if (message) {
       const chatId = String((message.chat as { id?: unknown } | undefined)?.id ?? '')
-      if (chatId !== this.options.ownerChatId) {
-        this.options.onRejected?.('message from a chat that is not the owner', { chatId })
+      const fromId = String((message.from as { id?: unknown } | undefined)?.id ?? '')
+      if (chatId !== this.options.ownerChatId || fromId !== this.options.ownerChatId) {
+        this.options.onRejected?.('message from someone who is not the owner', { chatId, fromId })
         return
       }
       const text = typeof message.text === 'string' ? message.text : undefined
       await this.emit({
         channel: 'telegram',
-        senderId: String((message.from as { id?: unknown } | undefined)?.id ?? chatId),
+        senderId: fromId,
         ...(text !== undefined ? { text } : {}),
         receivedAt: new Date().toISOString(),
       })
@@ -172,7 +183,7 @@ export class TelegramChannel implements Channel {
 
   private async call(method: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
     const token = await this.options.token()
-    if (!token) throw new Error('Telegram bot token is not set')
+    if (!token) throw new Error(TOKEN_MISSING)
     const response = await this.fetchImpl(`${this.baseUrl}/bot${token}/${method}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
