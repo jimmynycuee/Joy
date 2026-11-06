@@ -83,6 +83,20 @@ pnpm web
 pnpm joy restore 2026-11-06
 ```
 
+## 不信任的程式碼：container 模式
+
+新增 repo 時勾選「run agents in a container」，這個 repo 的 agent 會在 Docker 裡跑，只看得到該任務的 worktree 與 repo 的 git 資料，看不到你的家目錄、其他專案與主機上的登入。需要 Docker（Docker Desktop 請開啟 host networking），第一次先：
+
+```bash
+pnpm joy container-build
+```
+
+```bash
+pnpm joy container-login claude
+```
+
+Codex 要在 container 裡用，`~/.joy/config.yaml` 的 `providers.codex.transport` 要設成 `exec`。網路沒有隔離（CLI 要連模型與 Joy 的審核），保護的是檔案。
+
 ## 疑難排解
 
 | 狀況                          | 處理                                                                                                    |

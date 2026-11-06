@@ -17,11 +17,14 @@ import type { Database } from './database.js'
 
 export interface RepoRecord extends RepoRef {
   allowedProviders: ProviderKind[]
+  /** Untrusted repository: agents run inside a container (T4.5). */
+  container?: true
   createdAt: string
 }
 
 export interface NewRepo extends RepoRef {
   allowedProviders?: ProviderKind[]
+  container?: boolean
 }
 
 export interface StoredTask extends Task {
@@ -93,6 +96,7 @@ interface RepoRow {
   github_remote: string | null
   default_branch: string
   allowed_providers: string
+  container: number
   created_at: string
 }
 
@@ -151,8 +155,15 @@ interface AttemptRow {
 export function createRepo(db: Database, repo: NewRepo): RepoRecord {
   const allowedProviders = validateAllowedProviders(repo.allowedProviders ?? PROVIDER_KINDS)
   db.prepare(
-    'INSERT INTO repos (id, path, github_remote, default_branch, allowed_providers) VALUES (?, ?, ?, ?, ?)',
-  ).run(repo.id, repo.path, repo.githubRemote ?? null, repo.defaultBranch, JSON.stringify(allowedProviders))
+    'INSERT INTO repos (id, path, github_remote, default_branch, allowed_providers, container) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(
+    repo.id,
+    repo.path,
+    repo.githubRemote ?? null,
+    repo.defaultBranch,
+    JSON.stringify(allowedProviders),
+    repo.container ? 1 : 0,
+  )
   const stored = getRepo(db, repo.id)
   if (!stored) throw new Error(`Repository ${repo.id} was not found after insert`)
   return stored
@@ -176,6 +187,12 @@ export function updateRepoAllowedProviders(
 ): RepoRecord | undefined {
   const validated = validateAllowedProviders(allowedProviders)
   db.prepare('UPDATE repos SET allowed_providers = ? WHERE id = ?').run(JSON.stringify(validated), id)
+  return getRepo(db, id)
+}
+
+/** Runs this repository's agents in a container (T4.5), or back on the host. */
+export function updateRepoContainer(db: Database, id: RepoId, container: boolean): RepoRecord | undefined {
+  db.prepare('UPDATE repos SET container = ? WHERE id = ?').run(container ? 1 : 0, id)
   return getRepo(db, id)
 }
 
@@ -538,6 +555,7 @@ function mapRepo(row: RepoRow): RepoRecord {
     defaultBranch: row.default_branch,
     ...(row.github_remote ? { githubRemote: row.github_remote } : {}),
     allowedProviders: parseStoredAllowedProviders(row.allowed_providers),
+    ...(row.container === 1 ? { container: true as const } : {}),
     createdAt: row.created_at,
   }
 }

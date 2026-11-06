@@ -27,3 +27,4 @@ export {
   parseCliVersion,
 } from './versions.js'
 export type { CliName, TestedRange, VersionCheck } from './versions.js'
+export type { CommandWrapper } from './cli-run.js'

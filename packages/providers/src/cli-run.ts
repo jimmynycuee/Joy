@@ -3,6 +3,17 @@ import type { AgentEvent, ProviderKind } from '@joy/core'
 import type { ProcessExit } from './process.js'
 import { runJsonlProcess } from './process.js'
 
+/**
+ * Lets the server run a CLI some other way, e.g. inside a container for an untrusted repository (T4.5). Receives the
+ * normal command line and returns the one to spawn; the working directory stays the same.
+ */
+export type CommandWrapper = (run: {
+  cli: 'claude' | 'codex'
+  command: string
+  args: string[]
+  cwd: string
+}) => Promise<{ command: string; args: string[] }>
+
 /** What both CLI parsers provide. */
 export interface StreamParser {
   readonly finished: boolean

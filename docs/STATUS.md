@@ -2,7 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-06（T4.9 使用者文件）
+- 最後更新：2026-11-06（T4.5 container 模式）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
@@ -92,6 +92,15 @@
 - T3.8 依 PLAN 清單評估維護狀況、權限範圍與資料是否送第三方，自行選一個 Gmail／Calendar MCP server；先唯讀，寄信與邀請他人一律 🔴。選型理由寫在本檔決策區。
 - 不呼叫真實模型；若測試確實需要真實模型，只能使用 haiku 或 gpt-6-luna、low effort，且必須是 opt-in。
 - 每個 ticket 從最新 main 開獨立分支，diff 只保留該 ticket。CI 失敗最多修 3 次；無法修復時記錄原因並繼續不相依工作。
+
+### T4.5 container 模式
+
+- repo 可標成 `container`（新增 repo 時勾選，或 `PATCH /api/repos/:id {container}`；migration 15）。這類 repo 的 Claude Code／Codex（exec）改在 `docker run` 裡跑：**只看得到該任務的 worktree、該 repo 的 `.git`、Joy 原始碼（唯讀，給 Tool Hub 橋接用）、這次執行的暫存檔，以及專用的登入資料夾 `~/.joy/container-home/<cli>`**；看不到你的家目錄、其他 repo 與主機上的 CLI 憑證。`--cap-drop ALL`、`no-new-privileges`、以你的 uid 執行。
+- 憑證：容器內的 CLI 用專用資料夾登入一次（`pnpm joy container-login claude|codex`），不掛載、不讀取主機的登入。映像檔用 `pnpm joy container-build`（`docker/agent.Dockerfile`：node 22 + git + 兩個 CLI）。
+- 網路：`container.network`，預設 `host`（CLI 要連模型 API、Tool Hub 審核要連 Joy 的 127.0.0.1；Linux 直接可用，Docker Desktop 要開 host networking）；`none` 完全斷網（CLI 無法工作，只供離線檢查）。**host 模式下網路沒有隔離**，保護的是檔案系統。
+- 限制：Codex app-server 是共用的常駐程序，放不進容器 → container repo 只接受 `providers.codex.transport: exec`（否則任務直接拒絕並說明）。`transport: exec` 現在真的只用 exec（之前仍先試 app-server）。
+- 驗收：executor 測試（docker 參數、只掛該掛的路徑、拒絕可注入的路徑）、server 測試（Codex app-server 被拒、PATCH 切換）、**真實 Docker e2e**（`JOY_E2E_DOCKER=1`，不進 CI）：在容器裡跑假 CLI，確認 HOME 是 `/joy-home`、讀不到主機上的檔案、改動出現在 worktree 且檔案擁有者是你；Playwright `container.spec.ts`。
+- 本環境驗證不到：映像檔中的 `apt-get install git`（沙盒連不到 Debian 套件庫）；npm 安裝兩個 CLI 已在 node 映像內驗證可執行。
 
 ### T4.9 使用者文件（待擁有者驗收）
 
@@ -263,6 +272,7 @@
 - T1.9 真實驗收（擁有者 Mac）：使用該 Mac 上既有的 GitHub CLI 登入；啟動 Joy，對測試 repo 跑完一個小任務後按 Changes 欄的「Open draft PR」（第一次會要求填 GitHub repository URL），確認遠端測試分支、標題以 `[test] ` 開頭的 draft PR 與 review 摘要正確；驗收後關閉測試 PR 並刪除測試分支。不提供、不貼上或索取 PAT。
 - T1.13/T1.8（擁有者 Mac）：審查 PR #62 的鑰匙圈可用性探測後，在目標 Mac 執行 `pnpm joy doctor`，確認首頁顯示該機器的 CLI、鑰匙圈與資料目錄檢查；此驗收不讀取或提供已存憑證。
 - T2.4 Telegram（**擁有者決定暫緩**）：在 @BotFather 建 bot，對它傳一則訊息後用 `https://api.telegram.org/bot<token>/getUpdates` 查自己的 chat id；在 Joy 設定頁填入 chat id 與 bot token（或用環境變數 `JOY_TELEGRAM_BOT_TOKEN`），重啟 Joy。不要把 token 貼在對話、文件或程式碼中。
+- T4.5：在 Mac 上 `pnpm joy container-build`、`pnpm joy container-login claude`，Docker Desktop 開啟 host networking，對一個標成 container 的測試 repo 跑一個小任務（haiku、low effort）。
 - T4.9：在一台新電腦（或新使用者帳號）照 README 從 clone 到跑完第一個任務，記錄花了多久與卡住的地方。
 - T4.6：Claude Code 已更新到 2.1.319 以上時，在已登入的 Mac 依 `docs/cli-versions.md` 重錄 fixture 並更新測過範圍（用 haiku、low effort）。
 - T2.6 GitHub issue 真實驗收（擁有者 Mac）：確認 `gh auth status` 已登入；在測試 repo 建一個 issue 並加上 `joy` label，5 分鐘內 Joy 應建立 `#編號 標題` 的任務（標示 external content）；驗收後關閉 issue。不提供、不貼上或索取 PAT。

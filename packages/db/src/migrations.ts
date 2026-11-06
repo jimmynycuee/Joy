@@ -418,6 +418,13 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 15,
+    name: 'container mode for untrusted repositories',
+    sql: /* sql */ `
+      ALTER TABLE repos ADD COLUMN container INTEGER NOT NULL DEFAULT 0 CHECK (container IN (0, 1));
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

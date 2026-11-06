@@ -1565,3 +1565,10 @@ select {
 .discard-row {
   margin: 8px 0;
 }
+
+.checkbox-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+}
