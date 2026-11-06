@@ -126,6 +126,12 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/policy:
+    dependencies:
+      '@joy/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/providers:
     dependencies:
       '@joy/core':
@@ -164,6 +170,9 @@ importers:
       '@joy/orchestrator':
         specifier: workspace:*
         version: link:../orchestrator
+      '@joy/policy':
+        specifier: workspace:*
+        version: link:../policy
       '@joy/providers':
         specifier: workspace:*
         version: link:../providers

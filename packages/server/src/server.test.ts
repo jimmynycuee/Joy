@@ -153,6 +153,7 @@ function fixture(
     secretBackend?: MemoryBackend
     secretEnv?: NodeJS.ProcessEnv
     allowPlaywrightOrigin?: boolean
+    ownerApprovalChannel?: boolean
     configStore?: ConfigStore
     doctor?: Omit<DoctorOptions, 'home' | 'commands'>
     apiToken?: string
@@ -199,6 +200,7 @@ function fixture(
     redactor,
     executor,
     ...(options.allowPlaywrightOrigin ? { allowPlaywrightOrigin: true } : {}),
+    ...(options.ownerApprovalChannel ? { ownerApprovalChannel: true } : {}),
     ...(options.doctor ? { doctor: options.doctor } : {}),
     ...(options.generateApiToken ? {} : { apiToken: options.apiToken ?? TEST_API_TOKEN }),
     providers: {
@@ -1158,7 +1160,7 @@ describe('Joy local server', () => {
   it('exposes a task-scoped Tool Hub to CLI runs with authentication, shared read-only peers, and limits', async () => {
     const implementer = new FakeProvider('claude-cli')
     implementer.capabilities.delegatedApproval = true
-    const { reviewer, configStore, serverPromise } = fixture({ implementer })
+    const { reviewer, configStore, serverPromise } = fixture({ implementer, ownerApprovalChannel: true })
     await configStore.update((config) => ({ ...config, tool_hub: { max_ask_peer_calls: 1 } }))
     const { origin } = await start(serverPromise)
     const repoResponse = await postJson(`${origin}/api/repos`, {
@@ -1229,12 +1231,23 @@ describe('Joy local server', () => {
     expect(responses[3]?.body).toMatchObject({
       value: { behavior: 'allow', updatedInput: { provider: 'codex-cli', question: 'Review' } },
     })
-    expect(responses[4]?.body).toMatchObject({ value: { behavior: 'deny' } })
+    expect(responses[4]?.body).toMatchObject({
+      value: { behavior: 'deny', message: expect.stringContaining('owner approval') },
+    })
+    expect(responses[4]?.body).toMatchObject({
+      value: { message: expect.stringContaining('Cross-model pre-review (codex-cli)') },
+    })
     expect(responses[5]?.body).toMatchObject({ value: { provider: 'codex-cli', answer: 'working' } })
     expect(responses[6]?.body).toMatchObject({ error: 'ask_peer limit reached (1 per task)' })
-    expect(reviewer.calls).toHaveLength(1)
-    expect(reviewer.calls[0]).toMatchObject({ cwd: '/fake/worktree', autonomy: 'read-only' })
+    expect(reviewer.calls).toHaveLength(2)
+    expect(reviewer.calls[0]).toMatchObject({
+      cwd: '/fake/worktree',
+      autonomy: 'read-only',
+      outputSchema: expect.objectContaining({ required: ['approve', 'summary', 'findings'] }),
+    })
+    expect(reviewer.calls[0]?.prompt).toContain('cross-model safety pre-review')
     expect(reviewer.calls[0]?.mcpServers).toBeUndefined()
+    expect(result.events.map((event) => (event as { type?: string }).type)).toContain('policy.pre_review')
     expect(
       result.events.filter((event) => (event as { type?: string }).type === 'tool_hub.ask_peer'),
     ).toHaveLength(1)
@@ -1246,6 +1259,140 @@ describe('Joy local server', () => {
       body: JSON.stringify({ name: 'task_status', arguments: {} }),
     })
     expect(expired.status).toBe(403)
+  })
+
+  it('forces external_content Claude actions through cross-model review and owner approval in hands-off mode', async () => {
+    const implementer = new FakeProvider('claude-cli')
+    implementer.capabilities.delegatedApproval = true
+    const { reviewer, configStore, serverPromise } = fixture({ implementer, ownerApprovalChannel: true })
+    await configStore.update((config) => ({ ...config, autonomy_mode: 'hands-off' }))
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, {
+      path: '/tmp/external-policy-repo',
+      defaultBranch: 'main',
+    })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const taskResponse = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Inspect external issue',
+      prompt: 'Review untrusted imported content',
+      provenance: 'external_content',
+      mode: 'single',
+    })
+    const { task } = (await taskResponse.json()) as { task: { id: string; provenance: string } }
+    let permissionResponse: { status: number; body: unknown } | undefined
+    let actionRequestResponse: { status: number; body: unknown } | undefined
+    implementer.onRun = async (options) => {
+      const mcp = options.mcpServers?.[0]
+      if (!mcp || mcp.transport !== 'stdio') throw new Error('CLI provider did not receive stdio Tool Hub')
+      const endpoint = mcp.env?.JOY_TOOL_HUB_ENDPOINT
+      const token = mcp.env?.JOY_TOOL_HUB_TOKEN
+      if (!endpoint || !token) throw new Error('CLI provider did not receive Tool Hub credentials')
+      const response = await globalThis.fetch(endpoint, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'approve',
+          arguments: {
+            tool_name: 'Read',
+            input: { file_path: 'issue-path.txt' },
+            tool_use_id: 'external-read',
+          },
+        }),
+      })
+      permissionResponse = { status: response.status, body: await response.json() }
+      const actionRequest = await globalThis.fetch(endpoint, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'request_approval',
+          arguments: {
+            kind: 'read_calendar',
+            summary: 'Read external issue event details',
+            detail: { eventId: 'issue-supplied-id' },
+          },
+        }),
+      })
+      actionRequestResponse = { status: actionRequest.status, body: await actionRequest.json() }
+    }
+
+    const result = await waitForStatus(origin, task.id, 'done')
+    expect(task.provenance).toBe('external_content')
+    expect(permissionResponse).toMatchObject({
+      status: 200,
+      body: {
+        value: {
+          behavior: 'deny',
+          message: expect.stringContaining('requires owner approval'),
+        },
+      },
+    })
+    expect(actionRequestResponse).toMatchObject({
+      status: 200,
+      body: {
+        value: {
+          status: 'require_approval',
+          tier: 'approve',
+          preReview: { provider: 'codex-cli' },
+        },
+      },
+    })
+    expect(reviewer.calls).toHaveLength(2)
+    expect(reviewer.calls.every((call) => call.prompt.includes('Provenance: external_content'))).toBe(true)
+    expect(result.events.map((event) => (event as { type?: string }).type)).toContain('policy.pre_review')
+  })
+
+  it('denies red actions without a pre-review until an owner approval channel exists, and allows safe ones', async () => {
+    const implementer = new FakeProvider('claude-cli')
+    implementer.capabilities.delegatedApproval = true
+    const { reviewer, serverPromise } = fixture({ implementer })
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, {
+      path: '/tmp/no-channel-repo',
+      defaultBranch: 'main',
+    })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const taskResponse = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Policy without an approval channel',
+      prompt: 'Run the tests',
+      mode: 'single',
+    })
+    const { task } = (await taskResponse.json()) as { task: { id: string } }
+    const decisions: unknown[] = []
+    implementer.onRun = async (options) => {
+      const mcp = options.mcpServers?.[0]
+      if (!mcp || mcp.transport !== 'stdio')
+        throw new Error('CLI provider did not receive the stdio Tool Hub')
+      const approve = async (tool_name: string, input: unknown) => {
+        const response = await globalThis.fetch(mcp.env?.JOY_TOOL_HUB_ENDPOINT as string, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${mcp.env?.JOY_TOOL_HUB_TOKEN}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ name: 'approve', arguments: { tool_name, input, tool_use_id: tool_name } }),
+        })
+        decisions.push(((await response.json()) as { value: unknown }).value)
+      }
+      await approve('Bash', { command: 'pnpm test' })
+      await approve('Bash', { command: 'rm -rf node_modules' })
+      await approve('Read', { file_path: '/home/me/.ssh/id_rsa' })
+    }
+    const result = await waitForStatus(origin, task.id, 'done')
+    expect(decisions[0]).toMatchObject({ behavior: 'allow' })
+    expect(decisions[1]).toMatchObject({
+      behavior: 'deny',
+      message: expect.stringContaining('No owner approval channel'),
+    })
+    expect(decisions[2]).toMatchObject({ behavior: 'deny' })
+    expect(reviewer.calls).toHaveLength(0)
+    const skipped = result.events.filter(
+      (event) =>
+        (event as { type?: string }).type === 'policy.pre_review' &&
+        JSON.stringify(event).includes('skipped'),
+    )
+    expect(skipped).toHaveLength(2)
   })
 
   it('preserves the task ask_peer budget across a resumed provider session', async () => {

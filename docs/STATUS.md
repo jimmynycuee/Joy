@@ -2,7 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-06
+- 最後更新：2026-11-06（T2.3 修正）
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
 ## 驗證結果
@@ -25,6 +25,13 @@
 - PR #84 加入各 `ActionKind` 的三層分類與全域 autonomy mode，並以不同且 repository-allowed 的 provider 對紅色動作做唯讀預審；審核不通過、不可用或尚無使用者核准通道時，紅色動作不執行。
 - task-level `external_content` 來源經 DB 持久化並由 server 套用到 action policy；即使 hands-off，外部內容來源的動作仍需人工核准。Settings 提供模式選擇。
 - identity-sanitized Linux `pnpm check` 通過（PR implementation 的格式、lint、workspace typechecks、346 passed、2 skipped）；`pnpm test:e2e` 通過（4/4），包括 Settings 模式儲存與 startup 可用性。mainline checkout 首輪 E2E 發現舊按鈕名稱 locator，PR 分支改正後全套重跑通過。政策測試使用 fake providers；未呼叫真實 CLI 或模型。
+
+### T2.3 擁有者審查後的修正（PR #84）
+
+- Claude 的 `Bash`：只有單一、無 shell 語法的 `pnpm`／`npm`／`yarn` 的 test、lint、build、typecheck、check、format:check，與 `git status`／`diff`／`log`／`show` 視為 worktree 內執行（🟢）；其他一律 🔴。
+- `Read`／`Glob`／`Grep` 也檢查路徑：worktree 外（例如 `~/.ssh`、`~/.joy`）一律 🔴。寫入工具接受指向 worktree 內的絕對路徑。
+- 只有 `mcp__joy__` 開頭的 `ask_peer`、`task_status` 有特別待遇；其他 server 同名工具視為未知（🔴）。
+- 在人工核准管道（T2.4）完成前，`ownerApprovalChannel` 預設關閉：🔴 動作直接拒絕，不做跨模型預審，避免白白消耗額度。T2.4 完成時開啟。
 
 ### T1.9 GitHub publisher
 

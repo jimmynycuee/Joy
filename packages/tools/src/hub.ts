@@ -1,4 +1,11 @@
-import type { ActionKind, ApprovalDecision, ProviderKind, ProposedAction, TaskId } from '@joy/core'
+import type {
+  ActionKind,
+  ApprovalDecision,
+  ProviderKind,
+  ProposedAction,
+  TaskId,
+  TaskProvenance,
+} from '@joy/core'
 import { ACTION_KINDS, PROVIDER_KINDS } from '@joy/core'
 import { z } from 'zod'
 
@@ -38,6 +45,7 @@ export interface ToolHubBudget {
 
 export interface ToolHubRuntime {
   taskId: TaskId
+  taskProvenance: TaskProvenance
   currentProvider: ProviderKind
   allowedProviders: readonly ProviderKind[]
   cwd: string
@@ -103,7 +111,7 @@ export function createToolHubDispatcher(runtime: ToolHubRuntime): ToolHubDispatc
         kind: input.kind as ActionKind,
         summary: input.summary,
         detail: input.detail,
-        provenance: 'agent',
+        provenance: runtime.taskProvenance === 'external_content' ? 'external_content' : 'agent',
       }
       return runtime.requestApproval(action)
     }

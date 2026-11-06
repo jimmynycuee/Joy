@@ -6,6 +6,7 @@ import type { ToolHubRuntime } from './hub.js'
 function runtime(overrides: Partial<ToolHubRuntime> = {}): ToolHubRuntime {
   return {
     taskId: 'task-1' as TaskId,
+    taskProvenance: 'user',
     currentProvider: 'claude-cli',
     allowedProviders: ['claude-cli', 'codex-cli'],
     cwd: '/tmp/shared-worktree',
@@ -145,6 +146,46 @@ describe('Tool Hub dispatcher', () => {
     await expect(
       dispatch({ name: 'request_approval', arguments: { kind: 'invented', summary: 'x', detail: {} } }),
     ).rejects.toThrow()
+  })
+
+  it('derives action provenance from task origin instead of accepting a model-supplied marker', async () => {
+    const requestApproval = vi.fn(async (action) => ({ status: 'awaiting_approval', action }))
+    const userDispatch = createToolHubDispatcher(runtime({ requestApproval }))
+    await userDispatch({
+      name: 'request_approval',
+      arguments: { kind: 'read_file', summary: 'Read a task file', detail: { path: 'src/index.ts' } },
+    })
+    expect(requestApproval).toHaveBeenCalledWith({
+      kind: 'read_file',
+      summary: 'Read a task file',
+      detail: { path: 'src/index.ts' },
+      provenance: 'agent',
+    })
+    await expect(
+      userDispatch({
+        name: 'request_approval',
+        arguments: {
+          kind: 'read_file',
+          summary: 'Read a task file',
+          detail: { path: 'src/index.ts' },
+          provenance: 'external_content',
+        },
+      }),
+    ).rejects.toThrow()
+
+    const externalDispatch = createToolHubDispatcher(
+      runtime({ taskProvenance: 'external_content', requestApproval }),
+    )
+    await externalDispatch({
+      name: 'request_approval',
+      arguments: { kind: 'read_file', summary: 'Read issue-provided path', detail: { path: 'issue.txt' } },
+    })
+    expect(requestApproval).toHaveBeenLastCalledWith({
+      kind: 'read_file',
+      summary: 'Read issue-provided path',
+      detail: { path: 'issue.txt' },
+      provenance: 'external_content',
+    })
   })
 
   it('does not accept malformed peer input', async () => {

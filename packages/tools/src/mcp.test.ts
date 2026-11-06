@@ -8,6 +8,7 @@ import { createToolHubMcpConfig, createToolHubMcpServer } from './mcp.js'
 function runtime(): ToolHubRuntime {
   return {
     taskId: 'task-1' as ToolHubRuntime['taskId'],
+    taskProvenance: 'user',
     currentProvider: 'claude-cli',
     allowedProviders: ['claude-cli', 'codex-cli'],
     cwd: '/tmp/shared-worktree',

@@ -7,6 +7,8 @@ export type RepoId = Brand<string, 'RepoId'>
 export type TaskId = Brand<string, 'TaskId'>
 export type AttemptId = Brand<string, 'AttemptId'>
 
+export type TaskProvenance = 'user' | 'external_content'
+
 export const TASK_MODES = ['single', 'review_loop', 'compete'] as const
 export type TaskMode = (typeof TASK_MODES)[number]
 
@@ -45,6 +47,8 @@ export interface Task {
   repoId: RepoId
   title: string
   prompt: string
+  /** Origin of the task request; external content may never trigger automatic actions. */
+  provenance: TaskProvenance
   mode: TaskMode
   roleOverrides: Partial<RoleConfig>
   /** Plan-then-review before implementing (review_loop only). */
