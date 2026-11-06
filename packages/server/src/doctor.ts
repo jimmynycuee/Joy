@@ -1,4 +1,4 @@
-import { checkCliVersion } from '@joy/providers'
+import { checkCliVersion, parseCliVersion } from '@joy/providers'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import type { ChildProcess, SpawnOptions } from 'node:child_process'
@@ -9,7 +9,7 @@ import { KeychainBackend } from '@joy/secrets'
 export type DoctorStatus = 'ok' | 'missing' | 'untested'
 
 export interface DoctorCheck {
-  id: 'node' | 'git' | 'gh-auth' | 'claude-cli' | 'codex-cli' | 'keychain' | 'data-directory'
+  id: 'node' | 'git' | 'gh-auth' | 'claude-cli' | 'codex-cli' | 'keychain' | 'data-directory' | 'wsl'
   label: string
   status: DoctorStatus
   summary: string
@@ -73,6 +73,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       options.platform ?? process.platform,
     ),
     checkDataDirectory(options.home),
+    ...((options.platform ?? process.platform) === 'win32' ? [checkWsl(runCommand)] : []),
   ])
   return { checkedAt: (options.now ?? (() => new Date()))().toISOString(), checks }
 }
@@ -236,6 +237,39 @@ export async function cliVersionWarnings(
     checkOptionalCli('Codex', options.commands?.codex ?? 'codex', runCommand),
   ])
   return checks.filter((check) => check.status === 'untested' && check.version)
+}
+
+/** Windows only: whether Codex can run inside WSL, the fallback when it does not run natively (T4.4). */
+async function checkWsl(runCommand: DoctorCommandRunner): Promise<DoctorCheck> {
+  const wsl = await safeRunCommand(runCommand, 'wsl.exe', ['--status'], false)
+  if (wsl.spawnErrorCode === 'ENOENT' || wsl.exitCode !== 0)
+    return {
+      id: 'wsl',
+      label: 'WSL (for Codex)',
+      status: 'missing',
+      summary: 'WSL is not installed or has no Linux distribution.',
+      repair:
+        'Only needed when Codex does not run on Windows itself: run `wsl --install`, install Codex inside WSL, then set providers.codex.wsl: true and transport: exec.',
+    }
+  const codex = await safeRunCommand(runCommand, 'wsl.exe', ['-e', 'codex', '--version'], true)
+  const version = codex.exitCode === 0 ? parseCliVersion(codex.output ?? '') : undefined
+  return version
+    ? {
+        id: 'wsl',
+        label: 'WSL (for Codex)',
+        status: 'ok',
+        version,
+        summary: `Codex ${version} is available inside WSL.`,
+        repair: 'No action needed. Set providers.codex.wsl: true (with transport: exec) to use it.',
+      }
+    : {
+        id: 'wsl',
+        label: 'WSL (for Codex)',
+        status: 'untested',
+        summary: 'WSL is available but Codex is not installed inside it.',
+        repair:
+          'Inside WSL run `npm install -g @openai/codex` and `codex login`, if you want Joy to use Codex through WSL.',
+      }
 }
 
 async function checkKeychain(

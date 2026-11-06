@@ -28,3 +28,5 @@ export {
 } from './versions.js'
 export type { CliName, TestedRange, VersionCheck } from './versions.js'
 export type { CommandWrapper } from './cli-run.js'
+export { resolveCommand, shimScript, toWslPath, wslCommand } from './windows.js'
+export type { ResolvedCommand } from './windows.js'

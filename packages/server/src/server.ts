@@ -154,6 +154,7 @@ import {
   CodexAppServerProvider,
   CodexCliProvider,
   OpenAiApiProvider,
+  wslCommand,
 } from '@joy/providers'
 import type { ApiTool, CodexApprovalDecision, CodexApprovalRequest } from '@joy/providers'
 import { Redactor, SecretStore } from '@joy/secrets'
@@ -349,6 +350,8 @@ export interface JoyServerOptions {
   codexAppServer?: { command?: string; argsPrefix?: string[]; env?: NodeJS.ProcessEnv; timeoutMs?: number }
   /** Test seams for prerequisite checks; production uses the current process and OS services. */
   doctor?: Omit<DoctorOptions, 'home' | 'commands'>
+  /** Platform override for tests of Windows-only behavior. */
+  platform?: NodeJS.Platform
   /** The CLI inside the agent container, per CLI (tests run a fake CLI through node). Default the CLI's name. */
   containerCommands?: Partial<Record<'claude' | 'codex', string[]>>
   /** Warn at startup about CLI versions Joy was not tested with (T4.6). Default true. */
@@ -730,7 +733,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     cwd: string
   }): Promise<{ command: string; args: string[] }> {
     const repo = containerRepoFor(run.cwd)
-    if (!repo) return { command: run.command, args: run.args }
+    if (!repo) {
+      // Windows fallback (T4.4): Codex in WSL when it does not run on Windows itself.
+      if (run.cli === 'codex' && (options.platform ?? process.platform) === 'win32') {
+        const config = await configStore.get()
+        if (config.providers.codex.wsl) return wslCommand(run)
+      }
+      return { command: run.command, args: run.args }
+    }
     const config = await configStore.get()
     const containerHome = join(home, 'container-home', run.cli)
     await mkdir(containerHome, { recursive: true, mode: 0o700 })

@@ -289,4 +289,41 @@ describe('runDoctor', () => {
     })
     expect(readdirSync(parent)).toEqual([])
   })
+
+  it('checks WSL and Codex inside it on Windows only', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'joy-doctor-wsl-'))
+    const runWith = (wsl: (args: readonly string[]) => DoctorCommandResult) =>
+      runDoctor({
+        home,
+        platform: 'win32',
+        keychainLookup: async () => null,
+        runCommand: async (command, args) =>
+          command === 'wsl.exe' ? wsl(args) : { exitCode: null, spawnErrorCode: 'ENOENT' },
+      })
+    const ready = checksById(
+      (
+        await runWith((args) =>
+          args[0] === '--status' ? { exitCode: 0 } : { exitCode: 0, output: 'codex-cli 0.166.0' },
+        )
+      ).checks,
+    )
+    expect(ready.get('wsl')).toMatchObject({ status: 'ok', version: '0.166.0' })
+    const noCodex = checksById(
+      (await runWith((args) => (args[0] === '--status' ? { exitCode: 0 } : { exitCode: 1 }))).checks,
+    )
+    expect(noCodex.get('wsl')).toMatchObject({ status: 'untested' })
+    const none = checksById((await runWith(() => ({ exitCode: null, spawnErrorCode: 'ENOENT' }))).checks)
+    expect(none.get('wsl')).toMatchObject({
+      status: 'missing',
+      repair: expect.stringContaining('wsl --install'),
+    })
+    const mac = await runDoctor({
+      home,
+      platform: 'darwin',
+      keychainLookup: async () => null,
+      runCommand: commandRunner({}),
+    })
+    expect(checksById(mac.checks).has('wsl')).toBe(false)
+    rmSync(home, { recursive: true, force: true })
+  })
 })

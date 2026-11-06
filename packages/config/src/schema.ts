@@ -39,6 +39,8 @@ const codexCli = z.strictObject({
   command: z.string().min(1).optional(),
   /** `app-server` supports approvals and quota events; `exec` is the older one-shot JSONL fallback. */
   transport: z.enum(['app-server', 'exec']).default('app-server'),
+  /** Windows: run `codex exec` inside WSL (needs transport exec and Codex installed in WSL). T4.4. */
+  wsl: z.boolean().default(false),
 })
 
 export const configSchema = z.strictObject({
@@ -127,9 +129,9 @@ export const configSchema = z.strictObject({
   providers: z
     .strictObject({
       claude: cliPath.default({}),
-      codex: codexCli.default({ transport: 'app-server' }),
+      codex: codexCli.default({ transport: 'app-server', wsl: false }),
     })
-    .default({ claude: {}, codex: { transport: 'app-server' } }),
+    .default({ claude: {}, codex: { transport: 'app-server', wsl: false } }),
   paths: z
     .strictObject({
       /** Defaults to `<JOY_HOME>/worktrees`. */
