@@ -23,6 +23,14 @@ describe('parseConfig', () => {
     expect(config.roles).toEqual(DEFAULT_ROLES)
     expect(config.autonomy_mode).toBe('normal')
     expect(config.budget.per_task.max_rounds).toBe(3)
+    expect(config.tool_hub.max_ask_peer_calls).toBe(5)
+  })
+
+  it('validates the per-task Tool Hub ask_peer budget', () => {
+    expect(parseConfig('tool_hub: { max_ask_peer_calls: 1 }').tool_hub.max_ask_peer_calls).toBe(1)
+    expect(parseConfig('tool_hub: { max_ask_peer_calls: 100 }').tool_hub.max_ask_peer_calls).toBe(100)
+    expect(() => parseConfig('tool_hub: { max_ask_peer_calls: 0 }')).toThrow(/tool_hub.max_ask_peer_calls/)
+    expect(() => parseConfig('tool_hub: { max_ask_peer_calls: 101 }')).toThrow(/tool_hub.max_ask_peer_calls/)
   })
 
   it('lets one role be overridden and keeps the others', () => {
