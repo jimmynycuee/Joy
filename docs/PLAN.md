@@ -45,6 +45,8 @@
 - [x] T1.9b 把 publisher 接到 server API 與 UI「開 PR」按鈕（審查發現 T1.9 的 publisher 從未接線，擁有者無法本機驗收）
 - [x] T2.4c 逾時後任務停在「等待核准」，核准後以同一 session 接續（`approvals.on_timeout`）
 - [x] T2.5 額度交接、排隊、單一任務花費與時間上限、月預算（單一模式；review loop 與競賽模式的交接留待之後）
+- [ ] T2.1 平行競賽（擁有者 Codex 額度用完，延後；不是 P3 的前置條件）
+- [x] T3.1 助理對話（OpenAI API／Claude／Codex 任一當大腦，共用同一組工具；唯讀工具，派工在 T3.2）
 - [ ] P2（T2.1–T2.8）、P3（T3.1–T3.9）、P4（T4.1–T4.9）、P5（T5.1–T5.7）：見 §6
 
 目前狀態、卡住的事與下一步：見 [`docs/STATUS.md`](STATUS.md)。

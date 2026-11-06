@@ -250,6 +250,18 @@ export const MIGRATIONS: readonly Migration[] = [
       END;
     `,
   },
+  {
+    version: 7,
+    name: 'assistant conversations keep their model session',
+    sql: /* sql */ `
+      -- The assistant brain that served the conversation and its session, so the next turn can resume it.
+      ALTER TABLE conversations ADD COLUMN brain_provider TEXT;
+      ALTER TABLE conversations ADD COLUMN brain_model TEXT;
+      ALTER TABLE conversations ADD COLUMN session_id TEXT;
+      ALTER TABLE conversations ADD COLUMN updated_at TEXT;
+      CREATE INDEX messages_conversation_order ON messages(conversation_id, id);
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
