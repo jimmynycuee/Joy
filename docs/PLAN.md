@@ -45,6 +45,7 @@
 - [x] T1.9b 把 publisher 接到 server API 與 UI「開 PR」按鈕（審查發現 T1.9 的 publisher 從未接線，擁有者無法本機驗收）
 - [x] T2.4c 逾時後任務停在「等待核准」，核准後以同一 session 接續（`approvals.on_timeout`）
 - [x] T2.5 額度交接、排隊、單一任務花費與時間上限、月預算（單一模式；review loop 與競賽模式的交接留待之後）
+- [ ] T4.2 PWA + Web Push（可安裝網頁、service worker、VAPID 推播已完成並測試；待擁有者手機實測）
 - [ ] T4.4 Windows 強化（`.cmd` shim 啟動、WSL 偵測與 Codex fallback 已完成並由 Windows CI 驗證；安裝檔屬 T4.3；待擁有者實機跑一次交叉審查）
 - [x] T4.5 container 模式：不信任的 repo 在 docker 內執行，只掛 worktree、git 資料與專用登入資料夾（真實 Docker e2e 以假 CLI 驗證；真實 CLI 待擁有者）
 - [ ] T4.9 使用者文件（README 與 `pnpm joy start` 已完成；待擁有者在新電腦實測 15 分鐘）

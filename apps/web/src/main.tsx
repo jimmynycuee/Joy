@@ -795,6 +795,109 @@ function BackupsPanel() {
   )
 }
 
+function base64UrlToBytes(value: string): Uint8Array<ArrayBuffer> {
+  const base64 = (value + '='.repeat((4 - (value.length % 4)) % 4)).replace(/-/g, '+').replace(/_/g, '/')
+  const raw = atob(base64)
+  const bytes = new Uint8Array(new ArrayBuffer(raw.length))
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i)
+  return bytes
+}
+
+/** Why this browser cannot receive notifications, or undefined when it can. */
+function pushUnsupportedReason(): string | undefined {
+  if (!window.isSecureContext)
+    return 'Notifications need HTTPS (or localhost). On a phone, open Joy through `tailscale serve` (see README).'
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window))
+    return 'This browser does not support Web Push. On iPhone, add Joy to the Home Screen first.'
+  return undefined
+}
+
+/** Turns on notifications for this device (T4.2): task results and approval requests. */
+function NotificationsPanel() {
+  const [state, setState] = useState<'off' | 'on' | 'busy'>('off')
+  const [message, setMessage] = useState('')
+  const unsupported = pushUnsupportedReason()
+
+  useEffect(() => {
+    if (unsupported) return
+    void navigator.serviceWorker.ready
+      .then((registration) => registration.pushManager.getSubscription())
+      .then((subscription) => setState(subscription ? 'on' : 'off'))
+      .catch(() => undefined)
+  }, [unsupported])
+
+  async function enable() {
+    setState('busy')
+    setMessage('')
+    try {
+      if ((await Notification.requestPermission()) !== 'granted')
+        throw new Error('Notifications were not allowed')
+      const { publicKey } = await request<{ publicKey: string }>('/api/push/key')
+      const registration = await navigator.serviceWorker.ready
+      const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: base64UrlToBytes(publicKey),
+      })
+      await request('/api/push/subscriptions', {
+        method: 'POST',
+        body: JSON.stringify(subscription.toJSON()),
+      })
+      setState('on')
+    } catch (error) {
+      setState('off')
+      setMessage(error instanceof Error ? error.message : 'Could not turn notifications on')
+    }
+  }
+
+  async function disable() {
+    setState('busy')
+    const registration = await navigator.serviceWorker.ready
+    const subscription = await registration.pushManager.getSubscription()
+    if (subscription) {
+      await request('/api/push/subscriptions', {
+        method: 'DELETE',
+        body: JSON.stringify({ endpoint: subscription.endpoint }),
+      }).catch(() => undefined)
+      await subscription.unsubscribe()
+    }
+    setState('off')
+  }
+
+  return (
+    <section className="settings-card" aria-label="Notifications" data-testid="notifications-panel">
+      <h2>Notifications</h2>
+      <p className="muted">When a task finishes or needs your approval, this device gets a notification.</p>
+      {unsupported ? (
+        <p className="muted">{unsupported}</p>
+      ) : state === 'on' ? (
+        <div className="project-note-actions">
+          <span>On for this device.</span>
+          <button
+            type="button"
+            className="quiet-button"
+            onClick={() => void request('/api/push/test', { method: 'POST', body: '{}' })}
+          >
+            Send a test
+          </button>
+          <button type="button" className="quiet-button" onClick={() => void disable()}>
+            Turn off
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="quiet-button"
+          disabled={state === 'busy'}
+          onClick={() => void enable()}
+        >
+          Turn on notifications
+        </button>
+      )}
+      {message ? <p className="approvals-error">{message}</p> : null}
+    </section>
+  )
+}
+
 /** Throws away a finished task's worktrees (T2.8). */
 function DiscardButton({ details, onChanged }: { details: TaskDetails; onChanged: () => void }) {
   const [failure, setFailure] = useState('')
@@ -1608,7 +1711,20 @@ function App() {
   const [doctorReport, setDoctorReport] = useState<DoctorReport | null>(null)
   const [doctorLoading, setDoctorLoading] = useState(true)
   const [doctorRetry, setDoctorRetry] = useState(0)
-  const [selectedTaskId, setSelectedTaskId] = useState('')
+  // A notification opens `/?task=<id>`; start on that task.
+  const [selectedTaskId, setSelectedTaskId] = useState(
+    () => new URLSearchParams(window.location.search).get('task') ?? '',
+  )
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return
+    const onMessage = (event: MessageEvent<{ type?: string; url?: string }>) => {
+      if (event.data?.type !== 'joy-open' || !event.data.url) return
+      const task = new URL(event.data.url, window.location.origin).searchParams.get('task')
+      if (task) setSelectedTaskId(task)
+    }
+    navigator.serviceWorker.addEventListener('message', onMessage)
+    return () => navigator.serviceWorker.removeEventListener('message', onMessage)
+  }, [])
   const [details, setDetails] = useState<TaskDetails | null>(null)
   const [page, setPage] = useState<'tasks' | 'assistant' | 'stats' | 'settings'>('tasks')
   const [showTaskForm, setShowTaskForm] = useState(false)
@@ -2233,6 +2349,7 @@ function App() {
                 )}
               </section>
               {config ? <TelegramSettings config={config} onConfig={setConfig} /> : null}
+              <NotificationsPanel />
               <WorktreesPanel />
               <BackupsPanel />
               <LogsPanel />
@@ -2704,4 +2821,8 @@ export default App
 
 const rootElement = document.getElementById('root')
 if (!rootElement) throw new Error('Missing application root element')
+// The service worker only shows notifications (T4.2); browsers allow it on HTTPS and localhost.
+if ('serviceWorker' in navigator && window.isSecureContext)
+  void navigator.serviceWorker.register('/sw.js').catch(() => undefined)
+
 createRoot(rootElement).render(<App />)

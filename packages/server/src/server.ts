@@ -50,6 +50,9 @@ import {
   decideProjectNote,
   getProjectNote,
   claimIssueImport,
+  deletePushSubscription,
+  listPushSubscriptions,
+  savePushSubscription,
   dailyBackup,
   listBackups,
   createReminder,
@@ -105,6 +108,8 @@ import type {
 } from '@joy/db'
 import { ApprovalBroker } from './approvals.js'
 import { runAssistantTurn, toApiTools } from './assistant.js'
+import { sendPush, vapidKeys } from './push.js'
+import type { PushMessage } from './push.js'
 import type { Logger } from './log.js'
 import { createFileLogger, listLogFiles } from './log.js'
 import type { Clock, Delivery } from '@joy/scheduler'
@@ -257,6 +262,18 @@ const statsDay = z
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a date like 2026-11-06')
   .optional()
 const statsQuerySchema = z.object({ from: statsDay, to: statsDay, repoId: z.string().min(1).optional() })
+const pushSubscriptionSchema = z.object({
+  // Browsers' push services are HTTPS; loopback HTTP is only for tests with a fake push service.
+  endpoint: z
+    .string()
+    .url()
+    .max(2000)
+    .refine(
+      (value) => value.startsWith('https://') || value.startsWith('http://127.0.0.1:'),
+      'must be an https URL',
+    ),
+  keys: z.object({ p256dh: z.string().min(1).max(200), auth: z.string().min(1).max(100) }),
+})
 const reminderTextSchema = z.string().trim().min(1, 'The reminder needs some text').max(500)
 const scheduleInputSchema = z.strictObject({
   cron: z.string().trim().min(1).max(100),
@@ -350,6 +367,8 @@ export interface JoyServerOptions {
   codexAppServer?: { command?: string; argsPrefix?: string[]; env?: NodeJS.ProcessEnv; timeoutMs?: number }
   /** Test seams for prerequisite checks; production uses the current process and OS services. */
   doctor?: Omit<DoctorOptions, 'home' | 'commands'>
+  /** How Web Push requests are sent (tests point it at a fake push service). */
+  pushFetch?: typeof fetch
   /** Platform override for tests of Windows-only behavior. */
   platform?: NodeJS.Platform
   /** The CLI inside the agent container, per CLI (tests run a fake CLI through node). Default the CLI's name. */
@@ -496,7 +515,23 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     sendEvent(taskId, event)
     if (type === 'started') log.info('task started', { taskId, attemptId })
     if (type === 'result') {
-      const result = safe as { status?: string; approved?: boolean; reason?: string }
+      const result = safe as {
+        status?: string
+        approved?: boolean
+        reason?: string
+        awaitingChoice?: boolean
+      }
+      const title = getTask(db, taskId)?.title ?? 'Task'
+      pushToOwner({
+        title:
+          result.awaitingChoice || result.approved === false
+            ? `🟡 ${title}`
+            : result.status === 'succeeded'
+              ? `✅ ${title}`
+              : `❌ ${title}`,
+        body: result.reason ?? (result.status === 'succeeded' ? 'Finished.' : (result.status ?? 'Finished')),
+        url: `/?task=${encodeURIComponent(taskId)}`,
+      })
       log.info('task finished', {
         taskId,
         attemptId,
@@ -768,6 +803,27 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         : {}),
     })
   }
+
+  /** Web Push to every browser the owner enabled (T4.2). Nothing happens, not even a keychain read, without one. */
+  function pushToOwner(message: PushMessage): void {
+    if (listPushSubscriptions(db).length === 0) return
+    void vapidKeys(secretStore, redactor)
+      .then((keys) =>
+        sendPush(db, keys, message, {
+          redactor,
+          ...(options.pushFetch ? { fetch: options.pushFetch } : {}),
+          warn: (text) => log.warn(`push: ${text}`),
+        }),
+      )
+      .catch((error: unknown) => log.warn(`push: ${error instanceof Error ? error.message : String(error)}`))
+  }
+  approvals.onRequested((approval) =>
+    pushToOwner({
+      title: '🔴 Joy needs your approval',
+      body: `${getTask(db, approval.taskId)?.title ?? 'A task'}: ${approval.action.summary}`,
+      url: `/?task=${encodeURIComponent(approval.taskId)}`,
+    }),
+  )
 
   const publishTaskFailure = (taskId: TaskId, message: string): TaskEvent => {
     const event = appendTaskFailureEvent(db, taskId, redactor.redact(message))
@@ -1124,6 +1180,30 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (cancelMatch && method === 'POST') {
       const task = cancelTaskById(decodePathSegment(cancelMatch[1] ?? '') as TaskId)
       json(res, 200, { task })
+      return
+    }
+    if (url.pathname === '/api/push/key' && method === 'GET') {
+      json(res, 200, { publicKey: (await vapidKeys(secretStore, redactor)).publicKey })
+      return
+    }
+    if (url.pathname === '/api/push/subscriptions' && (method === 'POST' || method === 'DELETE')) {
+      assertJsonContentType(req)
+      const body = await readJson(req)
+      if (method === 'DELETE') {
+        const { endpoint } = z.object({ endpoint: z.string() }).parse(body)
+        json(res, 200, { removed: deletePushSubscription(db, endpoint) })
+        return
+      }
+      const subscription = pushSubscriptionSchema.parse(body)
+      savePushSubscription(db, subscription)
+      json(res, 201, { subscribed: true })
+      return
+    }
+    if (url.pathname === '/api/push/test' && method === 'POST') {
+      assertJsonContentType(req)
+      z.strictObject({}).parse(await readJson(req))
+      pushToOwner({ title: 'Joy', body: 'Notifications work on this device.', url: '/' })
+      json(res, 202, { sent: listPushSubscriptions(db).length })
       return
     }
     if (url.pathname === '/api/logs' && method === 'GET') {

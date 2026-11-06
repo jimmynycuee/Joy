@@ -1,0 +1,10 @@
+{
+  "name": "Joy",
+  "short_name": "Joy",
+  "description": "Claude and GPT split your coding work; your assistant in front.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111216",
+  "theme_color": "#111216",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

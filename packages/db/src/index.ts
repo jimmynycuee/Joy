@@ -106,3 +106,5 @@ export {
   verifyBackup,
 } from './backup.js'
 export type { BackupFile } from './backup.js'
+export { deletePushSubscription, listPushSubscriptions, savePushSubscription } from './push.js'
+export type { PushSubscriptionRecord } from './push.js'
