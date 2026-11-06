@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { fixturePath, fakeCodexAppServer } from '../../test-support/fixtures.js'
 import { syntheticCodexAppServerFixture } from '../../test-support/codex-app-server-fixtures.js'
 import { CodexAppServerProvider } from './app-server.js'
+import { CodexAppServerParser } from './app-server-parse.js'
 import { CodexCliProvider } from './provider.js'
 
 const model = { provider: 'codex-cli', model: 'gpt-6-luna', effort: 'low' } as const
@@ -65,6 +66,19 @@ describe('Codex app-server', () => {
   it('escapes Windows worktree paths when substituting synthetic fixtures', () => {
     const cwd = 'C:\\Users\\runneradmin\\AppData\\Local\\Temp\\joy-codex-test'
     expect(fixtureFor(cwd).commandApproval.params.cwd).toBe(cwd)
+  })
+
+  it('normalizes Windows file-change paths to POSIX separators on any host', () => {
+    const parser = new CodexAppServerParser({ cwd: 'C:\\worktree', structured: false })
+    const events = parser.notification('item/completed', {
+      item: {
+        type: 'fileChange',
+        status: 'completed',
+        changes: [{ kind: 'update', path: 'C:\\worktree\\src\\example.ts' }],
+      },
+    })
+
+    expect(events).toEqual([{ type: 'file_change', path: 'src/example.ts', kind: 'modify' }])
   })
 
   it('uses the persistent JSON-RPC lifecycle, maps events and answers policy approvals', async () => {

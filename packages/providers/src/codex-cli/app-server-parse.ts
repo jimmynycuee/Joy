@@ -1,5 +1,5 @@
 import type { AgentEvent, FileChangeKind } from '@joy/core'
-import { isAbsolute, relative } from 'node:path'
+import { isAbsolute, relative, win32 } from 'node:path'
 import type { RateLimitSnapshot, RateLimitWindow } from './app-server-protocol.js'
 import type { Rec } from '../guards.js'
 import { arr, isRecord, num, opt, rec, str } from '../guards.js'
@@ -238,9 +238,18 @@ export class CodexAppServerParser {
   }
 
   private relPath(path: string): string {
-    if (!isAbsolute(path)) return path
-    const rel = relative(this.options.cwd, path)
-    return rel.startsWith('..') ? path : rel
+    const windowsStyle =
+      process.platform === 'win32' ||
+      /^[a-z]:[\\/]/i.test(path) ||
+      path.startsWith('\\\\') ||
+      /^[a-z]:[\\/]/i.test(this.options.cwd) ||
+      this.options.cwd.startsWith('\\\\')
+    const pathApi = windowsStyle ? win32 : undefined
+    const absolute = pathApi ? pathApi.isAbsolute(path) : isAbsolute(path)
+    if (!absolute) return windowsStyle ? path.replaceAll('\\', '/') : path
+    const rel = pathApi ? pathApi.relative(this.options.cwd, path) : relative(this.options.cwd, path)
+    const normalized = rel.startsWith('..') ? path : rel
+    return windowsStyle ? normalized.replaceAll('\\', '/') : normalized
   }
 }
 
