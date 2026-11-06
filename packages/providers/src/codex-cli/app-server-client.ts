@@ -1,4 +1,5 @@
 import type { RunOptions } from '@joy/core'
+import { resolveCommandCached } from '../windows.js'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { killProcessTree, type ProcessExit } from '../process.js'
@@ -57,7 +58,10 @@ export class CodexAppServerClient {
 
   constructor(private readonly options: AppServerClientOptions) {
     const isWindows = process.platform === 'win32'
-    this.child = spawn(options.command, options.args, {
+    const resolved = isWindows
+      ? resolveCommandCached(options.command)
+      : { command: options.command, prefix: [] }
+    this.child = spawn(resolved.command, [...resolved.prefix, ...options.args], {
       cwd: options.cwd,
       env: options.env ?? process.env,
       stdio: ['pipe', 'pipe', 'pipe'],

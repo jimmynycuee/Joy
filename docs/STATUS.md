@@ -2,7 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-06（T4.5 container 模式）
+- 最後更新：2026-11-06（T4.4 Windows：shim 與 WSL）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
@@ -92,6 +92,14 @@
 - T3.8 依 PLAN 清單評估維護狀況、權限範圍與資料是否送第三方，自行選一個 Gmail／Calendar MCP server；先唯讀，寄信與邀請他人一律 🔴。選型理由寫在本檔決策區。
 - 不呼叫真實模型；若測試確實需要真實模型，只能使用 haiku 或 gpt-6-luna、low effort，且必須是 opt-in。
 - 每個 ticket 從最新 main 開獨立分支，diff 只保留該 ticket。CI 失敗最多修 3 次；無法修復時記錄原因並繼續不相依工作。
+
+### T4.4 Windows：`.cmd` shim 與 WSL（程式部分；實機驗收待擁有者）
+
+- **修正**：provider 一律不經 shell 啟動 CLI，但 Windows 上 npm／pnpm 裝的 `claude.cmd`、`codex.cmd` 不經 shell 無法啟動，之前任務在 Windows 會直接失敗（只有 doctor 的 `--version` 有繞過）。現在 `packages/providers/src/windows.ts` 會在 PATH 找 `.exe`，否則讀 shim 內容找出它執行的 JavaScript（`cli.js`、`codex.js`），用目前的 Node 直接執行；兩個 spawn 點（JSONL CLI 與 Codex app-server）都套用。讀不懂的 shim 會說明要在設定填 `.exe` 或 `cli.js` 路徑。
+- `doctor` 在 Windows 多一項「WSL (for Codex)」：WSL 是否可用、WSL 裡有沒有 Codex 與版本。
+- Codex WSL fallback（預設關）：`providers.codex.wsl: true` 且 `transport: exec` 時，`codex exec` 改由 `wsl.exe --cd /mnt/<碟>/… -e codex …` 執行，參數中的 Windows 路徑轉成 `/mnt/…`。
+- 驗收：純函式測試（npm 與 pnpm shim、`.exe` 優先、PATH、WSL 路徑轉換）；**Windows CI 實際用 `.cmd` shim 啟動一個 CLI**（只在 Windows runner 執行）；doctor 測試（WSL 三種狀態、非 Windows 不顯示）。
+- 安裝檔屬於 T4.3（Tauri）。「Windows 實機完成一次交叉審查任務」需擁有者在 Windows 電腦執行，**PLAN 未打勾**。
 
 ### T4.5 container 模式
 

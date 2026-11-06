@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
+import { resolveCommandCached } from './windows.js'
 
 export interface ProcessSpec {
   command: string
@@ -37,7 +38,9 @@ const STDERR_TAIL = 4096
  */
 export function runJsonlProcess(spec: ProcessSpec): JsonlProcess {
   const isWindows = process.platform === 'win32'
-  const child = spawn(spec.command, spec.args, {
+  // Windows .cmd shims cannot start without a shell; run the script they point at instead (T4.4).
+  const resolved = isWindows ? resolveCommandCached(spec.command) : { command: spec.command, prefix: [] }
+  const child = spawn(resolved.command, [...resolved.prefix, ...spec.args], {
     cwd: spec.cwd,
     env: spec.env ?? process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
