@@ -165,8 +165,10 @@ describe('runDoctor', () => {
     })
     expect(checks.get('git')).toMatchObject({ status: 'ok', version: '2.48.1' })
     expect(checks.get('gh-auth')).toMatchObject({ status: 'ok' })
-    expect(checks.get('claude-cli')).toMatchObject({ status: 'untested', version: '2.1.317' })
+    // 2.1.317 is the version the Claude fixtures were recorded with; 0.104.0 is outside Codex's tested range.
+    expect(checks.get('claude-cli')).toMatchObject({ status: 'ok', version: '2.1.317' })
     expect(checks.get('codex-cli')).toMatchObject({ status: 'untested', version: '0.104.0' })
+    expect(checks.get('codex-cli')?.repair).toContain('node scripts/record-fixtures.mjs codex')
     expect(checks.get('keychain')).toMatchObject({ status: 'ok' })
     expect(checks.get('data-directory')).toMatchObject({ status: 'ok' })
     expect(JSON.stringify(report)).not.toContain('private-account')

@@ -165,7 +165,7 @@ import {
 import type { ToolHubBudget, ToolHubDispatcher } from '@joy/tools'
 import { effortCompatibilityError } from '@joy/model-effort'
 import { classifyClaudeToolAction, classifyCodexApproval, evaluateAction } from '@joy/policy'
-import { runDoctor } from './doctor.js'
+import { cliVersionWarnings, runDoctor } from './doctor.js'
 import type { DoctorOptions } from './doctor.js'
 import { describeDisallowedRoleProvider, findDisallowedRoleProviders } from './provider-allowlist.js'
 
@@ -339,6 +339,8 @@ export interface JoyServerOptions {
   codexAppServer?: { command?: string; argsPrefix?: string[]; env?: NodeJS.ProcessEnv; timeoutMs?: number }
   /** Test seams for prerequisite checks; production uses the current process and OS services. */
   doctor?: Omit<DoctorOptions, 'home' | 'commands'>
+  /** Warn at startup about CLI versions Joy was not tested with (T4.6). Default true. */
+  cliVersionCheck?: boolean
   /** Trusted runtime injection/testing only. Otherwise the token is persisted in <home>/api-token. */
   apiToken?: string
 }
@@ -3456,6 +3458,23 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           httpServer.off('error', onError)
           telegram?.start()
           scheduler.start()
+          if (options.cliVersionCheck ?? true) {
+            void cliVersionWarnings({
+              ...(options.doctor?.runCommand ? { runCommand: options.doctor.runCommand } : {}),
+              commands: {
+                ...(initialConfig.providers.claude.command
+                  ? { claude: initialConfig.providers.claude.command }
+                  : {}),
+                ...(initialConfig.providers.codex.command
+                  ? { codex: initialConfig.providers.codex.command }
+                  : {}),
+              },
+            })
+              .then((warnings) => {
+                for (const warning of warnings) log.warn(warning.summary, { repair: warning.repair })
+              })
+              .catch(() => undefined)
+          }
           log.info('Joy is listening', {
             address: '127.0.0.1',
             port: (httpServer.address() as AddressInfo).port,

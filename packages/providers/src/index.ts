@@ -19,3 +19,11 @@ export { runCli } from './cli-run.js'
 export type { CliRunSpec, StreamParser } from './cli-run.js'
 export { OpenAiApiProvider } from './openai-api/provider.js'
 export type { ApiTool, ModelPrice, OpenAiApiOptions } from './openai-api/provider.js'
+export {
+  RECORD_COMMAND,
+  TESTED_CLI_VERSIONS,
+  checkCliVersion,
+  compareVersions,
+  parseCliVersion,
+} from './versions.js'
+export type { CliName, TestedRange, VersionCheck } from './versions.js'

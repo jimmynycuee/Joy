@@ -242,6 +242,8 @@ function fixture(
     ...(options.telegram ? { telegram: options.telegram } : {}),
     ...(options.publisher ? { publisher: options.publisher } : {}),
     ...(options.doctor ? { doctor: options.doctor } : {}),
+    // Never run the real CLIs from tests; a test that wants the startup check passes a fake runner in `doctor`.
+    cliVersionCheck: options.doctor?.runCommand !== undefined,
     ...(options.generateApiToken ? {} : { apiToken: options.apiToken ?? TEST_API_TOKEN }),
     providers: {
       'claude-cli': implementer,
@@ -2828,6 +2830,37 @@ describe('Joy local server', () => {
     expect(readFileSync(join(dir, 'server.pid'), 'utf8')).toBe(String(process.pid))
     await server.close()
     expect(existsSync(join(dir, 'server.pid'))).toBe(false)
+  })
+
+  it('warns at startup about a CLI version Joy was not tested with', async () => {
+    const { serverPromise, dir } = fixture({
+      doctor: {
+        runCommand: async (command) =>
+          command === 'codex'
+            ? { exitCode: 0, output: 'codex-cli 99.0.0' }
+            : { exitCode: 0, output: '2.1.317 (Claude Code)' },
+      },
+    })
+    await start(serverPromise)
+    const day = new Date().toISOString().slice(0, 10)
+    let text = ''
+    for (let i = 0; i < 100 && !text.includes('99.0.0'); i++) {
+      text = existsSync(join(dir, 'logs', `joy-${day}.log`))
+        ? readFileSync(join(dir, 'logs', `joy-${day}.log`), 'utf8')
+        : ''
+      await new Promise((r) => setTimeout(r, 10))
+    }
+    const warnings = text
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { level: string; msg: string; repair?: string })
+      .filter((entry) => entry.level === 'warn')
+    expect(warnings).toEqual([
+      expect.objectContaining({
+        msg: expect.stringContaining('Codex CLI 99.0.0 has not been tested with Joy'),
+        repair: expect.stringContaining('node scripts/record-fixtures.mjs codex'),
+      }),
+    ])
   })
 
   it('writes a debug log without any known secret and serves it for download', async () => {
