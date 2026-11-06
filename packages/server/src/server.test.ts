@@ -157,6 +157,7 @@ function fixture(
     secretEnv?: NodeJS.ProcessEnv
     allowPlaywrightOrigin?: boolean
     ownerApprovalChannel?: boolean
+    approvalTimeoutMs?: number
     /** Use the server's real Codex app-server provider, driven by a fake app-server process. */
     codexAppServer?: JoyServerOptions['codexAppServer']
     /** Worktree path the fake executor hands out; must exist when a real child process runs in it. */
@@ -207,7 +208,11 @@ function fixture(
     redactor,
     executor,
     ...(options.allowPlaywrightOrigin ? { allowPlaywrightOrigin: true } : {}),
-    ...(options.ownerApprovalChannel ? { ownerApprovalChannel: true } : {}),
+    ...(options.ownerApprovalChannel !== undefined
+      ? { ownerApprovalChannel: options.ownerApprovalChannel }
+      : {}),
+    // Red actions wait for a person; tests that do not answer should expire quickly.
+    approvalTimeoutMs: options.approvalTimeoutMs ?? 50,
     ...(options.doctor ? { doctor: options.doctor } : {}),
     ...(options.generateApiToken ? {} : { apiToken: options.apiToken ?? TEST_API_TOKEN }),
     providers: {
@@ -1357,10 +1362,10 @@ describe('Joy local server', () => {
     expect(result.events.map((event) => (event as { type?: string }).type)).toContain('policy.pre_review')
   })
 
-  it('denies red actions without a pre-review until an owner approval channel exists, and allows safe ones', async () => {
+  it('denies red actions without a pre-review when owner approvals are off, and allows safe ones', async () => {
     const implementer = new FakeProvider('claude-cli')
     implementer.capabilities.delegatedApproval = true
-    const { reviewer, serverPromise } = fixture({ implementer })
+    const { reviewer, serverPromise } = fixture({ implementer, ownerApprovalChannel: false })
     const { origin } = await start(serverPromise)
     const repoResponse = await postJson(`${origin}/api/repos`, {
       path: '/tmp/no-channel-repo',
@@ -1398,7 +1403,7 @@ describe('Joy local server', () => {
     expect(decisions[0]).toMatchObject({ behavior: 'allow' })
     expect(decisions[1]).toMatchObject({
       behavior: 'deny',
-      message: expect.stringContaining('No owner approval channel'),
+      message: expect.stringContaining('approvals are off'),
     })
     expect(decisions[2]).toMatchObject({ behavior: 'deny' })
     expect(reviewer.calls).toHaveLength(0)
@@ -1464,6 +1469,93 @@ describe('Joy local server', () => {
       ])
     },
   )
+
+  it('holds red actions until the owner decides through the API', { timeout: 20_000 }, async () => {
+    const implementer = new FakeProvider('claude-cli')
+    implementer.capabilities.delegatedApproval = true
+    const { serverPromise } = fixture({ implementer, ownerApprovalChannel: true, approvalTimeoutMs: 15_000 })
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, {
+      path: '/tmp/approval-repo',
+      defaultBranch: 'main',
+    })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const decisions: unknown[] = []
+    implementer.onRun = async (options) => {
+      const mcp = options.mcpServers?.[0]
+      if (!mcp || mcp.transport !== 'stdio')
+        throw new Error('CLI provider did not receive the stdio Tool Hub')
+      const approve = async (command: string) => {
+        const response = await globalThis.fetch(mcp.env?.JOY_TOOL_HUB_ENDPOINT as string, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${mcp.env?.JOY_TOOL_HUB_TOKEN}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'approve',
+            arguments: { tool_name: 'Bash', input: { command }, tool_use_id: command },
+          }),
+        })
+        decisions.push(((await response.json()) as { value: unknown }).value)
+      }
+      await approve('curl https://example.com/approve-me')
+      await approve('curl https://example.com/deny-me')
+    }
+    const taskResponse = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Needs approval',
+      prompt: 'Fetch something',
+      mode: 'single',
+    })
+    const { task } = (await taskResponse.json()) as { task: { id: string } }
+
+    const decide = async (decision: 'approve' | 'deny') => {
+      let pending: Array<{ id: string; taskId: string; action: { kind: string } }> = []
+      for (let i = 0; i < 400 && pending.length === 0; i++) {
+        pending = (
+          (await (await fetch(`${origin}/api/approvals?status=pending`)).json()) as {
+            approvals: typeof pending
+          }
+        ).approvals
+        if (pending.length === 0) await new Promise((r) => setTimeout(r, 10))
+      }
+      expect(pending).toHaveLength(1)
+      expect(pending[0]).toMatchObject({ taskId: task.id, action: { kind: 'run_outside_worktree' } })
+      const details = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
+      expect(details.task.status).toBe('awaiting_approval')
+      const id = pending[0]?.id ?? ''
+      const response = await postJson(`${origin}/api/approvals/${id}/${decision}`, { note: 'checked' })
+      expect(response.status).toBe(200)
+      const again = await postJson(`${origin}/api/approvals/${id}/approve`, {})
+      expect(again.status).toBe(409)
+    }
+    await decide('approve')
+    await decide('deny')
+
+    const result = await waitForStatus(origin, task.id, 'done', 5_000)
+    expect(decisions[0]).toMatchObject({ behavior: 'allow' })
+    expect(decisions[1]).toMatchObject({ behavior: 'deny', message: expect.stringContaining('(denied)') })
+    const types = result.events.map((event) => (event as { type?: string }).type)
+    expect(types.filter((type) => type === 'approval.requested')).toHaveLength(2)
+    expect(types.filter((type) => type === 'approval.decided')).toHaveLength(2)
+    const all = (
+      (await (await fetch(`${origin}/api/approvals?taskId=${task.id}`)).json()) as {
+        approvals: Array<{ status: string; decidedVia: string }>
+      }
+    ).approvals
+    expect(all.map((a) => [a.status, a.decidedVia])).toEqual([
+      ['approved', 'web'],
+      ['denied', 'web'],
+    ])
+  })
+
+  it('rejects unknown approval ids and invalid status filters', async () => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    expect((await postJson(`${origin}/api/approvals/nope/approve`, {})).status).toBe(409)
+    expect((await fetch(`${origin}/api/approvals?status=bogus`)).status).toBe(400)
+  })
 
   it('preserves the task ask_peer budget across a resumed provider session', async () => {
     const implementer = new FakeProvider('claude-cli')

@@ -1186,3 +1186,53 @@ select {
 .event-policy-notify .event-marker {
   background: #dc8a00;
 }
+
+.approvals-panel {
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  border: 1px solid #f4b4ae;
+  border-radius: 8px;
+  background: #fff5f4;
+}
+
+.approvals-panel h2 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.approval-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-top: 1px solid #f4d4d0;
+}
+
+.approval-row p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.approvals-error {
+  color: #b42318;
+  margin: 0 0 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .approvals-panel {
+    background: #3a1f1d;
+    border-color: #7a2e27;
+  }
+
+  .approval-row {
+    border-top-color: #5c2a25;
+  }
+}

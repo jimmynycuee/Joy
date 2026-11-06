@@ -26,6 +26,15 @@
 - task-level `external_content` 來源經 DB 持久化並由 server 套用到 action policy；即使 hands-off，外部內容來源的動作仍需人工核准。Settings 提供模式選擇。
 - identity-sanitized Linux `pnpm check` 通過（PR implementation 的格式、lint、workspace typechecks、346 passed、2 skipped）；`pnpm test:e2e` 通過（4/4），包括 Settings 模式儲存與 startup 可用性。mainline checkout 首輪 E2E 發現舊按鈕名稱 locator，PR 分支改正後全套重跑通過。政策測試使用 fake providers；未呼叫真實 CLI 或模型。
 
+### T2.4a 核准中心與 UI
+
+- 擁有者決定 T2.4 採用方案 A，分三個 PR：核准中心與 UI（本 PR）→ Telegram → 逾時暫停與接續。
+- 🔴 動作（Claude 權限請求、Codex app-server 核准請求）先做跨模型預審，再建立 `approvals` 紀錄，等擁有者決定；等待期間任務狀態為 `awaiting_approval`。核准後工具照常執行，拒絕或逾時則不執行。
+- 第一個決定生效（資料庫條件更新），之後的決定回 409；重啟時把遺留的待核准項目標成過期。
+- 新 API：`GET /api/approvals?status=&taskId=`、`POST /api/approvals/:id/approve|deny`（可附 `note`）。UI 在任務頁上方顯示待核准清單與 Approve / Deny，時間軸顯示請求與結果。
+- 逾時預設 30 分鐘（`approvals.timeout_minutes`）；`ownerApprovalChannel: false` 可關閉核准，恢復「直接拒絕、不預審」。
+- 已知限制：Claude Code 呼叫 MCP 工具有自己的逾時，若短於設定的等待時間，Claude 端會先放棄。T2.4c 會改為逾時後暫停任務。
+
 ### T2.7b Codex 審核接到 policy
 
 - server 的 Codex 預設改用 app-server（`providers.codex.transport`，預設 `app-server`；設為 `exec` 可退回舊的 `codex exec`）。之前 T2.7 的 adapter 已合併但 server 沒有使用。
@@ -85,7 +94,8 @@
 - [PR #62](https://github.com/jimmynycuee/Joy/pull/62)：審核 `joy doctor` 的 OS 鑰匙圈可用性檢查；只探測可用性、不讀取已存憑證。
 - [PR #84](https://github.com/jimmynycuee/Joy/pull/84)：審核 `packages/policy` 分級與全域模式、跨模型預審、task provenance DB/core 介面及 Claude delegated approval 接線；紅色動作在人工核准通道尚未完成前保持不執行。
 
-- T2.7b（本 PR）：審核 `packages/policy` 的 `classifyCodexApproval` 規則，以及 server 預設改用 Codex app-server。
+- T2.4a：核准中心（`packages/server/src/approvals.ts`）與 approvals API；確認第一個決定生效、記錄經過遮罩。
+- T2.7b（PR #86）：審核 `packages/policy` 的 `classifyCodexApproval` 規則，以及 server 預設改用 Codex app-server。
 
 ## 需要擁有者處理
 
