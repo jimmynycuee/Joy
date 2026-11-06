@@ -44,6 +44,7 @@ import { createJoyServer } from './server.js'
 import type { JoyServer, JoyServerOptions } from './server.js'
 import type { DoctorOptions } from './doctor.js'
 import WebSocket, { type RawData } from 'ws'
+import type { ApiTool } from '@joy/providers'
 
 const dirs: string[] = []
 const servers: JoyServer[] = []
@@ -165,6 +166,7 @@ function fixture(
     providers?: Partial<Record<ProviderKind, AgentProvider>>
     quotaResumeBufferMs?: number
     taskTimeLimitMs?: number
+    assistantApiProvider?: JoyServerOptions['assistantApiProvider']
     /** Use the server's real Codex app-server provider, driven by a fake app-server process. */
     codexAppServer?: JoyServerOptions['codexAppServer']
     /** Worktree path the fake executor hands out; must exist when a real child process runs in it. */
@@ -239,6 +241,7 @@ function fixture(
       ? { quotaResumeBufferMs: options.quotaResumeBufferMs }
       : {}),
     ...(options.taskTimeLimitMs !== undefined ? { taskTimeLimitMs: options.taskTimeLimitMs } : {}),
+    ...(options.assistantApiProvider ? { assistantApiProvider: options.assistantApiProvider } : {}),
     ...(options.redactor ? { redactor: options.redactor } : {}),
   }
   const serverPromise = createJoyServer(serverOptions)
@@ -2198,6 +2201,129 @@ describe('Joy local server', () => {
       openaiApi: { monthSpentUsd: number; monthlyCapUsd: number }
     }
     expect(quota.openaiApi).toEqual({ monthSpentUsd: 100, monthlyCapUsd: 30 })
+  })
+
+  it('answers through the OpenAI API brain with function-calling tools and resumes the session', async () => {
+    const seen: Array<{ prompt: string; resume?: string; tools: string[] }> = []
+    const assistantApiProvider = (tools: ApiTool[]): AgentProvider => ({
+      ...scriptedProvider('openai-api', []).provider,
+      async *run(options: RunOptions) {
+        seen.push({
+          prompt: options.prompt,
+          ...(options.resumeSessionId ? { resume: options.resumeSessionId } : {}),
+          tools: tools.map((t) => t.name),
+        })
+        const repos = await tools.find((t) => t.name === 'list_repos')?.run({}, options.signal)
+        yield { type: 'session_started', sessionId: `resp_${seen.length}` }
+        yield {
+          type: 'done',
+          sessionId: `resp_${seen.length}`,
+          isError: false,
+          finalMessage: `You have ${(repos as { repos: unknown[] }).repos.length} repo(s).`,
+        }
+      },
+    })
+    const redactor = new Redactor()
+    redactor.add('assistant-secret-123')
+    const { serverPromise } = fixture({ assistantApiProvider, redactor })
+    const { origin } = await start(serverPromise)
+    await postJson(`${origin}/api/repos`, { path: '/tmp/assistant-repo', defaultBranch: 'main' })
+    const created = await postJson(`${origin}/api/conversations`, {})
+    const { conversation } = (await created.json()) as { conversation: { id: string } }
+
+    const first = await postJson(`${origin}/api/conversations/${conversation.id}/messages`, {
+      text: 'How many repos do I have? my token is assistant-secret-123',
+    })
+    expect(first.status).toBe(200)
+    expect(((await first.json()) as { message: { content: string } }).message.content).toBe(
+      'You have 1 repo(s).',
+    )
+    expect(seen[0]?.tools).toEqual(['list_repos', 'list_tasks', 'task_status'])
+    expect(seen[0]?.prompt).toContain('You are Joy')
+    expect(seen[0]?.resume).toBeUndefined()
+
+    await postJson(`${origin}/api/conversations/${conversation.id}/messages`, { text: 'And now?' })
+    expect(seen[1]).toMatchObject({ prompt: 'And now?', resume: 'resp_1' })
+
+    const details = (await (await fetch(`${origin}/api/conversations/${conversation.id}`)).json()) as {
+      conversation: { title: string; brainProvider: string; sessionId: string }
+      messages: Array<{ role: string; content: string }>
+    }
+    expect(details.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant'])
+    expect(JSON.stringify(details)).not.toContain('assistant-secret-123')
+    expect(details.conversation).toMatchObject({ brainProvider: 'openai-api', sessionId: 'resp_2' })
+    expect(details.conversation.title).toContain('How many repos')
+  })
+
+  it('gives a CLI brain the same tools through the assistant MCP bridge', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'joy-assistant-cli-'))
+    dirs.push(home)
+    const configStore = new ConfigStore(join(home, 'config.yaml'))
+    await configStore.update((config) => ({
+      ...config,
+      roles: { ...config.roles, assistant_brain: { provider: 'claude-cli', model: 'haiku', effort: 'low' } },
+    }))
+    const implementer = new FakeProvider('claude-cli')
+    let listed: unknown
+    let called: unknown
+    implementer.onRun = async (options) => {
+      expect(options.autonomy).toBe('read-only')
+      const mcp = options.mcpServers?.[0]
+      if (!mcp || mcp.transport !== 'stdio') throw new Error('assistant bridge missing')
+      expect(mcp.name).toBe('joy_assistant')
+      const post = async (body: unknown) =>
+        (await (
+          await globalThis.fetch(mcp.env?.JOY_ASSISTANT_ENDPOINT as string, {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${mcp.env?.JOY_ASSISTANT_TOKEN}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify(body),
+          })
+        ).json()) as { value: unknown }
+      listed = (await post({ op: 'list' })).value
+      called = (await post({ op: 'call', name: 'list_tasks', arguments: {} })).value
+      const wrong = await globalThis.fetch(mcp.env?.JOY_ASSISTANT_ENDPOINT as string, {
+        method: 'POST',
+        headers: { authorization: 'Bearer wrong', 'content-type': 'application/json' },
+        body: JSON.stringify({ op: 'list' }),
+      })
+      expect(wrong.status).toBe(403)
+    }
+    const { serverPromise } = fixture({ implementer, configStore, home })
+    const { origin } = await start(serverPromise)
+    const { conversation } = (await (await postJson(`${origin}/api/conversations`, {})).json()) as {
+      conversation: { id: string }
+    }
+    const response = await postJson(`${origin}/api/conversations/${conversation.id}/messages`, {
+      text: 'Any tasks?',
+    })
+    expect(response.status).toBe(200)
+    expect((listed as Array<{ name: string }>).map((t) => t.name)).toEqual([
+      'list_repos',
+      'list_tasks',
+      'task_status',
+    ])
+    expect(called).toEqual({ tasks: [] })
+    expect(implementer.calls[0]?.cwd).toBe(join(home, 'assistant'))
+  })
+
+  it('records a failed assistant turn and reports it', async () => {
+    const assistantApiProvider = (): AgentProvider =>
+      scriptedProvider('openai-api', [() => outOfQuota('x')]).provider
+    const { serverPromise } = fixture({ assistantApiProvider })
+    const { origin } = await start(serverPromise)
+    const { conversation } = (await (await postJson(`${origin}/api/conversations`, {})).json()) as {
+      conversation: { id: string }
+    }
+    const response = await postJson(`${origin}/api/conversations/${conversation.id}/messages`, { text: 'hi' })
+    expect(response.status).toBe(502)
+    const details = (await (await fetch(`${origin}/api/conversations/${conversation.id}`)).json()) as {
+      messages: Array<{ role: string; content: string }>
+    }
+    expect(details.messages.map((m) => m.role)).toEqual(['user', 'system'])
+    expect(details.messages[1]?.content).toContain('usage limit reached')
   })
 
   it('preserves the task ask_peer budget across a resumed provider session', async () => {

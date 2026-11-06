@@ -3,6 +3,7 @@
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
 - 最後更新：2026-11-06（T2.3 修正）
+- 擁有者 Codex 額度用完：T2.1 平行競賽延後，先做 P3（不含需要 Google 登入的 T3.8）。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
 ## 驗證結果
@@ -91,6 +92,15 @@
 - T3.8 依 PLAN 清單評估維護狀況、權限範圍與資料是否送第三方，自行選一個 Gmail／Calendar MCP server；先唯讀，寄信與邀請他人一律 🔴。選型理由寫在本檔決策區。
 - 不呼叫真實模型；若測試確實需要真實模型，只能使用 haiku 或 gpt-6-luna、low effort，且必須是 opt-in。
 - 每個 ticket 從最新 main 開獨立分支，diff 只保留該 ticket。CI 失敗最多修 3 次；無法修復時記錄原因並繼續不相依工作。
+
+### T3.1 助理對話
+
+- 大腦依 `roles.assistant_brain`（預設 OpenAI API 的小模型），可換成 Claude 或 Codex。工具只在 server 定義一次：API 大腦以 function calling 使用；CLI 大腦透過新的 `joy_assistant` MCP 橋接（`packages/tools/src/assistant.ts`，啟動時向 server 取工具清單，呼叫時轉回 server；每輪一組只限本機的 token）。
+- 每段對話記住大腦與 session，下一輪接續同一個 session；換了大腦就改帶最近 20 則訊息。CLI 大腦以唯讀模式、在私有的 `~/.joy/assistant` 目錄執行。
+- 目前工具都是唯讀：`list_repos`、`list_tasks`、`task_status`。建立任務等派工工具在 T3.2。
+- 訊息存進資料庫前先遮罩；失敗的一輪會記成 system 訊息並回 502。OpenAI 大腦受月預算保護。
+- API：`GET/POST /api/conversations`、`GET /api/conversations/:id`、`POST /api/conversations/:id/messages`。UI 新增「Assistant」頁。
+- 驗證：server 測試（API 大腦以 function calling 呼叫工具並接續 session、CLI 大腦經橋接列出並呼叫工具、錯誤 token 403、失敗記錄、遮罩）。尚未用真實模型測試。
 
 ### T2.5 額度交接與成本上限
 

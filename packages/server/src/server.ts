@@ -29,9 +29,11 @@ import { EFFORTS, PROVIDER_KINDS, ROLES, resolveRole } from '@joy/core'
 import { ConfigStore, configSchema, joyHome, resolvePaths, type JoyConfig } from '@joy/config'
 import {
   addUsage,
+  appendMessage,
   appendTaskEvent,
   appendTaskFailureEvent,
   createAttempt,
+  createConversation,
   createRepo,
   createReview,
   createTask,
@@ -39,25 +41,32 @@ import {
   expirePendingApprovals,
   getApproval,
   getAttempt,
+  getConversation,
   getRepo,
   getTask,
   interruptRunningWork,
   latestAttempt,
   listApprovals,
   listAttempts,
+  listConversations,
+  listMessages,
   listRepos,
   listReviews,
   listTaskEvents,
   listTasks,
   listUsage,
   openDatabase,
+  setConversationTitle,
   setTaskStatus,
   updateAttempt,
+  updateConversationSession,
   updateRepoAllowedProviders,
   updateRepoGithubRemote,
 } from '@joy/db'
 import type { ApprovalRecord, ApprovalStatus, AttemptRecord, Database, RepoRecord, StoredTask } from '@joy/db'
 import { ApprovalBroker } from './approvals.js'
+import { runAssistantTurn, toApiTools } from './assistant.js'
+import type { AssistantTool } from './assistant.js'
 import { GitHubPublisher } from '@joy/github'
 import type { DraftPullRequestInput, PublishedPullRequest } from '@joy/github'
 import { TelegramChannel } from '@joy/channels'
@@ -70,10 +79,11 @@ import {
   CodexCliProvider,
   OpenAiApiProvider,
 } from '@joy/providers'
-import type { CodexApprovalDecision, CodexApprovalRequest } from '@joy/providers'
+import type { ApiTool, CodexApprovalDecision, CodexApprovalRequest } from '@joy/providers'
 import { Redactor, SecretStore } from '@joy/secrets'
 import {
   createToolHubDispatcher,
+  createAssistantMcpConfig,
   createToolHubMcpConfig,
   isToolHubValue,
   TOOL_HUB_APPROVAL_TOOL_NAME,
@@ -156,6 +166,16 @@ function actionFingerprint(action: { kind: string; detail: unknown }): string {
   return JSON.stringify({ kind: action.kind, detail: action.detail })
 }
 
+const conversationInputSchema = z.strictObject({ title: z.string().trim().min(1).max(200).optional() })
+const messageInputSchema = z.strictObject({ text: z.string().trim().min(1).max(20_000) })
+const assistantCallSchema = z.discriminatedUnion('op', [
+  z.strictObject({ op: z.literal('list') }),
+  z.strictObject({
+    op: z.literal('call'),
+    name: z.string().min(1).max(100),
+    arguments: z.unknown().optional(),
+  }),
+])
 const approvalDecisionSchema = z.strictObject({ note: z.string().max(2_000).optional() })
 const approvalStatusSchema = z.enum(['pending', 'approved', 'denied', 'expired']).optional()
 const toolHubCallSchema = z.strictObject({ name: z.enum(TOOL_HUB_TOOL_NAMES), arguments: z.unknown() })
@@ -206,6 +226,8 @@ export interface JoyServerOptions {
   telegram?: { baseUrl?: string; fetch?: typeof fetch; pollTimeoutSeconds?: number }
   /** Wait this long after a provider's quota reset before resuming a queued task. Default 60 s. */
   quotaResumeBufferMs?: number
+  /** Builds the OpenAI API brain for one assistant turn with that turn's tools (tests use a fake). */
+  assistantApiProvider?: (tools: ApiTool[]) => AgentProvider
   /** Overrides budget.per_task.max_minutes (tests). */
   taskTimeLimitMs?: number
   /** Replaces the GitHub publisher (tests). */
@@ -315,17 +337,16 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     ...options.providers,
   } satisfies Partial<Record<ProviderKind, AgentProvider>>
   // Every OpenAI API run, including injected ones, refuses to start once the month's budget is used up.
-  const apiProvider = providers['openai-api']
-  if (apiProvider) {
-    providers['openai-api'] = withMonthlyBudget(apiProvider, async () => {
-      const cap = (await configStore.get()).budget.openai_api_usd_monthly_cap
-      const spent = monthlyApiSpend()
-      if (spent >= cap)
-        throw new Error(
-          `The OpenAI API budget for this month is used up ($${spent.toFixed(2)} of $${cap.toFixed(2)}, budget.openai_api_usd_monthly_cap).`,
-        )
-    })
+  const assertMonthlyBudget = async () => {
+    const cap = (await configStore.get()).budget.openai_api_usd_monthly_cap
+    const spent = monthlyApiSpend()
+    if (spent >= cap)
+      throw new Error(
+        `The OpenAI API budget for this month is used up ($${spent.toFixed(2)} of $${cap.toFixed(2)}, budget.openai_api_usd_monthly_cap).`,
+      )
   }
+  const apiProvider = providers['openai-api']
+  if (apiProvider) providers['openai-api'] = withMonthlyBudget(apiProvider, assertMonthlyBudget)
   const executor = options.executor ?? new WorktreeExecutor({ worktreesDir: paths.worktrees })
   // Commits through the executor and scans with the same redactor that guards events and logs.
   const publisher =
@@ -593,6 +614,43 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (!isLoopbackHost(req.headers.host)) throw new HttpError(403, 'Host is not allowed')
     const method = req.method ?? 'GET'
     const url = requestUrl(req)
+    const assistantRoute = /^\/internal\/assistant\/([A-Za-z0-9_-]{32,})$/.exec(url.pathname)
+    if (assistantRoute && method === 'POST') {
+      if (!isLoopbackAddress(req.socket.remoteAddress))
+        throw new HttpError(403, 'The assistant bridge is local-only')
+      const session = assistantSessions.get(assistantRoute[1] ?? '')
+      if (!session || !hasValidBearerToken(req, session.token))
+        throw new HttpError(403, 'Assistant bridge authentication failed')
+      const call = assistantCallSchema.parse(await readJson(req))
+      if (call.op === 'list') {
+        json(res, 200, {
+          value: session.tools.map(({ name, description, inputSchema }) => ({
+            name,
+            description,
+            inputSchema,
+          })),
+        })
+        return
+      }
+      const tool = session.tools.find((candidate) => candidate.name === call.name)
+      if (!tool) throw new HttpError(404, `Unknown assistant tool "${call.name}"`)
+      try {
+        const args = call.arguments
+        const value = await tool.run(
+          args !== null && typeof args === 'object' && !Array.isArray(args)
+            ? (args as Record<string, unknown>)
+            : {},
+          new AbortController().signal,
+        )
+        json(res, 200, { value: redactor.redactValue(value) })
+      } catch (error) {
+        throw new HttpError(
+          422,
+          redactor.redact(error instanceof Error ? error.message : 'Assistant tool failed'),
+        )
+      }
+      return
+    }
     const toolHubRoute = /^\/internal\/tool-hub\/([A-Za-z0-9_-]{32,})$/.exec(url.pathname)
     if (toolHubRoute && method === 'POST') {
       const sessionId = toolHubRoute[1] ?? ''
@@ -850,6 +908,36 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       setTaskStatus(db, task.id, 'queued')
       scheduleTask({ ...task, status: 'queued' }, state)
       json(res, 202, { task: getTask(db, task.id), resumed: true })
+      return
+    }
+    if (url.pathname === '/api/conversations' && method === 'GET') {
+      json(res, 200, { conversations: listConversations(db) })
+      return
+    }
+    if (url.pathname === '/api/conversations' && method === 'POST') {
+      assertJsonContentType(req)
+      const input = conversationInputSchema.parse(await readJson(req))
+      const conversation = createConversation(db, {
+        id: randomUUID(),
+        channel: 'web',
+        ...(input.title ? { title: redactor.redact(input.title) } : {}),
+      })
+      json(res, 201, { conversation })
+      return
+    }
+    const conversationMatch = /^\/api\/conversations\/([^/]+)$/.exec(url.pathname)
+    if (conversationMatch && method === 'GET') {
+      const conversation = getConversation(db, decodePathSegment(conversationMatch[1] ?? ''))
+      if (!conversation) throw new HttpError(404, 'Conversation not found')
+      json(res, 200, { conversation, messages: listMessages(db, conversation.id) })
+      return
+    }
+    const messageMatch = /^\/api\/conversations\/([^/]+)\/messages$/.exec(url.pathname)
+    if (messageMatch && method === 'POST') {
+      assertJsonContentType(req)
+      const { text } = messageInputSchema.parse(await readJson(req))
+      const result = await assistantReply(decodePathSegment(messageMatch[1] ?? ''), text)
+      json(res, 200, result)
       return
     }
     if (url.pathname === '/api/quota' && method === 'GET') {
@@ -1442,6 +1530,161 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         sessionController.abort()
         toolHubSessions.delete(sessionId)
       },
+    }
+  }
+
+  const assistantSessions = new Map<string, { token: string; tools: AssistantTool[] }>()
+  const busyConversations = new Set<string>()
+
+  /** Read-only tools for T3.1. Task creation and other actions arrive with T3.2. */
+  function assistantTools(): AssistantTool[] {
+    return [
+      {
+        name: 'list_repos',
+        description: 'List the repositories Joy knows about, with their ids, paths and default branches.',
+        inputSchema: { type: 'object', properties: {} },
+        run: async () => ({
+          repos: listRepos(db).map(({ id, path, defaultBranch, githubRemote }) => ({
+            id,
+            path,
+            defaultBranch,
+            ...(githubRemote ? { githubRemote } : {}),
+          })),
+        }),
+      },
+      {
+        name: 'list_tasks',
+        description: 'List recent coding tasks with their status. Optionally filter by status.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            status: {
+              type: 'string',
+              enum: ['queued', 'running', 'awaiting_approval', 'review_ready', 'done', 'failed', 'cancelled'],
+            },
+          },
+        },
+        run: async (args) => ({
+          tasks: listTasks(db)
+            .filter((task) => typeof args.status !== 'string' || task.status === args.status)
+            .slice(0, 50)
+            .map(({ id, title, status, mode, createdAt }) => ({ id, title, status, mode, createdAt })),
+        }),
+      },
+      {
+        name: 'task_status',
+        description: 'Get the status of one task: its last result, pull request and waiting approvals.',
+        inputSchema: { type: 'object', properties: { task_id: { type: 'string' } }, required: ['task_id'] },
+        run: async (args) => {
+          const task = typeof args.task_id === 'string' ? getTask(db, args.task_id as TaskId) : undefined
+          if (!task) throw new Error('No task with that id')
+          const events = listTaskEvents(db, task.id)
+          const result = events.filter((event) => event.type === 'result').at(-1)?.payload as
+            { status?: string; reason?: string; approved?: boolean } | undefined
+          const pr = events.filter((event) => event.type === 'publish.done').at(-1)?.payload as
+            { pullRequestUrl?: string } | undefined
+          return {
+            id: task.id,
+            title: task.title,
+            status: task.status,
+            ...(result
+              ? { lastResult: { status: result.status, approved: result.approved, reason: result.reason } }
+              : {}),
+            ...(pr?.pullRequestUrl ? { pullRequestUrl: pr.pullRequestUrl } : {}),
+            waitingApprovals: listApprovals(db, { status: 'pending', taskId: task.id }).length,
+          }
+        },
+      },
+    ]
+  }
+
+  /** One assistant turn: store the owner's message, ask the configured brain, store and return its reply. */
+  async function assistantReply(conversationId: string, text: string) {
+    const conversation = getConversation(db, conversationId)
+    if (!conversation) throw new HttpError(404, 'Conversation not found')
+    if (busyConversations.has(conversationId))
+      throw new HttpError(409, 'The assistant is still answering the previous message')
+    busyConversations.add(conversationId)
+    let closeBridge = () => {}
+    try {
+      const config = await configStore.get()
+      const brain = resolveRole('assistant_brain', config.roles as RoleConfig, {})
+      const history = listMessages(db, conversationId)
+        .filter(
+          (message): message is typeof message & { role: 'user' | 'assistant' } =>
+            message.role === 'user' || message.role === 'assistant',
+        )
+        .map(({ role, content }) => ({ role, content }))
+      appendMessage(db, conversationId, 'user', redactor.redact(text))
+      const tools = assistantTools()
+      const canResume =
+        conversation.sessionId &&
+        conversation.brainProvider === brain.provider &&
+        conversation.brainModel === brain.model
+      let provider: AgentProvider | undefined
+      let mcpServer: NonNullable<RunOptions['mcpServers']>[number] | undefined
+      if (brain.provider === 'openai-api') {
+        const factory =
+          options.assistantApiProvider ??
+          ((apiTools: ApiTool[]) =>
+            new OpenAiApiProvider({
+              tools: apiTools,
+              apiKey: async () => {
+                const key = await secretStore.get('openai_api_key')
+                if (key) redactor.add(key)
+                return key
+              },
+            }))
+        provider = withMonthlyBudget(factory(toApiTools(tools)), assertMonthlyBudget)
+      } else {
+        provider = providers[brain.provider]
+        const address = httpServer.address()
+        if (provider && address && typeof address !== 'string') {
+          const sessionId = randomBytes(32).toString('base64url')
+          const token = randomBytes(32).toString('base64url')
+          assistantSessions.set(sessionId, { token, tools })
+          closeBridge = () => assistantSessions.delete(sessionId)
+          mcpServer = createAssistantMcpConfig(
+            `http://127.0.0.1:${address.port}/internal/assistant/${sessionId}`,
+            token,
+          )
+        }
+      }
+      if (!provider)
+        throw new HttpError(409, `No provider is configured for the assistant brain (${brain.provider})`)
+      const cwd = join(home, 'assistant')
+      await mkdir(cwd, { recursive: true, mode: 0o700 })
+      let result
+      try {
+        result = await runAssistantTurn({
+          brain,
+          provider,
+          userText: text,
+          history,
+          cwd,
+          signal: AbortSignal.timeout(10 * 60_000),
+          ...(canResume && conversation.sessionId ? { resumeSessionId: conversation.sessionId } : {}),
+          ...(mcpServer ? { mcpServer } : {}),
+        })
+      } catch (error) {
+        const message = redactor.redact(
+          error instanceof Error ? error.message : 'The assistant did not answer',
+        )
+        appendMessage(db, conversationId, 'system', message)
+        throw new HttpError(502, message)
+      }
+      for (const event of result.events) persistUsageEvent(db, brain.provider, event)
+      const reply = appendMessage(db, conversationId, 'assistant', redactor.redact(result.reply))
+      updateConversationSession(db, conversationId, {
+        provider: brain.provider,
+        model: brain.model,
+        sessionId: result.sessionId ?? null,
+      })
+      if (!conversation.title) setConversationTitle(db, conversationId, redactor.redact(text).slice(0, 60))
+      return { message: reply, conversation: getConversation(db, conversationId) }
+    } finally {
+      closeBridge()
+      busyConversations.delete(conversationId)
     }
   }
 

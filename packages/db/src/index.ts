@@ -49,3 +49,13 @@ export {
   listApprovals,
 } from './approvals.js'
 export type { ApprovalRecord, ApprovalStatus, NewApproval } from './approvals.js'
+export {
+  appendMessage,
+  createConversation,
+  getConversation,
+  listConversations,
+  listMessages,
+  setConversationTitle,
+  updateConversationSession,
+} from './conversations.js'
+export type { ConversationRecord, MessageRecord, MessageRole } from './conversations.js'

@@ -504,6 +504,145 @@ function UsageStrip() {
   )
 }
 
+interface ConversationSummary {
+  id: string
+  title?: string
+  brainProvider?: string
+  updatedAt?: string
+  createdAt: string
+}
+interface ChatMessage {
+  id: number
+  role: 'user' | 'assistant' | 'system' | 'tool'
+  content: string
+}
+
+/** Chat with the assistant (T3.1). Conversations are listed on the left, the selected one on the right. */
+function AssistantPage() {
+  const [conversations, setConversations] = useState<ConversationSummary[]>([])
+  const [selected, setSelected] = useState('')
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [sending, setSending] = useState(false)
+  const [failure, setFailure] = useState('')
+
+  async function loadList(): Promise<ConversationSummary[]> {
+    const body = await request<{ conversations?: ConversationSummary[] }>('/api/conversations')
+    const list = Array.isArray(body.conversations) ? body.conversations : []
+    setConversations(list)
+    return list
+  }
+
+  useEffect(() => {
+    void loadList()
+      .then((list) => {
+        if (list[0]) setSelected((current) => current || list[0]?.id || '')
+      })
+      .catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    if (!selected) {
+      setMessages([])
+      return
+    }
+    void request<{ messages?: ChatMessage[] }>(`/api/conversations/${encodeURIComponent(selected)}`)
+      .then((body) => setMessages(Array.isArray(body.messages) ? body.messages : []))
+      .catch(() => setMessages([]))
+  }, [selected])
+
+  async function newConversation() {
+    const body = await request<{ conversation: ConversationSummary }>('/api/conversations', {
+      method: 'POST',
+      body: '{}',
+    })
+    await loadList()
+    setSelected(body.conversation.id)
+  }
+
+  async function send(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const formElement = event.currentTarget
+    const text = String(new FormData(formElement).get('message') ?? '').trim()
+    if (!text) return
+    setFailure('')
+    setSending(true)
+    let conversationId = selected
+    try {
+      if (!conversationId) {
+        const created = await request<{ conversation: ConversationSummary }>('/api/conversations', {
+          method: 'POST',
+          body: '{}',
+        })
+        conversationId = created.conversation.id
+        setSelected(conversationId)
+      }
+      setMessages((current) => [...current, { id: -Date.now(), role: 'user', content: text }])
+      formElement.reset()
+      await request(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ text }),
+      })
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : 'The assistant did not answer')
+    } finally {
+      setSending(false)
+      if (conversationId) {
+        const body = await request<{ messages?: ChatMessage[] }>(
+          `/api/conversations/${encodeURIComponent(conversationId)}`,
+        ).catch(() => ({ messages: undefined }))
+        if (Array.isArray(body.messages)) setMessages(body.messages)
+      }
+      void loadList().catch(() => undefined)
+    }
+  }
+
+  return (
+    <main className="assistant-page" data-testid="assistant-page">
+      <aside className="assistant-list" aria-label="Conversations">
+        <button className="primary-button" type="button" onClick={() => void newConversation()}>
+          New conversation
+        </button>
+        {conversations.map((conversation) => (
+          <button
+            type="button"
+            key={conversation.id}
+            className={conversation.id === selected ? 'task-row selected' : 'task-row'}
+            onClick={() => setSelected(conversation.id)}
+          >
+            {conversation.title ?? 'New conversation'}
+          </button>
+        ))}
+      </aside>
+      <section className="assistant-chat" aria-label="Chat">
+        <div className="chat-messages">
+          {messages.length === 0 ? (
+            <p className="muted">
+              Ask about your repositories and tasks. The assistant brain is set in Settings.
+            </p>
+          ) : (
+            messages.map((message) => (
+              <div key={message.id} className={`chat-message chat-${message.role}`}>
+                <span className="chat-role">
+                  {message.role === 'user' ? 'You' : message.role === 'assistant' ? 'Joy' : 'Error'}
+                </span>
+                <p>{message.content}</p>
+              </div>
+            ))
+          )}
+          {sending ? <p className="muted">Joy is thinking…</p> : null}
+        </div>
+        {failure ? <p className="approvals-error">{failure}</p> : null}
+        <form className="chat-form" onSubmit={(event) => void send(event)}>
+          <textarea name="message" rows={3} placeholder="Message Joy" required disabled={sending} />
+          <button className="primary-button" type="submit" disabled={sending}>
+            Send
+          </button>
+        </form>
+      </section>
+    </main>
+  )
+}
+
 function App() {
   const [repos, setRepos] = useState<Repo[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
@@ -516,7 +655,7 @@ function App() {
   const [doctorRetry, setDoctorRetry] = useState(0)
   const [selectedTaskId, setSelectedTaskId] = useState('')
   const [details, setDetails] = useState<TaskDetails | null>(null)
-  const [page, setPage] = useState<'tasks' | 'settings'>('tasks')
+  const [page, setPage] = useState<'tasks' | 'assistant' | 'settings'>('tasks')
   const [showTaskForm, setShowTaskForm] = useState(false)
   const [showRepoForm, setShowRepoForm] = useState(false)
   const [error, setError] = useState('')
@@ -909,6 +1048,12 @@ function App() {
             Workspace
           </button>
           <button
+            className={page === 'assistant' ? 'nav-button active' : 'nav-button'}
+            onClick={() => setPage('assistant')}
+          >
+            Assistant
+          </button>
+          <button
             className={page === 'settings' ? 'nav-button active' : 'nav-button'}
             onClick={() => setPage('settings')}
           >
@@ -928,7 +1073,9 @@ function App() {
         </div>
       )}
 
-      {page === 'settings' ? (
+      {page === 'assistant' ? (
+        <AssistantPage />
+      ) : page === 'settings' ? (
         <main className="settings-page">
           <div className="page-heading">
             <div>

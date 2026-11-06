@@ -13,3 +13,11 @@ export type {
   ToolHubValue,
 } from './hub.js'
 export { createToolHubMcpConfig, createToolHubMcpServer, isToolHubValue, startToolHubStdio } from './mcp.js'
+export {
+  ASSISTANT_SERVER_NAME,
+  createAssistantMcpConfig,
+  createAssistantMcpServer,
+  createHttpAssistantBridge,
+  startAssistantStdio,
+} from './assistant.js'
+export type { AssistantBridge, AssistantToolSpec } from './assistant.js'
