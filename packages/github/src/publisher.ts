@@ -51,7 +51,7 @@ export interface PublishedPullRequest {
   body: string
 }
 
-interface GitHubRepository {
+export interface GitHubRepository {
   host: string
   owner: string
   name: string
@@ -616,7 +616,7 @@ export function formatPullRequestBody(summary: string, reviewSummary: string): s
   return ['## Summary', summary.trim(), '## Review summary', reviewSummary.trim()].join('\n\n')
 }
 
-function parseGitHubRepository(value: string | undefined): GitHubRepository {
+export function parseGitHubRepository(value: string | undefined): GitHubRepository {
   if (!value?.trim()) throw new Error('RepoRef.githubRemote must identify the configured GitHub repository.')
   const remote = value.trim()
   let host: string
