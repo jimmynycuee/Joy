@@ -2,7 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-06（T2.8 worktree 清理）
+- 最後更新：2026-11-06（T2.6 GitHub issue → 任務）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
@@ -92,6 +92,14 @@
 - T3.8 依 PLAN 清單評估維護狀況、權限範圍與資料是否送第三方，自行選一個 Gmail／Calendar MCP server；先唯讀，寄信與邀請他人一律 🔴。選型理由寫在本檔決策區。
 - 不呼叫真實模型；若測試確實需要真實模型，只能使用 haiku 或 gpt-6-luna、low effort，且必須是 opt-in。
 - 每個 ticket 從最新 main 開獨立分支，diff 只保留該 ticket。CI 失敗最多修 3 次；無法修復時記錄原因並繼續不相依工作。
+
+### T2.6 GitHub issue → 任務
+
+- 有設 GitHub remote 的 repo，每 `github.issue_poll_minutes`（預設 5，0 關閉）用擁有者已登入的 `gh` 查詢帶 `github.issue_label`（預設 `joy`，大小寫不分）的 open issue，**每個 issue 只建一個任務**（migration 14 `issue_imports`；建立失敗會釋放，下次再試）。Pull request 不算。
+- 助理工具 `import_github_issue(repo_id, issue_number)`：擁有者說「do #123」時使用；已匯入過就回傳原任務。
+- 任務一律 `provenance: external_content`；prompt 先寫 Joy 的指示，issue 標題、標籤、內文放在 `<<<ISSUE … ISSUE>>>` 區塊當資料。**由它提出的動作在任何自主模式下都要擁有者核准**（`packages/policy` 既有規則：external_content 一律 🔴）。
+- 沿用 `packages/github` 既有的 issue 驗證 adapter；新增 `GhIssueSource`（`gh api`，不經手 token，`shell: false`）。輪詢失敗同一個 repo 只警告一次。
+- 驗收：`packages/github` 測試（假 `gh`：排除 PR、錯誤訊息）、db 測試（只匯入一次、失敗可重試）、server 測試（label 輪詢多次只建一個任務、標記 external_content、issue 內容在資料區塊、「do #N」匯入與重複回傳）。
 
 ### T2.8 worktree 清理
 
@@ -227,6 +235,7 @@
 - T1.9 真實驗收（擁有者 Mac）：使用該 Mac 上既有的 GitHub CLI 登入；啟動 Joy，對測試 repo 跑完一個小任務後按 Changes 欄的「Open draft PR」（第一次會要求填 GitHub repository URL），確認遠端測試分支、標題以 `[test] ` 開頭的 draft PR 與 review 摘要正確；驗收後關閉測試 PR 並刪除測試分支。不提供、不貼上或索取 PAT。
 - T1.13/T1.8（擁有者 Mac）：審查 PR #62 的鑰匙圈可用性探測後，在目標 Mac 執行 `pnpm joy doctor`，確認首頁顯示該機器的 CLI、鑰匙圈與資料目錄檢查；此驗收不讀取或提供已存憑證。
 - T2.4 Telegram（**擁有者決定暫緩**）：在 @BotFather 建 bot，對它傳一則訊息後用 `https://api.telegram.org/bot<token>/getUpdates` 查自己的 chat id；在 Joy 設定頁填入 chat id 與 bot token（或用環境變數 `JOY_TELEGRAM_BOT_TOKEN`），重啟 Joy。不要把 token 貼在對話、文件或程式碼中。
+- T2.6 GitHub issue 真實驗收（擁有者 Mac）：確認 `gh auth status` 已登入；在測試 repo 建一個 issue 並加上 `joy` label，5 分鐘內 Joy 應建立 `#編號 標題` 的任務（標示 external content）；驗收後關閉 issue。不提供、不貼上或索取 PAT。
 - T3.8 Google：完成所選 MCP server 所需的 Google 登入；登入前保持唯讀功能未連線，登入指令依該 server 文件記錄於此。
 - Windows 實機驗收（P4）：在 Windows 電腦執行 `pnpm install --frozen-lockfile` 與 `pnpm check`，並依 T4.4 完成一次跨模型任務；不以 CI 取代實機驗收。
 

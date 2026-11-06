@@ -94,3 +94,5 @@ export {
 export type { ReminderRecord, ReminderStatus, ScheduleAction, ScheduleRecord } from './schedules.js'
 export { modelStats } from './stats.js'
 export type { ImplementerStats, ModelStats, ReviewerStats, StatsFilter } from './stats.js'
+export { claimIssueImport, getIssueImport, releaseIssueImport, setIssueImportTask } from './issue-imports.js'
+export type { IssueImportRecord } from './issue-imports.js'

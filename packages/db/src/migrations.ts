@@ -403,6 +403,21 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX schedules_due ON schedules(enabled, next_run_at);
     `,
   },
+  {
+    version: 14,
+    name: 'GitHub issues imported as tasks',
+    sql: /* sql */ `
+      -- One task per issue: polling the label again never creates a second task.
+      CREATE TABLE issue_imports (
+        repo_id       TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+        issue_number  INTEGER NOT NULL CHECK (issue_number > 0),
+        task_id       TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+        trigger       TEXT NOT NULL CHECK (trigger IN ('label', 'assistant-command')),
+        imported_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        PRIMARY KEY (repo_id, issue_number)
+      ) STRICT;
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

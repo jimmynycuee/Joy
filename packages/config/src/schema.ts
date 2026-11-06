@@ -96,6 +96,14 @@ export const configSchema = z.strictObject({
     })
     .default({ telegram: {} }),
   autonomy_mode: z.enum(['careful', 'normal', 'hands-off']).default('normal'),
+  github: z
+    .strictObject({
+      /** Open issues with this label become tasks (repositories with a GitHub remote only). */
+      issue_label: z.string().trim().min(1).max(100).default('joy'),
+      /** How often to look for labelled issues; 0 turns label import off. */
+      issue_poll_minutes: z.number().int().min(0).max(1440).default(5),
+    })
+    .default({ issue_label: 'joy', issue_poll_minutes: 5 }),
   worktrees: z
     .strictObject({
       /** Idle worktrees older than this are offered for cleanup in the UI (never removed without the owner). */
