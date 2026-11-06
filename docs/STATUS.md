@@ -93,6 +93,12 @@
 - 不呼叫真實模型；若測試確實需要真實模型，只能使用 haiku 或 gpt-6-luna、low effort，且必須是 opt-in。
 - 每個 ticket 從最新 main 開獨立分支，diff 只保留該 ticket。CI 失敗最多修 3 次；無法修復時記錄原因並繼續不相依工作。
 
+### T3.2 派工
+
+- 助理多了 `create_task`（預設 review_loop，也可 single）與 `cancel_task`；建立與取消和 UI 共用同一段驗證（允許清單、可改檔等）。
+- 任務記住建立它的對話（migration 8 `origin_conversation_id`，對話刪除時自動解除）；任務結束時，助理在那段對話留言回報結果（通過／輪數用完待決定／失敗原因／取消）。Telegram 啟用時另外推播。
+- UI 對話頁每 5 秒更新，看得到主動回報。
+
 ### T3.1 助理對話
 
 - 大腦依 `roles.assistant_brain`（預設 OpenAI API 的小模型），可換成 Claude 或 Codex。工具只在 server 定義一次：API 大腦以 function calling 使用；CLI 大腦透過新的 `joy_assistant` MCP 橋接（`packages/tools/src/assistant.ts`，啟動時向 server 取工具清單，呼叫時轉回 server；每輪一組只限本機的 token）。

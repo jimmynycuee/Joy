@@ -545,9 +545,20 @@ function AssistantPage() {
       setMessages([])
       return
     }
-    void request<{ messages?: ChatMessage[] }>(`/api/conversations/${encodeURIComponent(selected)}`)
-      .then((body) => setMessages(Array.isArray(body.messages) ? body.messages : []))
-      .catch(() => setMessages([]))
+    let cancelled = false
+    const load = () =>
+      request<{ messages?: ChatMessage[] }>(`/api/conversations/${encodeURIComponent(selected)}`)
+        .then((body) => {
+          if (!cancelled) setMessages(Array.isArray(body.messages) ? body.messages : [])
+        })
+        .catch(() => undefined)
+    void load()
+    // Tasks the assistant started report back here when they finish.
+    const timer = window.setInterval(() => void load(), 5000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
   }, [selected])
 
   async function newConversation() {

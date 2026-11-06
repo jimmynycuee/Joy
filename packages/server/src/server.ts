@@ -366,8 +366,31 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const safe = redactor.redactValue(payload)
     const event = appendTaskEvent(db, attemptId, type, safe)
     sendEvent(taskId, event)
-    if (type === 'result') notifyResult(taskId, safe)
+    if (type === 'result') {
+      notifyResult(taskId, safe)
+      reportToConversation(taskId, safe)
+    }
     return event
+  }
+  /** Tasks the assistant started tell their conversation how they ended. */
+  const reportToConversation = (taskId: TaskId, payload: unknown) => {
+    const task = getTask(db, taskId)
+    if (!task?.originConversationId || !getConversation(db, task.originConversationId)) return
+    const result = payload as { status?: string; approved?: boolean; reason?: string; rounds?: number }
+    const outcome =
+      result.status === 'succeeded'
+        ? result.approved === false
+          ? `finished after ${result.rounds ?? 'several'} review round(s) without the reviewer's approval; it needs your decision`
+          : 'finished and was approved by the cross-model review'
+        : result.status === 'cancelled'
+          ? 'was cancelled'
+          : `failed${result.reason ? `: ${result.reason}` : ''}`
+    appendMessage(
+      db,
+      task.originConversationId,
+      'assistant',
+      redactor.redact(`Task "${task.title}" ${outcome}. Open it in the workspace to see the changes.`),
+    )
   }
   // Assigned once Telegram is set up below; results published before then are not announced.
   let notifyResult: (taskId: TaskId, payload: unknown) => void = () => {}
@@ -754,35 +777,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     if (url.pathname === '/api/tasks' && method === 'POST') {
       assertJsonContentType(req)
-      const input = taskInputSchema.parse(await readJson(req))
-      if (input.mode === 'compete') throw new HttpError(422, 'Compete mode is not available in P1 yet')
-      const roleOverrides = input.roleOverrides as Partial<RoleConfig> | undefined
-      const config = await configStore.get()
-      const implementer = resolveRole('implementer', config.roles as RoleConfig, roleOverrides)
-      const provider = providers[implementer.provider]
-      if (provider && !provider.capabilities.codeEdit)
-        throw new HttpError(
-          422,
-          `${implementer.provider} does not support code editing required by ${input.mode} mode`,
-        )
-      const repo = getRepo(db, input.repoId as RepoId)
-      if (!repo) throw new HttpError(404, `Repository ${input.repoId} was not found`)
-      const configRoles = config.roles as RoleConfig
-      const selectedRoles = selectActiveRoles(input.mode, configRoles, roleOverrides ?? {})
-      const disallowed = findDisallowedRoleProviders(selectedRoles, repo.allowedProviders)[0]
-      if (disallowed) throw new HttpError(422, describeDisallowedRoleProvider(disallowed))
-      const task = createTask(db, {
-        id: randomUUID() as TaskId,
-        repoId: repo.id,
-        title: input.title,
-        prompt: input.prompt,
-        mode: input.mode,
-        ...(input.provenance ? { provenance: input.provenance } : {}),
-        ...(roleOverrides ? { roleOverrides } : {}),
-        ...(input.planFirst !== undefined ? { planFirst: input.planFirst } : {}),
-        ...(input.maxRounds !== undefined ? { maxRounds: input.maxRounds } : {}),
-      })
-      scheduleTask(task)
+      const task = await startTask(taskInputSchema.parse(await readJson(req)))
       json(res, 201, { task })
       return
     }
@@ -888,14 +883,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     const cancelMatch = /^\/api\/tasks\/([^/]+)\/cancel$/.exec(url.pathname)
     if (cancelMatch && method === 'POST') {
-      const task = requireTask(decodePathSegment(cancelMatch[1] ?? ''))
-      const active = running.get(task.id)
-      if (active) active.controller.abort()
-      else if (task.status === 'queued' || task.status === 'awaiting_approval')
-        setTaskStatus(db, task.id, 'cancelled')
-      else if (task.status !== 'cancelled')
-        throw new HttpError(409, `Task cannot be cancelled from ${task.status}`)
-      json(res, 200, { task: getTask(db, task.id) })
+      const task = cancelTaskById(decodePathSegment(cancelMatch[1] ?? '') as TaskId)
+      json(res, 200, { task })
       return
     }
     const resumeMatch = /^\/api\/tasks\/([^/]+)\/resume$/.exec(url.pathname)
@@ -1533,11 +1522,62 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
   }
 
+  /** Validates and starts a task; shared by the API and the assistant's create_task tool. */
+  async function startTask(
+    input: z.infer<typeof taskInputSchema>,
+    originConversationId?: string,
+  ): Promise<StoredTask> {
+    if (input.mode === 'compete') throw new HttpError(422, 'Compete mode is not available in P1 yet')
+    const roleOverrides = input.roleOverrides as Partial<RoleConfig> | undefined
+    const config = await configStore.get()
+    const implementer = resolveRole('implementer', config.roles as RoleConfig, roleOverrides)
+    const provider = providers[implementer.provider]
+    if (provider && !provider.capabilities.codeEdit)
+      throw new HttpError(
+        422,
+        `${implementer.provider} does not support code editing required by ${input.mode} mode`,
+      )
+    const repo = getRepo(db, input.repoId as RepoId)
+    if (!repo) throw new HttpError(404, `Repository ${input.repoId} was not found`)
+    const configRoles = config.roles as RoleConfig
+    const selectedRoles = selectActiveRoles(input.mode, configRoles, roleOverrides ?? {})
+    const disallowed = findDisallowedRoleProviders(selectedRoles, repo.allowedProviders)[0]
+    if (disallowed) throw new HttpError(422, describeDisallowedRoleProvider(disallowed))
+    const task = createTask(db, {
+      id: randomUUID() as TaskId,
+      repoId: repo.id,
+      title: input.title,
+      prompt: input.prompt,
+      mode: input.mode,
+      ...(input.provenance ? { provenance: input.provenance } : {}),
+      ...(roleOverrides ? { roleOverrides } : {}),
+      ...(input.planFirst !== undefined ? { planFirst: input.planFirst } : {}),
+      ...(input.maxRounds !== undefined ? { maxRounds: input.maxRounds } : {}),
+      ...(originConversationId ? { originConversationId } : {}),
+    })
+    scheduleTask(task)
+    return task
+  }
+
+  /** Cancels a running, queued or paused task; shared by the API and the assistant. */
+  function cancelTaskById(id: TaskId): StoredTask {
+    const task = requireTask(id)
+    const active = running.get(task.id)
+    if (active) active.controller.abort()
+    else if (task.status === 'queued' || task.status === 'awaiting_approval')
+      setTaskStatus(db, task.id, 'cancelled')
+    else if (task.status !== 'cancelled')
+      throw new HttpError(409, `Task cannot be cancelled from ${task.status}`)
+    const current = getTask(db, task.id)
+    if (!current) throw new HttpError(404, 'Task not found')
+    return current
+  }
+
   const assistantSessions = new Map<string, { token: string; tools: AssistantTool[] }>()
   const busyConversations = new Set<string>()
 
-  /** Read-only tools for T3.1. Task creation and other actions arrive with T3.2. */
-  function assistantTools(): AssistantTool[] {
+  /** Tools for the assistant. create_task and cancel_task act; the rest only read. */
+  function assistantTools(conversationId: string): AssistantTool[] {
     return [
       {
         name: 'list_repos',
@@ -1570,6 +1610,43 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
             .slice(0, 50)
             .map(({ id, title, status, mode, createdAt }) => ({ id, title, status, mode, createdAt })),
         }),
+      },
+      {
+        name: 'create_task',
+        description:
+          'Start a coding task in a repository. Joy runs it in an isolated worktree with a cross-model review and ' +
+          'reports back in this conversation when it finishes. Only call it when the owner asked for the change.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            repo_id: { type: 'string', description: 'From list_repos' },
+            title: { type: 'string', description: 'Short title' },
+            prompt: { type: 'string', description: "The owner's request, complete enough to work from" },
+            mode: { type: 'string', enum: ['review_loop', 'single'], description: 'Default review_loop' },
+          },
+          required: ['repo_id', 'title', 'prompt'],
+        },
+        run: async (args) => {
+          const input = taskInputSchema.parse({
+            repoId: args.repo_id,
+            title: args.title,
+            prompt: args.prompt,
+            mode: args.mode ?? 'review_loop',
+          })
+          const task = await startTask(input, conversationId)
+          return { id: task.id, title: task.title, status: task.status, mode: task.mode }
+        },
+      },
+      {
+        name: 'cancel_task',
+        description:
+          'Cancel a task that is running, queued or waiting for approval. Only when the owner asks.',
+        inputSchema: { type: 'object', properties: { task_id: { type: 'string' } }, required: ['task_id'] },
+        run: async (args) => {
+          if (typeof args.task_id !== 'string') throw new Error('task_id is required')
+          const task = cancelTaskById(args.task_id as TaskId)
+          return { id: task.id, status: task.status }
+        },
       },
       {
         name: 'task_status',
@@ -1616,7 +1693,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         )
         .map(({ role, content }) => ({ role, content }))
       appendMessage(db, conversationId, 'user', redactor.redact(text))
-      const tools = assistantTools()
+      const tools = assistantTools(conversationId)
       const canResume =
         conversation.sessionId &&
         conversation.brainProvider === brain.provider &&

@@ -262,6 +262,14 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX messages_conversation_order ON messages(conversation_id, id);
     `,
   },
+  {
+    version: 8,
+    name: 'remember the conversation that created a task',
+    sql: /* sql */ `
+      -- Tasks the assistant starts report back to this conversation when they finish.
+      ALTER TABLE tasks ADD COLUMN origin_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL;
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

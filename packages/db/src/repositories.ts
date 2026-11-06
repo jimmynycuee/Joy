@@ -26,6 +26,8 @@ export interface NewRepo extends RepoRef {
 
 export interface StoredTask extends Task {
   updatedAt: string
+  /** Set when the assistant created the task: its result is reported back to this conversation. */
+  originConversationId?: string
 }
 
 export interface TaskEventRecord {
@@ -107,6 +109,7 @@ interface TaskRow {
   status: TaskStatus
   created_at: string
   updated_at: string
+  origin_conversation_id: string | null
 }
 
 interface ReviewRow {
@@ -196,12 +199,14 @@ export interface NewTask {
   roleOverrides?: Partial<RoleConfig>
   planFirst?: boolean
   maxRounds?: number
+  originConversationId?: string
 }
 
 export function createTask(db: Database, input: NewTask): StoredTask {
   db.prepare(
-    `INSERT INTO tasks (id, repo_id, title, prompt, mode, provenance, role_overrides, plan_first, max_rounds, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`,
+    `INSERT INTO tasks (id, repo_id, title, prompt, mode, provenance, role_overrides, plan_first, max_rounds,
+       origin_conversation_id, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`,
   ).run(
     input.id,
     input.repoId,
@@ -212,6 +217,7 @@ export function createTask(db: Database, input: NewTask): StoredTask {
     JSON.stringify(input.roleOverrides ?? {}),
     input.planFirst ? 1 : 0,
     input.maxRounds ?? 3,
+    input.originConversationId ?? null,
   )
   const stored = getTask(db, input.id)
   if (!stored) throw new Error(`Task ${input.id} was not found after insert`)
@@ -558,6 +564,7 @@ function mapTask(row: TaskRow): StoredTask {
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    ...(row.origin_conversation_id ? { originConversationId: row.origin_conversation_id } : {}),
   }
 }
 
