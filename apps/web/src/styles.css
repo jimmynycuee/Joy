@@ -1236,3 +1236,11 @@ select {
     border-top-color: #5c2a25;
   }
 }
+
+.publish-panel {
+  margin: 0 0 12px;
+}
+
+.publish-panel a {
+  font-weight: 600;
+}

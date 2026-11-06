@@ -51,13 +51,16 @@ import {
   setTaskStatus,
   updateAttempt,
   updateRepoAllowedProviders,
+  updateRepoGithubRemote,
 } from '@joy/db'
 import type { ApprovalStatus, AttemptRecord, Database, RepoRecord, StoredTask } from '@joy/db'
 import { ApprovalBroker } from './approvals.js'
+import { GitHubPublisher } from '@joy/github'
+import type { DraftPullRequestInput, PublishedPullRequest } from '@joy/github'
 import { TelegramChannel } from '@joy/channels'
 import { WorktreeExecutor } from '@joy/executor'
 import type { Executor, WorkspaceDiff } from '@joy/core'
-import { reviewLoop } from '@joy/orchestrator'
+import { formatFindings, reviewLoop } from '@joy/orchestrator'
 import {
   ClaudeCliProvider,
   CodexAppServerProvider,
@@ -102,7 +105,19 @@ const repoInputSchema = z.strictObject({
   githubRemote: z.string().trim().min(1).optional(),
   allowedProviders: allowedProvidersSchema.optional(),
 })
-const repoAllowlistInputSchema = z.strictObject({ allowedProviders: allowedProvidersSchema })
+const repoAllowlistInputSchema = z
+  .strictObject({
+    allowedProviders: allowedProvidersSchema.optional(),
+    /** null clears it. */
+    githubRemote: z.string().trim().min(1).nullable().optional(),
+  })
+  .refine((input) => input.allowedProviders !== undefined || input.githubRemote !== undefined, {
+    message: 'Send allowedProviders, githubRemote, or both',
+  })
+const publishInputSchema = z.strictObject({
+  title: z.string().trim().min(1).max(256).optional(),
+  baseBranch: z.string().trim().min(1).max(255).optional(),
+})
 const taskInputSchema = z.strictObject({
   repoId: z.string().trim().min(1),
   title: z.string().trim().min(1).max(500),
@@ -168,6 +183,8 @@ export interface JoyServerOptions {
   approvalTimeoutMs?: number
   /** Telegram Bot API overrides (tests point this at a fake API). */
   telegram?: { baseUrl?: string; fetch?: typeof fetch; pollTimeoutSeconds?: number }
+  /** Replaces the GitHub publisher (tests). */
+  publisher?: { publish(workspace: Workspace, input: DraftPullRequestInput): Promise<PublishedPullRequest> }
   /** Overrides for the built-in Codex app-server provider (tests and local development). */
   codexAppServer?: { command?: string; argsPrefix?: string[]; env?: NodeJS.ProcessEnv; timeoutMs?: number }
   /** Test seams for prerequisite checks; production uses the current process and OS services. */
@@ -266,6 +283,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     ...options.providers,
   } satisfies Partial<Record<ProviderKind, AgentProvider>>
   const executor = options.executor ?? new WorktreeExecutor({ worktreesDir: paths.worktrees })
+  // Commits through the executor and scans with the same redactor that guards events and logs.
+  const publisher =
+    options.publisher ?? new GitHubPublisher({ committer: executor, redact: (text) => redactor.redact(text) })
+  const publishing = new Set<TaskId>()
   const running = new Map<TaskId, ActiveTask>()
   const subscribers = new Map<TaskId, Set<WebSocket>>()
   const toolHubSessions = new Map<string, { token: string; dispatch: ToolHubDispatcher }>()
@@ -564,7 +585,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       const repoId = idSchema.parse(decodePathSegment(repoMatch[1] ?? '')) as RepoId
       assertJsonContentType(req)
       const input = repoAllowlistInputSchema.parse(await readJson(req))
-      const repo = updateRepoAllowedProviders(db, repoId, input.allowedProviders)
+      if (!getRepo(db, repoId)) throw new HttpError(404, `Repository ${repoId} was not found`)
+      if (input.allowedProviders) updateRepoAllowedProviders(db, repoId, input.allowedProviders)
+      if (input.githubRemote !== undefined) updateRepoGithubRemote(db, repoId, input.githubRemote)
+      const repo = getRepo(db, repoId)
       if (!repo) throw new HttpError(404, `Repository ${repoId} was not found`)
       json(res, 200, { repo })
       return
@@ -653,6 +677,58 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       )
       if (!decided) throw new HttpError(409, 'Approval does not exist or was already decided')
       json(res, 200, { approval: decided })
+      return
+    }
+    const publishMatch = /^\/api\/tasks\/([^/]+)\/publish$/.exec(url.pathname)
+    if (publishMatch && method === 'POST') {
+      assertJsonContentType(req)
+      const input = publishInputSchema.parse(await readJson(req))
+      const task = requireTask(decodePathSegment(publishMatch[1] ?? ''))
+      if (task.status !== 'done')
+        throw new HttpError(409, `Only finished tasks can be published; this task is ${task.status}`)
+      const repo = getRepo(db, task.repoId)
+      if (!repo?.githubRemote)
+        throw new HttpError(
+          409,
+          'Set the repository GitHub remote first (PATCH /api/repos/{repoId} with githubRemote)',
+        )
+      const attempt = latestAttempt(db, task.id)
+      if (!attempt?.worktreePath || !attempt.branch || !attempt.baseCommit)
+        throw new HttpError(409, 'This task has no worktree to publish')
+      if (publishing.has(task.id)) throw new HttpError(409, 'This task is already being published')
+      publishing.add(task.id)
+      try {
+        const workspace: Workspace = {
+          repo,
+          taskId: task.id,
+          attemptId: attempt.id,
+          path: attempt.worktreePath,
+          branch: attempt.branch,
+          baseCommit: attempt.baseCommit,
+        }
+        const review = listReviews(db, attempt.id).at(-1)
+        // The owner pressing the button is the approval for the push and the draft PR.
+        publish(task.id, attempt.id, 'publish.started', { branch: attempt.branch })
+        const result = await publisher.publish(workspace, {
+          title: input.title ?? task.title,
+          baseBranch: input.baseBranch ?? repo.defaultBranch,
+          summary: task.prompt,
+          reviewSummary: review
+            ? `${review.approve ? 'Approved' : 'Not approved'} by ${review.reviewerProvider} (${review.reviewerModel}) in round ${review.round}: ${review.summary}\n\n${formatFindings(review)}`
+            : 'No cross-model review was recorded for this task.',
+        })
+        publish(task.id, attempt.id, 'publish.done', {
+          pullRequestUrl: result.pullRequestUrl,
+          commitSha: result.commitSha,
+        })
+        json(res, 200, { pullRequestUrl: result.pullRequestUrl, commitSha: result.commitSha })
+      } catch (error) {
+        const message = redactor.redact(error instanceof Error ? error.message : 'Publishing failed')
+        publish(task.id, attempt.id, 'publish.failed', { message })
+        throw new HttpError(422, message)
+      } finally {
+        publishing.delete(task.id)
+      }
       return
     }
     const cancelMatch = /^\/api\/tasks\/([^/]+)\/cancel$/.exec(url.pathname)
