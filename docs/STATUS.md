@@ -40,7 +40,7 @@
 - 第一個決定生效（資料庫條件更新），之後的決定回 409；重啟時把遺留的待核准項目標成過期。
 - 新 API：`GET /api/approvals?status=&taskId=`、`POST /api/approvals/:id/approve|deny`（可附 `note`）。UI 在任務頁上方顯示待核准清單與 Approve / Deny，時間軸顯示請求與結果。
 - 逾時預設 30 分鐘（`approvals.timeout_minutes`）；`ownerApprovalChannel: false` 可關閉核准，恢復「直接拒絕、不預審」。
-- 已知限制：Claude Code 呼叫 MCP 工具有自己的逾時，若短於設定的等待時間，Claude 端會先放棄。T2.4c 會改為逾時後暫停任務。
+- 已知限制：Claude Code 呼叫 MCP 工具有自己的逾時，若短於設定的等待時間，Claude 端會先放棄並繼續（T2.4c 的暫停只在 Joy 這邊的逾時觸發）。擁有者實機測試時若遇到，把 `approvals.timeout_minutes` 調短即可。
 
 ### T2.7b Codex 審核接到 policy
 
@@ -91,6 +91,13 @@
 - T3.8 依 PLAN 清單評估維護狀況、權限範圍與資料是否送第三方，自行選一個 Gmail／Calendar MCP server；先唯讀，寄信與邀請他人一律 🔴。選型理由寫在本檔決策區。
 - 不呼叫真實模型；若測試確實需要真實模型，只能使用 haiku 或 gpt-6-luna、low effort，且必須是 opt-in。
 - 每個 ticket 從最新 main 開獨立分支，diff 只保留該 ticket。CI 失敗最多修 3 次；無法修復時記錄原因並繼續不相依工作。
+
+### T2.4c 逾時暫停與接續
+
+- 核准逾時（`approvals.on_timeout: pause`，預設）時，Joy 中止這次執行，任務停在 `awaiting_approval`，事件 `task.paused`。設為 `deny` 則維持舊行為：告訴 agent 未核准，任務繼續。
+- 逾時的請求仍可在 UI（或 Telegram）核准：Joy 用同一個 session 接續，告訴 agent 擁有者已核准、請重試，且**只放行那一個動作一次**（以遮罩後的動作內容比對）。事後拒絕則任務變成 `failed`；暫停中的任務可以取消。
+- 只有「無人回應而逾時」的請求可事後核准；因取消或重啟而過期的不行。重啟後暫停中的任務變成 `failed`，但其逾時請求仍可核准並接續。
+- 驗證：server 端到端測試（逾時暫停 → 事後核准 → 同 session 接續、同一動作放行一次、重複核准 409；事後拒絕 → failed；暫停中取消）。
 
 ### T1.9b 開 PR 接上 server 與 UI
 

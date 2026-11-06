@@ -51,6 +51,9 @@ export function policyEventTitle(type: string, payload: Payload): string | undef
   if (type === 'approval.requested') {
     return `Waiting for your approval: ${text(payload?.summary) ?? KIND_LABELS[text(payload?.kind) ?? ''] ?? 'an action'}`
   }
+  if (type === 'task.paused') return 'Paused: no answer in time. Approve it to resume the same session.'
+  if (type === 'approval.granted')
+    return `Allowed once by your late approval: ${text(payload?.summary) ?? ''}`.trim()
   if (type === 'approval.decided') {
     const status = text(payload?.status) ?? 'decided'
     const via = text(payload?.via)
@@ -65,7 +68,8 @@ export function policyEventTitle(type: string, payload: Payload): string | undef
 export function policyEventKind(type: string, payload: Payload): string | undefined {
   if (type === 'policy.action') return `policy-${text(payload?.tier) ?? 'approve'}`
   if (type === 'policy.pre_review') return 'policy-review'
-  if (type === 'approval.requested') return 'policy-approve'
+  if (type === 'approval.requested' || type === 'task.paused') return 'policy-approve'
+  if (type === 'approval.granted') return 'policy-auto'
   if (type === 'approval.decided') return payload?.status === 'approved' ? 'policy-auto' : 'policy-approve'
   return undefined
 }

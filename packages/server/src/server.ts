@@ -35,7 +35,9 @@ import {
   createRepo,
   createReview,
   createTask,
+  approveTimedOutApproval,
   expirePendingApprovals,
+  getApproval,
   getRepo,
   getTask,
   interruptRunningWork,
@@ -53,7 +55,7 @@ import {
   updateRepoAllowedProviders,
   updateRepoGithubRemote,
 } from '@joy/db'
-import type { ApprovalStatus, AttemptRecord, Database, RepoRecord, StoredTask } from '@joy/db'
+import type { ApprovalRecord, ApprovalStatus, AttemptRecord, Database, RepoRecord, StoredTask } from '@joy/db'
 import { ApprovalBroker } from './approvals.js'
 import { GitHubPublisher } from '@joy/github'
 import type { DraftPullRequestInput, PublishedPullRequest } from '@joy/github'
@@ -135,6 +137,11 @@ const SECRET_ROUTES: Record<string, { name: 'openai_api_key' | 'telegram_bot_tok
   'telegram-bot-token': { name: 'telegram_bot_token', env: 'JOY_TELEGRAM_BOT_TOKEN' },
 }
 const secretValueSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
+/** Identifies an action for one-time grants; computed from the redacted action, as stored in approvals. */
+function actionFingerprint(action: { kind: string; detail: unknown }): string {
+  return JSON.stringify({ kind: action.kind, detail: action.detail })
+}
+
 const approvalDecisionSchema = z.strictObject({ note: z.string().max(2_000).optional() })
 const approvalStatusSchema = z.enum(['pending', 'approved', 'denied', 'expired']).optional()
 const toolHubCallSchema = z.strictObject({ name: z.enum(TOOL_HUB_TOOL_NAMES), arguments: z.unknown() })
@@ -213,12 +220,16 @@ class ProviderAllowlistError extends Error {}
 interface ActiveTask {
   controller: AbortController
   promise: Promise<void>
+  /** Set when an approval timed out and the run was stopped to wait for the owner (approvals.on_timeout: pause). */
+  pausedFor?: string
 }
 
 interface ResumeState {
   attempt: AttemptRecord
   workspace: Workspace
   sessionId: string
+  /** What to tell the resumed session; defaults to the task prompt. */
+  prompt?: string
 }
 
 function selectActiveRoles(
@@ -316,6 +327,58 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   })
   // Nobody is waiting for approvals created before this process started.
   expirePendingApprovals(db)
+  /** One-time permissions created by late approvals, keyed by task, holding action fingerprints. */
+  const approvalGrants = new Map<TaskId, Set<string>>()
+
+  /**
+   * Answers an approval from any channel. A pending one is decided directly. One that timed out and paused its task
+   * can still be approved: the task resumes in the same session and that exact action is allowed once.
+   */
+  async function answerApproval(
+    id: string,
+    decision: 'approved' | 'denied',
+    via: string,
+    note?: string,
+  ): Promise<{ approval: ApprovalRecord; resumed: boolean } | undefined> {
+    const decided = approvals.decide(id, decision, via, note)
+    if (decided) return { approval: decided, resumed: false }
+    const late = getApproval(db, id)
+    if (!late || late.status !== 'expired' || late.decidedVia !== 'timeout') return undefined
+    const task = getTask(db, late.taskId)
+    if (!task || running.has(task.id) || (task.status !== 'awaiting_approval' && task.status !== 'failed'))
+      return undefined
+    if (decision === 'denied') {
+      if (task.status === 'awaiting_approval') setTaskStatus(db, task.id, 'failed')
+      publish(task.id, late.attemptId, 'approval.decided', {
+        approvalId: id,
+        status: 'denied',
+        via,
+        late: true,
+      })
+      return { approval: late, resumed: false }
+    }
+    const state = await resumeState(task)
+    const approved = approveTimedOutApproval(db, id, via, note ? redactor.redact(note) : undefined)
+    if (!approved) return undefined
+    const grants = approvalGrants.get(task.id) ?? new Set<string>()
+    grants.add(actionFingerprint(approved.action))
+    approvalGrants.set(task.id, grants)
+    publish(task.id, late.attemptId, 'approval.decided', {
+      approvalId: id,
+      status: 'approved',
+      via,
+      late: true,
+    })
+    setTaskStatus(db, task.id, 'queued')
+    scheduleTask(
+      { ...task, status: 'queued' },
+      {
+        ...state,
+        prompt: `The owner approved the action you asked for earlier: ${approved.action.summary} Try it again now, then continue the task.`,
+      },
+    )
+    return { approval: approved, resumed: true }
+  }
 
   // Telegram (T2.4b): only when the owner's chat id is configured. The token is read from the keychain per call.
   const telegramChatId = initialConfig.channels.telegram.owner_chat_id
@@ -383,11 +446,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     })
     telegram.onMessage(async (message) => {
       if (message.correlationId && (message.buttonId === 'approve' || message.buttonId === 'deny')) {
-        const decided = approvals.decide(
+        const answered = await answerApproval(
           message.correlationId,
           message.buttonId === 'approve' ? 'approved' : 'denied',
           'telegram',
-        )
+        ).catch(() => undefined)
+        const decided = answered?.approval
         sendTelegram({
           text: decided
             ? decided.status === 'approved'
@@ -669,14 +733,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (decisionMatch && method === 'POST') {
       const body = approvalDecisionSchema.parse(await readJson(req))
       const id = decodePathSegment(decisionMatch[1] ?? '')
-      const decided = approvals.decide(
+      const answered = await answerApproval(
         id,
         decisionMatch[2] === 'approve' ? 'approved' : 'denied',
         'web',
         body.note,
       )
-      if (!decided) throw new HttpError(409, 'Approval does not exist or was already decided')
-      json(res, 200, { approval: decided })
+      if (!answered) throw new HttpError(409, 'Approval does not exist or was already decided')
+      json(res, 200, answered)
       return
     }
     const publishMatch = /^\/api\/tasks\/([^/]+)\/publish$/.exec(url.pathname)
@@ -736,7 +800,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       const task = requireTask(decodePathSegment(cancelMatch[1] ?? ''))
       const active = running.get(task.id)
       if (active) active.controller.abort()
-      else if (task.status === 'queued') setTaskStatus(db, task.id, 'cancelled')
+      else if (task.status === 'queued' || task.status === 'awaiting_approval')
+        setTaskStatus(db, task.id, 'cancelled')
       else if (task.status !== 'cancelled')
         throw new HttpError(409, `Task cannot be cancelled from ${task.status}`)
       json(res, 200, { task: getTask(db, task.id) })
@@ -1114,9 +1179,17 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       assessed: Awaited<ReturnType<typeof assessAction>>,
     ): Promise<ApprovalStatus | undefined> => {
       if (!(options.ownerApprovalChannel ?? true)) return undefined
+      // A late approval of this exact action resumed the task: let it through once.
+      if (approvalGrants.get(task.id)?.delete(actionFingerprint(redactor.redactValue(action)))) {
+        publish(task.id, attempt.id, 'approval.granted', {
+          kind: action.kind,
+          summary: redactor.redact(action.summary),
+        })
+        return 'approved'
+      }
       setTaskStatus(db, task.id, 'awaiting_approval')
       try {
-        return await approvals.request(
+        const { approvalId, status } = await approvals.request(
           {
             taskId: task.id,
             attemptId: attempt.id,
@@ -1135,6 +1208,19 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           AbortSignal.any([signal, sessionController.signal]),
           options.approvalTimeoutMs ?? config.approvals.timeout_minutes * 60_000,
         )
+        if (
+          status === 'expired' &&
+          config.approvals.on_timeout === 'pause' &&
+          getApproval(db, approvalId)?.decidedVia === 'timeout'
+        ) {
+          // Nobody answered: stop the run instead of letting the agent work around the refusal.
+          const active = running.get(task.id)
+          if (active && !active.pausedFor) {
+            active.pausedFor = approvalId
+            active.controller.abort()
+          }
+        }
+        return status
       } finally {
         // Another red action of this task may still be waiting; only the last answer resumes the status.
         const stillWaiting = listApprovals(db, { status: 'pending', taskId: task.id }).length > 0
@@ -1322,7 +1408,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         : undefined
     const options: RunOptions = {
       cwd: workspace.path,
-      prompt: task.prompt,
+      prompt: resume?.prompt ?? task.prompt,
       autonomy: 'workspace-write',
       signal: controller.signal,
       ...(toolHub ? { mcpServers: [toolHub.server] } : {}),
@@ -1350,6 +1436,13 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       toolHub?.close()
     }
     const diff = await executor.diff(workspace)
+    const pausedFor = running.get(task.id)?.pausedFor
+    if (pausedFor) {
+      updateAttempt(db, attempt.id, { status: 'cancelled', diffStats: summarizeDiff(diff) })
+      setTaskStatus(db, task.id, 'awaiting_approval')
+      publish(task.id, attempt.id, 'task.paused', { approvalId: pausedFor, diff })
+      return
+    }
     const succeeded = !controller.signal.aborted && !!done && !done.isError && !failure
     const status = controller.signal.aborted ? 'cancelled' : succeeded ? 'succeeded' : 'failed'
     updateAttempt(db, attempt.id, { status, diffStats: summarizeDiff(diff) })

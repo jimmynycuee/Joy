@@ -190,24 +190,40 @@ interface PendingApproval {
   id: string
   taskId: string
   createdAt: string
+  status: string
+  decidedVia?: string
   action: { kind: string; summary: string; provenance: string }
 }
 
 /** Red actions waiting for the owner in this task, with Approve / Deny. Refreshes on approval events. */
-function ApprovalsPanel({ taskId, approvalEvents }: { taskId: string; approvalEvents: number }) {
+function ApprovalsPanel({
+  taskId,
+  taskStatus,
+  approvalEvents,
+}: {
+  taskId: string
+  taskStatus: string
+  approvalEvents: number
+}) {
   const [pending, setPending] = useState<PendingApproval[]>([])
   const [busy, setBusy] = useState('')
   const [failure, setFailure] = useState('')
 
   useEffect(() => {
     let cancelled = false
+    // A paused task also shows the request that timed out, so it can still be approved and resumed.
+    const paused = taskStatus === 'awaiting_approval' || taskStatus === 'failed'
     const load = () =>
-      request<{ approvals: PendingApproval[] }>(
-        `/api/approvals?status=pending&taskId=${encodeURIComponent(taskId)}`,
-      )
+      request<{ approvals: PendingApproval[] }>(`/api/approvals?taskId=${encodeURIComponent(taskId)}`)
         .then((body) => {
           // Never trust the shape of a response: a missing list must not take the whole page down.
-          if (!cancelled) setPending(Array.isArray(body.approvals) ? body.approvals : [])
+          const all = Array.isArray(body.approvals) ? body.approvals : []
+          const open = all.filter(
+            (approval) =>
+              approval.status === 'pending' ||
+              (paused && approval.status === 'expired' && approval.decidedVia === 'timeout'),
+          )
+          if (!cancelled) setPending(open)
         })
         .catch(() => undefined)
     void load()
@@ -217,7 +233,7 @@ function ApprovalsPanel({ taskId, approvalEvents }: { taskId: string; approvalEv
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [taskId, approvalEvents])
+  }, [taskId, taskStatus, approvalEvents])
 
   async function decide(id: string, decision: 'approve' | 'deny') {
     setBusy(id)
@@ -235,7 +251,11 @@ function ApprovalsPanel({ taskId, approvalEvents }: { taskId: string; approvalEv
   if (pending.length === 0) return null
   return (
     <section className="approvals-panel" aria-label="Pending approvals" data-testid="pending-approvals">
-      <h2>Waiting for your approval</h2>
+      <h2>
+        {pending.some((a) => a.status === 'expired')
+          ? 'Paused until you approve'
+          : 'Waiting for your approval'}
+      </h2>
       {failure ? <p className="approvals-error">{failure}</p> : null}
       {pending.map((approval) => (
         <div className="approval-row" key={approval.id}>
@@ -255,7 +275,7 @@ function ApprovalsPanel({ taskId, approvalEvents }: { taskId: string; approvalEv
               disabled={busy === approval.id}
               onClick={() => void decide(approval.id, 'approve')}
             >
-              Approve
+              {approval.status === 'expired' ? 'Approve and resume' : 'Approve'}
             </button>
             <button
               type="button"
@@ -1199,6 +1219,7 @@ function App() {
                 </div>
                 <ApprovalsPanel
                   taskId={details.task.id}
+                  taskStatus={details.task.status}
                   approvalEvents={details.events.filter((event) => event.type.startsWith('approval.')).length}
                 />
                 <div className="event-stream" aria-label="Live event stream" data-testid="event-stream">

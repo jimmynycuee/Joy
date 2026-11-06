@@ -41,6 +41,7 @@ export type {
   UsageRecord,
 } from './repositories.js'
 export {
+  approveTimedOutApproval,
   createApproval,
   decideApproval,
   expirePendingApprovals,
