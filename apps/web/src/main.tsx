@@ -206,7 +206,8 @@ function ApprovalsPanel({ taskId, eventCount }: { taskId: string; eventCount: nu
         `/api/approvals?status=pending&taskId=${encodeURIComponent(taskId)}`,
       )
         .then((body) => {
-          if (!cancelled) setPending(body.approvals)
+          // Never trust the shape of a response: a missing list must not take the whole page down.
+          if (!cancelled) setPending(Array.isArray(body.approvals) ? body.approvals : [])
         })
         .catch(() => undefined)
     void load()
