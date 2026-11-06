@@ -163,6 +163,12 @@ importers:
         specifier: workspace:*
         version: link:../model-effort
 
+  packages/scheduler:
+    dependencies:
+      '@joy/db':
+        specifier: workspace:*
+        version: link:../db
+
   packages/secrets:
     dependencies:
       '@joy/core':
@@ -207,6 +213,9 @@ importers:
       '@joy/providers':
         specifier: workspace:*
         version: link:../providers
+      '@joy/scheduler':
+        specifier: workspace:*
+        version: link:../scheduler
       '@joy/secrets':
         specifier: workspace:*
         version: link:../secrets

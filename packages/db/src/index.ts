@@ -76,3 +76,18 @@ export {
 export type { MemoryRecord, MemoryScope, MemorySource, NewMemory } from './memories.js'
 export { createProjectNote, decideProjectNote, getProjectNote, listProjectNotes } from './project-notes.js'
 export type { ProjectNoteRecord, ProjectNoteStatus } from './project-notes.js'
+export {
+  advanceSchedule,
+  createReminder,
+  createSchedule,
+  deleteSchedule,
+  dueReminders,
+  dueSchedules,
+  finishReminder,
+  getReminder,
+  getSchedule,
+  listReminders,
+  listSchedules,
+  setScheduleEnabled,
+} from './schedules.js'
+export type { ReminderRecord, ReminderStatus, ScheduleAction, ScheduleRecord } from './schedules.js'

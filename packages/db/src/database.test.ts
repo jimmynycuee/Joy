@@ -234,9 +234,14 @@ describe('schema', () => {
     expect(search('squash')).toEqual([])
   })
 
-  it('requires exactly one of cron or run_at on schedules', () => {
+  it('checks schedule actions and payloads', () => {
     const db = fresh()
-    expect(() => db.prepare("INSERT INTO schedules (id, payload) VALUES ('s', '{}')").run()).toThrow(/CHECK/)
-    db.prepare("INSERT INTO schedules (id, cron, payload) VALUES ('s', '0 9 * * 1-5', '{}')").run()
+    const insert = (action: string, payload: string) =>
+      db
+        .prepare('INSERT INTO schedules (id, cron, action, payload, next_run_at) VALUES (?, ?, ?, ?, ?)')
+        .run(`s-${action}-${payload.length}`, '0 9 * * 1-5', action, payload, '2026-11-09T01:00:00.000Z')
+    expect(() => insert('dance', '{}')).toThrow(/CHECK/)
+    expect(() => insert('task', 'not json')).toThrow(/CHECK/)
+    insert('task', '{}')
   })
 })

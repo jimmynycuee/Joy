@@ -168,6 +168,7 @@ function fixture(
     quotaResumeBufferMs?: number
     taskTimeLimitMs?: number
     assistantApiProvider?: JoyServerOptions['assistantApiProvider']
+    schedulerClock?: JoyServerOptions['schedulerClock']
     /** Use the server's real Codex app-server provider, driven by a fake app-server process. */
     codexAppServer?: JoyServerOptions['codexAppServer']
     /** Worktree path the fake executor hands out; must exist when a real child process runs in it. */
@@ -243,6 +244,7 @@ function fixture(
       : {}),
     ...(options.taskTimeLimitMs !== undefined ? { taskTimeLimitMs: options.taskTimeLimitMs } : {}),
     ...(options.assistantApiProvider ? { assistantApiProvider: options.assistantApiProvider } : {}),
+    ...(options.schedulerClock ? { schedulerClock: options.schedulerClock } : {}),
     ...(options.redactor ? { redactor: options.redactor } : {}),
   }
   const serverPromise = createJoyServer(serverOptions)
@@ -2243,6 +2245,10 @@ describe('Joy local server', () => {
       'list_repos',
       'list_tasks',
       'create_task',
+      'create_reminder',
+      'create_schedule',
+      'list_schedules',
+      'cancel_schedule',
       'search_history',
       'propose_project_note',
       'cancel_task',
@@ -2313,6 +2319,10 @@ describe('Joy local server', () => {
       'list_repos',
       'list_tasks',
       'create_task',
+      'create_reminder',
+      'create_schedule',
+      'list_schedules',
+      'cancel_schedule',
       'search_history',
       'propose_project_note',
       'cancel_task',
@@ -2422,6 +2432,78 @@ describe('Joy local server', () => {
     expect(cancelResult).toMatchObject({ id: task.id })
     await waitForStatus(origin, task.id, 'cancelled', 5_000)
     expect(badInput).toBeTruthy()
+  })
+
+  it('keeps reminders and schedules across a restart and catches up once after sleeping', async () => {
+    let now = new Date(2026, 10, 6, 9, 30)
+    const schedulerClock = { now: () => new Date(now), setTimeout: () => 0, clearTimeout: () => undefined }
+    const assistantApiProvider = (tools: ApiTool[]): AgentProvider => ({
+      ...scriptedProvider('openai-api', []).provider,
+      async *run(options: RunOptions) {
+        const tool = (name: string) => tools.find((t) => t.name === name)
+        await tool('create_reminder')?.run(
+          { text: 'Call the bank', at: new Date(2026, 10, 6, 10).toISOString() },
+          options.signal,
+        )
+        await tool('create_schedule')?.run(
+          { cron: '0 * * * *', action: 'reminder', text: 'Drink water' },
+          options.signal,
+        )
+        const bad = await tool('create_schedule')
+          ?.run({ cron: 'hourly', action: 'reminder', text: 'x' }, options.signal)
+          .catch((error: Error) => error.message)
+        yield { type: 'done', sessionId: 's', isError: false, finalMessage: String(bad) }
+      },
+    })
+    const { serverPromise, restart } = fixture({ assistantApiProvider, schedulerClock })
+    const first = await start(serverPromise)
+    const conversation = (
+      (await (await postJson(`${first.origin}/api/conversations`, {})).json()) as {
+        conversation: { id: string }
+      }
+    ).conversation.id
+    const reply = (await (
+      await postJson(`${first.origin}/api/conversations/${conversation}/messages`, { text: 'remind me' })
+    ).json()) as { message: { content: string } }
+    expect(reply.message.content).toMatch(/five fields/)
+    const listed = (await (await fetch(`${first.origin}/api/schedules`)).json()) as {
+      reminders: unknown[]
+      schedules: unknown[]
+    }
+    expect(listed.reminders).toHaveLength(1)
+    expect(listed.schedules).toHaveLength(1)
+    await first.server.close()
+
+    // Off from 09:30 until 12:40; then Joy starts again.
+    now = new Date(2026, 10, 6, 12, 40)
+    const second = await start(restart())
+    type Message = { role: string; content: string }
+    let messages: Message[] = []
+    for (let i = 0; i < 100 && messages.filter((m) => m.content.startsWith('⏰')).length < 2; i++) {
+      messages = (
+        (await (await fetch(`${second.origin}/api/conversations/${conversation}`)).json()) as {
+          messages: Message[]
+        }
+      ).messages
+      await new Promise((r) => setTimeout(r, 10))
+    }
+    const reminders = messages.filter((m) => m.content.startsWith('⏰')).map((m) => m.content)
+    expect(reminders).toHaveLength(2)
+    expect(reminders[0]).toMatch(/^⏰ Reminder: Call the bank \(late by 3 h/)
+    expect(reminders[1]).toMatch(
+      /^⏰ Drink water \(late by 40 min.*2 earlier run\(s\) were missed and skipped/,
+    )
+    const after = (await (await fetch(`${second.origin}/api/schedules`)).json()) as {
+      reminders: unknown[]
+      schedules: Array<{ id: string; nextRunAt: string }>
+    }
+    expect(after.reminders).toEqual([])
+    expect(after.schedules[0]?.nextRunAt).toBe(new Date(2026, 10, 6, 13).toISOString())
+    const removed = await fetch(`${second.origin}/api/schedules/${after.schedules[0]?.id}`, {
+      method: 'DELETE',
+      headers: { origin: VITE_ORIGIN },
+    })
+    expect(removed.status).toBe(204)
   })
 
   it('summarizes conversations and finds a decision from a month ago', async () => {

@@ -2,7 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-06（T3.6 事件記憶）
+- 最後更新：2026-11-06（T3.7 排程）
 - 擁有者 Codex 額度用完：T2.1 平行競賽延後，先做 P3（不含需要 Google 登入的 T3.8）。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
@@ -92,6 +92,14 @@
 - T3.8 依 PLAN 清單評估維護狀況、權限範圍與資料是否送第三方，自行選一個 Gmail／Calendar MCP server；先唯讀，寄信與邀請他人一律 🔴。選型理由寫在本檔決策區。
 - 不呼叫真實模型；若測試確實需要真實模型，只能使用 haiku 或 gpt-6-luna、low effort，且必須是 opt-in。
 - 每個 ticket 從最新 main 開獨立分支，diff 只保留該 ticket。CI 失敗最多修 3 次；無法修復時記錄原因並繼續不相依工作。
+
+### T3.7 排程
+
+- 新套件 `packages/scheduler`：五欄 cron（本機時間；`*`、清單、範圍、間隔；兩個日期欄都有限制時任一符合即可）與排程器。提醒與定時工作存在 SQLite（migration 13：`reminders`、`schedules`；v1 未使用的 `schedules` 佔位表被替換），重啟後仍有效。
+- 排程器最多睡 60 秒就醒來檢查，所以電腦睡醒或 Joy 重新啟動後一分鐘內補上：**錯過的提醒立刻送出並標「late by …」；錯過多次的定時工作只跑最近一次**，訊息註明跳過幾次。同一次不會跑兩次（以 `next_run_at` 條件更新）。
+- 提醒送到原對話（對話已刪就送到「Reminders」對話），有設定 Telegram 時也送一份。定時工作可以是提醒或程式任務（走 `startTask`，有 repo allowlist 與預算等原本的檢查）。
+- 助理工具 `create_reminder`、`create_schedule`、`list_schedules`、`cancel_schedule`；`GET/POST /api/schedules`、`POST /api/reminders`、`DELETE /api/schedules/:id`；助理頁左側「Scheduled」可取消。
+- 驗收：假時鐘測試（`packages/scheduler`：睡 3 小時後提醒標延遲、每小時工作只補跑一次、重啟後仍有效、並行 tick 不重複）；server 測試（關掉 server、時鐘前進 3 小時再啟動）；Playwright `apps/web/e2e/scheduled.spec.ts`。
 
 ### T3.6 事件記憶
 

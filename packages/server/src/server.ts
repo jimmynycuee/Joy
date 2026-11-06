@@ -45,7 +45,13 @@ import {
   createProjectNote,
   decideProjectNote,
   getProjectNote,
+  createReminder,
+  createSchedule,
+  deleteSchedule,
+  finishReminder,
   getRepo,
+  listReminders,
+  listSchedules,
   listProjectNotes,
   getTask,
   interruptRunningWork,
@@ -87,6 +93,8 @@ import type {
 } from '@joy/db'
 import { ApprovalBroker } from './approvals.js'
 import { runAssistantTurn, toApiTools } from './assistant.js'
+import type { Clock, Delivery } from '@joy/scheduler'
+import { createScheduler, firstRun } from '@joy/scheduler'
 import {
   EXTRACTION_SCHEMA,
   applyExtraction,
@@ -209,6 +217,16 @@ function actionFingerprint(action: { kind: string; detail: unknown }): string {
 const conversationInputSchema = z.strictObject({ title: z.string().trim().min(1).max(200).optional() })
 const messageInputSchema = z.strictObject({ text: z.string().trim().min(1).max(20_000) })
 const projectNoteStatusSchema = z.enum(['pending', 'applied', 'rejected', 'conflict']).optional()
+const reminderTextSchema = z.string().trim().min(1, 'The reminder needs some text').max(500)
+const scheduleInputSchema = z.strictObject({
+  cron: z.string().trim().min(1).max(100),
+  action: z.enum(['reminder', 'task']),
+  text: z.string().optional(),
+  repoId: z.string().optional(),
+  title: z.string().optional(),
+  prompt: z.string().optional(),
+  mode: z.enum(['review_loop', 'single']).optional(),
+})
 const memoryInputSchema = z.strictObject({ content: z.string().trim().min(1).max(500) })
 const assistantCallSchema = z.discriminatedUnion('op', [
   z.strictObject({ op: z.literal('list') }),
@@ -272,6 +290,8 @@ export interface JoyServerOptions {
   assistantApiProvider?: (tools: ApiTool[]) => AgentProvider
   /** Learn memories from the owner's chat messages (T3.3). Default true. */
   memoryExtraction?: boolean
+  /** Clock for reminders and recurring schedules (tests). */
+  schedulerClock?: Clock
   /** Summarize conversations for history search (T3.6). Default true. */
   conversationSummaries?: boolean
   /** Overrides budget.per_task.max_minutes (tests). */
@@ -970,6 +990,28 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (!memory || memory.scope !== 'user') throw new HttpError(404, 'Memory not found')
       deleteMemory(db, id)
       forgetMemoryInSessions(id)
+      res.writeHead(204).end()
+      return
+    }
+    if (url.pathname === '/api/schedules' && method === 'GET') {
+      json(res, 200, { reminders: listReminders(db, 'pending'), schedules: listSchedules(db) })
+      return
+    }
+    if (url.pathname === '/api/reminders' && method === 'POST') {
+      assertJsonContentType(req)
+      const input = z.strictObject({ text: z.string(), at: z.string() }).parse(await readJson(req))
+      json(res, 201, { reminder: addReminder(input.text, input.at) })
+      return
+    }
+    if (url.pathname === '/api/schedules' && method === 'POST') {
+      assertJsonContentType(req)
+      json(res, 201, { schedule: addSchedule(scheduleInputSchema.parse(await readJson(req))) })
+      return
+    }
+    const scheduledMatch = /^\/api\/schedules\/([^/]+)$/.exec(url.pathname)
+    if (scheduledMatch && method === 'DELETE') {
+      if (!cancelScheduled(decodePathSegment(scheduledMatch[1] ?? '')))
+        throw new HttpError(404, 'No pending reminder or schedule with that id')
       res.writeHead(204).end()
       return
     }
@@ -1736,6 +1778,80 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         },
       },
       {
+        name: 'create_reminder',
+        description:
+          'Remind the owner of something at a time. Give `at` as an ISO date-time with the time zone offset. ' +
+          'If Joy is not running at that time, the reminder is sent as soon as it starts again, marked late.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: 'What to remind the owner of' },
+            at: { type: 'string', description: 'e.g. 2026-11-07T09:00:00+08:00' },
+          },
+          required: ['text', 'at'],
+        },
+        run: async (args) => {
+          const reminder = addReminder(String(args.text ?? ''), String(args.at ?? ''), conversationId)
+          return { id: reminder.id, dueAt: reminder.dueAt }
+        },
+      },
+      {
+        name: 'create_schedule',
+        description:
+          'Repeat something on a cron schedule (five fields, local time, e.g. "0 9 * * 1-5" = 09:00 on weekdays): ' +
+          'either a reminder (`text`) or a coding task (`repo_id`, `title`, `prompt`). Only when the owner asked. ' +
+          'Runs missed while the computer was off are not repeated; only the most recent one runs.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            cron: { type: 'string' },
+            action: { type: 'string', enum: ['reminder', 'task'] },
+            text: { type: 'string' },
+            repo_id: { type: 'string' },
+            title: { type: 'string' },
+            prompt: { type: 'string' },
+            mode: { type: 'string', enum: ['review_loop', 'single'] },
+          },
+          required: ['cron', 'action'],
+        },
+        run: async (args) => {
+          const schedule = addSchedule(
+            scheduleInputSchema.parse({
+              cron: args.cron,
+              action: args.action,
+              ...(args.text !== undefined ? { text: args.text } : {}),
+              ...(args.repo_id !== undefined ? { repoId: args.repo_id } : {}),
+              ...(args.title !== undefined ? { title: args.title } : {}),
+              ...(args.prompt !== undefined ? { prompt: args.prompt } : {}),
+              ...(args.mode !== undefined ? { mode: args.mode } : {}),
+            }),
+            conversationId,
+          )
+          return { id: schedule.id, nextRunAt: schedule.nextRunAt }
+        },
+      },
+      {
+        name: 'list_schedules',
+        description: 'List pending reminders and recurring schedules.',
+        inputSchema: { type: 'object', properties: {} },
+        run: async () => ({
+          reminders: listReminders(db, 'pending').map(({ id, text, dueAt }) => ({ id, text, dueAt })),
+          schedules: listSchedules(db).map(({ id, cron, action, payload, nextRunAt }) => ({
+            id,
+            cron,
+            action,
+            what: action === 'reminder' ? payload.text : payload.title,
+            nextRunAt,
+          })),
+        }),
+      },
+      {
+        name: 'cancel_schedule',
+        description: 'Cancel a pending reminder or delete a recurring schedule by id (from list_schedules).',
+        inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+        run: async (args) => ({ cancelled: cancelScheduled(String(args.id ?? '')) }),
+      },
+      {
         name: 'search_history',
         description:
           'Search earlier conversations with the owner (messages and summaries), newest first. Use it when the owner ' +
@@ -1817,6 +1933,123 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   }
 
   const memoryJobs = new Set<Promise<unknown>>()
+  const REMINDERS_CONVERSATION = 'joy-reminders'
+
+  /** Where a reminder is said: its own conversation if it still exists, else the shared Reminders conversation. */
+  function reminderConversation(conversationId: string | undefined): string {
+    if (conversationId && getConversation(db, conversationId)) return conversationId
+    if (!getConversation(db, REMINDERS_CONVERSATION))
+      createConversation(db, { id: REMINDERS_CONVERSATION, channel: 'scheduler', title: 'Reminders' })
+    return REMINDERS_CONVERSATION
+  }
+
+  function lateNote(lateMs: number, dueAt: Date): string {
+    if (lateMs <= 0) return ''
+    const minutes = Math.round(lateMs / 60_000)
+    const late = minutes >= 120 ? `${Math.round(minutes / 60)} h` : `${minutes} min`
+    return ` (late by ${late}: it was due ${dueAt.toISOString()} while Joy was not running)`
+  }
+
+  async function deliverScheduled(delivery: Delivery): Promise<void> {
+    if (delivery.kind === 'reminder') {
+      const { reminder, lateMs } = delivery
+      const text = `⏰ Reminder: ${reminder.text}${lateNote(lateMs, new Date(reminder.dueAt))}`
+      appendMessage(db, reminderConversation(reminder.conversationId), 'assistant', redactor.redact(text))
+      sendTelegram({ text })
+      return
+    }
+    const { schedule, lateMs, scheduledFor, skipped } = delivery
+    const missed = skipped > 0 ? ` ${skipped} earlier run(s) were missed and skipped.` : ''
+    if (schedule.action === 'reminder') {
+      const text = `⏰ ${String(schedule.payload.text ?? 'Scheduled reminder')}${lateNote(lateMs, scheduledFor)}${missed}`
+      appendMessage(db, reminderConversation(schedule.conversationId), 'assistant', redactor.redact(text))
+      sendTelegram({ text })
+      return
+    }
+    const conversationId = reminderConversation(schedule.conversationId)
+    try {
+      const task = await startTask(taskInputSchema.parse(schedule.payload), conversationId)
+      appendMessage(
+        db,
+        conversationId,
+        'assistant',
+        redactor.redact(`Started scheduled task "${task.title}"${lateNote(lateMs, scheduledFor)}.${missed}`),
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      appendMessage(
+        db,
+        conversationId,
+        'assistant',
+        redactor.redact(`Scheduled task could not start: ${message}`),
+      )
+    }
+  }
+
+  const scheduler = createScheduler({
+    db,
+    deliver: deliverScheduled,
+    ...(options.schedulerClock ? { clock: options.schedulerClock } : {}),
+    onError: (error) =>
+      console.warn(
+        redactor.redact(`[joy] scheduler: ${error instanceof Error ? error.message : String(error)}`),
+      ),
+  })
+
+  function addReminder(text: string, at: string, conversationId?: string) {
+    const due = new Date(at)
+    if (Number.isNaN(due.getTime()))
+      throw new HttpError(
+        400,
+        'Give the reminder time as an ISO date with a time zone, e.g. 2026-11-07T09:00:00+08:00',
+      )
+    const now = options.schedulerClock?.now() ?? new Date()
+    if (due.getTime() < now.getTime() - 60_000) throw new HttpError(400, 'That time has already passed')
+    return createReminder(db, {
+      id: randomUUID(),
+      text: reminderTextSchema.parse(redactor.redact(text)),
+      dueAt: due.toISOString(),
+      ...(conversationId ? { conversationId } : {}),
+    })
+  }
+
+  function addSchedule(input: z.infer<typeof scheduleInputSchema>, conversationId?: string) {
+    const now = options.schedulerClock?.now() ?? new Date()
+    let nextRunAt
+    try {
+      nextRunAt = firstRun(input.cron, now)
+    } catch (error) {
+      throw new HttpError(400, error instanceof Error ? error.message : 'Invalid cron expression')
+    }
+    let payload: Record<string, unknown>
+    if (input.action === 'reminder') {
+      payload = { text: reminderTextSchema.parse(redactor.redact(input.text ?? '')) }
+    } else {
+      const task = taskInputSchema.parse({
+        repoId: input.repoId,
+        title: input.title,
+        prompt: input.prompt,
+        mode: input.mode ?? 'review_loop',
+      })
+      if (!getRepo(db, task.repoId as RepoId))
+        throw new HttpError(404, 'Repository not found; use list_repos for ids')
+      payload = { ...task, title: redactor.redact(task.title), prompt: redactor.redact(task.prompt) }
+    }
+    return createSchedule(db, {
+      id: randomUUID(),
+      cron: input.cron,
+      action: input.action,
+      payload,
+      nextRunAt,
+      ...(conversationId ? { conversationId } : {}),
+    })
+  }
+
+  function cancelScheduled(id: string): boolean {
+    const now = (options.schedulerClock?.now() ?? new Date()).toISOString()
+    return deleteSchedule(db, id) || finishReminder(db, id, 'cancelled', now)
+  }
+
   function backgroundJob(label: string, run: () => Promise<void>): void {
     const job = run().catch((error: unknown) =>
       console.warn(
@@ -2399,6 +2632,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         httpServer.listen(port, '127.0.0.1', () => {
           httpServer.off('error', onError)
           telegram?.start()
+          scheduler.start()
           resolve(httpServer.address() as AddressInfo)
         })
       })
@@ -2406,6 +2640,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     async close() {
       if (closed) return
       closed = true
+      scheduler.stop()
       await telegram?.stop()
       for (const timer of quotaTimers.values()) clearTimeout(timer)
       await Promise.allSettled([...memoryJobs])

@@ -615,6 +615,77 @@ function MemoryPanel(props: {
   )
 }
 
+interface ScheduledItems {
+  reminders: Array<{ id: string; text: string; dueAt: string }>
+  schedules: Array<{
+    id: string
+    cron: string
+    action: string
+    payload: Record<string, unknown>
+    nextRunAt: string
+  }>
+}
+
+/** Pending reminders and recurring schedules (T3.7); the assistant creates them, the owner can cancel them here. */
+function ScheduledPanel(props: { onError: (message: string) => void }) {
+  const [items, setItems] = useState<ScheduledItems>({ reminders: [], schedules: [] })
+
+  async function load() {
+    const body = await request<Partial<ScheduledItems>>('/api/schedules')
+    setItems({
+      reminders: Array.isArray(body.reminders) ? body.reminders : [],
+      schedules: Array.isArray(body.schedules) ? body.schedules : [],
+    })
+  }
+
+  useEffect(() => {
+    void load().catch(() => undefined)
+    const timer = window.setInterval(() => void load().catch(() => undefined), 15000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  async function cancel(id: string) {
+    try {
+      await request(`/api/schedules/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    } catch (error) {
+      props.onError(error instanceof Error ? error.message : 'Could not cancel')
+    }
+    await load().catch(() => undefined)
+  }
+
+  if (items.reminders.length === 0 && items.schedules.length === 0) return null
+  return (
+    <section className="memory-panel" aria-label="Scheduled" data-testid="scheduled-panel">
+      <h3>Scheduled</h3>
+      <ul>
+        {items.reminders.map((reminder) => (
+          <li key={reminder.id} className="memory-item">
+            <span>
+              ⏰ {reminder.text} <span className="muted">· {new Date(reminder.dueAt).toLocaleString()}</span>
+            </span>
+            <button type="button" className="quiet-button" onClick={() => void cancel(reminder.id)}>
+              Cancel
+            </button>
+          </li>
+        ))}
+        {items.schedules.map((schedule) => (
+          <li key={schedule.id} className="memory-item">
+            <span>
+              🔁 {String(schedule.action === 'reminder' ? schedule.payload.text : schedule.payload.title)}{' '}
+              <span className="muted">
+                · <code>{schedule.cron}</code> · next {new Date(schedule.nextRunAt).toLocaleString()}
+              </span>
+            </span>
+            <button type="button" className="quiet-button" onClick={() => void cancel(schedule.id)}>
+              Remove
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
 interface HistoryHit {
   conversationId: string
   title?: string
@@ -875,6 +946,7 @@ function AssistantPage() {
             {conversation.title ?? 'New conversation'}
           </button>
         ))}
+        <ScheduledPanel onError={setFailure} />
         <MemoryPanel memories={memories} onChange={loadMemories} onError={setFailure} />
       </aside>
       <section className="assistant-chat" aria-label="Chat">
