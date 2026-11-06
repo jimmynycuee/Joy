@@ -116,8 +116,32 @@ describe('openDatabase', () => {
       db.prepare("UPDATE tasks SET provenance = 'external_content' WHERE id = 't1'").run(),
     ).not.toThrow()
     expect(() => db.prepare("UPDATE tasks SET provenance = 'untrusted' WHERE id = 't1'").run()).toThrow(
-      /CHECK/,
+      /task provenance must be user or external_content/,
     )
+  })
+
+  it('normalizes agent task provenance and rejects non-request origins after migration', () => {
+    const db = openDatabase(':memory:', { migrations: MIGRATIONS.slice(0, 5) })
+    open.push(db)
+    seedTask(db)
+    db.prepare("UPDATE tasks SET provenance = 'agent' WHERE id = 't1'").run()
+
+    migrate(db, MIGRATIONS)
+
+    expect(db.prepare('SELECT provenance FROM tasks WHERE id = ?').get('t1')).toEqual({ provenance: 'user' })
+    expect(() => db.prepare("UPDATE tasks SET provenance = 'agent' WHERE id = 't1'").run()).toThrow(
+      /task provenance must be user or external_content/,
+    )
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO tasks (id, repo_id, title, prompt, mode, provenance, status) VALUES ('t2', 'r1', 'X', 'X', 'single', 'agent', 'queued')",
+        )
+        .run(),
+    ).toThrow(/task provenance must be user or external_content/)
+    expect(() =>
+      db.prepare("UPDATE tasks SET provenance = 'external_content' WHERE id = 't1'").run(),
+    ).not.toThrow()
   })
 
   it('refuses a database from a newer Joy', () => {

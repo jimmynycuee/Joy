@@ -2,7 +2,7 @@ import type {
   AttemptId,
   AttemptStatus,
   ProviderKind,
-  Provenance,
+  TaskProvenance,
   RepoId,
   RepoRef,
   ReviewFinding,
@@ -100,7 +100,7 @@ interface TaskRow {
   title: string
   prompt: string
   mode: TaskMode
-  provenance: Provenance
+  provenance: TaskProvenance
   role_overrides: string
   plan_first: number
   max_rounds: number
@@ -182,7 +182,7 @@ export interface NewTask {
   title: string
   prompt: string
   mode: TaskMode
-  provenance?: Provenance
+  provenance?: TaskProvenance
   roleOverrides?: Partial<RoleConfig>
   planFirst?: boolean
   maxRounds?: number

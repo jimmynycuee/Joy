@@ -229,6 +229,27 @@ export const MIGRATIONS: readonly Migration[] = [
         CHECK (provenance IN ('user', 'agent', 'external_content'));
     `,
   },
+  {
+    version: 6,
+    name: 'restrict task provenance to request origin',
+    sql: /* sql */ `
+      UPDATE tasks SET provenance = 'user' WHERE provenance = 'agent';
+
+      CREATE TRIGGER tasks_provenance_insert
+      BEFORE INSERT ON tasks
+      WHEN NEW.provenance NOT IN ('user', 'external_content')
+      BEGIN
+        SELECT RAISE(ABORT, 'task provenance must be user or external_content');
+      END;
+
+      CREATE TRIGGER tasks_provenance_update
+      BEFORE UPDATE OF provenance ON tasks
+      WHEN NEW.provenance NOT IN ('user', 'external_content')
+      BEGIN
+        SELECT RAISE(ABORT, 'task provenance must be user or external_content');
+      END;
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

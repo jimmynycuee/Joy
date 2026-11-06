@@ -1,4 +1,3 @@
-import type { Provenance } from './policy.js'
 import type { RoleConfig } from './roles.js'
 
 declare const brand: unique symbol
@@ -7,6 +6,8 @@ type Brand<T, B extends string> = T & { readonly [brand]: B }
 export type RepoId = Brand<string, 'RepoId'>
 export type TaskId = Brand<string, 'TaskId'>
 export type AttemptId = Brand<string, 'AttemptId'>
+
+export type TaskProvenance = 'user' | 'external_content'
 
 export const TASK_MODES = ['single', 'review_loop', 'compete'] as const
 export type TaskMode = (typeof TASK_MODES)[number]
@@ -47,7 +48,7 @@ export interface Task {
   title: string
   prompt: string
   /** Origin of the task request; external content may never trigger automatic actions. */
-  provenance: Provenance
+  provenance: TaskProvenance
   mode: TaskMode
   roleOverrides: Partial<RoleConfig>
   /** Plan-then-review before implementing (review_loop only). */

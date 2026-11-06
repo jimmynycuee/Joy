@@ -833,6 +833,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     const dispatch = createToolHubDispatcher({
       taskId: task.id,
+      taskProvenance: task.provenance,
       currentProvider: model.provider,
       allowedProviders: repo.allowedProviders,
       cwd: workspace.path,

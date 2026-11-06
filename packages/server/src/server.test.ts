@@ -1219,6 +1219,7 @@ describe('Joy local server', () => {
     })
     const { task } = (await taskResponse.json()) as { task: { id: string; provenance: string } }
     let permissionResponse: { status: number; body: unknown } | undefined
+    let actionRequestResponse: { status: number; body: unknown } | undefined
     implementer.onRun = async (options) => {
       const mcp = options.mcpServers?.[0]
       if (!mcp || mcp.transport !== 'stdio') throw new Error('CLI provider did not receive stdio Tool Hub')
@@ -1238,6 +1239,19 @@ describe('Joy local server', () => {
         }),
       })
       permissionResponse = { status: response.status, body: await response.json() }
+      const actionRequest = await globalThis.fetch(endpoint, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'request_approval',
+          arguments: {
+            kind: 'read_calendar',
+            summary: 'Read external issue event details',
+            detail: { eventId: 'issue-supplied-id' },
+          },
+        }),
+      })
+      actionRequestResponse = { status: actionRequest.status, body: await actionRequest.json() }
     }
 
     const result = await waitForStatus(origin, task.id, 'done')
@@ -1251,8 +1265,18 @@ describe('Joy local server', () => {
         },
       },
     })
-    expect(reviewer.calls).toHaveLength(1)
-    expect(reviewer.calls[0]?.prompt).toContain('Provenance: external_content')
+    expect(actionRequestResponse).toMatchObject({
+      status: 200,
+      body: {
+        value: {
+          status: 'require_approval',
+          tier: 'approve',
+          preReview: { provider: 'codex-cli' },
+        },
+      },
+    })
+    expect(reviewer.calls).toHaveLength(2)
+    expect(reviewer.calls.every((call) => call.prompt.includes('Provenance: external_content'))).toBe(true)
     expect(result.events.map((event) => (event as { type?: string }).type)).toContain('policy.pre_review')
   })
 

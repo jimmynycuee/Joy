@@ -34,6 +34,13 @@ describe('action classification and autonomy modes', () => {
     }
   })
 
+  it('keeps external notify-tier actions approval-required in hands-off mode', () => {
+    const result = evaluateAction(proposed('read_calendar', 'external_content'), 'hands-off')
+    expect(result.tier).toBe('approve')
+    expect(result.outcome).toBe('require_approval')
+    expect(result.requiresPreReview).toBe(true)
+  })
+
   it('never auto-executes actions marked as external_content in any global mode', () => {
     for (const kind of ACTION_KINDS) {
       for (const mode of modes) {
