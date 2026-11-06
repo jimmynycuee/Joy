@@ -63,30 +63,44 @@ test('Joy is installable, its service worker shows pushed notifications, and a d
   const scope = await page.evaluate(async () => (await navigator.serviceWorker.ready).scope)
   expect(scope).toMatch(/\/$/)
 
-  // A real push event through the DevTools protocol: the service worker turns it into a notification.
-  const cdp = await context.newCDPSession(page)
-  await cdp.send('ServiceWorker.enable')
-  const registrationId = await new Promise<string>((resolve) => {
-    cdp.on(
-      'ServiceWorker.workerRegistrationUpdated',
-      (event: { registrations: Array<{ registrationId: string }> }) => {
-        const first = event.registrations[0]
-        if (first) resolve(first.registrationId)
-      },
-    )
+  // Some headless Chromium builds cannot display notifications at all; probe before relying on it.
+  const canShow = await page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.ready
+    await registration.showNotification('probe', { tag: 'probe' }).catch(() => undefined)
+    const shown = (await registration.getNotifications({ tag: 'probe' })).length > 0
+    for (const notification of await registration.getNotifications()) notification.close()
+    return shown
   })
-  await cdp.send('ServiceWorker.deliverPushMessage', {
-    origin: new URL(page.url()).origin,
-    registrationId,
-    data: JSON.stringify({ title: '✅ Fix add()', body: 'Finished.', url: '/?task=t1' }),
-  })
-  await expect
-    .poll(() =>
-      page.evaluate(async () =>
-        (await (await navigator.serviceWorker.ready).getNotifications()).map((n) => `${n.title}|${n.body}`),
-      ),
-    )
-    .toEqual(['✅ Fix add()|Finished.'])
+  if (canShow) {
+    // A real push event through the DevTools protocol: the service worker turns it into a notification.
+    const cdp = await context.newCDPSession(page)
+    await cdp.send('ServiceWorker.enable')
+    const registrationId = await new Promise<string>((resolve) => {
+      cdp.on(
+        'ServiceWorker.workerRegistrationUpdated',
+        (event: { registrations: Array<{ registrationId: string }> }) => {
+          const first = event.registrations[0]
+          if (first) resolve(first.registrationId)
+        },
+      )
+    })
+    await cdp.send('ServiceWorker.deliverPushMessage', {
+      origin: new URL(page.url()).origin,
+      registrationId,
+      data: JSON.stringify({ title: '✅ Fix add()', body: 'Finished.', url: '/?task=t1' }),
+    })
+    await expect
+      .poll(() =>
+        page.evaluate(async () =>
+          (await (await navigator.serviceWorker.ready).getNotifications()).map((n) => `${n.title}|${n.body}`),
+        ),
+      )
+      .toEqual(['✅ Fix add()|Finished.'])
+  } else {
+    test
+      .info()
+      .annotations.push({ type: 'skip-part', description: 'this browser cannot display notifications' })
+  }
 
   await page.getByRole('button', { name: 'Settings' }).click()
   const panel = page.getByTestId('notifications-panel')
