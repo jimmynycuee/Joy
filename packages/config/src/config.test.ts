@@ -33,6 +33,20 @@ describe('parseConfig', () => {
     expect(() => parseConfig('tool_hub: { max_ask_peer_calls: 101 }')).toThrow(/tool_hub.max_ask_peer_calls/)
   })
 
+  it('refuses a remote address that listens on every network (T4.1)', () => {
+    expect(parseConfig('remote: { enabled: true, address: 100.64.0.5 }').remote.address).toBe('100.64.0.5')
+    for (const address of ['0.0.0.0', '"::"', '"0:0:0:0:0:0:0:0"', '"::ffff:0.0.0.0"'])
+      expect(() => parseConfig(`remote: { enabled: true, address: ${address} }`)).toThrow(/not 0\.0\.0\.0/)
+  })
+
+  it('accepts host names for an HTTPS proxy and refuses URLs (T4.1)', () => {
+    expect(parseConfig('remote: { https_hosts: [my-pc.tail-1.ts.net] }').remote.https_hosts).toEqual([
+      'my-pc.tail-1.ts.net',
+    ])
+    for (const host of ['"https://my-pc.ts.net"', '"my-pc.ts.net:443"', 'localhost', '"a b.ts.net"'])
+      expect(() => parseConfig(`remote: { https_hosts: [${host}] }`)).toThrow(/remote.https_hosts/)
+  })
+
   it('lets one role be overridden and keeps the others', () => {
     const config = parseConfig(`
 roles:

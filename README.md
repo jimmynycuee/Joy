@@ -149,7 +149,20 @@ remote:
 
 4. 在另一台裝置開 `http://100.x.y.z:4317`，貼上跑 Joy 那台電腦的 `~/.joy/api-token`。
 
-每個請求都要帶 token，沒帶或錯的一律 401。手機遺失或 token 外洩時，到 Settings → Access token 按 **Regenerate**：舊 token 立刻失效、所有連線斷開，其他裝置要貼新的 token。`address` 請填 Tailscale IP，不要填 `0.0.0.0` 或區網 IP；Tailscale 之外的流量是明文 HTTP。
+每個請求都要帶 token，沒帶或錯的一律 401。手機遺失或 token 外洩時，到 Settings → Access token 按 **Regenerate**：舊 token 立刻失效、所有連線斷開，其他裝置要貼新的 token。`address` 請填 Tailscale IP，不要填區網 IP（`0.0.0.0`、`::` 會被拒絕）；Tailscale 之外的流量是明文 HTTP。
+
+**手機要裝成 App、收推播，需要 HTTPS**。用 `tailscale serve` 把 Joy 包成 HTTPS（這條路不需要上面的 `remote.enabled`）：
+
+```bash
+tailscale serve --bg 4317
+```
+
+再把它給的網址主機名（例如 `my-pc.tail-1234.ts.net`）加進設定，重啟 Joy，手機開 `https://my-pc.tail-1234.ts.net`：
+
+```yaml
+remote:
+  https_hosts: [my-pc.tail-1234.ts.net]
+```
 
 ## 疑難排解
 

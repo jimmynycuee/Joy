@@ -458,6 +458,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     remoteHosts.add(`${hostPart}:${remoteConfig.port}`.toLowerCase())
     allowedOrigins.add(`http://${hostPart}:${remoteConfig.port}`.toLowerCase())
   }
+  // An HTTPS proxy on this computer (tailscale serve) reaches the loopback listener with its own Host name.
+  for (const name of remoteConfig.https_hosts) {
+    remoteHosts.add(name.toLowerCase())
+    remoteHosts.add(`${name}:443`.toLowerCase())
+    allowedOrigins.add(`https://${name}`.toLowerCase())
+  }
   const isAllowedHost = (host: string | undefined) =>
     isLoopbackHost(host) || (host !== undefined && remoteHosts.has(host.toLowerCase()))
   await mkdir(home, { recursive: true, mode: 0o700 })
@@ -1031,7 +1037,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const url = requestUrl(req)
     const assistantRoute = /^\/internal\/assistant\/([A-Za-z0-9_-]{32,})$/.exec(url.pathname)
     if (assistantRoute && method === 'POST') {
-      if (!isLoopbackAddress(req.socket.remoteAddress))
+      // The peer check alone is not enough: a local HTTPS proxy (remote.https_hosts) connects from loopback too.
+      if (!isLoopbackAddress(req.socket.remoteAddress) || !isLoopbackHost(req.headers.host))
         throw new HttpError(403, 'The assistant bridge is local-only')
       const session = assistantSessions.get(assistantRoute[1] ?? '')
       if (!session || !hasValidBearerToken(req, session.token))
@@ -1069,7 +1076,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const toolHubRoute = /^\/internal\/tool-hub\/([A-Za-z0-9_-]{32,})$/.exec(url.pathname)
     if (toolHubRoute && method === 'POST') {
       const sessionId = toolHubRoute[1] ?? ''
-      if (!isLoopbackAddress(req.socket.remoteAddress)) throw new HttpError(403, 'Tool Hub is local-only')
+      if (!isLoopbackAddress(req.socket.remoteAddress) || !isLoopbackHost(req.headers.host))
+        throw new HttpError(403, 'Tool Hub is local-only')
       const session = toolHubSessions.get(sessionId)
       if (!session || !hasValidBearerToken(req, session.token))
         throw new HttpError(403, 'Tool Hub authentication failed')
@@ -3954,8 +3962,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           remoteServer.on('upgrade', (request, socket, head) =>
             httpServer.emit('upgrade', request, socket, head),
           )
-          remoteServer.once('error', (error) => reject(error))
+          const failToStart = (error: Error) => reject(error)
+          remoteServer.once('error', failToStart)
           remoteServer.listen(remoteConfig.port, remoteConfig.address, () => {
+            remoteServer?.off('error', failToStart)
+            // Without a listener a later socket error would crash Joy; the local listener keeps working.
+            remoteServer?.on('error', (error) =>
+              log.error(redactor.redact(`[joy] remote access listener: ${error.message}`)),
+            )
             const remote = remoteServer?.address() as AddressInfo
             log.warn(
               `Remote access is on: http://${remoteConfig.address}:${remote.port} (access token required)`,

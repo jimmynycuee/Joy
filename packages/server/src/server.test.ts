@@ -3218,7 +3218,7 @@ describe('Joy local server', () => {
     await configStore.update((config) => ({
       ...config,
       approvals: { ...config.approvals, on_timeout: 'deny' },
-      remote: { enabled: true, address: '127.0.0.1', port: 0 },
+      remote: { enabled: true, address: '127.0.0.1', port: 0, https_hosts: [] },
     }))
     const { serverPromise } = fixture({ configStore })
     const { server, origin } = await start(serverPromise)
@@ -3240,6 +3240,47 @@ describe('Joy local server', () => {
     servers.push(localServer)
     await localServer.listen()
     expect(localServer.remoteAddress()).toBeUndefined()
+  })
+
+  it('accepts a configured HTTPS proxy host on the local listener, but never for internal bridges', async () => {
+    const configStore = new ConfigStore(join(mkdtempSync(join(tmpdir(), 'joy-proxy-config-')), 'config.yaml'))
+    await configStore.update((config) => ({
+      ...config,
+      remote: { ...config.remote, https_hosts: ['my-pc.tail-1.ts.net'] },
+    }))
+    const { serverPromise } = fixture({ configStore })
+    const { server, origin } = await start(serverPromise)
+    expect(server.remoteAddress()).toBeUndefined()
+    const proxied = { host: 'my-pc.tail-1.ts.net', origin: 'https://my-pc.tail-1.ts.net' }
+    expect((await rawRequest(origin, '/api/repos', 'GET', proxied, '', null)).status).toBe(401)
+    expect((await rawRequest(origin, '/api/repos', 'GET', proxied, '', TEST_API_TOKEN)).status).toBe(200)
+    expect(
+      (await rawRequest(origin, '/api/repos', 'GET', { host: 'my-pc.tail-1.ts.net:443' }, '', TEST_API_TOKEN))
+        .status,
+    ).toBe(200)
+    // Plain http:// from that name is not the proxy, and another name is still refused.
+    expect(
+      (
+        await rawRequest(
+          origin,
+          '/api/repos',
+          'GET',
+          { host: 'my-pc.tail-1.ts.net', origin: 'http://my-pc.tail-1.ts.net' },
+          '',
+          TEST_API_TOKEN,
+        )
+      ).status,
+    ).toBe(403)
+    expect(
+      (await rawRequest(origin, '/api/repos', 'GET', { host: 'other.ts.net' }, '', TEST_API_TOKEN)).status,
+    ).toBe(403)
+    // The proxy connects from loopback, so the bridges must also check the Host.
+    const session = 'a'.repeat(40)
+    for (const path of [`/internal/tool-hub/${session}`, `/internal/assistant/${session}`]) {
+      const response = await rawRequest(origin, path, 'POST', { host: 'my-pc.tail-1.ts.net' }, '{}', null)
+      expect(response.status).toBe(403)
+      expect(response.body).toContain('local-only')
+    }
   })
 
   it('serves only files inside the built UI folder', async () => {

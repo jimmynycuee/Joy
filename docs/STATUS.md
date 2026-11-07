@@ -121,6 +121,7 @@
 - server 會提供 `apps/web/dist`（需先 `pnpm --filter @joy/web build`）給遠端瀏覽器；路徑只能在該資料夾內。正式版網頁沒有內嵌 token，會先要求貼上 token（存在該裝置）。
 - Tailscale 教學在 README。
 - 驗收：server 測試（沒 token／錯 token 401；重新產生後舊 token 401、新 token 可用、檔案權限；遠端 listener 需要 token、未設定的 Host 403、未開啟時沒有遠端 listener；UI 檔案不能跳出資料夾）、Playwright `access-token.spec.ts`（token 被拒時要求輸入、重新產生後改用新 token）、`origin-proxy.spec.ts` 改為 401。
+- 審查後修正（2026-11-07）：`remote.address` 拒絕 `0.0.0.0`、`::` 等「聽所有網路」的位址；新增 `remote.https_hosts`（`tailscale serve` 這類本機 HTTPS proxy 的主機名，允許該 Host 與 `https://` Origin，手機 PWA／推播要用）；proxy 也從 loopback 連進來，所以 Tool Hub 與助理橋接**另外檢查 Host 必須是 loopback**；遠端 listener 啟動後的錯誤只記 log，不再讓 Joy 當掉。`tailscale serve` 實際送的 Host 仍待擁有者實測。
 - **依 AGENTS.md，擴大到 127.0.0.1 以外需經擁有者審查**：功能預設關閉，列入待審表，擁有者審過再開。
 
 ### T4.2 PWA 與 Web Push（程式部分；手機驗收待擁有者）
@@ -129,7 +130,7 @@
 - 任務結束（✅／🟡／❌）與需要核准（🔴）時，Joy 用自己的 VAPID 金鑰直接送到各瀏覽器的推播服務；內容先經 Redactor 再加密。金鑰第一次使用時產生，存在**鑰匙圈**（新 secret 名稱 `web_push_vapid_keys`，列入待審）。推播服務回 404／410 的訂閱自動刪除。沒有任何訂閱時完全不碰鑰匙圈。
 - 設定頁「Notifications」：開啟（要求權限、訂閱、送到 `POST /api/push/subscriptions`）、送測試、關閉。不支援時說明原因（需要 HTTPS 或 localhost；iPhone 要先加到主畫面）。
 - 驗收：push 測試（金鑰只產生一次；**用瀏覽器的方式解密**確認內容正確且已遮罩；410 時刪除訂閱）、server 測試（任務完成時對訂閱裝置送出帶 VAPID 的請求；拒絕非 https 端點）、Playwright：manifest、service worker 註冊、**透過 Chromium DevTools 真的推一則訊息，service worker 顯示通知**、開啟流程送出訂閱。
-- 手機上要能用：Joy 要能從手機以 HTTPS 開啟（依賴 T4.1 #110 與 `tailscale serve` 之類的 HTTPS；`tailscale serve` 轉送時的 Host 是否被 Joy 接受還沒實測）。「手機加到主畫面後收得到通知」**需擁有者實測，PLAN 未打勾**。
+- 手機上要能用：Joy 要能從手機以 HTTPS 開啟（依賴 T4.1 #110：`tailscale serve` 加上 `remote.https_hosts`；`tailscale serve` 實際送的 Host 還沒實測）。「手機加到主畫面後收得到通知」**需擁有者實測，PLAN 未打勾**。
 
 ### T4.4 Windows：`.cmd` shim 與 WSL（程式部分；實機驗收待擁有者）
 
