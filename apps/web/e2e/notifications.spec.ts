@@ -102,7 +102,7 @@ test('Joy is installable, its service worker shows pushed notifications, and a d
       .annotations.push({ type: 'skip-part', description: 'this browser cannot display notifications' })
   }
 
-  await page.getByRole('button', { name: 'Settings' }).click()
+  await page.getByRole('button', { name: '設定' }).click()
   const panel = page.getByTestId('notifications-panel')
   await panel.getByRole('button', { name: 'Turn on notifications' }).click()
   await expect(panel).toContainText('On for this device.')

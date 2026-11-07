@@ -56,7 +56,7 @@ test('memories used by a reply are shown and can be forgotten or corrected', asy
   })
 
   await page.goto('/')
-  await page.getByRole('button', { name: 'Assistant' }).click()
+  await page.getByRole('button', { name: '助理' }).click()
   const used = page.getByLabel('Memories used')
   await expect(used).toContainText('Likes tabs')
   await expect(used).toContainText('Works in Taipei')

@@ -97,7 +97,7 @@ test('reconnects from the snapshot cursor and deduplicates replayed and sequence
     }
   })
 
-  await page.goto('/')
+  await page.goto(`/?task=${task.id}`)
   await expect(page.getByRole('heading', { name: task.title })).toBeVisible()
   await expect(page.getByTestId('event-stream')).toContainText('Unpersisted startup error remains visible')
   await expect(page.locator('[data-event-seq="0"]')).toHaveCount(1)
@@ -118,7 +118,7 @@ test('reconnects from the snapshot cursor and deduplicates replayed and sequence
 
   closeFirstSocket?.()
   await expect.poll(() => connectionUrls.length).toBe(2)
-  await expect(page.getByTestId('event-stream')).toContainText('Phase: after reconnect')
+  await expect(page.getByTestId('event-stream')).toContainText('階段：after reconnect')
   await expect(page.getByTestId('event-stream')).not.toContainText('Collision must not replace')
   await expect(page.locator('[data-event-seq]')).toHaveCount(4)
   await expect(page.locator('[data-event-seq="0"]')).toHaveCount(1)

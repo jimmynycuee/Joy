@@ -48,7 +48,7 @@ test('past conversations can be searched and opened', async ({ page }) => {
   })
 
   await page.goto('/')
-  await page.getByRole('button', { name: 'Assistant' }).click()
+  await page.getByRole('button', { name: '助理' }).click()
   const box = page.getByLabel('Search past conversations')
   await box.fill('postgres')
   await box.press('Enter')

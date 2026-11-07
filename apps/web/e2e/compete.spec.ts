@@ -87,7 +87,7 @@ test('compete attempts are compared side by side with the judge and can be merge
     }
   })
 
-  await page.goto('/')
+  await page.goto(`/?task=${task.id}`)
   const panel = page.getByTestId('compare-panel')
   await expect(panel.getByLabel('Judge')).toContainText('Prefers A. A is simpler and tested.')
   await expect(panel.getByLabel('Diff A')).toContainText('+claude version')

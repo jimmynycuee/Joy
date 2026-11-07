@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import type { FormEvent } from 'react'
+import type { FormEvent, ReactNode } from 'react'
 import { EFFORTS, PROVIDER_KINDS, ROLES } from '@joy/core'
 import type { ModelRef, ProviderKind, Role, RoleConfig } from '@joy/core'
 import type { JoyConfig } from '@joy/config'
@@ -51,12 +51,12 @@ type DoctorReport = { checkedAt: string; checks: DoctorCheck[] }
 type ApiError = { error?: string }
 
 const ROLE_LABELS: Record<Role, string> = {
-  assistant_brain: 'Assistant brain',
-  background: 'Background',
-  orchestrator: 'Orchestrator',
-  implementer: 'Implementer',
-  reviewer: 'Reviewer',
-  judge: 'Judge',
+  assistant_brain: '助理大腦',
+  background: '背景工作',
+  orchestrator: '調度者',
+  implementer: '實作者',
+  reviewer: '審查者',
+  judge: '裁判',
 }
 const PROVIDER_LABELS: Record<ProviderKind, string> = {
   'openai-api': 'OpenAI API',
@@ -103,7 +103,84 @@ function providersForRole(role: Role): ProviderKind[] {
 }
 
 function doctorStatusLabel(status: DoctorStatus): string {
-  return status === 'ok' ? 'OK' : status === 'missing' ? 'Missing' : 'Untested'
+  return status === 'ok' ? '正常' : status === 'missing' ? '缺少' : '未驗證'
+}
+
+const EFFORT_LABELS: Record<string, string> = {
+  low: '低',
+  medium: '中',
+  high: '高',
+  xhigh: '很高',
+  max: '最高',
+}
+
+const STATUS_LABELS: Record<string, string> = {
+  queued: '排隊中',
+  running: '進行中',
+  awaiting_approval: '等你同意',
+  review_ready: '待你決定',
+  done: '完成',
+  failed: '失敗',
+  cancelled: '已取消',
+}
+
+const MODE_LABELS: Record<string, string> = {
+  single: '單人',
+  review_loop: '實作＋審查',
+  compete: '兩家比賽',
+}
+
+const MODE_HINTS: Record<string, string> = {
+  review_loop: '一個 AI 動手做，另一個 AI 再檢查一次。推送、刪除這類動作會先問你。',
+  single: '只用一個 AI 完成，最快。',
+  compete: '兩個 AI 各做一份、互相審查，最後由你挑一個。',
+}
+
+const PHASE_LABELS: Record<string, string> = {
+  preparing: '準備工作環境',
+  planning: '規劃中',
+  plan_review: '審查計畫',
+  implementing: '實作中',
+  reviewing: '審查中',
+  fixing: '依審查意見修正',
+}
+
+/** The title the owner typed, else the prompt's first line, so a task needs only one box. */
+function taskTitle(title: string, prompt: string): string {
+  const typed = title.trim()
+  if (typed) return typed
+  const firstLine = prompt.trim().split('\n')[0]?.trim() ?? ''
+  return firstLine.length > 80 ? `${firstLine.slice(0, 80)}…` : firstLine
+}
+
+function statusLabel(status: string): string {
+  return STATUS_LABELS[status] ?? status.replaceAll('_', ' ')
+}
+
+function modeLabel(mode: string): string {
+  return MODE_LABELS[mode] ?? mode.replaceAll('_', ' ')
+}
+
+function repoName(path: string | undefined): string {
+  return path?.split(/[\\/]/).filter(Boolean).at(-1) ?? '專案'
+}
+
+function Icon({ path }: { path: string }) {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={path} />
+    </svg>
+  )
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -193,30 +270,55 @@ function eventTitle(event: TaskEvent): string {
     if (agentEvent?.type === 'message' && typeof agentEvent.text === 'string') return agentEvent.text
     if (agentEvent?.type === 'thinking' && typeof agentEvent.text === 'string') return agentEvent.text
     if (agentEvent?.type === 'tool_call' && typeof agentEvent.name === 'string')
-      return `Running ${agentEvent.name}`
-    if (agentEvent?.type === 'done') return 'Agent finished the task'
+      return `執行 ${agentEvent.name}`
+    if (agentEvent?.type === 'done') return 'Agent 完成了這一步'
     if (agentEvent?.type === 'error' && typeof agentEvent.message === 'string') return agentEvent.message
-    return `Agent event: ${String(agentEvent?.type ?? 'update')}`
+    return `Agent 事件：${String(agentEvent?.type ?? 'update')}`
   }
-  if (event.type === 'phase' && typeof payload?.phase === 'string') return `Phase: ${payload.phase}`
-  if (event.type === 'result') return 'Task result is ready'
+  if (event.type === 'phase' && typeof payload?.phase === 'string')
+    return `階段：${PHASE_LABELS[payload.phase] ?? payload.phase}`
+  if (event.type === 'result') return '任務結果已產生'
   if (event.type === 'review') {
     const summary = record(payload?.verdict)?.summary
-    if (typeof summary === 'string' && summary) return `Review: ${summary}`
+    if (typeof summary === 'string' && summary) return `審查：${summary}`
   }
   if (event.type === 'error' && typeof payload?.message === 'string') return payload.message
-  if (event.type === 'started') return 'Task started'
-  if (event.type === 'workspace') return 'Isolated worktree prepared'
+  if (event.type === 'started') return '任務開始'
+  if (event.type === 'workspace') return '已準備好獨立的工作副本'
   return event.type.replaceAll('_', ' ')
 }
 
-function eventKind(event: TaskEvent): string {
-  const policyKind = policyEventKind(event.type, record(event.payload))
-  if (policyKind) return policyKind
-  if (event.type !== 'agent') return event.type
+type TimelineItem = {
+  kind: 'message' | 'step' | 'phase' | 'review' | 'error' | 'noise'
+  text: string
+  role?: string
+  tone?: string
+}
+
+const ROLE_SPEAKERS: Record<string, string> = {
+  implementer: '實作',
+  reviewer: '審查',
+  judge: '裁判',
+  orchestrator: '調度',
+}
+
+/** Turns a raw task event into what a non-expert needs to see; low-level agent chatter becomes "noise". */
+function timelineItem(event: TaskEvent): TimelineItem {
   const payload = record(event.payload)
-  const role = payload?.role
-  return typeof role === 'string' ? role : 'agent'
+  const text = eventTitle(event)
+  if (event.type === 'agent') {
+    const agentEvent = record(payload?.event)
+    const role = typeof payload?.role === 'string' ? ROLE_SPEAKERS[payload.role] : undefined
+    if (agentEvent?.type === 'message') return { kind: 'message', text, ...(role ? { role } : {}) }
+    if (agentEvent?.type === 'tool_call' || agentEvent?.type === 'done') return { kind: 'step', text }
+    if (agentEvent?.type === 'error') return { kind: 'error', text }
+    return { kind: 'noise', text }
+  }
+  if (event.type === 'phase') return { kind: 'phase', text }
+  if (event.type === 'review') return { kind: 'review', text }
+  if (event.type === 'error') return { kind: 'error', text }
+  const tone = policyEventKind(event.type, payload)
+  return { kind: 'step', text, ...(tone ? { tone } : {}) }
 }
 
 function splitDiff(patch: string): Map<string, string> {
@@ -285,7 +387,7 @@ function ApprovalsPanel({
       await request(`/api/approvals/${encodeURIComponent(id)}/${decision}`, { method: 'POST', body: '{}' })
       setPending((current) => current.filter((approval) => approval.id !== id))
     } catch (error) {
-      setFailure(error instanceof Error ? error.message : 'Could not record the decision')
+      setFailure(error instanceof Error ? error.message : '無法記錄你的決定')
     } finally {
       setBusy('')
     }
@@ -293,12 +395,8 @@ function ApprovalsPanel({
 
   if (pending.length === 0) return null
   return (
-    <section className="approvals-panel" aria-label="Pending approvals" data-testid="pending-approvals">
-      <h2>
-        {pending.some((a) => a.status === 'expired')
-          ? 'Paused until you approve'
-          : 'Waiting for your approval'}
-      </h2>
+    <section className="approvals-panel" aria-label="等你同意的動作" data-testid="pending-approvals">
+      <h2>{pending.some((a) => a.status === 'expired') ? '已暫停，等你同意後繼續' : '需要你同意'}</h2>
       {failure ? <p className="approvals-error">{failure}</p> : null}
       {pending.map((approval) => (
         <div className="approval-row" key={approval.id}>
@@ -318,7 +416,7 @@ function ApprovalsPanel({
               disabled={busy === approval.id}
               onClick={() => void decide(approval.id, 'approve')}
             >
-              {approval.status === 'expired' ? 'Approve and resume' : 'Approve'}
+              {approval.status === 'expired' ? '同意並繼續' : '同意'}
             </button>
             <button
               type="button"
@@ -326,7 +424,7 @@ function ApprovalsPanel({
               disabled={busy === approval.id}
               onClick={() => void decide(approval.id, 'deny')}
             >
-              Deny
+              拒絕
             </button>
           </div>
         </div>
@@ -937,16 +1035,14 @@ function DiscardButton({ details, onChanged }: { details: TaskDetails; onChanged
         type="button"
         className="quiet-button"
         onClick={() => {
-          if (!window.confirm('Discard this task’s worktree and its changes?')) return
+          if (!window.confirm('要丟掉這個任務的工作副本和所有變更嗎？')) return
           setFailure('')
           void removeWithConfirmation(`/api/tasks/${encodeURIComponent(details.task.id)}/discard`, {})
             .then(onChanged)
-            .catch((error: unknown) =>
-              setFailure(error instanceof Error ? error.message : 'Could not discard'),
-            )
+            .catch((error: unknown) => setFailure(error instanceof Error ? error.message : '無法丟棄'))
         }}
       >
-        Discard worktree
+        丟掉這些變更
       </button>
       {failure ? <p className="approvals-error">{failure}</p> : null}
     </div>
@@ -974,7 +1070,7 @@ function PublishPanel({ details, onChanged }: { details: TaskDetails; onChanged:
       })
       onChanged()
     } catch (error) {
-      setFailure(error instanceof Error ? error.message : 'Could not save the remote')
+      setFailure(error instanceof Error ? error.message : '無法儲存 GitHub 網址')
     }
   }
 
@@ -988,7 +1084,7 @@ function PublishPanel({ details, onChanged }: { details: TaskDetails; onChanged:
       })
       onChanged()
     } catch (error) {
-      setFailure(error instanceof Error ? error.message : 'Publishing failed')
+      setFailure(error instanceof Error ? error.message : '開 PR 失敗')
     } finally {
       setBusy(false)
     }
@@ -998,15 +1094,15 @@ function PublishPanel({ details, onChanged }: { details: TaskDetails; onChanged:
     <div className="publish-panel" data-testid="publish-panel">
       {typeof prUrl === 'string' ? (
         <a href={prUrl} target="_blank" rel="noreferrer">
-          Draft PR opened ↗
+          已開 draft PR ↗
         </a>
       ) : remote ? (
         <button className="primary-button" type="button" disabled={busy} onClick={() => void publishTask()}>
-          {busy ? 'Opening draft PR…' : 'Open draft PR'}
+          {busy ? '正在開 draft PR…' : '開 draft PR'}
         </button>
       ) : (
         <form className="secret-form" onSubmit={(event) => void setRemote(event)}>
-          <label htmlFor="github-remote">GitHub repository URL</label>
+          <label htmlFor="github-remote">第一次開 PR：填入 GitHub repo 網址</label>
           <div className="secret-input-row">
             <input
               id="github-remote"
@@ -1015,7 +1111,7 @@ function PublishPanel({ details, onChanged }: { details: TaskDetails; onChanged:
               required
             />
             <button className="outline-button" type="submit">
-              Save
+              儲存
             </button>
           </div>
         </form>
@@ -1055,13 +1151,13 @@ function UsageStrip() {
     <div className="usage-strip" data-testid="usage-strip">
       {api && typeof api.monthSpentUsd === 'number' ? (
         <span>
-          OpenAI API ${api.monthSpentUsd.toFixed(2)} / ${api.monthlyCapUsd.toFixed(2)} this month
+          本月 OpenAI API ${api.monthSpentUsd.toFixed(2)} / ${api.monthlyCapUsd.toFixed(2)}
         </span>
       ) : null}
       {limited.map(([provider, state]) => (
         <span className="usage-limited" key={provider}>
-          {provider} out of quota
-          {state.resetsAt ? ` until ${new Date(state.resetsAt * 1000).toLocaleTimeString()}` : ''}
+          {provider} 額度用完
+          {state.resetsAt ? `，${new Date(state.resetsAt * 1000).toLocaleTimeString()} 恢復` : ''}
         </span>
       ))}
     </div>
@@ -1923,7 +2019,6 @@ function Workspace() {
     ])
     setRepos(repoResponse.repos)
     setTasks(taskResponse.tasks)
-    if (!selectedTaskId && taskResponse.tasks[0]) setSelectedTaskId(taskResponse.tasks[0].id)
   }
 
   useEffect(() => {
@@ -1938,10 +2033,9 @@ function Workspace() {
         setRepos(repoResponse.repos)
         setTasks(taskResponse.tasks)
         setConfig(configResponse.config)
-        if (taskResponse.tasks[0]) setSelectedTaskId(taskResponse.tasks[0].id)
       })
       .catch((cause: unknown) => {
-        if (active) setError(cause instanceof Error ? cause.message : 'Could not connect to Joy server')
+        if (active) setError(cause instanceof Error ? cause.message : '連不到 Joy server')
       })
     return () => {
       active = false
@@ -2148,7 +2242,7 @@ function Workspace() {
         if (pendingStatusEvents.length || ephemeralErrors.length) refreshTaskList()
       })
       .catch((cause: unknown) => {
-        if (active) setError(cause instanceof Error ? cause.message : 'Could not load task')
+        if (active) setError(cause instanceof Error ? cause.message : '無法載入任務')
       })
     return () => {
       active = false
@@ -2177,9 +2271,9 @@ function Workspace() {
       })
       await refreshLists()
       setShowRepoForm(false)
-      setNotice('Repository added to this Joy server.')
+      setNotice('已加入專案。')
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not add repository')
+      setError(cause instanceof Error ? cause.message : '無法加入專案')
     }
   }
 
@@ -2197,7 +2291,7 @@ function Workspace() {
         method: 'POST',
         body: JSON.stringify({
           repoId: String(form.get('repoId')),
-          title: String(form.get('title')).trim(),
+          title: taskTitle(String(form.get('title') ?? ''), String(form.get('prompt') ?? '')),
           prompt: String(form.get('prompt')).trim(),
           // A custom workflow (T5.6) brings its own models and options; the built-in ones use the fields below.
           ...(String(form.get('mode')).startsWith('workflow:')
@@ -2211,9 +2305,9 @@ function Workspace() {
       setShowTaskForm(false)
       setSelectedTaskId(task.id)
       await refreshLists()
-      setNotice('Task created. Joy is working in an isolated worktree.')
+      setNotice('任務已建立，Joy 在獨立的工作副本裡處理。')
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not create task')
+      setError(cause instanceof Error ? cause.message : '無法建立任務')
     }
   }
 
@@ -2236,9 +2330,9 @@ function Workspace() {
         body: JSON.stringify({ ...config, roles }),
       })
       setConfig(saved)
-      setNotice('Settings saved.')
+      setNotice('設定已儲存。')
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not save settings')
+      setError(cause instanceof Error ? cause.message : '無法儲存設定')
     }
   }
 
@@ -2255,7 +2349,7 @@ function Workspace() {
       })
       setSecretStatus(status)
       formElement.reset()
-      setNotice('OpenAI key saved securely; the value is not returned or displayed.')
+      setNotice('金鑰已安全儲存，之後不會再顯示。')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not save OpenAI key')
     }
@@ -2265,7 +2359,7 @@ function Workspace() {
     setError('')
     try {
       setSecretStatus(await request<SecretStatus>('/api/secrets/openai-api-key', { method: 'DELETE' }))
-      setNotice('Saved OpenAI key removed.')
+      setNotice('已移除金鑰。')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not remove OpenAI key')
     }
@@ -2282,336 +2376,160 @@ function Workspace() {
     })
   }
 
+  const [showDiff, setShowDiff] = useState(true)
+  const [showDetails, setShowDetails] = useState(false)
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [composerMode, setComposerMode] = useState('review_loop')
+
+  const composing = page === 'tasks' && (showTaskForm || !selectedTaskId)
+  const setupProblems = doctorReport?.checks.filter((check) => check.status === 'missing').length ?? 0
+  const tasksByRepo = useMemo(() => {
+    const groups = new Map<string, Task[]>()
+    for (const task of tasks) groups.set(task.repoId, [...(groups.get(task.repoId) ?? []), task])
+    return [...groups.entries()].map(([repoId, list]) => ({
+      repoId,
+      name: repoName(repos.find((repo) => repo.id === repoId)?.path),
+      tasks: list,
+    }))
+  }, [tasks, repos])
+  const timeline = useMemo(() => (details?.events ?? []).map(timelineItem), [details?.events])
+  const hiddenCount = timeline.filter((item) => item.kind === 'noise').length
+  const diffAdditions = diff?.files.reduce((total, file) => total + file.additions, 0) ?? 0
+  const diffDeletions = diff?.files.reduce((total, file) => total + file.deletions, 0) ?? 0
+  const working = details ? ['queued', 'running'].includes(details.task.status) : false
+
+  function openComposer() {
+    setPage('tasks')
+    setShowTaskForm(true)
+  }
+
+  function navButton(target: typeof page, label: string, icon: ReactNode) {
+    return (
+      <button
+        className={page === target ? 'nav-item active' : 'nav-item'}
+        aria-current={page === target ? 'page' : undefined}
+        onClick={() => setPage(target)}
+      >
+        {icon}
+        {label}
+      </button>
+    )
+  }
+
   return (
     <div className="app-shell">
-      <header className="topbar">
-        <a className="brand" href="#workspace" onClick={() => setPage('tasks')} aria-label="Joy workspace">
-          <span className="brand-mark">J</span>
-          <span>joy</span>
-        </a>
-        <div className="topbar-center">
-          <span className="connection-dot" />
-          <span>Local workspace</span>
+      <nav className="sidebar" aria-label="主選單">
+        <div className="sidebar-brand">
+          <span className="brand-mark" aria-hidden="true">
+            J
+          </span>
+          <span>Joy</span>
         </div>
-        <nav className="topbar-nav" aria-label="Main navigation">
-          <button
-            className={page === 'tasks' ? 'nav-button active' : 'nav-button'}
-            onClick={() => setPage('tasks')}
-          >
-            Workspace
-          </button>
-          <button
-            className={page === 'assistant' ? 'nav-button active' : 'nav-button'}
-            onClick={() => setPage('assistant')}
-          >
-            Assistant
-          </button>
-          <button
-            className={page === 'stats' ? 'nav-button active' : 'nav-button'}
-            onClick={() => setPage('stats')}
-          >
-            Stats
-          </button>
-          <button
-            className={page === 'settings' ? 'nav-button active' : 'nav-button'}
-            onClick={() => setPage('settings')}
-          >
-            Settings
-          </button>
-        </nav>
-      </header>
+        <button
+          className={composing ? 'nav-item active' : 'nav-item'}
+          onClick={openComposer}
+          aria-current={composing ? 'page' : undefined}
+        >
+          <Icon path="M12 5v14M5 12h14" />
+          新任務
+        </button>
+        {navButton(
+          'assistant',
+          '助理',
+          <Icon path="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />,
+        )}
+        {navButton('stats', '統計', <Icon path="M4 20V10M10 20V4M16 20v-7M22 20H2" />)}
 
-      {error && (
-        <div className="toast error-toast" role="alert">
-          {error}
-        </div>
-      )}
-      {notice && (
-        <div className="toast notice-toast" role="status">
-          {notice}
-        </div>
-      )}
-
-      {page === 'assistant' ? (
-        <AssistantPage />
-      ) : page === 'stats' ? (
-        <StatsPage repos={repos} />
-      ) : page === 'settings' ? (
-        <main className="settings-page">
-          <div className="page-heading">
-            <div>
-              <p className="eyebrow">PREFERENCES</p>
-              <h1>Settings</h1>
-              <p className="subheading">Configure model routing and global action permissions.</p>
-            </div>
-            <button className="quiet-button" onClick={() => setPage('tasks')}>
-              Back to workspace
-            </button>
-          </div>
-
-          {config ? (
-            <div className="settings-layout">
-              <section className="settings-card">
-                <form onSubmit={saveConfig}>
-                  <div className="section-heading">
-                    <div>
-                      <p className="eyebrow">MODEL ROUTING</p>
-                      <h2>Roles and autonomy</h2>
-                    </div>
-                    <span className="muted">Changes apply to new tasks</span>
-                  </div>
-                  <div className="mode-setting">
-                    <label htmlFor="autonomy-mode">Global autonomy mode</label>
-                    <select
-                      id="autonomy-mode"
-                      aria-label="Global autonomy mode"
-                      value={config.autonomy_mode}
-                      onChange={(event) =>
-                        setConfig({
-                          ...config,
-                          autonomy_mode: event.target.value as JoyConfig['autonomy_mode'],
-                        })
-                      }
-                    >
-                      <option value="careful">Careful — raise actions by one tier</option>
-                      <option value="normal">Normal — use each action’s default tier</option>
-                      <option value="hands-off">Hands-off — lower notifications, keep red approvals</option>
-                    </select>
-                    <p className="muted">
-                      Red actions always need owner approval and cross-model pre-review. Actions derived from
-                      external content are never auto-executed.
-                    </p>
-                  </div>
-                  <div className="role-grid">
-                    {ROLES.map((role) => (
-                      <fieldset className="role-card" key={role}>
-                        <legend>{ROLE_LABELS[role]}</legend>
-                        {role === 'implementer' && config.roles.implementer.provider === 'openai-api' ? (
-                          <p className="muted" role="status">
-                            OpenAI API cannot edit code, so Joy selected Claude Code for this role. Save to
-                            update routing.
-                          </p>
-                        ) : null}
-                        <label>
-                          Provider
-                          <select
-                            aria-label={`${ROLE_LABELS[role]} provider`}
-                            name={`${role}-provider`}
-                            value={roleModel(config, role).provider}
-                            onChange={(event) =>
-                              updateRole(role, 'provider', event.target.value as ProviderKind)
-                            }
-                          >
-                            {providersForRole(role).map((provider) => (
-                              <option key={provider} value={provider}>
-                                {PROVIDER_LABELS[provider]}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          Model
-                          <input
-                            aria-label={`${ROLE_LABELS[role]} model`}
-                            name={`${role}-model`}
-                            list={`${role}-model-options`}
-                            value={roleModel(config, role).model}
-                            onChange={(event) => updateRole(role, 'model', event.target.value)}
-                            required
-                          />
-                          <datalist id={`${role}-model-options`}>
-                            {MODEL_SUGGESTIONS[roleModel(config, role).provider].map((model) => (
-                              <option key={model} value={model} />
-                            ))}
-                          </datalist>
-                        </label>
-                        <label>
-                          Effort
-                          <select
-                            aria-label={`${ROLE_LABELS[role]} effort`}
-                            name={`${role}-effort`}
-                            value={roleModel(config, role).effort ?? 'medium'}
-                            onChange={(event) =>
-                              updateRole(role, 'effort', event.target.value as ModelRef['effort'])
-                            }
-                          >
-                            {EFFORTS.map((effort) => (
-                              <option key={effort} value={effort}>
-                                {effort}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      </fieldset>
-                    ))}
-                  </div>
-                  <div className="form-actions">
-                    <button className="primary-button" type="submit">
-                      Save settings
-                    </button>
-                  </div>
-                </form>
-              </section>
-
-              <section className="settings-card secret-card">
-                <div className="section-heading">
-                  <div>
-                    <p className="eyebrow">CREDENTIALS</p>
-                    <h2>OpenAI API key</h2>
-                  </div>
-                  <span
-                    className={secretStatus?.set ? 'status-pill configured' : 'status-pill'}
-                    role="status"
-                  >
-                    {secretStatusLoading
-                      ? 'Checking…'
-                      : secretStatus === null
-                        ? 'Unavailable'
-                        : secretStatus.set
-                          ? 'Configured'
-                          : 'Not configured'}
-                  </span>
-                </div>
-                <p className="muted secret-description">
-                  {secretStatusLoading
-                    ? 'Checking OpenAI key status…'
-                    : secretStatus === null
-                      ? 'OpenAI key status is unavailable. Key management is temporarily disabled.'
-                      : 'Stored in the OS keychain. Joy never returns the key to the browser or writes it to config, events, or the database.'}
-                </p>
-                {secretStatusLoading ? null : secretStatus === null ? (
+        <h2 className="sidebar-section">任務</h2>
+        <div className="task-list" aria-label="任務列表">
+          {tasks.length === 0 ? (
+            <p className="empty-list">你的任務會出現在這裡。</p>
+          ) : (
+            tasksByRepo.map((group) => (
+              <div className="task-group" key={group.repoId}>
+                <div className="task-group-label">{group.name}</div>
+                {group.tasks.map((task) => (
                   <button
-                    className="outline-button"
-                    type="button"
+                    className={
+                      page === 'tasks' && !composing && selectedTaskId === task.id
+                        ? 'task-row selected'
+                        : 'task-row'
+                    }
+                    key={task.id}
                     onClick={() => {
-                      setSecretStatusLoading(true)
-                      setSecretStatusRetry((attempt) => attempt + 1)
+                      setSelectedTaskId(task.id)
+                      setShowTaskForm(false)
+                      setPage('tasks')
                     }}
                   >
-                    Retry key status
+                    <span className={`task-dot status-${task.status}`} aria-hidden="true" />
+                    <span className="task-row-copy">
+                      <span className="task-title">{task.title}</span>
+                      <span className="task-meta">
+                        {statusLabel(task.status)} · {modeLabel(task.mode)}
+                      </span>
+                    </span>
                   </button>
-                ) : secretStatus.source === 'env' ? (
-                  <div className="env-managed" role="status">
-                    Managed by the OPENAI_API_KEY environment variable.
-                  </div>
-                ) : (
-                  <form className="secret-form" onSubmit={saveOpenAiKey}>
-                    <label htmlFor="openai-key">{secretStatus.set ? 'Replace key' : 'Enter key'}</label>
-                    <div className="secret-input-row">
-                      <input
-                        id="openai-key"
-                        name="openai-key"
-                        type="password"
-                        autoComplete="new-password"
-                        minLength={1}
-                        required
-                      />
-                      <button className="primary-button" type="submit">
-                        Save key
-                      </button>
-                    </div>
-                    <div className="secret-actions">
-                      <span className="muted">
-                        {secretStatus.set
-                          ? 'Saved securely in the OS keychain'
-                          : 'Only the status is shown after saving'}
-                      </span>
-                      {secretStatus.source === 'keychain' && (
-                        <button
-                          className="text-button danger-text"
-                          type="button"
-                          onClick={() => void removeOpenAiKey()}
-                        >
-                          Remove key
-                        </button>
-                      )}
-                    </div>
-                  </form>
-                )}
-              </section>
-              {config ? <TelegramSettings config={config} onConfig={setConfig} /> : null}
-              <AccessTokenPanel />
-              <NotificationsPanel />
-              <WorktreesPanel />
-              <BackupsPanel />
-              <LogsPanel />
-            </div>
-          ) : (
-            <div className="loading-card">Loading settings…</div>
+                ))}
+              </div>
+            ))
           )}
-        </main>
-      ) : (
-        <main className="workspace-grid">
-          <aside className="task-sidebar">
-            <div className="sidebar-heading">
+        </div>
+
+        <div className="sidebar-footer">
+          <UsageStrip />
+          <button className="nav-item" onClick={() => setShowRepoForm(true)}>
+            <Icon path="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            加入專案
+          </button>
+          {navButton(
+            'settings',
+            '設定',
+            <Icon path="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19 12a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14 3h-4l-.5 2.6a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a7 7 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 2 1.2L10 21h4l.5-2.6a7 7 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2z" />,
+          )}
+        </div>
+      </nav>
+
+      <div className="main-area">
+        {error && (
+          <div className="toast error-toast" role="alert">
+            {error}
+          </div>
+        )}
+        {notice && (
+          <div className="toast notice-toast" role="status">
+            {notice}
+          </div>
+        )}
+
+        {page === 'assistant' ? (
+          <AssistantPage />
+        ) : page === 'stats' ? (
+          <StatsPage repos={repos} />
+        ) : page === 'settings' ? (
+          <main className="settings-page">
+            <div className="page-heading">
               <div>
-                <p className="eyebrow">YOUR WORK</p>
-                <h1>Tasks</h1>
+                <h1>設定</h1>
+                <p className="subheading">各角色用哪個模型、哪些動作要先問你。</p>
               </div>
-              <button
-                className="icon-button"
-                aria-label="Create task"
-                title="Create task"
-                onClick={() => setShowTaskForm(true)}
-              >
-                ＋
-              </button>
             </div>
-            <button className="new-task-button" onClick={() => setShowTaskForm(true)}>
-              <span>＋</span> New task
-            </button>
-            {repos.length === 0 ? (
-              <div className="empty-repo">
-                <div className="empty-icon">⌘</div>
-                <h2>Add a repository</h2>
-                <p>Connect a local project folder to start an isolated coding task.</p>
-                <button className="outline-button" onClick={() => setShowRepoForm(true)}>
-                  Add repository
-                </button>
-              </div>
-            ) : (
-              <div className="task-list" aria-label="Task list">
-                <div className="list-label">RECENT</div>
-                {tasks.length === 0 ? (
-                  <p className="empty-list">Your tasks will appear here.</p>
-                ) : (
-                  tasks.map((task) => (
-                    <button
-                      className={selectedTaskId === task.id ? 'task-row selected' : 'task-row'}
-                      key={task.id}
-                      onClick={() => {
-                        setSelectedTaskId(task.id)
-                        setPage('tasks')
-                      }}
-                    >
-                      <span className={`task-status status-${task.status}`} aria-hidden="true" />
-                      <span className="task-row-copy">
-                        <span className="task-title">{task.title}</span>
-                        <span className="task-meta">
-                          {task.status.replaceAll('_', ' ')} · {task.mode.replace('_', ' ')}
-                        </span>
-                      </span>
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
-            <section className="doctor-panel" aria-labelledby="doctor-heading" data-testid="doctor-checks">
-              <div className="doctor-panel-heading">
-                <h2 id="doctor-heading">Environment checks</h2>
+
+            <section className="settings-card" aria-labelledby="doctor-heading" data-testid="doctor-checks">
+              <div className="section-heading">
+                <h2 id="doctor-heading">環境檢查</h2>
                 <button
-                  className="doctor-refresh"
-                  aria-label="Refresh environment checks"
-                  title="Refresh environment checks"
+                  className="outline-button"
+                  aria-label="重新檢查環境"
                   disabled={doctorLoading}
                   onClick={() => setDoctorRetry((retry) => retry + 1)}
                 >
-                  ↻
+                  重新檢查
                 </button>
               </div>
               {doctorLoading ? (
-                <p className="doctor-message" role="status">
-                  Checking Joy's setup…
+                <p className="muted" role="status">
+                  正在檢查 Joy 的環境…
                 </p>
               ) : doctorReport ? (
                 <ul className="doctor-check-list">
@@ -2631,183 +2549,472 @@ function Workspace() {
                   ))}
                 </ul>
               ) : (
-                <div className="doctor-message" role="status">
-                  <p>Setup checks are unavailable.</p>
-                  <button className="footer-link" onClick={() => setDoctorRetry((retry) => retry + 1)}>
-                    Retry checks
+                <div className="muted" role="status">
+                  <p>目前無法取得環境檢查結果。</p>
+                  <button className="outline-button" onClick={() => setDoctorRetry((retry) => retry + 1)}>
+                    再試一次
                   </button>
                 </div>
               )}
             </section>
-            <div className="sidebar-footer">
-              <UsageStrip />
-              <div className="local-badge">
-                <span className="connection-dot" /> Joy is running locally
-              </div>
-              <button className="footer-link" onClick={() => setShowRepoForm(true)}>
-                Manage repositories
-              </button>
-            </div>
-          </aside>
 
-          <section className="activity-panel" aria-label="Task activity">
-            {details ? (
-              <>
-                <div className="activity-header">
-                  <div className="breadcrumbs">
-                    <span>{details.repo?.path.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Repository'}</span>
-                    <span className="breadcrumb-separator">/</span>
-                    <span>Task</span>
-                  </div>
-                  <div className="task-heading-row">
-                    <div>
-                      <h1>{details.task.title}</h1>
-                      <p className="task-prompt">{details.task.prompt}</p>
+            {config ? (
+              <div className="settings-layout">
+                <section className="settings-card">
+                  <form onSubmit={saveConfig}>
+                    <div className="section-heading">
+                      <h2>角色與自主程度</h2>
+                      <span className="muted">只套用到之後的新任務</span>
                     </div>
-                    <span className={`large-status status-${details.task.status}`}>
-                      {details.task.status.replaceAll('_', ' ')}
+                    <div className="mode-setting">
+                      <label htmlFor="autonomy-mode">自主程度</label>
+                      <select
+                        id="autonomy-mode"
+                        aria-label="自主程度"
+                        value={config.autonomy_mode}
+                        onChange={(event) =>
+                          setConfig({
+                            ...config,
+                            autonomy_mode: event.target.value as JoyConfig['autonomy_mode'],
+                          })
+                        }
+                      >
+                        <option value="careful">謹慎：每個動作都提高一級</option>
+                        <option value="normal">一般：照每個動作的預設等級</option>
+                        <option value="hands-off">放手：少通知，但高風險動作仍要你同意</option>
+                      </select>
+                      <p className="muted">
+                        高風險動作（推送、刪除等）一定要你同意，並先由另一個模型預審。來自外部內容的要求永遠不會自動執行。
+                      </p>
+                    </div>
+                    <div className="role-grid">
+                      {ROLES.map((role) => (
+                        <fieldset className="role-card" key={role}>
+                          <legend>{ROLE_LABELS[role]}</legend>
+                          {role === 'implementer' && config.roles.implementer.provider === 'openai-api' ? (
+                            <p className="muted" role="status">
+                              OpenAI API 不能改程式碼，所以這個角色改用 Claude Code。按儲存後生效。
+                            </p>
+                          ) : null}
+                          <label>
+                            服務
+                            <select
+                              aria-label={`${ROLE_LABELS[role]}的服務`}
+                              name={`${role}-provider`}
+                              value={roleModel(config, role).provider}
+                              onChange={(event) =>
+                                updateRole(role, 'provider', event.target.value as ProviderKind)
+                              }
+                            >
+                              {providersForRole(role).map((provider) => (
+                                <option key={provider} value={provider}>
+                                  {PROVIDER_LABELS[provider]}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            模型
+                            <input
+                              aria-label={`${ROLE_LABELS[role]}的模型`}
+                              name={`${role}-model`}
+                              list={`${role}-model-options`}
+                              value={roleModel(config, role).model}
+                              onChange={(event) => updateRole(role, 'model', event.target.value)}
+                              required
+                            />
+                            <datalist id={`${role}-model-options`}>
+                              {MODEL_SUGGESTIONS[roleModel(config, role).provider].map((model) => (
+                                <option key={model} value={model} />
+                              ))}
+                            </datalist>
+                          </label>
+                          <label>
+                            思考程度
+                            <select
+                              aria-label={`${ROLE_LABELS[role]}的思考程度`}
+                              name={`${role}-effort`}
+                              value={roleModel(config, role).effort ?? 'medium'}
+                              onChange={(event) =>
+                                updateRole(role, 'effort', event.target.value as ModelRef['effort'])
+                              }
+                            >
+                              {EFFORTS.map((effort) => (
+                                <option key={effort} value={effort}>
+                                  {EFFORT_LABELS[effort] ?? effort}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </fieldset>
+                      ))}
+                    </div>
+                    <div className="form-actions">
+                      <button className="primary-button" type="submit">
+                        儲存設定
+                      </button>
+                    </div>
+                  </form>
+                </section>
+
+                <section className="settings-card secret-card">
+                  <div className="section-heading">
+                    <h2>OpenAI API 金鑰</h2>
+                    <span
+                      className={secretStatus?.set ? 'status-pill configured' : 'status-pill'}
+                      role="status"
+                    >
+                      {secretStatusLoading
+                        ? '檢查中…'
+                        : secretStatus === null
+                          ? '無法取得'
+                          : secretStatus.set
+                            ? '已設定'
+                            : '未設定'}
                     </span>
                   </div>
-                  <div className="run-meta">
-                    <span className="mode-tag">{details.task.mode.replace('_', ' ')}</span>
-                    <span>{details.events.length} events</span>
-                    <span>{details.repo?.defaultBranch ?? 'main'}</span>
-                  </div>
-                </div>
-                <ApprovalsPanel
-                  taskId={details.task.id}
-                  taskStatus={details.task.status}
-                  approvalEvents={details.events.filter((event) => event.type.startsWith('approval.')).length}
-                />
-                <div className="event-stream" aria-label="Live event stream" data-testid="event-stream">
-                  {details.events.length === 0 ? (
-                    <div className="stream-empty">
-                      <span className="spinner" />
-                      <p>Waiting for the first event…</p>
+                  <p className="muted secret-description">
+                    {secretStatusLoading
+                      ? '正在檢查金鑰狀態…'
+                      : secretStatus === null
+                        ? '目前無法取得金鑰狀態，暫時不能管理金鑰。'
+                        : '存在作業系統鑰匙圈。Joy 不會把金鑰傳回瀏覽器，也不會寫進設定檔、紀錄或資料庫。'}
+                  </p>
+                  {secretStatusLoading ? null : secretStatus === null ? (
+                    <button
+                      className="outline-button"
+                      type="button"
+                      onClick={() => {
+                        setSecretStatusLoading(true)
+                        setSecretStatusRetry((attempt) => attempt + 1)
+                      }}
+                    >
+                      重新檢查金鑰
+                    </button>
+                  ) : secretStatus.source === 'env' ? (
+                    <div className="env-managed" role="status">
+                      由環境變數 OPENAI_API_KEY 管理。
                     </div>
                   ) : (
-                    details.events.map((event, index) => (
-                      <article
-                        className={`event-card event-${eventKind(event).replaceAll('_', '-')}`}
-                        data-event-seq={event.seq}
-                        key={`${event.seq}-${index}`}
-                      >
-                        <span className="event-marker" />
-                        <div className="event-body">
-                          <div className="event-topline">
-                            <span className="event-kind">{eventKind(event).replaceAll('_', ' ')}</span>
-                            <time>
-                              {new Date(event.ts).toLocaleTimeString([], {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                              })}
-                            </time>
-                          </div>
-                          <p>{eventTitle(event)}</p>
-                        </div>
-                      </article>
-                    ))
+                    <form className="secret-form" onSubmit={saveOpenAiKey}>
+                      <label htmlFor="openai-key">{secretStatus.set ? '換一把金鑰' : '輸入金鑰'}</label>
+                      <div className="secret-input-row">
+                        <input
+                          id="openai-key"
+                          name="openai-key"
+                          type="password"
+                          autoComplete="new-password"
+                          minLength={1}
+                          required
+                        />
+                        <button className="primary-button" type="submit">
+                          儲存金鑰
+                        </button>
+                      </div>
+                      <div className="secret-actions">
+                        <span className="muted">
+                          {secretStatus.set ? '已安全存在作業系統鑰匙圈' : '儲存後只會顯示狀態'}
+                        </span>
+                        {secretStatus.source === 'keychain' && (
+                          <button
+                            className="text-button danger-text"
+                            type="button"
+                            onClick={() => void removeOpenAiKey()}
+                          >
+                            移除金鑰
+                          </button>
+                        )}
+                      </div>
+                    </form>
                   )}
-                </div>
-                <div className="activity-footer">
-                  <span className="footer-orb" /> Live event replay is connected
-                </div>
-              </>
+                </section>
+                {config ? <TelegramSettings config={config} onConfig={setConfig} /> : null}
+                <AccessTokenPanel />
+                <NotificationsPanel />
+                <WorktreesPanel />
+                <BackupsPanel />
+                <LogsPanel />
+              </div>
             ) : (
-              <div className="welcome-panel">
-                <div className="welcome-mark">J</div>
-                <p className="eyebrow">LOCAL-FIRST AGENT WORKSPACE</p>
-                <h1>What should Joy work on?</h1>
-                <p>
-                  Choose a repository and describe the change. Joy runs each task in an isolated worktree.
-                </p>
-                <button
-                  className="primary-button"
-                  onClick={() => (repos.length ? setShowTaskForm(true) : setShowRepoForm(true))}
-                >
-                  {repos.length ? 'Create a task' : 'Add a repository'}
+              <div className="loading-card">正在載入設定…</div>
+            )}
+          </main>
+        ) : !composing && !details ? (
+          <main className="composer-page" aria-busy="true">
+            <div className="timeline-working" role="status">
+              <span className="spinner" aria-hidden="true" />
+              正在載入任務…
+            </div>
+          </main>
+        ) : composing || !details ? (
+          <main className="composer-page">
+            {repos.length === 0 ? (
+              <div className="composer-empty">
+                <h1>先加入一個專案</h1>
+                <p>選一個電腦裡的 Git 專案資料夾，Joy 會在獨立的工作副本裡幫你改程式。</p>
+                <button className="primary-button" onClick={() => setShowRepoForm(true)}>
+                  加入專案
                 </button>
               </div>
-            )}
-          </section>
-
-          <aside className="diff-panel" aria-label="Diff viewer">
-            <div className="diff-header">
-              <div>
-                <p className="eyebrow">WORKTREE</p>
-                <h2>Changes</h2>
-              </div>
-              <span className="diff-count">{diff?.files.length ?? 0}</span>
-            </div>
-            {details?.task.mode === 'compete' && details.task.status !== 'done' ? (
-              <ComparePanel details={details} onChanged={() => void refreshSelectedTask()} />
-            ) : null}
-            {details ? <PublishPanel details={details} onChanged={() => void refreshSelectedTask()} /> : null}
-            {details ? (
-              <DiscardButton details={details} onChanged={() => void refreshSelectedTask()} />
-            ) : null}
-            {diff ? (
-              <>
-                <div className="diff-summary">
-                  <span>
-                    {diff.files.length} {diff.files.length === 1 ? 'file' : 'files'}
-                  </span>
-                  <span className="additions">
-                    +{diff.files.reduce((total, file) => total + file.additions, 0)}
-                  </span>
-                  <span className="deletions">
-                    −{diff.files.reduce((total, file) => total + file.deletions, 0)}
-                  </span>
-                </div>
-                <div className="diff-file-list" aria-label="Changed files">
-                  {diff.files.map((file) => (
-                    <button
-                      className={activeDiffFile === file.path ? 'diff-file active' : 'diff-file'}
-                      key={file.path}
-                      onClick={() => setActiveDiffFile(file.path)}
-                    >
-                      <span className="file-icon">
-                        {file.status === 'added' ? '＋' : file.status === 'deleted' ? '−' : '·'}
-                      </span>
-                      <span>{file.path}</span>
-                      <span className="file-stat">
-                        +{file.additions} −{file.deletions}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-                <pre className="diff-code" data-testid="diff-patch">
-                  {String(selectedPatch)
-                    .split('\n')
-                    .map((line, index) => (
-                      <span
-                        className={
-                          line.startsWith('+') && !line.startsWith('+++')
-                            ? 'diff-line added'
-                            : line.startsWith('-') && !line.startsWith('---')
-                              ? 'diff-line removed'
-                              : line.startsWith('@@')
-                                ? 'diff-line hunk'
-                                : 'diff-line'
-                        }
-                        key={`${index}-${line}`}
-                      >
-                        {line || ' '}
-                      </span>
-                    ))}
-                </pre>
-              </>
             ) : (
-              <div className="diff-empty">
-                <div className="diff-empty-icon">⌁</div>
-                <h3>No changes yet</h3>
-                <p>The latest task diff will appear here when the agent finishes.</p>
-              </div>
+              <form className="composer-home" onSubmit={(event) => void createTask(event)}>
+                {setupProblems > 0 ? (
+                  <button type="button" className="setup-banner" onClick={() => setPage('settings')}>
+                    有 {setupProblems} 項環境設定需要處理，點這裡查看
+                  </button>
+                ) : null}
+                <h1>要讓 Joy 做什麼？</h1>
+                <div className="composer">
+                  <textarea
+                    name="prompt"
+                    aria-label="任務內容"
+                    placeholder="例如：登入頁按 Enter 不會送出，幫我修好"
+                    required
+                    rows={3}
+                    autoFocus
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey))
+                        event.currentTarget.form?.requestSubmit()
+                    }}
+                  />
+                  <div className="composer-bar">
+                    <select name="repoId" aria-label="專案" className="chip-select" required>
+                      {repos.map((repo) => (
+                        <option key={repo.id} value={repo.id}>
+                          {repoName(repo.path)} · {repo.defaultBranch}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      name="mode"
+                      aria-label="模式"
+                      className="chip-select"
+                      value={composerMode}
+                      onChange={(event) => setComposerMode(event.target.value)}
+                    >
+                      <option value="review_loop">實作＋審查</option>
+                      <option value="single">單人</option>
+                      <option value="compete">兩家比賽</option>
+                      {customWorkflows.map((workflow) => (
+                        <option key={workflow.name} value={`workflow:${workflow.name}`}>
+                          {workflow.name}
+                          {workflow.description ? ` — ${workflow.description}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="chip-button"
+                      aria-expanded={showAdvanced}
+                      onClick={() => setShowAdvanced((open) => !open)}
+                    >
+                      進階
+                    </button>
+                    <span className="composer-spacer" />
+                    <button type="submit" className="send-button" aria-label="開始任務">
+                      <Icon path="M12 19V5M5 12l7-7 7 7" />
+                    </button>
+                  </div>
+                  <div className="composer-advanced" hidden={!showAdvanced}>
+                    <label>
+                      標題（選填，預設用任務內容的第一行）
+                      <input name="title" aria-label="任務標題" maxLength={500} />
+                    </label>
+                    <div className="task-model-grid">
+                      {(['implementer', 'reviewer'] as const).map((role) => {
+                        const model = roleModel(config, role)
+                        return (
+                          <fieldset className="task-role-card" key={role}>
+                            <legend>{ROLE_LABELS[role]}</legend>
+                            <label>
+                              服務
+                              <select
+                                aria-label={`${ROLE_LABELS[role]}的服務`}
+                                name={`${role}-provider`}
+                                defaultValue={model.provider}
+                              >
+                                {providersForRole(role).map((provider) => (
+                                  <option key={provider} value={provider}>
+                                    {PROVIDER_LABELS[provider]}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              模型
+                              <input
+                                aria-label={`${ROLE_LABELS[role]}的模型`}
+                                name={`${role}-model`}
+                                list={`task-${role}-models`}
+                                defaultValue={model.model}
+                                required
+                              />
+                              <datalist id={`task-${role}-models`}>
+                                {MODEL_SUGGESTIONS[model.provider].map((option) => (
+                                  <option key={option} value={option} />
+                                ))}
+                              </datalist>
+                            </label>
+                            <label>
+                              思考程度
+                              <select
+                                aria-label={`${ROLE_LABELS[role]}的思考程度`}
+                                name={`${role}-effort`}
+                                defaultValue={model.effort ?? 'medium'}
+                              >
+                                {EFFORTS.map((effort) => (
+                                  <option key={effort} value={effort}>
+                                    {EFFORT_LABELS[effort] ?? effort}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          </fieldset>
+                        )
+                      })}
+                    </div>
+                  </div>
+                </div>
+                <p className="composer-hint">{MODE_HINTS[composerMode] ?? '照這個自訂流程的設定執行。'}</p>
+              </form>
             )}
-            <div className="diff-footer">Diff from the task result event</div>
-          </aside>
-        </main>
-      )}
+          </main>
+        ) : (
+          <main className="thread" aria-label="任務進度">
+            <header className="thread-header">
+              <div className="thread-heading">
+                <h1>{details.task.title}</h1>
+                <span className="thread-sub">
+                  {repoName(details.repo?.path)} · {details.repo?.defaultBranch ?? 'main'} ·{' '}
+                  {modeLabel(details.task.mode)}
+                </span>
+              </div>
+              <span className={`status-pill status-${details.task.status}`}>
+                {statusLabel(details.task.status)}
+              </span>
+              <button
+                className="outline-button diff-toggle"
+                aria-pressed={showDiff}
+                onClick={() => setShowDiff((open) => !open)}
+              >
+                變更 <span className="additions">+{diffAdditions}</span>{' '}
+                <span className="deletions">−{diffDeletions}</span>
+              </button>
+            </header>
+            <div className="thread-body">
+              <div className="thread-scroll">
+                <div className="thread-column">
+                  <div className="user-bubble">{details.task.prompt}</div>
+                  <ApprovalsPanel
+                    taskId={details.task.id}
+                    taskStatus={details.task.status}
+                    approvalEvents={
+                      details.events.filter((event) => event.type.startsWith('approval.')).length
+                    }
+                  />
+                  <div className="timeline" aria-label="任務紀錄" data-testid="event-stream">
+                    {timeline.map((item, index) => (
+                      <div
+                        hidden={item.kind === 'noise' && !showDetails}
+                        className={`timeline-item timeline-${item.kind} ${item.tone ? `tone-${item.tone}` : ''}`}
+                        data-event-seq={details.events[index]?.seq}
+                        key={`${details.events[index]?.seq ?? 0}-${index}`}
+                      >
+                        {item.kind === 'message' ? (
+                          <>
+                            {item.role ? <span className="timeline-role">{item.role}</span> : null}
+                            <p>{item.text}</p>
+                          </>
+                        ) : item.kind === 'phase' ? (
+                          <span>{item.text}</span>
+                        ) : (
+                          <>
+                            <span className="timeline-mark" aria-hidden="true" />
+                            <span className="timeline-text">{item.text}</span>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                    {working ? (
+                      <div className="timeline-working" role="status">
+                        <span className="spinner" aria-hidden="true" />
+                        Joy 正在處理…
+                      </div>
+                    ) : null}
+                  </div>
+                  {hiddenCount > 0 ? (
+                    <button
+                      className="text-button details-toggle"
+                      onClick={() => setShowDetails((open) => !open)}
+                    >
+                      {showDetails ? '隱藏細節' : `顯示細節（${hiddenCount} 筆）`}
+                    </button>
+                  ) : null}
+                  {details.task.mode === 'compete' && details.task.status !== 'done' ? (
+                    <ComparePanel details={details} onChanged={() => void refreshSelectedTask()} />
+                  ) : null}
+                  <div className="thread-actions">
+                    <PublishPanel details={details} onChanged={() => void refreshSelectedTask()} />
+                    <DiscardButton details={details} onChanged={() => void refreshSelectedTask()} />
+                  </div>
+                </div>
+              </div>
+              {showDiff ? (
+                <aside className="diff-pane" aria-label="檔案變更">
+                  <div className="diff-header">
+                    <h2>變更</h2>
+                    <span className="muted">{diff?.files.length ?? 0} 個檔案</span>
+                  </div>
+                  {diff ? (
+                    <>
+                      <div className="diff-file-list" aria-label="變更的檔案">
+                        {diff.files.map((file) => (
+                          <button
+                            className={activeDiffFile === file.path ? 'diff-file active' : 'diff-file'}
+                            key={file.path}
+                            onClick={() => setActiveDiffFile(file.path)}
+                          >
+                            <span className="diff-file-path">{file.path}</span>
+                            <span className="file-stat">
+                              <span className="additions">+{file.additions}</span>{' '}
+                              <span className="deletions">−{file.deletions}</span>
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                      <pre className="diff-code" data-testid="diff-patch">
+                        {String(selectedPatch)
+                          .split('\n')
+                          .map((line, index) => (
+                            <span
+                              className={
+                                line.startsWith('+') && !line.startsWith('+++')
+                                  ? 'diff-line added'
+                                  : line.startsWith('-') && !line.startsWith('---')
+                                    ? 'diff-line removed'
+                                    : line.startsWith('@@')
+                                      ? 'diff-line hunk'
+                                      : 'diff-line'
+                              }
+                              key={`${index}-${line}`}
+                            >
+                              {line || ' '}
+                            </span>
+                          ))}
+                      </pre>
+                    </>
+                  ) : (
+                    <div className="diff-empty">
+                      <h3>還沒有變更</h3>
+                      <p>任務完成後，改了哪些地方會顯示在這裡。</p>
+                    </div>
+                  )}
+                </aside>
+              ) : null}
+            </div>
+          </main>
+        )}
+      </div>
 
       {showRepoForm && (
         <div
@@ -2824,177 +3031,37 @@ function Workspace() {
             aria-labelledby="repo-dialog-title"
           >
             <div className="dialog-header">
-              <div>
-                <p className="eyebrow">LOCAL PROJECT</p>
-                <h2 id="repo-dialog-title">Add repository</h2>
-              </div>
-              <button className="close-button" aria-label="Close" onClick={() => setShowRepoForm(false)}>
+              <h2 id="repo-dialog-title">加入專案</h2>
+              <button className="close-button" aria-label="關閉" onClick={() => setShowRepoForm(false)}>
                 ×
               </button>
             </div>
-            <p className="muted">Use the absolute path to a Git repository on the machine running Joy.</p>
+            <p className="muted">填入執行 Joy 這台電腦上，Git 專案資料夾的完整路徑。</p>
             <form className="stacked-form" onSubmit={(event) => void createRepo(event)}>
               <label>
-                Repository path
+                專案路徑
                 <input
                   name="path"
-                  aria-label="Repository path"
+                  aria-label="專案路徑"
                   placeholder="/Users/you/project"
                   required
                   autoFocus
                 />
               </label>
               <label>
-                Default branch
-                <input name="defaultBranch" aria-label="Default branch" defaultValue="main" required />
+                預設分支
+                <input name="defaultBranch" aria-label="預設分支" defaultValue="main" required />
               </label>
               <label className="checkbox-row">
-                <input type="checkbox" name="container" aria-label="Run agents in a container" />
-                Untrusted code: run agents in a container (needs Docker; see README)
+                <input type="checkbox" name="container" aria-label="在容器裡執行 agent" />
+                不信任的程式碼：在容器裡執行 agent（需要 Docker，見 README）
               </label>
               <div className="form-actions">
                 <button className="quiet-button" type="button" onClick={() => setShowRepoForm(false)}>
-                  Cancel
+                  取消
                 </button>
                 <button className="primary-button" type="submit">
-                  Add repository
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
-      )}
-
-      {showTaskForm && (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setShowTaskForm(false)
-          }}
-        >
-          <section
-            className="dialog-card task-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="task-dialog-title"
-          >
-            <div className="dialog-header">
-              <div>
-                <p className="eyebrow">NEW WORK</p>
-                <h2 id="task-dialog-title">Create a task</h2>
-              </div>
-              <button className="close-button" aria-label="Close" onClick={() => setShowTaskForm(false)}>
-                ×
-              </button>
-            </div>
-            <form className="stacked-form" onSubmit={(event) => void createTask(event)}>
-              <label>
-                Repository
-                <select name="repoId" aria-label="Task repository" required defaultValue="">
-                  <option value="" disabled>
-                    Select a repository
-                  </option>
-                  {repos.map((repo) => (
-                    <option key={repo.id} value={repo.id}>
-                      {repo.path}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Task title
-                <input
-                  name="title"
-                  aria-label="Task title"
-                  placeholder="What needs to change?"
-                  required
-                  maxLength={500}
-                />
-              </label>
-              <label>
-                Instructions
-                <textarea
-                  name="prompt"
-                  aria-label="Task instructions"
-                  placeholder="Describe the desired behavior and any constraints…"
-                  required
-                  rows={4}
-                />
-              </label>
-              <label>
-                Workflow
-                <select name="mode" aria-label="Workflow">
-                  <option value="review_loop">Implement + review</option>
-                  <option value="single">Single agent</option>
-                  <option value="compete">Compete (both models, judge compares)</option>
-                  {customWorkflows.map((workflow) => (
-                    <option key={workflow.name} value={`workflow:${workflow.name}`}>
-                      {workflow.name}
-                      {workflow.description ? ` — ${workflow.description}` : ''}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="task-model-grid">
-                {(['implementer', 'reviewer'] as const).map((role) => {
-                  const model = roleModel(config, role)
-                  return (
-                    <fieldset className="task-role-card" key={role}>
-                      <legend>{ROLE_LABELS[role]}</legend>
-                      <label>
-                        Provider
-                        <select
-                          aria-label={`${ROLE_LABELS[role]} provider`}
-                          name={`${role}-provider`}
-                          defaultValue={model.provider}
-                        >
-                          {providersForRole(role).map((provider) => (
-                            <option key={provider} value={provider}>
-                              {PROVIDER_LABELS[provider]}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        Model
-                        <input
-                          aria-label={`${ROLE_LABELS[role]} model`}
-                          name={`${role}-model`}
-                          list={`task-${role}-models`}
-                          defaultValue={model.model}
-                          required
-                        />
-                        <datalist id={`task-${role}-models`}>
-                          {MODEL_SUGGESTIONS[model.provider].map((option) => (
-                            <option key={option} value={option} />
-                          ))}
-                        </datalist>
-                      </label>
-                      <label>
-                        Effort
-                        <select
-                          aria-label={`${ROLE_LABELS[role]} effort`}
-                          name={`${role}-effort`}
-                          defaultValue={model.effort ?? 'medium'}
-                        >
-                          {EFFORTS.map((effort) => (
-                            <option key={effort} value={effort}>
-                              {effort}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </fieldset>
-                  )
-                })}
-              </div>
-              <div className="form-actions">
-                <button className="quiet-button" type="button" onClick={() => setShowTaskForm(false)}>
-                  Cancel
-                </button>
-                <button className="primary-button" type="submit">
-                  Start task
+                  加入專案
                 </button>
               </div>
             </form>

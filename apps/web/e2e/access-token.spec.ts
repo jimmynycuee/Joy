@@ -48,12 +48,12 @@ test('a refused token asks for a new one, and regenerating switches this device 
   await gate.getByRole('button', { name: 'Continue' }).click()
   await expect(gate).toHaveCount(0)
 
-  await page.getByRole('button', { name: 'Settings' }).click()
+  await page.getByRole('button', { name: '設定' }).click()
   page.on('dialog', (dialog) => void dialog.accept())
   const panel = page.getByTestId('access-token-panel')
   await panel.getByRole('button', { name: 'Regenerate token' }).click()
   await expect(panel.getByTestId('new-token')).toHaveText('rotated-token-0123456789abcdef')
   // Later requests from this device use the new token.
-  await page.getByRole('button', { name: 'Workspace', exact: true }).click()
+  await page.getByRole('button', { name: '新任務' }).click()
   await expect.poll(() => seen.at(-1)).toBe('Bearer rotated-token-0123456789abcdef')
 })

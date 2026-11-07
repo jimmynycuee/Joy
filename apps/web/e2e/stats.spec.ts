@@ -38,7 +38,7 @@ test('model stats can be filtered by period and repository', async ({ page }) =>
   })
 
   await page.goto('/')
-  await page.getByRole('button', { name: 'Stats' }).click()
+  await page.getByRole('button', { name: '統計' }).click()
   const implementers = page.getByLabel('Implementer stats')
   await expect(implementers).toContainText('claude-cli · opus')
   await expect(implementers).toContainText('75% (3/4)')

@@ -39,7 +39,7 @@ test('a proposed AGENTS.md note is shown as a diff and written only when applied
   })
 
   await page.goto('/')
-  await page.getByRole('button', { name: 'Assistant' }).click()
+  await page.getByRole('button', { name: '助理' }).click()
   const panel = page.getByTestId('project-notes')
   const diff = panel.getByLabel('Diff for Run pnpm check before committing')
   await expect(diff).toContainText('+ - Run pnpm check before committing')

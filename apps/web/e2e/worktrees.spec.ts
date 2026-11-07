@@ -61,7 +61,7 @@ test('worktrees show disk usage and are removed only after confirming unpushed c
   })
 
   await page.goto('/')
-  await page.getByRole('button', { name: 'Settings' }).click()
+  await page.getByRole('button', { name: '設定' }).click()
   const panel = page.getByTestId('worktrees-panel')
   await expect(panel).toContainText('1 worktree(s) using 3.0 MB. 1 idle for more than 14 days.')
   await expect(panel).toContainText('Old experiment')
