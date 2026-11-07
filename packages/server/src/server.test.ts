@@ -3096,10 +3096,13 @@ describe('Joy local server', () => {
         reviewer: { provider: 'codex-cli', model: 'gpt-6-luna' },
       },
     })
-    await waitForStatus(origin, careful.task.id, 'done', 5_000)
-    // Plan first: the implementer's first run only plans (read-only), and it ran on the workflow's model.
+    // Plan first: the implementer's first run only plans (read-only), then the task waits for the owner.
+    await waitForEvent(origin, careful.task.id, 'plan.awaiting_approval')
     expect(implementer.calls[0]?.autonomy).toBe('read-only')
     expect(reviewer.calls.length).toBeGreaterThan(0)
+    expect((await postJson(`${origin}/api/tasks/${careful.task.id}/plan/approve`, {})).status).toBe(202)
+    await waitForStatus(origin, careful.task.id, 'done', 5_000)
+    expect(implementer.calls[1]?.autonomy).toBe('workspace-write')
 
     // The built-in workflow is exactly the old mode.
     const single = (await (await create({ workflow: 'single' })).json()) as {

@@ -20,6 +20,7 @@ import type {
   ProposedAction,
   ProviderKind,
   RepoId,
+  ReviewVerdict,
   Role,
   RoleConfig,
   RunOptions,
@@ -92,8 +93,10 @@ import {
   setConversationTitle,
   setTaskStatus,
   updateAttempt,
+  updateTask,
   updateConversationSession,
   updateRepoAllowedProviders,
+  updateRepoCheckCommand,
   updateRepoContainer,
   updateRepoGithubRemote,
 } from '@joy/db'
@@ -105,6 +108,7 @@ import type {
   ProjectNoteRecord,
   RepoRecord,
   StoredTask,
+  TaskEventRecord,
 } from '@joy/db'
 import { ApprovalBroker } from './approvals.js'
 import { runAssistantTurn, toApiTools } from './assistant.js'
@@ -138,27 +142,42 @@ import type { AssistantTool } from './assistant.js'
 import {
   GhIssueSource,
   GitHubPublisher,
+  PullRequestStatusReader,
   importGitHubIssueFromAssistantCommand,
   importGitHubIssueFromLabel,
   repositoryName,
 } from '@joy/github'
 import type {
   DraftPullRequestInput,
+  GhRunner,
   GitHubIssueSource,
   PublishedPullRequest,
   TaskImportRequest,
 } from '@joy/github'
 import { TelegramChannel } from '@joy/channels'
 import type { WorktreeCleanupOptions, WorktreeInfo } from '@joy/executor'
-import { UnpushedCommitsError, WorktreeExecutor, containerRunCommand, gitCommonDir } from '@joy/executor'
+import {
+  CheckpointCommitsError,
+  UnpushedCommitsError,
+  WorktreeExecutor,
+  checkpointRef,
+  containerRunCommand,
+  gitCommonDir,
+} from '@joy/executor'
+import type { RunCommandResult, RunInWorktreeInput } from '@joy/executor'
 import type { Executor, WorkspaceDiff } from '@joy/core'
-import type { ContestantOutcome, Judgement, LoopEvent } from '@joy/orchestrator'
+import type { ChecksResult, ContestantOutcome, Judgement, LoopEvent } from '@joy/orchestrator'
 import type { Workflow } from '@joy/orchestrator'
 import {
   BUILT_IN_WORKFLOWS,
+  approvedPlanPrompt,
   compete,
   findWorkflow,
+  followUpPrompt,
   formatFindings,
+  planPrompt,
+  revisePlanPrompt,
+  withOwnerMessages,
   mergePrompt,
   reviewLoop,
   workflowProblems,
@@ -204,6 +223,17 @@ const allowedProvidersSchema = z
   .array(z.enum(PROVIDER_KINDS))
   .min(1, 'must allow at least one provider')
   .refine((providers) => new Set(providers).size === providers.length, 'providers must be unique')
+/** argv, run without a shell: ["pnpm", "check"], never "pnpm check". */
+const checkCommandSchema = z
+  .array(
+    z
+      .string()
+      .min(1)
+      .max(1_000)
+      .refine((part) => !part.includes('\0'), 'must not contain NUL'),
+  )
+  .min(1)
+  .max(64)
 const repoInputSchema = z.strictObject({
   id: z.string().trim().min(1).optional(),
   path: z.string().trim().min(1).refine(isAbsolute, 'must be an absolute path'),
@@ -211,6 +241,7 @@ const repoInputSchema = z.strictObject({
   githubRemote: z.string().trim().min(1).optional(),
   allowedProviders: allowedProvidersSchema.optional(),
   container: z.boolean().optional(),
+  checkCommand: checkCommandSchema.optional(),
 })
 const repoAllowlistInputSchema = z
   .strictObject({
@@ -218,13 +249,16 @@ const repoAllowlistInputSchema = z
     /** null clears it. */
     githubRemote: z.string().trim().min(1).nullable().optional(),
     container: z.boolean().optional(),
+    /** null clears it. */
+    checkCommand: checkCommandSchema.nullable().optional(),
   })
   .refine(
     (input) =>
       input.allowedProviders !== undefined ||
       input.githubRemote !== undefined ||
-      input.container !== undefined,
-    { message: 'Send allowedProviders, githubRemote or container' },
+      input.container !== undefined ||
+      input.checkCommand !== undefined,
+    { message: 'Send allowedProviders, githubRemote, container or checkCommand' },
   )
 const publishInputSchema = z.strictObject({
   title: z.string().trim().min(1).max(256).optional(),
@@ -242,6 +276,16 @@ const taskInputSchema = z.strictObject({
   planFirst: z.boolean().optional(),
   maxRounds: z.number().int().min(1).max(20).optional(),
 })
+const taskUpdateSchema = z
+  .strictObject({
+    title: z.string().trim().min(1).max(500).optional(),
+    archived: z.boolean().optional(),
+  })
+  .refine((input) => input.title !== undefined || input.archived !== undefined, {
+    message: 'Send title or archived',
+  })
+const planDecisionSchema = z.strictObject({ note: z.string().trim().min(1).max(20_000).optional() })
+const restoreCheckpointSchema = z.strictObject({ confirm: z.boolean().optional() })
 const idSchema = z.string().min(1).max(128)
 /** Secrets the settings page can manage, by URL segment. Values never leave the server. */
 const SECRET_ROUTES: Record<string, { name: 'openai_api_key' | 'telegram_bot_token'; env: string }> = {
@@ -390,6 +434,10 @@ export interface JoyServerOptions {
   cliVersionCheck?: boolean
   /** Trusted runtime injection/testing only. Otherwise the token is persisted in <home>/api-token. */
   apiToken?: string
+  /** Runs `gh` for pull request status (tests use a fake). Default the GitHub CLI, without a shell. */
+  ghRunner?: GhRunner
+  /** How long a repository's check command may run. Default 15 minutes. */
+  checkTimeoutMs?: number
 }
 
 export interface JoyServer {
@@ -427,7 +475,21 @@ interface ResumeState {
   sessionId: string
   /** What to tell the resumed session; defaults to the task prompt. */
   prompt?: string
+  /** Why the session is continued, when the owner asked for it (follow-up message, plan feedback or approval). */
+  kind?: ContinuationKind
 }
+
+type ContinuationKind = 'follow_up' | 'replan' | 'plan_approved'
+
+/** Statuses from which the owner can continue a task with a message. */
+const CONTINUABLE_STATUSES = new Set<TaskStatus>(['done', 'review_ready', 'failed', 'cancelled'])
+/** Events that end one run of a task (for the duration in its usage). */
+const RUN_END_EVENTS = new Set(['result', 'error', 'task.paused', 'interrupted', 'quota.queued'])
+const PLAN_EVENTS = new Set(['plan.awaiting_approval', 'plan.approved', 'plan.rejected'])
+const MAX_QUEUED_MESSAGES = 20
+const MAX_CHECK_OUTPUT_CHARS = 4_000
+/** Environment variables that look like credentials are not passed to the project's check command. */
+const SECRET_ENV = /TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|CREDENTIAL/i
 
 function selectActiveRoles(
   mode: TaskMode,
@@ -531,6 +593,22 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     options.publisher ?? new GitHubPublisher({ committer: executor, redact: (text) => redactor.redact(text) })
   const publishing = new Set<TaskId>()
   const running = new Map<TaskId, ActiveTask>()
+  /** Owner messages sent while a task was busy, delivered with its next agent turn or right after the run. */
+  const queuedMessages = new Map<TaskId, Array<{ id: string; text: string }>>()
+  const pullRequests = new PullRequestStatusReader(options.ghRunner ? { run: options.ghRunner } : {})
+  /** Executors that can run commands and keep checkpoints (the real git executor; test fakes may not). */
+  const commandRunner = ('run' in executor ? executor : undefined) as
+    (Executor & { run(ws: Workspace, input: RunInWorktreeInput): Promise<RunCommandResult> }) | undefined
+  const checkpointer = ('checkpoint' in executor ? executor : undefined) as
+    | (Executor & {
+        checkpoint(ws: Workspace, ref: string, message: string): Promise<{ commit: string; head: string }>
+        restoreCheckpoint(
+          ws: Workspace,
+          ref: string,
+          options?: { confirmDiscardCommits?: boolean; expectedCommit?: string },
+        ): Promise<{ commit: string; discardedCommits: number }>
+      })
+    | undefined
   const subscribers = new Map<TaskId, Set<WebSocket>>()
   const toolHubSessions = new Map<string, { token: string; dispatch: ToolHubDispatcher }>()
   const wsServer = new WebSocketServer({
@@ -1155,6 +1233,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         ...(input.githubRemote ? { githubRemote: input.githubRemote } : {}),
         ...(input.allowedProviders ? { allowedProviders: input.allowedProviders } : {}),
         ...(input.container ? { container: true } : {}),
+        ...(input.checkCommand ? { checkCommand: input.checkCommand } : {}),
       })
       json(res, 201, { repo })
       return
@@ -1168,13 +1247,16 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (input.allowedProviders) updateRepoAllowedProviders(db, repoId, input.allowedProviders)
       if (input.githubRemote !== undefined) updateRepoGithubRemote(db, repoId, input.githubRemote)
       if (input.container !== undefined) updateRepoContainer(db, repoId, input.container)
+      if (input.checkCommand !== undefined) updateRepoCheckCommand(db, repoId, input.checkCommand)
       const repo = getRepo(db, repoId)
       if (!repo) throw new HttpError(404, `Repository ${repoId} was not found`)
       json(res, 200, { repo })
       return
     }
     if (url.pathname === '/api/tasks' && method === 'GET') {
-      json(res, 200, { tasks: listTasks(db) })
+      // Archived tasks are hidden unless ?archived=1 asks for them too.
+      const withArchived = url.searchParams.get('archived') === '1'
+      json(res, 200, { tasks: listTasks(db, withArchived ? {} : { archived: false }) })
       return
     }
     if (url.pathname === '/api/tasks' && method === 'POST') {
@@ -1188,13 +1270,30 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (taskMatch && method === 'GET') {
       const task = requireTask(decodePathSegment(taskMatch[1] ?? ''))
       const repo = getRepo(db, task.repoId)
+      const attempts = listAttempts(db, task.id)
+      const events = listTaskEvents(db, task.id)
       json(res, 200, {
         task,
         repo,
-        attempts: listAttempts(db, task.id),
-        reviews: listAttempts(db, task.id).flatMap((attempt) => listReviews(db, attempt.id)),
-        events: listTaskEvents(db, task.id),
+        attempts,
+        reviews: attempts.flatMap((attempt) => listReviews(db, attempt.id)),
+        events,
+        usage: taskUsage(events, attempts, running.has(task.id)),
+        pendingPlan: pendingPlan(task, events) ?? null,
+        queuedMessages: queuedMessages.get(task.id) ?? [],
       })
+      return
+    }
+    if (taskMatch && method === 'PATCH') {
+      assertJsonContentType(req)
+      const input = taskUpdateSchema.parse(await readJson(req))
+      const task = requireTask(decodePathSegment(taskMatch[1] ?? ''))
+      if (input.archived && (ACTIVE_TASK_STATUSES.has(task.status) || running.has(task.id)))
+        throw new HttpError(409, `Task cannot be archived while it is ${task.status}; cancel it first`)
+      const updated = updateTask(db, task.id, input)
+      if (!updated) throw new HttpError(404, `Task ${task.id} was not found`)
+      publishTaskLevel(task.id, 'task.updated', input)
+      json(res, 200, { task: updated })
       return
     }
     const eventsMatch = /^\/api\/tasks\/([^/]+)\/events$/.exec(url.pathname)
@@ -1293,6 +1392,76 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       } finally {
         publishing.delete(task.id)
       }
+      return
+    }
+    const messagesMatch = /^\/api\/tasks\/([^/]+)\/messages$/.exec(url.pathname)
+    if (messagesMatch && method === 'POST') {
+      assertJsonContentType(req)
+      const { text } = messageInputSchema.parse(await readJson(req))
+      const task = requireTask(decodePathSegment(messagesMatch[1] ?? ''))
+      json(res, 202, await postTaskMessage(task, text))
+      return
+    }
+    const planMatch = /^\/api\/tasks\/([^/]+)\/plan\/(approve|reject)$/.exec(url.pathname)
+    if (planMatch && method === 'POST') {
+      assertJsonContentType(req)
+      const { note } = planDecisionSchema.parse(await readJson(req))
+      const task = requireTask(decodePathSegment(planMatch[1] ?? ''))
+      const pending = pendingPlan(task)
+      if (!pending) throw new HttpError(409, 'This task has no plan waiting for approval')
+      if (planMatch[2] === 'reject') {
+        publishTaskLevel(task.id, 'plan.rejected', note ? { note } : {})
+        setTaskStatus(db, task.id, 'cancelled')
+        discardQueuedMessages(task.id, 'The plan was rejected')
+        json(res, 200, { task: getTask(db, task.id) })
+        return
+      }
+      const state = await continuationState(task)
+      if (running.has(task.id)) throw new HttpError(409, 'Task is already running')
+      publishTaskLevel(task.id, 'plan.approved', note ? { note } : {})
+      const queued = takeQueuedMessages(task.id, 'plan_approved')
+      json(res, 202, {
+        task: continueTask(task, state, 'plan_approved', approvedPlanPrompt(note, pending.review, queued)),
+      })
+      return
+    }
+    const prMatch = /^\/api\/tasks\/([^/]+)\/pr$/.exec(url.pathname)
+    if (prMatch && method === 'GET') {
+      const task = requireTask(decodePathSegment(prMatch[1] ?? ''))
+      const published = listTaskEvents(db, task.id)
+        .filter((event) => event.type === 'publish.done')
+        .at(-1)
+      const prUrl = (published?.payload as { pullRequestUrl?: unknown } | undefined)?.pullRequestUrl
+      if (typeof prUrl !== 'string') throw new HttpError(404, 'This task has no pull request yet')
+      try {
+        const status = await pullRequests.get(prUrl)
+        json(res, 200, {
+          url: status.url,
+          state: status.state,
+          isDraft: status.isDraft,
+          checks: status.checks,
+          fetchedAt: status.fetchedAt,
+        })
+      } catch (error) {
+        throw new HttpError(
+          502,
+          redactor.redact(error instanceof Error ? error.message : 'Could not read the pull request'),
+        )
+      }
+      return
+    }
+    const checkpointsMatch = /^\/api\/tasks\/([^/]+)\/checkpoints$/.exec(url.pathname)
+    if (checkpointsMatch && method === 'GET') {
+      const task = requireTask(decodePathSegment(checkpointsMatch[1] ?? ''))
+      json(res, 200, { checkpoints: listCheckpoints(task) })
+      return
+    }
+    const restoreMatch = /^\/api\/tasks\/([^/]+)\/checkpoints\/(\d{1,9})\/restore$/.exec(url.pathname)
+    if (restoreMatch && method === 'POST') {
+      assertJsonContentType(req)
+      const { confirm } = restoreCheckpointSchema.parse(await readJson(req))
+      const task = requireTask(decodePathSegment(restoreMatch[1] ?? ''))
+      json(res, 200, await restoreCheckpoint(task, Number(restoreMatch[2]), confirm ?? false))
       return
     }
     const cancelMatch = /^\/api\/tasks\/([^/]+)\/cancel$/.exec(url.pathname)
@@ -1785,7 +1954,418 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     active.promise = runTask(task, controller, resume).finally(() => {
       clearTimeout(active.timeLimit)
       if (running.get(task.id) === active) running.delete(task.id)
+      if (!closed) void continueWithQueuedMessages(task.id)
     })
+  }
+
+  /** The owner's messages on a task, oldest first, as recorded in its events. */
+  function ownerMessages(events: TaskEventRecord[]): string[] {
+    return events
+      .filter((event) => event.type === 'user.message')
+      .map((event) => (event.payload as { text?: unknown }).text)
+      .filter((text): text is string => typeof text === 'string' && text !== '')
+  }
+
+  /** What the task is now: the original request plus every later instruction from the owner (for the reviewer). */
+  function taskBrief(task: StoredTask): string {
+    const messages = ownerMessages(listTaskEvents(db, task.id))
+    if (!messages.length) return task.prompt
+    return [
+      task.prompt,
+      '',
+      'Later instructions from the owner, in order:',
+      ...messages.map((text, index) => `${index + 1}. ${text}`),
+    ].join('\n')
+  }
+
+  /** Plan-first tasks write no code until the owner approved a plan. */
+  function planApproved(task: StoredTask, events = listTaskEvents(db, task.id)): boolean {
+    return !task.planFirst || events.some((event) => event.type === 'plan.approved')
+  }
+
+  /** The plan waiting for the owner, when the task stopped after planning and is not busy. */
+  function pendingPlan(
+    task: StoredTask,
+    events = listTaskEvents(db, task.id),
+  ): { plan: string; review?: ReviewVerdict } | undefined {
+    if (running.has(task.id) || ACTIVE_TASK_STATUSES.has(task.status)) return undefined
+    if (planApproved(task, events)) return undefined
+    const last = events.filter((event) => PLAN_EVENTS.has(event.type)).at(-1)
+    if (last?.type !== 'plan.awaiting_approval') return undefined
+    const payload = last.payload as { plan?: unknown; review?: ReviewVerdict }
+    return {
+      plan: typeof payload.plan === 'string' ? payload.plan : '',
+      ...(payload.review ? { review: payload.review } : {}),
+    }
+  }
+
+  /** Hands the owner's queued messages to the next agent turn, recording that they were delivered. */
+  function takeQueuedMessages(taskId: TaskId, via: string): string[] {
+    const queued = queuedMessages.get(taskId)
+    if (!queued?.length) return []
+    queuedMessages.delete(taskId)
+    publishTaskLevel(taskId, 'user.message.delivered', { ids: queued.map((m) => m.id), via })
+    return queued.map((m) => m.text)
+  }
+
+  function discardQueuedMessages(taskId: TaskId, reason: string): void {
+    const queued = queuedMessages.get(taskId)
+    if (!queued?.length) return
+    queuedMessages.delete(taskId)
+    publishTaskLevel(taskId, 'user.message.discarded', { ids: queued.map((m) => m.id), reason })
+  }
+
+  /** The saved worktree and session of a task the owner wants to continue. */
+  async function continuationState(task: StoredTask): Promise<ResumeState> {
+    if (task.mode === 'compete')
+      throw new HttpError(409, 'Compete tasks cannot be continued; choose an attempt or start a new task')
+    const state = await resumeState(task)
+    if (removedWorktrees(task.id).has(state.attempt.id))
+      throw new HttpError(409, 'This worktree was already removed (published or discarded); start a new task')
+    return state
+  }
+
+  /** Continues a finished task in the same worktree and session, then runs its workflow again. */
+  function continueTask(
+    task: StoredTask,
+    state: ResumeState,
+    kind: ContinuationKind,
+    prompt: string,
+  ): StoredTask | undefined {
+    setTaskStatus(db, task.id, 'queued')
+    scheduleTask({ ...task, status: 'queued' }, { ...state, prompt, kind })
+    return getTask(db, task.id)
+  }
+
+  /** A note for the agent when the owner restored a checkpoint since its last turn. */
+  function restoreNote(taskId: TaskId): string[] {
+    const events = listTaskEvents(db, taskId)
+    const lastStart = events.findLastIndex((event) => event.type === 'started')
+    const restored = events.slice(lastStart + 1).filter((event) => event.type === 'checkpoint.restored')
+    const n = (restored.at(-1)?.payload as { n?: unknown } | undefined)?.n
+    return typeof n === 'number'
+      ? [
+          `Note: the owner restored the worktree to checkpoint ${n}; changes made after it are gone. Look at the files again before continuing.`,
+          '',
+        ]
+      : []
+  }
+
+  /**
+   * The owner writes in a task's thread. A busy task queues the message for its next agent turn; a finished one is
+   * continued in the same worktree and session (a plan that is not approved yet is revised instead).
+   */
+  async function postTaskMessage(task: StoredTask, text: string) {
+    if (task.mode === 'compete')
+      throw new HttpError(409, 'Compete tasks cannot take messages; choose an attempt or start a new task')
+    const id = randomUUID()
+    if (running.has(task.id) || ACTIVE_TASK_STATUSES.has(task.status)) {
+      const queue = queuedMessages.get(task.id) ?? []
+      if (queue.length >= MAX_QUEUED_MESSAGES)
+        throw new HttpError(
+          429,
+          'Too many messages are waiting for this task; wait for the agent to pick them up',
+        )
+      queue.push({ id, text })
+      queuedMessages.set(task.id, queue)
+      publishTaskLevel(task.id, 'user.message', { id, text, provenance: 'user', delivery: 'queued' })
+      return { task: getTask(db, task.id), message: { id, delivery: 'queued' as const } }
+    }
+    if (!CONTINUABLE_STATUSES.has(task.status))
+      throw new HttpError(409, `Task cannot take a message while it is ${task.status}`)
+    const state = await continuationState(task)
+    if (running.has(task.id)) throw new HttpError(409, 'Task is already running')
+    const kind: ContinuationKind = planApproved(task) ? 'follow_up' : 'replan'
+    const earlier = takeQueuedMessages(task.id, kind)
+    publishTaskLevel(task.id, 'user.message', { id, text, provenance: 'user', delivery: kind })
+    const messages = [...earlier, text]
+    const prompt =
+      kind === 'replan'
+        ? revisePlanPrompt(messages)
+        : [...restoreNote(task.id), followUpPrompt(messages)].join('\n')
+    return { task: continueTask(task, state, kind, prompt), message: { id, delivery: kind } }
+  }
+
+  /** Messages that arrived too late for the last agent turn start a follow-up once the run ends. */
+  async function continueWithQueuedMessages(taskId: TaskId): Promise<void> {
+    if (!queuedMessages.get(taskId)?.length || running.has(taskId)) return
+    const task = getTask(db, taskId)
+    if (!task) return
+    // Queued (quota wait) and paused tasks pick the messages up when they resume.
+    if (ACTIVE_TASK_STATUSES.has(task.status)) return
+    if (task.status === 'cancelled') {
+      discardQueuedMessages(taskId, 'The task was cancelled')
+      return
+    }
+    try {
+      const state = await continuationState(task)
+      if (running.has(taskId)) return
+      const kind: ContinuationKind = planApproved(task) ? 'follow_up' : 'replan'
+      const messages = takeQueuedMessages(taskId, kind)
+      if (!messages.length) return
+      continueTask(
+        task,
+        state,
+        kind,
+        kind === 'replan' ? revisePlanPrompt(messages) : followUpPrompt(messages),
+      )
+    } catch (error) {
+      discardQueuedMessages(
+        taskId,
+        redactor.redact(error instanceof Error ? error.message : 'The task could not be continued'),
+      )
+    }
+  }
+
+  /** Wall-clock time the task ran and the tokens and cost its agents reported (only what was recorded). */
+  function taskUsage(events: TaskEventRecord[], attempts: AttemptRecord[], isRunning: boolean) {
+    const byAttempt = new Map(attempts.map((attempt) => [attempt.id as string, attempt]))
+    const roleModels = new Map<string, ModelRef>()
+    const totals: { inputTokens?: number; outputTokens?: number; costUsd?: number } = {}
+    const byProvider = new Map<
+      string,
+      { provider: ProviderKind; model: string; inputTokens?: number; outputTokens?: number; costUsd?: number }
+    >()
+    const add = (
+      target: { inputTokens?: number; outputTokens?: number; costUsd?: number },
+      key: 'inputTokens' | 'outputTokens' | 'costUsd',
+      value: unknown,
+    ) => {
+      if (typeof value === 'number' && Number.isFinite(value)) target[key] = (target[key] ?? 0) + value
+    }
+    let durationMs = 0
+    let openedAt: number | undefined
+    for (const event of events) {
+      const at = Date.parse(event.ts)
+      if (event.type === 'started' && openedAt === undefined) openedAt = at
+      else if (RUN_END_EVENTS.has(event.type) && openedAt !== undefined) {
+        durationMs += Math.max(0, at - openedAt)
+        openedAt = undefined
+      }
+      const payload = event.payload as {
+        role?: unknown
+        model?: ModelRef
+        type?: unknown
+        event?: { type?: unknown; inputTokens?: unknown; outputTokens?: unknown; costUsd?: unknown }
+      }
+      if (typeof payload !== 'object' || payload === null) continue
+      const role = typeof payload.role === 'string' ? payload.role : undefined
+      if (event.type === 'phase' && role && payload.model?.provider)
+        roleModels.set(`${event.attemptId ?? ''}:${role}`, payload.model)
+      if (payload.event?.type !== 'usage') continue
+      const attempt = event.attemptId ? byAttempt.get(event.attemptId) : undefined
+      const model =
+        roleModels.get(`${event.attemptId ?? ''}:${role ?? ''}`) ??
+        (role === 'implementer' && attempt ? { provider: attempt.provider, model: attempt.model } : undefined)
+      for (const key of ['inputTokens', 'outputTokens', 'costUsd'] as const)
+        add(totals, key, payload.event[key])
+      if (!model) continue
+      const id = `${model.provider}:${model.model}`
+      const entry = byProvider.get(id) ?? { provider: model.provider, model: model.model }
+      for (const key of ['inputTokens', 'outputTokens', 'costUsd'] as const)
+        add(entry, key, payload.event[key])
+      byProvider.set(id, entry)
+    }
+    if (openedAt !== undefined && isRunning) durationMs += Math.max(0, Date.now() - openedAt)
+    return { durationMs, ...totals, byProvider: [...byProvider.values()] }
+  }
+
+  /**
+   * Runs the repository's check command in the worktree (T: pre-review checks). It is a run_in_worktree action
+   * under the policy; an approval-tier decision waits for the owner and skips the checks when not approved.
+   */
+  async function runProjectChecks(
+    task: StoredTask,
+    repo: RepoRecord,
+    attempt: AttemptRecord,
+    ws: Workspace,
+    round: number,
+    signal: AbortSignal,
+  ): Promise<ChecksResult | undefined> {
+    const argv = getRepo(db, repo.id)?.checkCommand
+    if (!argv?.length) return undefined
+    const skip = (reason: string) => {
+      publish(task.id, attempt.id, 'checks.skipped', { round, reason })
+      return undefined
+    }
+    if (!commandRunner) return skip('This executor cannot run commands')
+    const config = await configStore.get()
+    const action: ProposedAction = {
+      kind: 'run_in_worktree',
+      summary: `Run the project checks: ${argv.join(' ')}`,
+      detail: { command: argv, cwd: ws.path },
+      provenance: task.provenance === 'external_content' ? 'external_content' : 'user',
+    }
+    const decision = evaluateAction(action, config.autonomy_mode)
+    publish(task.id, attempt.id, 'policy.action', {
+      kind: action.kind,
+      summary: redactor.redact(action.summary),
+      provenance: action.provenance,
+      mode: config.autonomy_mode,
+      tier: decision.tier,
+      outcome: decision.outcome,
+    })
+    if (decision.outcome === 'require_approval') {
+      if (!(options.ownerApprovalChannel ?? true))
+        return skip("The checks need the owner's approval and owner approvals are turned off")
+      setTaskStatus(db, task.id, 'awaiting_approval')
+      let status: ApprovalStatus
+      try {
+        status = (
+          await approvals.request(
+            { taskId: task.id, attemptId: attempt.id, action, tier: 'approve' },
+            signal,
+            options.approvalTimeoutMs ?? config.approvals.timeout_minutes * 60_000,
+          )
+        ).status
+      } finally {
+        if (getTask(db, task.id)?.status === 'awaiting_approval') setTaskStatus(db, task.id, 'running')
+      }
+      if (status !== 'approved') return skip(`The owner did not approve running the checks (${status})`)
+    }
+    const command = repo.container
+      ? await containerCheckCommand(ws.path, argv, config)
+      : { command: argv[0] ?? '', args: argv.slice(1) }
+    const startedAt = Date.now()
+    const result = await commandRunner.run(ws, {
+      ...command,
+      signal,
+      timeoutMs: options.checkTimeoutMs ?? 15 * 60_000,
+      env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !SECRET_ENV.test(name))),
+    })
+    const output = result.spawnError
+      ? `${result.output}\nCould not start ${argv[0] ?? 'the command'}: ${result.spawnError}`
+      : result.output
+    return {
+      ok: result.exitCode === 0 && !result.timedOut,
+      exitCode: result.exitCode,
+      outputTail: redactor.redact(output).slice(-MAX_CHECK_OUTPUT_CHARS),
+      durationMs: Date.now() - startedAt,
+      ...(result.timedOut ? { timedOut: true } : {}),
+    }
+  }
+
+  /** The check command inside the agent container for an untrusted repository (T4.5). */
+  async function containerCheckCommand(cwd: string, argv: string[], config: JoyConfig) {
+    const containerHome = join(home, 'container-home', 'checks')
+    await mkdir(containerHome, { recursive: true, mode: 0o700 })
+    return containerRunCommand({
+      image: config.container.image,
+      network: config.container.network,
+      containerHome,
+      cwd,
+      mounts: [{ host: await gitCommonDir(cwd), readOnly: false }],
+      command: argv,
+      args: [],
+      ...(typeof process.getuid === 'function' && typeof process.getgid === 'function'
+        ? { user: `${process.getuid()}:${process.getgid()}` }
+        : {}),
+    })
+  }
+
+  /** Joy's checkpoints of a task, oldest first, from its events. */
+  function listCheckpoints(task: StoredTask) {
+    const removed = removedWorktrees(task.id)
+    return listTaskEvents(db, task.id)
+      .filter((event) => event.type === 'checkpoint.created' && event.attemptId)
+      .map((event) => {
+        const payload = event.payload as {
+          n: number
+          ref: string
+          commit: string
+          head: string
+          round: number
+          label: string
+        }
+        return {
+          n: payload.n,
+          ref: payload.ref,
+          commit: payload.commit,
+          head: payload.head,
+          round: payload.round,
+          label: payload.label,
+          attemptId: event.attemptId,
+          createdAt: event.ts,
+          available: !removed.has(event.attemptId ?? ''),
+        }
+      })
+  }
+
+  /** Snapshots the worktree after a successful agent turn. A failure is logged and never fails the task. */
+  async function createCheckpoint(
+    task: StoredTask,
+    attempt: AttemptRecord,
+    ws: Workspace,
+    round: number,
+    label: string,
+  ): Promise<number | undefined> {
+    if (!checkpointer || task.mode === 'compete') return undefined
+    const n = Math.max(0, ...listCheckpoints(task).map((checkpoint) => checkpoint.n)) + 1
+    try {
+      const ref = checkpointRef(task.id, n)
+      const { commit, head } = await checkpointer.checkpoint(ws, ref, `Joy checkpoint ${n}: ${label}`)
+      publish(task.id, attempt.id, 'checkpoint.created', { n, ref, commit, head, round, label })
+      return n
+    } catch (error) {
+      log.warn(
+        redactor.redact(`[joy] could not create checkpoint ${n} for task ${task.id}: ${String(error)}`),
+      )
+      return undefined
+    }
+  }
+
+  /** Puts the worktree back to checkpoint n after saving the current state as a new checkpoint. */
+  async function restoreCheckpoint(task: StoredTask, n: number, confirm: boolean) {
+    if (!checkpointer) throw new HttpError(409, 'Checkpoints are not available with this executor')
+    if (running.has(task.id) || ACTIVE_TASK_STATUSES.has(task.status))
+      throw new HttpError(409, `Task is ${task.status}; cancel it or wait for it to finish before restoring`)
+    const checkpoint = listCheckpoints(task).find((candidate) => candidate.n === n)
+    if (!checkpoint) throw new HttpError(404, `Checkpoint ${n} was not found`)
+    if (!checkpoint.available || !checkpoint.attemptId)
+      throw new HttpError(409, 'The worktree of this checkpoint was already removed')
+    const attempt = getAttempt(db, checkpoint.attemptId)
+    const repo = getRepo(db, task.repoId)
+    if (!attempt?.worktreePath || !attempt.branch || !attempt.baseCommit || !repo)
+      throw new HttpError(409, 'This checkpoint has no worktree to restore')
+    if (samePath(attempt.worktreePath, repo.path))
+      throw new HttpError(409, 'Refusing to restore into the repository main checkout')
+    const ws: Workspace = {
+      repo,
+      taskId: task.id,
+      attemptId: attempt.id,
+      path: attempt.worktreePath,
+      branch: attempt.branch,
+      baseCommit: attempt.baseCommit,
+    }
+    // Nothing is lost: the current state becomes a checkpoint the owner can restore again.
+    const saved = await createCheckpoint(
+      task,
+      attempt,
+      ws,
+      checkpoint.round,
+      `before restoring checkpoint ${n}`,
+    )
+    if (saved === undefined) throw new HttpError(500, 'Could not save the current state before restoring')
+    try {
+      const restored = await checkpointer.restoreCheckpoint(ws, checkpoint.ref, {
+        confirmDiscardCommits: confirm,
+        expectedCommit: checkpoint.commit,
+      })
+      const diff = await executor.diff(ws)
+      updateAttempt(db, attempt.id, { diffStats: summarizeDiff(diff) })
+      publish(task.id, attempt.id, 'checkpoint.restored', {
+        n,
+        commit: restored.commit,
+        savedAs: saved,
+        discardedCommits: restored.discardedCommits,
+        diff,
+      })
+      return { restored: n, savedAs: saved, discardedCommits: restored.discardedCommits }
+    } catch (error) {
+      if (error instanceof CheckpointCommitsError)
+        throw new HttpError(409, `${error.message} (send {"confirm": true})`)
+      throw new HttpError(409, redactor.redact(error instanceof Error ? error.message : 'Restore failed'))
+    }
   }
 
   async function runTask(task: StoredTask, controller: AbortController, resume?: ResumeState): Promise<void> {
@@ -2349,22 +2929,33 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     resume?: ResumeState,
   ): Promise<void> {
     let finished = false
+    let workspace: Workspace | undefined = resume?.workspace
+    const planning = !planApproved(task)
+    const brief = taskBrief(task)
+    // Round numbers continue after the reviews this attempt already has (a follow-up starts a new round).
+    const firstRound = Math.max(0, ...listReviews(db, attempt.id).map((review) => review.round)) + 1
     for await (const event of reviewLoop(
       {
         taskId: task.id,
         attemptId: attempt.id,
         repo,
-        prompt: task.prompt,
+        prompt: brief,
         implementer,
         reviewer,
-        planFirst: task.planFirst,
+        planFirst: planning,
         maxRounds: task.maxRounds,
         signal: controller.signal,
+        firstRound,
+        takeMessages: () => takeQueuedMessages(task.id, 'next_turn'),
+        runChecks: (ws, round) => runProjectChecks(task, repo, attempt, ws, round, controller.signal),
         ...(resume ? { resumeWorkspace: resume.workspace, resumeSessionId: resume.sessionId } : {}),
+        ...(resume && planning ? { replanPrompt: resume.prompt ?? planPrompt(brief) } : {}),
+        ...(resume?.prompt && !planning ? { resumePrompt: resume.prompt } : {}),
       },
       { providers, executor },
     )) {
       recordLoopEvent(attempt, implementer, reviewer, event)
+      if (event.type === 'workspace') workspace = event.workspace
       if (event.type === 'result') {
         finished = true
         const taskStatus: TaskStatus =
@@ -2376,8 +2967,28 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
                 ? 'done'
                 : 'review_ready'
         setTaskStatus(db, task.id, taskStatus)
+        if (event.awaitingPlanApproval)
+          publish(task.id, attempt.id, 'plan.awaiting_approval', {
+            plan: event.plan ?? '',
+            ...(event.planReview ? { review: event.planReview } : {}),
+          })
       }
       publish(task.id, attempt.id, event.type, event)
+      if (
+        workspace &&
+        event.type === 'agent' &&
+        event.role === 'implementer' &&
+        event.round >= 1 &&
+        event.event.type === 'done' &&
+        !event.event.isError
+      )
+        await createCheckpoint(
+          task,
+          attempt,
+          workspace,
+          event.round,
+          `implementer turn, round ${event.round}`,
+        )
     }
     if (!finished) throw new Error('Review loop stopped without a result')
   }
@@ -2705,6 +3316,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         422,
         `${implementer.provider} does not support code editing required by ${input.mode} mode`,
       )
+    if (input.planFirst && input.mode === 'compete')
+      throw new HttpError(422, 'planFirst works with the single and review_loop workflows, not compete')
     const repo = getRepo(db, input.repoId as RepoId)
     if (!repo) throw new HttpError(404, `Repository ${input.repoId} was not found`)
     const configRoles = config.roles as RoleConfig
@@ -2781,9 +3394,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const task = requireTask(id)
     const active = running.get(task.id)
     if (active) active.controller.abort()
-    else if (task.status === 'queued' || task.status === 'awaiting_approval')
+    else if (task.status === 'queued' || task.status === 'awaiting_approval') {
       setTaskStatus(db, task.id, 'cancelled')
-    else if (task.status !== 'cancelled')
+      discardQueuedMessages(task.id, 'The task was cancelled')
+    } else if (task.status !== 'cancelled')
       throw new HttpError(409, `Task cannot be cancelled from ${task.status}`)
     const current = getTask(db, task.id)
     if (!current) throw new HttpError(404, 'Task not found')
@@ -3791,6 +4405,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (!provider) throw new Error(`No provider configured for ${model.provider}`)
     if (!provider.capabilities.codeEdit)
       throw new Error(`${model.provider} does not support code editing required by single mode`)
+    if (!handoff && !planApproved(task)) {
+      await runSinglePlan(task, repo, attempt, model, provider, controller, resume)
+      return
+    }
     const workspace =
       handoff?.workspace ?? resume?.workspace ?? (await executor.prepare(repo, task.id, attempt.id))
     updateAttempt(db, attempt.id, {
@@ -3807,7 +4425,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         : undefined
     const options: RunOptions = {
       cwd: workspace.path,
-      prompt: handoff?.prompt ?? resume?.prompt ?? task.prompt,
+      prompt: withOwnerMessages(
+        handoff?.prompt ?? resume?.prompt ?? task.prompt,
+        takeQueuedMessages(task.id, 'next_turn'),
+      ),
       autonomy: 'workspace-write',
       signal: controller.signal,
       ...(toolHub ? { mcpServers: [toolHub.server] } : {}),
@@ -3870,6 +4491,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       return
     }
     const succeeded = !controller.signal.aborted && !!done && !done.isError && !failure
+    if (succeeded) {
+      await createCheckpoint(task, attempt, workspace, 1, 'implementer turn')
+      // Single mode has no review to feed: the result is shown to the owner, it does not change the outcome.
+      const checks = await runProjectChecks(task, repo, attempt, workspace, 1, controller.signal)
+      if (checks) publish(task.id, attempt.id, 'checks', { type: 'checks', round: 1, ...checks })
+    }
     const status = controller.signal.aborted ? 'cancelled' : succeeded ? 'succeeded' : 'failed'
     updateAttempt(db, attempt.id, { status, diffStats: summarizeDiff(diff) })
     setTaskStatus(db, task.id, status === 'succeeded' ? 'done' : status)
@@ -3880,6 +4507,83 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       rounds: 1,
       diff,
       ...(failure ? { reason: failure } : {}),
+    })
+  }
+
+  /** Plan-first single task: the implementer writes a plan (read-only) and the task waits for the owner. */
+  async function runSinglePlan(
+    task: StoredTask,
+    repo: RepoRecord,
+    attempt: AttemptRecord,
+    model: ModelRef,
+    provider: AgentProvider,
+    controller: AbortController,
+    resume?: ResumeState,
+  ): Promise<void> {
+    const workspace = resume?.workspace ?? (await executor.prepare(repo, task.id, attempt.id))
+    updateAttempt(db, attempt.id, {
+      status: 'running',
+      worktreePath: workspace.path,
+      branch: workspace.branch,
+      baseCommit: workspace.baseCommit,
+    })
+    publish(task.id, attempt.id, 'workspace', workspace)
+    publish(task.id, attempt.id, 'phase', {
+      type: 'phase',
+      phase: 'planning',
+      round: 0,
+      role: 'implementer',
+      model,
+    })
+    let done: Extract<AgentEvent, { type: 'done' }> | undefined
+    let failure: string | undefined
+    for await (const event of provider.run(
+      {
+        cwd: workspace.path,
+        prompt: withOwnerMessages(
+          resume?.prompt ?? planPrompt(task.prompt),
+          takeQueuedMessages(task.id, 'next_turn'),
+        ),
+        autonomy: 'read-only',
+        signal: controller.signal,
+        ...(resume ? { resumeSessionId: resume.sessionId } : {}),
+      },
+      model,
+    )) {
+      persistUsageEvent(db, model.provider, event)
+      if (event.type === 'quota') noteQuota(model.provider, event)
+      if (event.type === 'usage') chargeTask(task.id, model.provider, event)
+      if (event.type === 'session_started') updateAttempt(db, attempt.id, { sessionId: event.sessionId })
+      if (event.type === 'error' && !event.recoverable) failure = event.message
+      if (event.type === 'done') done = event
+      publish(task.id, attempt.id, 'agent', { role: 'implementer', round: 0, event })
+    }
+    const stoppedFor = running.get(task.id)?.stoppedFor
+    if (controller.signal.aborted || !done || done.isError || failure) {
+      const status = controller.signal.aborted && !stoppedFor ? 'cancelled' : 'failed'
+      updateAttempt(db, attempt.id, { status })
+      setTaskStatus(db, task.id, status)
+      publish(task.id, attempt.id, 'result', {
+        type: 'result',
+        status,
+        approved: false,
+        rounds: 0,
+        reason: stoppedFor ?? failure ?? (status === 'cancelled' ? 'Cancelled' : 'Planning failed'),
+      })
+      return
+    }
+    const plan = done.finalMessage ?? ''
+    updateAttempt(db, attempt.id, { status: 'succeeded' })
+    setTaskStatus(db, task.id, 'review_ready')
+    publish(task.id, attempt.id, 'plan.awaiting_approval', { plan })
+    publish(task.id, attempt.id, 'result', {
+      type: 'result',
+      status: 'succeeded',
+      approved: false,
+      rounds: 0,
+      awaitingPlanApproval: true,
+      plan,
+      reason: 'The plan is ready for your approval',
     })
   }
 
