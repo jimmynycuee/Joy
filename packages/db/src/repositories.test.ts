@@ -24,6 +24,8 @@ import {
   listUsage,
   setTaskStatus,
   updateAttempt,
+  updateRepoCheckCommand,
+  updateTask,
 } from './repositories.js'
 
 const databases: Database[] = []
@@ -274,5 +276,33 @@ describe('repositories', () => {
       worktreePath: '/tmp/joy-worktree',
       sessionId: 'session-1',
     })
+  })
+})
+
+describe('task rename and archive', () => {
+  it('renames, archives and filters archived tasks out of the list on request', () => {
+    const db = fresh()
+    const { task } = seed(db)
+    expect(task.archived).toBe(false)
+    const renamed = updateTask(db, task.id, { title: 'Better title' })
+    expect(renamed).toMatchObject({ title: 'Better title', archived: false })
+    expect(updateTask(db, task.id, { archived: true })).toMatchObject({ archived: true })
+    expect(listTasks(db).map((t) => t.id)).toEqual([task.id])
+    expect(listTasks(db, { archived: false })).toEqual([])
+    expect(listTasks(db, { archived: true }).map((t) => t.id)).toEqual([task.id])
+    expect(updateTask(db, tid('missing'), { title: 'x' })).toBeUndefined()
+    expect(() => db.prepare('UPDATE tasks SET archived = 2').run()).toThrow()
+  })
+})
+
+describe('repository check command', () => {
+  it('stores, clears and validates the argv', () => {
+    const db = fresh()
+    const { repo } = seed(db)
+    expect(repo.checkCommand).toBeUndefined()
+    expect(updateRepoCheckCommand(db, repo.id, ['pnpm', 'check'])?.checkCommand).toEqual(['pnpm', 'check'])
+    expect(updateRepoCheckCommand(db, repo.id, null)?.checkCommand).toBeUndefined()
+    expect(() => updateRepoCheckCommand(db, repo.id, [])).toThrow('Invalid check command')
+    expect(() => db.prepare('UPDATE repos SET check_command = \'"pnpm check"\'').run()).toThrow()
   })
 })
