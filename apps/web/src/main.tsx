@@ -71,6 +71,31 @@ const MODEL_SUGGESTIONS: Record<ProviderKind, string[]> = {
 
 declare const __JOY_API_TOKEN__: string
 
+const TOKEN_KEY = 'joy.apiToken'
+
+/**
+ * The access token: one this device saved (remote access, or after regenerating), else the one the local dev server
+ * injected. Storage can be unavailable (private windows), so every access is guarded.
+ */
+function apiToken(): string {
+  try {
+    return window.localStorage.getItem(TOKEN_KEY) || __JOY_API_TOKEN__
+  } catch {
+    return __JOY_API_TOKEN__
+  }
+}
+
+function saveApiToken(token: string): void {
+  try {
+    window.localStorage.setItem(TOKEN_KEY, token)
+  } catch {
+    // Without storage the token only lasts until reload; the gate asks again.
+  }
+}
+
+/** Tells the app the token was refused, so it can ask for a new one. */
+const UNAUTHORIZED_EVENT = 'joy-unauthorized'
+
 function providersForRole(role: Role): ProviderKind[] {
   return role === 'implementer'
     ? PROVIDER_KINDS.filter((provider) => provider !== 'openai-api')
@@ -84,8 +109,9 @@ function doctorStatusLabel(status: DoctorStatus): string {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body && !headers.has('content-type')) headers.set('content-type', 'application/json')
-  headers.set('authorization', `Bearer ${__JOY_API_TOKEN__}`)
+  headers.set('authorization', `Bearer ${apiToken()}`)
   const response = await fetch(path, { ...init, headers })
+  if (response.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
   const text = await response.text()
   const body = text ? (JSON.parse(text) as T & ApiError) : ({} as T & ApiError)
   if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`)
@@ -681,7 +707,7 @@ function WorktreesPanel() {
 
 /** Downloads an authenticated API response as a file. */
 async function downloadFile(path: string, filename: string): Promise<void> {
-  const response = await fetch(path, { headers: { authorization: `Bearer ${__JOY_API_TOKEN__}` } })
+  const response = await fetch(path, { headers: { authorization: `Bearer ${apiToken()}` } })
   if (!response.ok) throw new Error(`Download failed (${response.status})`)
   const url = URL.createObjectURL(await response.blob())
   const link = document.createElement('a')
@@ -1762,7 +1788,81 @@ function StatsPage(props: { repos: Repo[] }) {
   )
 }
 
+/** Shown when this device has no accepted access token (remote access, or after the token was regenerated). */
+function TokenGate() {
+  return (
+    <main className="token-gate" data-testid="token-gate">
+      <h1>Joy access token</h1>
+      <p className="muted">
+        Paste the token from <code>~/.joy/api-token</code> on the computer that runs Joy. It is kept on this
+        device only.
+      </p>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault()
+          const token = String(new FormData(event.currentTarget).get('token') ?? '').trim()
+          if (!token) return
+          saveApiToken(token)
+          window.location.reload()
+        }}
+      >
+        <input name="token" type="password" aria-label="Access token" autoComplete="off" required />
+        <button className="primary-button" type="submit">
+          Continue
+        </button>
+      </form>
+    </main>
+  )
+}
+
+/** Regenerating the token logs out every other device and browser tab (T4.1). */
+function AccessTokenPanel() {
+  const [shown, setShown] = useState('')
+  const [failure, setFailure] = useState('')
+
+  async function regenerate() {
+    if (!window.confirm('Regenerate the access token? Every other device and tab will need the new token.'))
+      return
+    setFailure('')
+    try {
+      const body = await request<{ token: string }>('/api/token/rotate', { method: 'POST', body: '{}' })
+      saveApiToken(body.token)
+      setShown(body.token)
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : 'Could not regenerate the token')
+    }
+  }
+
+  return (
+    <section className="settings-card" aria-label="Access token" data-testid="access-token-panel">
+      <h2>Access token</h2>
+      <p className="muted">
+        Every request to Joy needs this token. For remote access (Tailscale), see the README.
+      </p>
+      <button type="button" className="quiet-button" onClick={() => void regenerate()}>
+        Regenerate token
+      </button>
+      {shown ? (
+        <p>
+          New token (shown once): <code data-testid="new-token">{shown}</code>
+        </p>
+      ) : null}
+      {failure ? <p className="approvals-error">{failure}</p> : null}
+    </section>
+  )
+}
+
 function App() {
+  const [unauthorized, setUnauthorized] = useState(() => !apiToken())
+  useEffect(() => {
+    const onUnauthorized = () => setUnauthorized(true)
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized)
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized)
+  }, [])
+  return unauthorized ? <TokenGate /> : <Workspace />
+}
+
+function Workspace() {
   const [repos, setRepos] = useState<Repo[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [config, setConfig] = useState<JoyConfig | null>(null)
@@ -1960,7 +2060,7 @@ function App() {
 
     function connect(): void {
       if (!active) return
-      const nextSocket = new WebSocket(socketUrl(), ['joy', `joy-auth.${__JOY_API_TOKEN__}`])
+      const nextSocket = new WebSocket(socketUrl(), ['joy', `joy-auth.${apiToken()}`])
       socket = nextSocket
       nextSocket.onopen = () => {
         if (!active) return
@@ -2430,6 +2530,7 @@ function App() {
                 )}
               </section>
               {config ? <TelegramSettings config={config} onConfig={setConfig} /> : null}
+              <AccessTokenPanel />
               <NotificationsPanel />
               <WorktreesPanel />
               <BackupsPanel />

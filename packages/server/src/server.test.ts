@@ -600,10 +600,11 @@ describe('Joy local server', () => {
       body,
       wrongToken,
     )
-    expect(missing.status).toBe(403)
-    expect(unauthenticatedDoctor.status).toBe(403)
-    expect(unauthenticatedRead.status).toBe(403)
-    expect(wrong.status).toBe(403)
+    // T4.1: a missing or wrong access token is 401; 403 is kept for a forbidden host or origin.
+    expect(missing.status).toBe(401)
+    expect(unauthenticatedDoctor.status).toBe(401)
+    expect(unauthenticatedRead.status).toBe(401)
+    expect(wrong.status).toBe(401)
     const publicHealth = await rawRequest(
       origin,
       '/api/health',
@@ -665,10 +666,10 @@ describe('Joy local server', () => {
       '',
       null,
     )
-    expect(missingSocket.status).toBe(403)
-    expect(wrongSocket.status).toBe(403)
-    expect(missingMarkerSocket.status).toBe(403)
-    expect(duplicateCredentialSocket.status).toBe(403)
+    expect(missingSocket.status).toBe(401)
+    expect(wrongSocket.status).toBe(401)
+    expect(missingMarkerSocket.status).toBe(401)
+    expect(duplicateCredentialSocket.status).toBe(401)
     expect(missingSocket.messages).toEqual([])
     expect(wrongSocket.messages).toEqual([])
     expect(missingMarkerSocket.messages).toEqual([])
@@ -717,7 +718,7 @@ describe('Joy local server', () => {
           method === 'POST' || method === 'PUT' ? '{}' : '',
           token,
         )
-        expect(response.status, `${method} ${path}`).toBe(403)
+        expect(response.status, `${method} ${path}`).toBe(401)
       }
     }
 
@@ -858,7 +859,7 @@ describe('Joy local server', () => {
       JSON.stringify({ path: '/tmp/token-redaction-repo', defaultBranch: 'main' }),
       badToken,
     )
-    expect(error.status).toBe(403)
+    expect(error.status).toBe(401)
     expect(error.body).not.toContain(TEST_API_TOKEN)
     expect(error.body).not.toContain(badToken)
 
@@ -3191,6 +3192,109 @@ describe('Joy local server', () => {
     }
     const notes = messages.map((m) => m.content).filter((c) => /^(🔔|🔴|✅|⛔)/u.test(c))
     expect(notes.map((n) => Array.from(n)[0])).toEqual(['🔔', '🔴', '✅', '🔴', '⛔'])
+  })
+
+  it('regenerates the access token and the old one stops working at once', async () => {
+    const { serverPromise, dir } = fixture()
+    const { origin } = await start(serverPromise)
+    const host = new URL(origin).host
+    const rotated = await rawRequest(
+      origin,
+      '/api/token/rotate',
+      'POST',
+      { host, origin: VITE_ORIGIN, 'content-type': 'application/json' },
+      '{}',
+    )
+    expect(rotated.status).toBe(200)
+    const { token } = JSON.parse(rotated.body) as { token: string }
+    expect(token).toMatch(/^[A-Za-z0-9_-]{40,}$/)
+    expect(readFileSync(join(dir, 'api-token'), 'utf8')).toBe(token)
+    if (process.platform !== 'win32') expect(statSync(join(dir, 'api-token')).mode & 0o077).toBe(0)
+    const read = (auth: string | null) =>
+      rawRequest(origin, '/api/repos', 'GET', { host, origin: VITE_ORIGIN }, '', auth)
+    expect((await read(TEST_API_TOKEN)).status).toBe(401)
+    expect((await read(null)).status).toBe(401)
+    expect((await read(token)).status).toBe(200)
+  })
+
+  it('listens remotely only when enabled, still requiring the token, and refuses other hosts', async () => {
+    const configStore = new ConfigStore(
+      join(mkdtempSync(join(tmpdir(), 'joy-remote-config-')), 'config.yaml'),
+    )
+    await configStore.update((config) => ({
+      ...config,
+      approvals: { ...config.approvals, on_timeout: 'deny' },
+      remote: { enabled: true, address: '127.0.0.1', port: 0, https_hosts: [] },
+    }))
+    const { serverPromise } = fixture({ configStore })
+    const { server, origin } = await start(serverPromise)
+    const remote = server.remoteAddress()
+    expect(remote?.port).toBeGreaterThan(0)
+    const remoteOrigin = `http://127.0.0.1:${remote?.port}`
+    const host = new URL(remoteOrigin).host
+    expect((await rawRequest(remoteOrigin, '/api/repos', 'GET', { host }, '', null)).status).toBe(401)
+    expect((await rawRequest(remoteOrigin, '/api/repos', 'GET', { host }, '', TEST_API_TOKEN)).status).toBe(
+      200,
+    )
+    // A host name nobody configured (DNS rebinding) is still refused.
+    expect(
+      (await rawRequest(origin, '/api/repos', 'GET', { host: '100.64.0.5:4317' }, '', TEST_API_TOKEN)).status,
+    ).toBe(403)
+
+    const local = fixture()
+    const localServer = await local.serverPromise
+    servers.push(localServer)
+    await localServer.listen()
+    expect(localServer.remoteAddress()).toBeUndefined()
+  })
+
+  it('accepts a configured HTTPS proxy host on the local listener, but never for internal bridges', async () => {
+    const configStore = new ConfigStore(join(mkdtempSync(join(tmpdir(), 'joy-proxy-config-')), 'config.yaml'))
+    await configStore.update((config) => ({
+      ...config,
+      remote: { ...config.remote, https_hosts: ['my-pc.tail-1.ts.net'] },
+    }))
+    const { serverPromise } = fixture({ configStore })
+    const { server, origin } = await start(serverPromise)
+    expect(server.remoteAddress()).toBeUndefined()
+    const proxied = { host: 'my-pc.tail-1.ts.net', origin: 'https://my-pc.tail-1.ts.net' }
+    expect((await rawRequest(origin, '/api/repos', 'GET', proxied, '', null)).status).toBe(401)
+    expect((await rawRequest(origin, '/api/repos', 'GET', proxied, '', TEST_API_TOKEN)).status).toBe(200)
+    expect(
+      (await rawRequest(origin, '/api/repos', 'GET', { host: 'my-pc.tail-1.ts.net:443' }, '', TEST_API_TOKEN))
+        .status,
+    ).toBe(200)
+    // Plain http:// from that name is not the proxy, and another name is still refused.
+    expect(
+      (
+        await rawRequest(
+          origin,
+          '/api/repos',
+          'GET',
+          { host: 'my-pc.tail-1.ts.net', origin: 'http://my-pc.tail-1.ts.net' },
+          '',
+          TEST_API_TOKEN,
+        )
+      ).status,
+    ).toBe(403)
+    expect(
+      (await rawRequest(origin, '/api/repos', 'GET', { host: 'other.ts.net' }, '', TEST_API_TOKEN)).status,
+    ).toBe(403)
+    // The proxy connects from loopback, so the bridges must also check the Host.
+    const session = 'a'.repeat(40)
+    for (const path of [`/internal/tool-hub/${session}`, `/internal/assistant/${session}`]) {
+      const response = await rawRequest(origin, path, 'POST', { host: 'my-pc.tail-1.ts.net' }, '{}', null)
+      expect(response.status).toBe(403)
+      expect(response.body).toContain('local-only')
+    }
+  })
+
+  it('serves only files inside the built UI folder', async () => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const host = new URL(origin).host
+    for (const path of ['/%2e%2e%2f%2e%2e%2fpackage.json', '/..%2f..%2f..%2fpackage.json'])
+      expect((await rawRequest(origin, path, 'GET', { host }, '', null)).body).not.toContain('"name": "joy"')
   })
 
   it('reports model stats filtered by period and repository', async () => {

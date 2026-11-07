@@ -132,6 +132,38 @@ mcp_servers:
 
 助理讀信、查行事曆會直接做；替你新增自己的行程會在對話裡告訴你；**寄信、邀請別人一律等你在助理頁按 Approve**。讀過信之後同一輪要做的任何更動也都要你核准。
 
+## 從手機或其他電腦使用（Tailscale，預設關閉）
+
+Joy 預設只聽 `127.0.0.1`。要從手機或另一台電腦用：
+
+1. 兩台裝置都裝 [Tailscale](https://tailscale.com) 並登入同一個帳號；在跑 Joy 的電腦上用 `tailscale ip -4` 查到它的 IP（`100.x.y.z`）。
+2. 建好網頁：`pnpm --filter @joy/web build`（Joy 會直接提供這份網頁）。
+3. 在 `~/.joy/config.yaml` 加上，然後重啟 Joy：
+
+```yaml
+remote:
+  enabled: true
+  address: 100.x.y.z
+  port: 4317
+```
+
+4. 在另一台裝置開 `http://100.x.y.z:4317`，貼上跑 Joy 那台電腦的 `~/.joy/api-token`。
+
+每個請求都要帶 token，沒帶或錯的一律 401。手機遺失或 token 外洩時，到 Settings → Access token 按 **Regenerate**：舊 token 立刻失效、所有連線斷開，其他裝置要貼新的 token。`address` 請填 Tailscale IP，不要填區網 IP（`0.0.0.0`、`::` 會被拒絕）；Tailscale 之外的流量是明文 HTTP。
+
+**手機要裝成 App、收推播，需要 HTTPS**。用 `tailscale serve` 把 Joy 包成 HTTPS（這條路不需要上面的 `remote.enabled`）：
+
+```bash
+tailscale serve --bg 4317
+```
+
+再把它給的網址主機名（例如 `my-pc.tail-1234.ts.net`）加進設定，重啟 Joy，手機開 `https://my-pc.tail-1234.ts.net`：
+
+```yaml
+remote:
+  https_hosts: [my-pc.tail-1234.ts.net]
+```
+
 ## 疑難排解
 
 | 狀況                          | 處理                                                                                                    |

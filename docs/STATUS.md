@@ -2,7 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-07（T3.8 Google 程式部分）
+- 最後更新：2026-11-07（T3.8、T5.6、T4.1）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
@@ -113,13 +113,24 @@
 - 任務可以用 `workflow` 建立（API、建立任務表單、助理 `create_task`）；工作流程給預設值，請求裡明寫的角色與選項優先。用了哪個自訂工作流程記在任務上（migration 17）。`GET /api/workflows` 列出全部與其問題。
 - 驗收：orchestrator 測試（三種模式各自等於內建工作流程、選項帶入、錯誤說明）、server 測試（自訂工作流程的模型、回合數、先規劃都生效並跑完；內建 `single` 與舊模式相同；不存在／有問題／模式衝突回 422）、Playwright `workflows.spec.ts`。
 
+### T4.1 遠端存取（預設關閉，待擁有者審）
+
+- 沒帶 token 或 token 錯誤一律 **401**（之前是 403；403 保留給不允許的 Host／Origin）。WebSocket 同樣 401。
+- **Settings → Access token → Regenerate**（`POST /api/token/rotate`）：新 token 寫入 `~/.joy/api-token`（0600，原子替換），舊 token 立刻失效，所有 WebSocket 斷開；新 token 只回傳一次，這個裝置會記住。
+- 遠端：`remote: { enabled, address, port }`（預設關），開啟時**另外**在該 IP 上聽（主 listener 仍只聽 127.0.0.1）；只多允許 `http://address:port` 這一個 Host 與 Origin，其他 Host 仍 403（防 DNS rebinding）；Tool Hub 與助理橋接仍只接受 loopback 來源。改設定要重啟。
+- server 會提供 `apps/web/dist`（需先 `pnpm --filter @joy/web build`）給遠端瀏覽器；路徑只能在該資料夾內。正式版網頁沒有內嵌 token，會先要求貼上 token（存在該裝置）。
+- Tailscale 教學在 README。
+- 驗收：server 測試（沒 token／錯 token 401；重新產生後舊 token 401、新 token 可用、檔案權限；遠端 listener 需要 token、未設定的 Host 403、未開啟時沒有遠端 listener；UI 檔案不能跳出資料夾）、Playwright `access-token.spec.ts`（token 被拒時要求輸入、重新產生後改用新 token）、`origin-proxy.spec.ts` 改為 401。
+- 審查後修正（2026-11-07）：`remote.address` 拒絕 `0.0.0.0`、`::` 等「聽所有網路」的位址；新增 `remote.https_hosts`（`tailscale serve` 這類本機 HTTPS proxy 的主機名，允許該 Host 與 `https://` Origin，手機 PWA／推播要用）；proxy 也從 loopback 連進來，所以 Tool Hub 與助理橋接**另外檢查 Host 必須是 loopback**；遠端 listener 啟動後的錯誤只記 log，不再讓 Joy 當掉。`tailscale serve` 實際送的 Host 仍待擁有者實測。
+- **依 AGENTS.md，擴大到 127.0.0.1 以外需經擁有者審查**：功能預設關閉，列入待審表，擁有者審過再開。
+
 ### T4.2 PWA 與 Web Push（程式部分；手機驗收待擁有者）
 
 - 網頁可安裝（`manifest.webmanifest`、圖示），service worker 只負責顯示通知與點通知開到該任務（`/?task=…`），**不做離線快取**（舊 UI 接新 server 比沒有 UI 更糟）。
 - 任務結束（✅／🟡／❌）與需要核准（🔴）時，Joy 用自己的 VAPID 金鑰直接送到各瀏覽器的推播服務；內容先經 Redactor 再加密。金鑰第一次使用時產生，存在**鑰匙圈**（新 secret 名稱 `web_push_vapid_keys`，列入待審）。推播服務回 404／410 的訂閱自動刪除。沒有任何訂閱時完全不碰鑰匙圈。
 - 設定頁「Notifications」：開啟（要求權限、訂閱、送到 `POST /api/push/subscriptions`）、送測試、關閉。不支援時說明原因（需要 HTTPS 或 localhost；iPhone 要先加到主畫面）。
 - 驗收：push 測試（金鑰只產生一次；**用瀏覽器的方式解密**確認內容正確且已遮罩；410 時刪除訂閱）、server 測試（任務完成時對訂閱裝置送出帶 VAPID 的請求；拒絕非 https 端點）、Playwright：manifest、service worker 註冊、**透過 Chromium DevTools 真的推一則訊息，service worker 顯示通知**、開啟流程送出訂閱。
-- 手機上要能用：Joy 要能從手機以 HTTPS 開啟（依賴 T4.1 #110 與 `tailscale serve` 之類的 HTTPS；`tailscale serve` 轉送時的 Host 是否被 Joy 接受還沒實測）。「手機加到主畫面後收得到通知」**需擁有者實測，PLAN 未打勾**。
+- 手機上要能用：Joy 要能從手機以 HTTPS 開啟（依賴 T4.1 #110：`tailscale serve` 加上 `remote.https_hosts`；`tailscale serve` 實際送的 Host 還沒實測）。「手機加到主畫面後收得到通知」**需擁有者實測，PLAN 未打勾**。
 
 ### T4.4 Windows：`.cmd` shim 與 WSL（程式部分；實機驗收待擁有者）
 
@@ -287,20 +298,21 @@
 
 2026-11-06 由 agent 代為審查（擁有者授權）。下表為結論；擁有者可只看「發現」欄。
 
-| 項目                                                                  | 審查方式                       | 結論       | 發現                                                                                                                                                                        |
-| --------------------------------------------------------------------- | ------------------------------ | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| #73 本機 API／WebSocket token                                         | 獨立審查（非作者）             | 通過       | Windows 上 token 檔只依賴使用者資料夾的預設 ACL，T4.4 實機確認                                                                                                              |
-| #54 GitHub publisher                                                  | 獨立審查                       | 已修       | 內容掃描認不得私鑰與 AWS／Slack／Google／Stripe／GitLab 憑證 → 已加入 Redactor；**publisher 從未接到 server/UI → 新增 T1.9b**                                               |
-| #57 provider 允許清單                                                 | 獨立審查                       | 通過       | —                                                                                                                                                                           |
-| #58 core 介面、機密遮罩                                               | 獨立審查                       | 通過       | —                                                                                                                                                                           |
-| #62 `joy doctor` 鑰匙圈                                               | 獨立審查                       | 通過       | 只查詢隨機、不存在的帳號                                                                                                                                                    |
-| #84 權限規則                                                          | 擁有者已審（2026-11-06）       | 通過       | —                                                                                                                                                                           |
-| T2.7b、T2.4a、T2.4b                                                   | `/code-review`（high）         | 已修 9／10 | 見下                                                                                                                                                                        |
-| T3.3 記憶寫入規則（`packages/memory`）                                | **待擁有者審**                 | —          | 什麼會被記住、什麼一定擋下；agent 不審自己訂的規則                                                                                                                          |
-| T3.5 專案記憶寫入（`packages/memory/src/project.ts`）                 | **待擁有者審**                 | —          | Joy 會寫進 repo 的內容與衝突處理；issue #36 的兩點已照驗收條件實作                                                                                                          |
-| T4.2 Web Push 金鑰（鑰匙圈新 secret `web_push_vapid_keys`）           | **待擁有者審**（機密處理）     | —          | 金鑰只在本機產生、存鑰匙圈；推播內容經遮罩與加密                                                                                                                            |
-| T3.8 外部 MCP 工具的動作分類（`packages/server/src/external-mcp.ts`） | **待擁有者審**（等同權限分類） | —          | 不改 policy 規則，但哪些 Google 工具算「讀」「自己的行程」「寄信／邀請」由這裡決定；不認得的一律要核准                                                                      |
-| T3.6、T3.7、T3.9、T2.1                                                | `/code-review`（high）         | 已修 9／10 | compete 同時選擇／合併的競態、合併中重啟卡住、合併無時間上限、通知誤寫成審查未過、排程器關閉時未處理的 rejection；**未修：cron 補跑逐次計算（只在啟動時跑一次，成本有限）** |
+| 項目                                                                  | 審查方式                         | 結論       | 發現                                                                                                                                                                        |
+| --------------------------------------------------------------------- | -------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #73 本機 API／WebSocket token                                         | 獨立審查（非作者）               | 通過       | Windows 上 token 檔只依賴使用者資料夾的預設 ACL，T4.4 實機確認                                                                                                              |
+| #54 GitHub publisher                                                  | 獨立審查                         | 已修       | 內容掃描認不得私鑰與 AWS／Slack／Google／Stripe／GitLab 憑證 → 已加入 Redactor；**publisher 從未接到 server/UI → 新增 T1.9b**                                               |
+| #57 provider 允許清單                                                 | 獨立審查                         | 通過       | —                                                                                                                                                                           |
+| #58 core 介面、機密遮罩                                               | 獨立審查                         | 通過       | —                                                                                                                                                                           |
+| #62 `joy doctor` 鑰匙圈                                               | 獨立審查                         | 通過       | 只查詢隨機、不存在的帳號                                                                                                                                                    |
+| #84 權限規則                                                          | 擁有者已審（2026-11-06）         | 通過       | —                                                                                                                                                                           |
+| T2.7b、T2.4a、T2.4b                                                   | `/code-review`（high）           | 已修 9／10 | 見下                                                                                                                                                                        |
+| T3.3 記憶寫入規則（`packages/memory`）                                | **待擁有者審**                   | —          | 什麼會被記住、什麼一定擋下；agent 不審自己訂的規則                                                                                                                          |
+| T3.5 專案記憶寫入（`packages/memory/src/project.ts`）                 | **待擁有者審**                   | —          | Joy 會寫進 repo 的內容與衝突處理；issue #36 的兩點已照驗收條件實作                                                                                                          |
+| T4.1 遠端存取（`remote` 設定、token 重新產生、`packages/server`）     | **待擁有者審**（AGENTS.md 規定） | —          | 預設關閉；開啟前請確認只填 Tailscale IP，並看過 Host／Origin 與 401 的處理                                                                                                  |
+| T4.2 Web Push 金鑰（鑰匙圈新 secret `web_push_vapid_keys`）           | **待擁有者審**（機密處理）       | —          | 金鑰只在本機產生、存鑰匙圈；推播內容經遮罩與加密                                                                                                                            |
+| T3.8 外部 MCP 工具的動作分類（`packages/server/src/external-mcp.ts`） | **待擁有者審**（等同權限分類）   | —          | 不改 policy 規則，但哪些 Google 工具算「讀」「自己的行程」「寄信／邀請」由這裡決定；不認得的一律要核准                                                                      |
+| T3.6、T3.7、T3.9、T2.1                                                | `/code-review`（high）           | 已修 9／10 | compete 同時選擇／合併的競態、合併中重啟卡住、合併無時間上限、通知誤寫成審查未過、排程器關閉時未處理的 rejection；**未修：cron 補跑逐次計算（只在啟動時跑一次，成本有限）** |
 
 `/code-review` 的發現與處理：重啟時等待核准的任務會卡住（已修）；核准紀錄的 detail 未遮罩（已修）；同任務多個待核准時狀態被提早改回（已修）；Telegram 群組中任何人可按核准（已修，只接受擁有者本人的私訊）；同步決定要等到逾時才生效（已修）；UI 每個事件都重抓待核准清單（已修）；沒有 token 時每分鐘警告（已修，只警告一次）；完成通知未遮罩（已修）；命名與重複程式（已修）；**Telegram 設定要重啟才生效（未修，留待之後）**。
 

@@ -88,8 +88,9 @@ ticket.
 
 - **Dependency direction:** `core` ← everything. Packages depend on `core` interfaces, never on each other's
   internals. `server` is the only place that wires implementations together.
-- **Local server boundary:** HTTP and WebSocket listeners bind to `127.0.0.1` only. Do not widen to LAN or all
-  interfaces unless authenticated remote access is designed and reviewed.
+- **Local server boundary:** HTTP and WebSocket listeners bind to `127.0.0.1` only. The single exception is the
+  opt-in `remote` listener (T4.1, off by default, token required, one configured Host/Origin). Do not add other
+  listeners or widen it without the owner's review.
 - **CLI integrations live only in `packages/providers`.** Nothing else spawns `claude` or `codex` or parses their
   output. Every adapter is tested against recorded fixtures in `tests/fixtures/cli-events/`; real CLIs are never called
   in unit tests or CI.

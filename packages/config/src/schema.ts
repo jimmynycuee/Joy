@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import { ACTION_KINDS, EFFORTS, PROVIDER_KINDS, ROLES, TASK_MODES } from '@joy/core'
 import type { ModelRef, Role } from '@joy/core'
 import { effortCompatibilityError } from '@joy/model-effort'
@@ -106,6 +107,44 @@ export const configSchema = z.strictObject({
       issue_poll_minutes: z.number().int().min(0).max(1440).default(5),
     })
     .default({ issue_label: 'joy', issue_poll_minutes: 5 }),
+  remote: z
+    .strictObject({
+      /**
+       * Also listen on `address` (e.g. this computer's Tailscale IP) so other devices can use Joy with the access
+       * token. Off by default; Joy otherwise listens on 127.0.0.1 only. Restart Joy after changing it.
+       */
+      enabled: z.boolean().default(false),
+      address: z
+        .string()
+        .refine((value) => value === '' || isIP(value) !== 0, 'must be an IP address')
+        .refine(
+          (value) => !isUnspecifiedAddress(value),
+          'must be one interface (e.g. the Tailscale IP), not 0.0.0.0 or ::, which listens on every network',
+        )
+        .default(''),
+      port: z.number().int().min(0).max(65535).default(4317),
+      /**
+       * Host names an HTTPS reverse proxy on this computer forwards to Joy's 127.0.0.1 listener, e.g. the name
+       * `tailscale serve` gives this machine (`my-pc.tailnet-123.ts.net`). Allows that Host and its https:// Origin,
+       * which phones need for installing the app and push notifications. Works with or without `enabled`.
+       */
+      https_hosts: z
+        .array(
+          z
+            .string()
+            .regex(
+              /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$/i,
+              'must be a host name such as my-pc.tailnet-123.ts.net (no scheme, port or path)',
+            )
+            .refine((value) => !/^localhost$/i.test(value), 'localhost is always allowed'),
+        )
+        .max(5)
+        .default([]),
+    })
+    .refine((remote) => !remote.enabled || remote.address !== '', {
+      message: 'remote.address is required when remote.enabled is true',
+    })
+    .default({ enabled: false, address: '', port: 4317, https_hosts: [] }),
   container: z
     .strictObject({
       /** Image with Claude Code, Codex, git and node (build it with `pnpm joy container-build`). */
@@ -189,4 +228,11 @@ export type JoyConfigInput = z.input<typeof configSchema>
 
 export function defaultConfig(): JoyConfig {
   return configSchema.parse({})
+}
+
+/** 0.0.0.0 or ::, which bind every network interface instead of one. */
+function isUnspecifiedAddress(value: string): boolean {
+  if (isIP(value) === 4) return value.split('.').every((part) => Number(part) === 0)
+  if (isIP(value) === 6) return /^[0:]+$/.test(value) || /^::ffff:0+\.0+\.0+\.0+$/i.test(value)
+  return false
 }
