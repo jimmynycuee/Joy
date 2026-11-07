@@ -44,7 +44,6 @@
 - [x] T2.4 Telegram 與核准（拆成 T2.4a／b／c 完成；真實 bot 測試擁有者決定暫緩）
 - [x] T2.7 Codex app-server adapter（PR #81；真實聯調在 T0.4）
 - [ ] T3.8 Google 行事曆與 Gmail（選型與整合完成：外部 MCP、權限分類、外部內容標示、寄信與邀請要核准；待擁有者登入後實測）
-- [ ] T4.1 遠端存取（PR #110 完成且 CI 全綠；擁有者決定審過再合併）
 - [ ] T4.3 Tauri 桌面版（擁有者 2026-11-07 決定延後：需簽章帳號與安裝檔決策）
 - [x] T5.6 自訂工作流程：三種模式為內建工作流程；`config.yaml` 可自訂（模式、各角色模型、回合數、先規劃）
 - [ ] P5 其餘（T5.1–T5.5、T5.7）（擁有者 2026-11-07 決定暫不開始）
@@ -54,7 +53,7 @@
 - [x] T1.9b 把 publisher 接到 server API 與 UI「開 PR」按鈕（審查發現 T1.9 的 publisher 從未接線，擁有者無法本機驗收）
 - [x] T2.4c 逾時後任務停在「等待核准」，核准後以同一 session 接續（`approvals.on_timeout`）
 - [x] T2.5 額度交接、排隊、單一任務花費與時間上限、月預算（單一模式；review loop 與競賽模式的交接留待之後）
-- [x] T4.1 遠端存取：沒 token 一律 401、UI 重新產生 token 讓舊的失效、可選的遠端 listener（預設關，待擁有者審）、Tailscale 文件
+- [x] T4.1 遠端存取：沒 token 一律 401、UI 重新產生 token 讓舊的失效、可選的遠端 listener（預設關）、`tailscale serve` 用的 `remote.https_hosts`、Tailscale 文件（擁有者 2026-11-07 審過，PR #110 合併）
 - [ ] T4.2 PWA + Web Push（可安裝網頁、service worker、VAPID 推播已完成並測試；待擁有者手機實測）
 - [ ] T4.4 Windows 強化（`.cmd` shim 啟動、WSL 偵測與 Codex fallback 已完成並由 Windows CI 驗證；安裝檔屬 T4.3；待擁有者實機跑一次交叉審查）
 - [x] T4.5 container 模式：不信任的 repo 在 docker 內執行，只掛 worktree、git 資料與專用登入資料夾（真實 Docker e2e 以假 CLI 驗證；真實 CLI 待擁有者）
