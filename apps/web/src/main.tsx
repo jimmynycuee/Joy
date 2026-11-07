@@ -2748,6 +2748,11 @@ function Workspace() {
           </main>
         ) : composing || !details ? (
           <main className="composer-page">
+            {setupProblems > 0 ? (
+              <button type="button" className="setup-banner" onClick={() => setPage('settings')}>
+                有 {setupProblems} 項環境設定需要處理，點這裡查看
+              </button>
+            ) : null}
             {repos.length === 0 ? (
               <div className="composer-empty">
                 <h1>先加入一個專案</h1>
@@ -2758,11 +2763,6 @@ function Workspace() {
               </div>
             ) : (
               <form className="composer-home" onSubmit={(event) => void createTask(event)}>
-                {setupProblems > 0 ? (
-                  <button type="button" className="setup-banner" onClick={() => setPage('settings')}>
-                    有 {setupProblems} 項環境設定需要處理，點這裡查看
-                  </button>
-                ) : null}
                 <h1>要讓 Joy 做什麼？</h1>
                 <div className="composer">
                   <textarea

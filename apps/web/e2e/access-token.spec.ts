@@ -54,6 +54,6 @@ test('a refused token asks for a new one, and regenerating switches this device 
   await panel.getByRole('button', { name: 'Regenerate token' }).click()
   await expect(panel.getByTestId('new-token')).toHaveText('rotated-token-0123456789abcdef')
   // Later requests from this device use the new token.
-  await page.getByRole('button', { name: '新任務' }).click()
+  await page.getByRole('button', { name: '統計' }).click()
   await expect.poll(() => seen.at(-1)).toBe('Bearer rotated-token-0123456789abcdef')
 })

@@ -274,6 +274,8 @@ p {
 .composer-page {
   flex: 1;
   display: flex;
+  flex-direction: column;
+  gap: 24px;
   align-items: center;
   justify-content: center;
   padding: 48px 24px;
