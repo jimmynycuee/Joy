@@ -474,9 +474,9 @@ tool_hub:
 - [x] LINE：**P5 商業化時**再做（T5.5）
 
 ### 待決（不影響 P1）
-- [ ] 確認兩家實際可用的模型名稱，更新 §3.3 與 `packages/config` 預設值
+- [ ] 確認兩家實際可用的模型名稱，更新 §3.3 與 `packages/config` 預設值（2026-11-07 查：Claude Code CLI 的 `--model` 說明列出別名 `fable`、`opus`、`sonnet`，預設 `opus` 有效；公開資料找不到 `gpt-6.1-sol`、`gpt-6-luna`（只看到 GPT-5.x／5.6），需擁有者用自己的 Codex／OpenAI 帳號確認後再改預設）
 - [x] T3.8 選定哪一個 Gmail / 行事曆 MCP server（2026-11-07：taylorwilsdon/google_workspace_mcp，理由見 STATUS 已確認決策）
-- [ ] T5.5 前確認 LINE 推播費用
+- [ ] T5.5 前確認 LINE 推播費用（2026-11-07 查：LINE 於 2026-11-01 調整台灣官方帳號費率；第三方資料寫免費方案每月 500 則、回覆訊息不計入額度，**未在 LINE 官方台灣頁面核實**；T5.5 仍延後）
 - [ ] 如需參考 Reason 雲端產品細節，需在 session 網路設定允許 `reasonmachines.com`
 
 ---
