@@ -2721,7 +2721,8 @@ describe('Joy local server', () => {
     setTaskStatus(db, 't-busy' as TaskId, 'cancelled')
     expect((await postJson(`${origin}/api/tasks/t-busy/discard`, {})).status).toBe(200)
     expect(existsSync(busy.path)).toBe(false)
-  })
+    // Real git worktrees: many git processes, slow on the Windows CI runner.
+  }, 60_000)
 
   it('turns labelled GitHub issues into external_content tasks once, and imports "do #N" on request', async () => {
     const issues: Record<
