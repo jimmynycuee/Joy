@@ -49,39 +49,38 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
     await route.fulfill({ response, json: body })
   })
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
-  await expect(page.getByRole('region', { name: 'Task activity' })).toBeVisible()
-  await expect(page.getByRole('complementary', { name: 'Diff viewer' })).toBeVisible()
+  await expect(page.getByRole('navigation', { name: '主選單' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '任務' })).toBeVisible()
 
-  await page.getByRole('button', { name: 'Settings' }).click()
-  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
-  await expect(page.getByRole('status').filter({ hasText: 'OpenAI API cannot edit code' })).toBeVisible()
+  await page.getByRole('button', { name: '設定', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '設定' })).toBeVisible()
+  await expect(page.getByRole('status').filter({ hasText: 'OpenAI API 不能改程式碼' })).toBeVisible()
   await page.screenshot({ path: 'test-results/t1.8-legacy-openai-implementer.png', fullPage: true })
-  for (const role of ['Assistant brain', 'Background', 'Orchestrator', 'Implementer', 'Reviewer', 'Judge']) {
-    await expect(page.getByLabel(`${role} provider`)).toBeVisible()
-    await expect(page.getByLabel(`${role} model`)).toBeVisible()
+  for (const role of ['助理大腦', '背景工作', '調度者', '實作者', '審查者', '裁判']) {
+    await expect(page.getByLabel(`${role}的服務`)).toBeVisible()
+    await expect(page.getByLabel(`${role}的模型`)).toBeVisible()
   }
-  const autonomyMode = page.getByLabel('Global autonomy mode')
+  const autonomyMode = page.getByLabel('自主程度')
   await expect(autonomyMode).toHaveValue('normal')
   await autonomyMode.selectOption('careful')
-  const settingsImplementerProvider = page.getByLabel('Implementer provider')
+  const settingsImplementerProvider = page.getByLabel('實作者的服務')
   await expect(settingsImplementerProvider.locator('option[value="openai-api"]')).toHaveCount(0)
   await settingsImplementerProvider.selectOption('claude-cli')
-  await page.getByLabel('Implementer model').fill('claude-opus-4-6')
-  await page.getByRole('button', { name: 'Save settings' }).click()
-  await expect(page.getByRole('status').filter({ hasText: 'Settings saved' })).toBeVisible()
+  await page.getByLabel('實作者的模型').fill('claude-opus-4-6')
+  await page.getByRole('button', { name: '儲存設定' }).click()
+  await expect(page.getByRole('status').filter({ hasText: '設定已儲存' })).toBeVisible()
 
   const secret = 'fake-openai-key-must-never-return-41'
   const responsePromise = page.waitForResponse(
     (response) =>
       response.url().includes('/api/secrets/openai-api-key') && response.request().method() === 'PUT',
   )
-  await page.getByLabel('Enter key').fill(secret)
-  await page.getByRole('button', { name: 'Save key' }).click()
+  await page.getByLabel('輸入金鑰').fill(secret)
+  await page.getByRole('button', { name: '儲存金鑰' }).click()
   const keyResponse = await responsePromise
   expect(keyResponse.status()).toBe(200)
   expect(await keyResponse.text()).not.toContain(secret)
-  await expect(page.getByText('Configured', { exact: true })).toBeVisible()
+  await expect(page.getByText('已設定', { exact: true })).toBeVisible()
   await expect(page.locator('body')).not.toContainText(secret)
   await expect(page.locator('#openai-key')).toHaveValue('')
   const configResponse = await request.get('/api/config', {
@@ -93,32 +92,30 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   await page.waitForTimeout(4100)
   await page.screenshot({ path: 'test-results/t1.8-settings.png', fullPage: true })
 
-  await page.getByRole('button', { name: 'Workspace', exact: true }).click()
-  await page.getByRole('button', { name: 'Add repository' }).click()
-  const repoDialog = page.getByRole('dialog', { name: 'Add repository' })
-  await repoDialog.getByLabel('Repository path').fill('/tmp/joy-e2e-project')
-  await repoDialog.getByLabel('Default branch').fill('main')
-  await repoDialog.getByRole('button', { name: 'Add repository' }).click()
-  await expect(page.getByText('Your tasks will appear here.')).toBeVisible()
+  await page.getByRole('button', { name: '新任務' }).click()
+  await page.getByRole('button', { name: '加入專案' }).first().click()
+  const repoDialog = page.getByRole('dialog', { name: '加入專案' })
+  await repoDialog.getByLabel('專案路徑').fill('/tmp/joy-e2e-project')
+  await repoDialog.getByLabel('預設分支').fill('main')
+  await repoDialog.getByRole('button', { name: '加入專案' }).click()
+  await expect(page.getByText('你的任務會出現在這裡。')).toBeVisible()
 
-  await page.getByRole('button', { name: 'New task' }).click()
-  const taskDialog = page.getByRole('dialog', { name: 'Create a task' })
-  await expect(
-    taskDialog.getByLabel('Implementer provider').locator('option[value="openai-api"]'),
-  ).toHaveCount(0)
-  await taskDialog.getByLabel('Task repository').selectOption({ index: 1 })
-  await taskDialog.getByLabel('Task title').fill('Show the fake diff')
-  await taskDialog.getByLabel('Task instructions').fill('Update the greeting and explain the result.')
+  const taskDialog = page.locator('form.composer-home')
+  await taskDialog.getByRole('button', { name: '進階' }).click()
+  await expect(taskDialog.getByLabel('實作者的服務').locator('option[value="openai-api"]')).toHaveCount(0)
+  await taskDialog.getByLabel('專案').selectOption({ index: 0 })
+  await taskDialog.getByLabel('任務標題').fill('Show the fake diff')
+  await taskDialog.getByLabel('任務內容').fill('Update the greeting and explain the result.')
   expect(await taskDialog.locator('option[value="compete"]').getAttribute('disabled')).toBeNull()
-  await taskDialog.getByRole('button', { name: 'Start task' }).click()
+  await taskDialog.getByRole('button', { name: '開始任務' }).click()
 
   await expect(page.getByRole('heading', { name: 'Show the fake diff' })).toBeVisible()
   await expect(page.getByTestId('event-stream')).toContainText(
     'Fake provider completed: claude-cli:claude-opus-4-6',
   )
-  await expect(page.getByTestId('event-stream')).toContainText('Review: Fake review approved')
+  await expect(page.getByTestId('event-stream')).toContainText('審查：Fake review approved')
   await expect(page.getByTestId('diff-patch')).toContainText('hello from fake')
-  await expect(page.getByText('done', { exact: true })).toBeVisible()
+  await expect(page.locator('.thread-header .status-pill')).toHaveText('完成')
   await expect(page.locator('body')).not.toContainText(secret)
 
   const taskListResponse = await request.get('/api/tasks', {

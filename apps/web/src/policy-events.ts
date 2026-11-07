@@ -1,30 +1,30 @@
-// Readable labels for policy events (T2.3 / T2.7b), shared by the task timeline.
+// Readable (Traditional Chinese) labels for policy events (T2.3 / T2.7b), shared by the task timeline.
 
 const KIND_LABELS: Record<string, string> = {
-  read_file: 'read a file',
-  edit_worktree: 'edit files in the worktree',
-  run_in_worktree: 'run a command in the worktree',
-  run_outside_worktree: 'act outside the worktree',
-  local_commit: 'commit locally',
-  push_feature_branch: 'push the feature branch',
-  push_default_branch: 'push to the default branch',
-  open_draft_pr: 'open a draft PR',
-  merge_pr: 'merge a PR',
-  delete_file: 'delete a file',
-  delete_branch: 'delete a branch',
-  ask_peer: 'ask the other model',
-  read_mail: 'read mail',
-  send_mail: 'send mail',
-  read_calendar: 'read the calendar',
-  create_own_event: 'create a calendar event',
-  invite_others: 'invite other people',
-  spend_money: 'spend money',
+  read_file: '讀取檔案',
+  edit_worktree: '修改工作副本裡的檔案',
+  run_in_worktree: '在工作副本裡執行指令',
+  run_outside_worktree: '在工作副本以外動作',
+  local_commit: '在本機 commit',
+  push_feature_branch: '推送功能分支',
+  push_default_branch: '推送到預設分支',
+  open_draft_pr: '開 draft PR',
+  merge_pr: '合併 PR',
+  delete_file: '刪除檔案',
+  delete_branch: '刪除分支',
+  ask_peer: '詢問另一個模型',
+  read_mail: '讀取郵件',
+  send_mail: '寄出郵件',
+  read_calendar: '讀取行事曆',
+  create_own_event: '建立行事曆活動',
+  invite_others: '邀請其他人',
+  spend_money: '花錢',
 }
 
 const TIER_LABELS: Record<string, string> = {
-  auto: 'allowed',
-  notify: 'allowed with a notice',
-  approve: 'needs owner approval',
+  auto: '允許',
+  notify: '允許並通知你',
+  approve: '需要你同意',
 }
 
 type Payload = Record<string, unknown> | null
@@ -36,39 +36,35 @@ export function policyEventTitle(type: string, payload: Payload): string | undef
   if (type === 'policy.action') {
     const kind = text(payload?.kind) ?? 'unknown'
     const tier = text(payload?.tier) ?? 'approve'
-    const external = payload?.provenance === 'external_content' ? ' (from external content)' : ''
-    return `Policy: ${KIND_LABELS[kind] ?? kind}${external} — ${TIER_LABELS[tier] ?? tier}`
+    const external = payload?.provenance === 'external_content' ? '（來自外部內容）' : ''
+    return `權限：${KIND_LABELS[kind] ?? kind}${external} — ${TIER_LABELS[tier] ?? tier}`
   }
   if (type === 'policy.pre_review') {
-    if (payload?.status === 'skipped')
-      return 'Policy: denied without pre-review (no owner approval channel yet)'
-    if (payload?.status === 'unavailable')
-      return `Policy pre-review unavailable: ${text(payload?.message) ?? ''}`.trim()
-    const verdict = payload?.approve === true ? 'recommends allowing' : 'recommends denying'
-    const reviewer = text(payload?.reviewerProvider) ?? 'reviewer'
-    return `Policy pre-review (${reviewer}) ${verdict}: ${text(payload?.summary) ?? ''}`.trim()
+    if (payload?.status === 'skipped') return '權限：沒有預審就拒絕（還沒設定讓你同意的管道）'
+    if (payload?.status === 'unavailable') return `權限預審無法進行：${text(payload?.message) ?? ''}`.trim()
+    const verdict = payload?.approve === true ? '建議允許' : '建議拒絕'
+    const reviewer = text(payload?.reviewerProvider) ?? '審查者'
+    return `權限預審（${reviewer}）${verdict}：${text(payload?.summary) ?? ''}`.trim()
   }
   if (type === 'approval.requested') {
-    return `Waiting for your approval: ${text(payload?.summary) ?? KIND_LABELS[text(payload?.kind) ?? ''] ?? 'an action'}`
+    return `等你同意：${text(payload?.summary) ?? KIND_LABELS[text(payload?.kind) ?? ''] ?? '一個動作'}`
   }
   if (type === 'quota.handoff') {
-    const from = (payload?.from as { provider?: string } | undefined)?.provider ?? 'the first model'
-    const to = (payload?.to as { provider?: string } | undefined)?.provider ?? 'another model'
-    return `Out of quota: ${from} handed the task to ${to} in the same worktree`
+    const from = (payload?.from as { provider?: string } | undefined)?.provider ?? '第一個模型'
+    const to = (payload?.to as { provider?: string } | undefined)?.provider ?? '另一個模型'
+    return `額度用完：${from} 把任務交給 ${to}，在同一個工作副本繼續`
   }
   if (type === 'quota.queued') {
     const at = text(payload?.resumeAt)
-    return `Out of quota: waiting${at ? ` until ${new Date(at).toLocaleString()}` : ''}, then resuming`
+    return `額度用完：等待${at ? `到 ${new Date(at).toLocaleString()}` : ''}，之後自動繼續`
   }
-  if (type === 'task.paused') return 'Paused: no answer in time. Approve it to resume the same session.'
-  if (type === 'approval.granted')
-    return `Allowed once by your late approval: ${text(payload?.summary) ?? ''}`.trim()
+  if (type === 'task.paused') return '已暫停：時間內沒有回覆。你同意後會接著原本的進度繼續。'
+  if (type === 'approval.granted') return `你稍後同意了，允許這一次：${text(payload?.summary) ?? ''}`.trim()
   if (type === 'approval.decided') {
     const status = text(payload?.status) ?? 'decided'
     const via = text(payload?.via)
-    const label =
-      status === 'approved' ? 'Approved' : status === 'denied' ? 'Denied' : 'Expired without an answer'
-    return `${label}${via && status !== 'expired' ? ` (via ${via})` : ''}`
+    const label = status === 'approved' ? '已同意' : status === 'denied' ? '已拒絕' : '逾時未回覆'
+    return `${label}${via && status !== 'expired' ? `（透過 ${via}）` : ''}`
   }
   return undefined
 }

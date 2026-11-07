@@ -58,7 +58,7 @@ const doctor = {
   ],
 }
 
-test('homepage shows setup status and actionable repair guidance', async ({ page }) => {
+test('settings show setup status and actionable repair guidance', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1400 })
   let requests = 0
   await page.route('**/api/doctor', async (route) => {
@@ -67,24 +67,26 @@ test('homepage shows setup status and actionable repair guidance', async ({ page
   })
 
   await page.goto('/')
+  // The new-task page only flags that something needs fixing; the details live in Settings.
+  await page.getByRole('button', { name: /有 3 項環境設定需要處理/ }).click()
   const panel = page.getByTestId('doctor-checks')
-  await expect(panel.getByRole('heading', { name: 'Environment checks' })).toBeVisible()
+  await expect(panel.getByRole('heading', { name: '環境檢查' })).toBeVisible()
   await expect(panel).toContainText('Node.js')
-  await expect(panel).toContainText('GitHub CLI sign-in')
+  await expect(panel).toContainText('GitHub CLI 登入')
   await expect(panel).toContainText('Claude Code CLI')
   await expect(panel).toContainText('Codex CLI')
-  await expect(panel).toContainText('OS keychain')
-  await expect(panel).toContainText('Joy data directory')
+  await expect(panel).toContainText('作業系統鑰匙圈')
+  await expect(panel).toContainText('Joy 資料夾')
   const nodeCheck = panel.getByRole('listitem').filter({ hasText: 'Node.js' })
-  await expect(nodeCheck.getByText('Missing', { exact: true })).toBeVisible()
-  await expect(panel.getByText('OK', { exact: true })).toHaveCount(2)
-  await expect(panel.getByText('Missing', { exact: true })).toHaveCount(3)
+  await expect(nodeCheck.getByText('缺少', { exact: true })).toBeVisible()
+  await expect(panel.getByText('正常', { exact: true })).toHaveCount(2)
+  await expect(panel.getByText('缺少', { exact: true })).toHaveCount(3)
   await expect(panel).toContainText('Upgrade to Node.js 22.13.0 or later')
-  await expect(panel.getByText('Untested', { exact: true })).toHaveCount(2)
+  await expect(panel.getByText('未驗證', { exact: true })).toHaveCount(2)
   await expect(panel).toContainText('gh auth login --hostname github.com')
   await expect(panel).toContainText('Start and unlock a Secret Service')
   await page.screenshot({ path: 'test-results/t1.13-doctor.png', fullPage: true })
 
-  await page.getByRole('button', { name: 'Refresh environment checks' }).click()
+  await page.getByRole('button', { name: '重新檢查環境' }).click()
   await expect.poll(() => requests).toBe(2)
 })

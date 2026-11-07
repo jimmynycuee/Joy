@@ -87,17 +87,17 @@ test('compete attempts are compared side by side with the judge and can be merge
     }
   })
 
-  await page.goto('/')
+  await page.goto(`/?task=${task.id}`)
   const panel = page.getByTestId('compare-panel')
-  await expect(panel.getByLabel('Judge')).toContainText('Prefers A. A is simpler and tested.')
-  await expect(panel.getByLabel('Diff A')).toContainText('+claude version')
-  await expect(panel.getByLabel('Diff B')).toContainText('+codex version')
-  await expect(panel.getByLabel('Attempt B')).toContainText('Review: changes requested — missing a test')
-  await expect(panel.getByLabel('Attempt B')).toContainText('+ handles NaN')
-  await expect(panel.getByLabel('Attempt A')).toContainText("judge's pick")
+  await expect(panel.getByLabel('裁判')).toContainText('選 A。 A is simpler and tested.')
+  await expect(panel.getByLabel('差異 A')).toContainText('+claude version')
+  await expect(panel.getByLabel('差異 B')).toContainText('+codex version')
+  await expect(panel.getByLabel('方案 B')).toContainText('審查：要求修改 — missing a test')
+  await expect(panel.getByLabel('方案 B')).toContainText('+ handles NaN')
+  await expect(panel.getByLabel('方案 A')).toContainText('裁判推薦')
 
-  await panel.getByRole('button', { name: /Merge: the judge re-implements/ }).click()
-  await panel.getByRole('button', { name: 'Choose B' }).click()
+  await panel.getByRole('button', { name: /合併：由裁判綜合兩邊/ }).click()
+  await panel.getByRole('button', { name: '選 B' }).click()
   await expect.poll(() => posts.length).toBe(2)
   expect(posts).toEqual([
     { path: `/api/tasks/${task.id}/merge`, body: '{}' },

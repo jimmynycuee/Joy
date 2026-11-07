@@ -45,20 +45,21 @@ test('a custom workflow from config can be picked when creating a task', async (
   })
 
   await page.goto('/')
-  await page.getByRole('button', { name: 'New task' }).click()
-  const dialog = page.getByRole('dialog', { name: 'Create a task' })
-  const workflow = dialog.getByLabel('Workflow')
+  await page.getByRole('button', { name: '新任務' }).click()
+  const dialog = page.locator('form.composer-home')
+  const workflow = dialog.getByLabel('模式')
   await expect(workflow.locator('option')).toHaveText([
-    'Implement + review',
-    'Single agent',
-    'Compete (both models, judge compares)',
+    '實作＋審查',
+    '單人',
+    '兩家比賽',
     'careful — Plan first, five rounds',
   ])
-  await dialog.getByLabel('Task repository').selectOption(repo.id)
-  await dialog.getByLabel('Task title').fill('Careful fix')
-  await dialog.getByLabel('Task instructions').fill('Fix add()')
+  await dialog.getByLabel('專案').selectOption(repo.id)
+  await dialog.getByRole('button', { name: '進階' }).click()
+  await dialog.getByLabel('任務標題').fill('Careful fix')
+  await dialog.getByLabel('任務內容').fill('Fix add()')
   await workflow.selectOption('workflow:careful')
-  await dialog.getByRole('button', { name: 'Start task' }).click()
+  await dialog.getByRole('button', { name: '開始任務' }).click()
   await expect.poll(() => created.length).toBe(1)
   expect(created[0]).toEqual({
     repoId: repo.id,
