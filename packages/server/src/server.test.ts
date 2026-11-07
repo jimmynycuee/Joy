@@ -357,7 +357,8 @@ async function waitForStatus(
   origin: string,
   id: string,
   status: string,
-  timeoutMs = 500,
+  // Generous: it returns as soon as the status is reached, and shared Windows/macOS CI runners can be slow.
+  timeoutMs = 10_000,
 ): Promise<TaskDetails> {
   const deadline = Date.now() + timeoutMs
   let last: TaskDetails | undefined
