@@ -39,6 +39,14 @@
 - [x] T1.13 `joy doctor` 與首次啟動檢查（PR #62 已整合；**擁有者待審**鑰匙圈可用性檢查，並在本機執行 `pnpm joy doctor` 驗收）
 - [x] T1.14 本機 API 與 WebSocket token 認證（PR #73 已整合；**擁有者待審**）
 - [ ] T1.8 Codex 風格 Web UI（含設定頁；UI 主體已整合至 main，PR #58；首頁檢查已由 PR #62 整合；待擁有者本機驗收）
+- [x] T2.2 Tool Hub（`ask_peer`、`task_status`、`request_approval`；見 STATUS）
+- [x] T2.3 policy：三級權限與動作分類（擁有者已審，PR #84）
+- [x] T2.4 Telegram 與核准（拆成 T2.4a／b／c 完成；真實 bot 測試擁有者決定暫緩）
+- [x] T2.7 Codex app-server adapter（PR #81；真實聯調在 T0.4）
+- [ ] T3.8 Google 行事曆與 Gmail（需要擁有者完成 Google 登入）
+- [ ] T4.1 遠端存取（PR #110 完成且 CI 全綠；擁有者決定審過再合併）
+- [ ] T4.3 Tauri 桌面版（擁有者 2026-11-07 決定延後：需簽章帳號與安裝檔決策）
+- [ ] P5 T5.1–T5.7（擁有者 2026-11-07 決定暫不開始，依 PLAN「視使用情況決定」）
 - [x] T2.7b Codex app-server 審核接到 policy 與 UI（server 預設改用 app-server，`providers.codex.transport: exec` 可退回）
 - [x] T2.4a 核准中心與 UI（🔴 動作等擁有者在 UI 核准；逾時視為未核准）
 - [x] T2.4b Telegram 通知與核准按鈕（設定頁輸入 chat id 與 bot token，重啟後生效）
