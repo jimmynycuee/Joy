@@ -63,17 +63,17 @@ test('worktrees show disk usage and are removed only after confirming unpushed c
   await page.goto('/')
   await page.getByRole('button', { name: '設定', exact: true }).click()
   const panel = page.getByTestId('worktrees-panel')
-  await expect(panel).toContainText('1 worktree(s) using 3.0 MB. 1 idle for more than 14 days.')
+  await expect(panel).toContainText('共 1 個，佔用 3.0 MB。其中 1 個閒置超過 14 天。')
   await expect(panel).toContainText('Old experiment')
-  await expect(panel).toContainText('2 unpushed commit(s)')
+  await expect(panel).toContainText('2 個 commit 還沒推送')
 
   const dialogs: string[] = []
   page.on('dialog', (dialog) => {
     dialogs.push(dialog.message())
     void dialog.accept()
   })
-  await panel.getByRole('button', { name: 'Remove' }).click()
-  await expect(panel).toContainText('0 worktree(s)')
+  await panel.getByRole('button', { name: '移除' }).click()
+  await expect(panel).toContainText('共 0 個')
   expect(dialogs[0]).toContain('2 unpushed commits')
   expect(removals).toEqual([{ path: '/wt/a' }, { path: '/wt/a', confirmUnpushedCommits: true }])
 })

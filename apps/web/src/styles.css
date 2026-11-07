@@ -1151,16 +1151,16 @@ select {
 
 .assistant-page {
   display: grid;
-  grid-template-columns: minmax(180px, 240px) 1fr;
-  gap: 16px;
-  padding: 16px;
-  min-height: calc(100vh - 64px);
+  grid-template-columns: minmax(200px, 260px) 1fr;
+  min-height: 100vh;
 }
 
 .assistant-list {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 16px 12px;
+  border-right: 1px solid var(--border);
 }
 
 .assistant-chat {
@@ -1168,6 +1168,10 @@ select {
   flex-direction: column;
   gap: 12px;
   min-width: 0;
+  width: 100%;
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 24px 24px 20px;
 }
 
 .chat-messages {

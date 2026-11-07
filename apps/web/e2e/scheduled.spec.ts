@@ -40,7 +40,7 @@ test('pending reminders and schedules are listed and can be cancelled', async ({
   await expect(panel).toContainText('Call the bank')
   await expect(panel).toContainText('Stand-up')
   await expect(panel).toContainText('0 9 * * 1-5')
-  await panel.getByRole('button', { name: 'Cancel' }).click()
+  await panel.getByRole('button', { name: '取消' }).click()
   await expect(panel).not.toContainText('Call the bank')
   expect(deleted).toEqual(['/api/schedules/r1'])
 })

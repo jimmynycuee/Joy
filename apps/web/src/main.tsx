@@ -106,6 +106,12 @@ function doctorStatusLabel(status: DoctorStatus): string {
   return status === 'ok' ? '正常' : status === 'missing' ? '缺少' : '未驗證'
 }
 
+const DOCTOR_LABELS: Record<string, string> = {
+  'gh-auth': 'GitHub CLI 登入',
+  keychain: '作業系統鑰匙圈',
+  'data-directory': 'Joy 資料夾',
+}
+
 const EFFORT_LABELS: Record<string, string> = {
   low: '低',
   medium: '中',
@@ -191,7 +197,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (response.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
   const text = await response.text()
   const body = text ? (JSON.parse(text) as T & ApiError) : ({} as T & ApiError)
-  if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`)
+  if (!response.ok) throw new Error(body.error ?? `請求失敗（${response.status}）`)
   return body
 }
 
@@ -476,29 +482,26 @@ function TelegramSettings({
         )
       }
       formElement.reset()
-      setMessage('Saved. Restart Joy to connect Telegram.')
+      setMessage('已儲存。重新啟動 Joy 後才會連上 Telegram。')
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Could not save Telegram settings')
+      setMessage(error instanceof Error ? error.message : '無法儲存 Telegram 設定')
     }
   }
 
   return (
     <section className="settings-card" aria-labelledby="telegram-heading">
       <div className="section-heading">
-        <div>
-          <p className="eyebrow">CHANNELS</p>
-          <h2 id="telegram-heading">Telegram</h2>
-        </div>
+        <h2 id="telegram-heading">Telegram</h2>
         <span className={tokenStatus?.set && chatId ? 'status-pill configured' : 'status-pill'}>
-          {tokenStatus?.set && chatId ? 'Configured' : 'Not configured'}
+          {tokenStatus?.set && chatId ? '已設定' : '未設定'}
         </span>
       </div>
       <p className="muted secret-description">
-        Joy sends approval requests and task results to your chat and only accepts button presses from it.
-        Create a bot with @BotFather; the token is stored in the OS keychain.
+        Joy 會把需要你同意的動作和任務結果傳到你的 Telegram 對話，也只接受從這個對話按下的按鈕。用 @BotFather
+        建立機器人；token 會存在作業系統鑰匙圈。
       </p>
       <form className="secret-form" onSubmit={(event) => void save(event)}>
-        <label htmlFor="telegram-chat-id">Your chat id</label>
+        <label htmlFor="telegram-chat-id">你的 chat id</label>
         <input
           id="telegram-chat-id"
           name="telegram-chat-id"
@@ -508,16 +511,16 @@ function TelegramSettings({
         />
         {tokenStatus?.source === 'env' ? (
           <div className="env-managed" role="status">
-            Managed by the JOY_TELEGRAM_BOT_TOKEN environment variable.
+            由環境變數 JOY_TELEGRAM_BOT_TOKEN 管理。
           </div>
         ) : (
           <>
-            <label htmlFor="telegram-token">{tokenStatus?.set ? 'Replace bot token' : 'Bot token'}</label>
+            <label htmlFor="telegram-token">{tokenStatus?.set ? '換一個機器人 token' : '機器人 token'}</label>
             <input id="telegram-token" name="telegram-token" type="password" autoComplete="new-password" />
           </>
         )}
         <button className="primary-button" type="submit">
-          Save Telegram settings
+          儲存 Telegram 設定
         </button>
         {message ? (
           <p className="muted" role="status">
@@ -586,31 +589,29 @@ function ComparePanel({ details, onChanged }: { details: TaskDetails; onChanged:
       })
       onChanged()
     } catch (error) {
-      setFailure(error instanceof Error ? error.message : 'Request failed')
+      setFailure(error instanceof Error ? error.message : '操作失敗')
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <section className="compare-panel" aria-label="Compare attempts" data-testid="compare-panel">
+    <section className="compare-panel" aria-label="比較兩個方案" data-testid="compare-panel">
       {judgement ? (
-        <div className="judge-box" aria-label="Judge">
-          <p className="eyebrow">JUDGE</p>
+        <div className="judge-box" aria-label="裁判">
+          <p className="eyebrow">裁判</p>
           <p>
             {judgement.winner ? (
-              <strong>Prefers {labels.get(judgement.winner) ?? 'an attempt'}.</strong>
+              <strong>選 {labels.get(judgement.winner) ?? '其中一個方案'}。</strong>
             ) : (
-              <strong>No attempt is acceptable.</strong>
+              <strong>兩個方案都不夠好。</strong>
             )}{' '}
             {judgement.reasons}
           </p>
-          {judgement.mergeRecommended ? (
-            <p className="muted">The judge thinks a merged version would be better.</p>
-          ) : null}
+          {judgement.mergeRecommended ? <p className="muted">裁判認為合併兩邊會更好。</p> : null}
         </div>
       ) : details.task.status === 'running' ? (
-        <p className="muted">The attempts are running; the judge compares them when both are reviewed.</p>
+        <p className="muted">兩個方案都在進行中；兩邊都審查完後，裁判會比較。</p>
       ) : null}
       <div className="compare-columns">
         {attempts.map((attempt) => {
@@ -619,12 +620,12 @@ function ComparePanel({ details, onChanged }: { details: TaskDetails; onChanged:
           const resultDiff = record(result?.diff) as WorkspaceDiff | undefined
           const review = reviews.filter((r) => r.attemptId === id).at(-1)
           const notes = judgement?.attempts.find((a) => a.attemptId === id)
-          const label = id === mergeId ? 'Merged' : (labels.get(id) ?? 'Attempt')
+          const label = id === mergeId ? '合併版' : (labels.get(id) ?? '方案')
           return (
             <article
               key={id}
               className={id === chosenId ? 'compare-column chosen' : 'compare-column'}
-              aria-label={`Attempt ${label}`}
+              aria-label={`方案 ${label}`}
             >
               <header>
                 <strong>{label}</strong>
@@ -632,17 +633,17 @@ function ComparePanel({ details, onChanged }: { details: TaskDetails; onChanged:
                   {' '}
                   {String(attempt.provider)} · {String(attempt.model)}
                 </span>
-                {judgement?.winner === id ? <span className="badge">judge's pick</span> : null}
-                {id === chosenId ? <span className="badge">chosen</span> : null}
+                {judgement?.winner === id ? <span className="badge">裁判推薦</span> : null}
+                {id === chosenId ? <span className="badge">已選定</span> : null}
               </header>
               <p className="muted">
                 {result
                   ? result.status === 'succeeded'
                     ? review
-                      ? `Review: ${review.approve ? 'approved' : 'changes requested'}${review.summary ? ` — ${String(review.summary)}` : ''}`
-                      : 'Finished'
+                      ? `審查：${review.approve ? '通過' : '要求修改'}${review.summary ? ` — ${String(review.summary)}` : ''}`
+                      : '完成'
                     : `${String(result.status)}${result.reason ? `: ${String(result.reason)}` : ''}`
-                  : 'Running…'}
+                  : '進行中…'}
               </p>
               {notes ? (
                 <p className="compare-notes">
@@ -651,7 +652,7 @@ function ComparePanel({ details, onChanged }: { details: TaskDetails; onChanged:
                 </p>
               ) : null}
               {resultDiff ? (
-                <pre className="diff-code compare-diff" aria-label={`Diff ${label}`}>
+                <pre className="diff-code compare-diff" aria-label={`差異 ${label}`}>
                   {resultDiff.patch.split('\n').map((line, index) => (
                     <span
                       key={index}
@@ -675,7 +676,7 @@ function ComparePanel({ details, onChanged }: { details: TaskDetails; onChanged:
                   disabled={busy}
                   onClick={() => void act('choose', { attemptId: id })}
                 >
-                  Choose {label}
+                  選 {label}
                 </button>
               ) : null}
             </article>
@@ -684,7 +685,7 @@ function ComparePanel({ details, onChanged }: { details: TaskDetails; onChanged:
       </div>
       {canMerge ? (
         <button type="button" className="quiet-button" disabled={busy} onClick={() => void act('merge', {})}>
-          Merge: the judge re-implements the best of both
+          合併：由裁判綜合兩邊的優點重做一版
         </button>
       ) : null}
       {failure ? <p className="approvals-error">{failure}</p> : null}
@@ -726,7 +727,7 @@ async function removeWithConfirmation(path: string, body: Record<string, unknown
   } catch (error) {
     const message = error instanceof Error ? error.message : ''
     if (!/unpushed commit/.test(message)) throw error
-    if (!window.confirm(`${message}\n\nDelete these commits anyway?`)) return false
+    if (!window.confirm(`${message}\n\n還是要刪掉這些 commit 嗎？`)) return false
     await request(path, { method: 'POST', body: JSON.stringify({ ...body, confirmUnpushedCommits: true }) })
     return true
   }
@@ -761,18 +762,18 @@ function WorktreesPanel() {
     try {
       await removeWithConfirmation('/api/worktrees/remove', { path: row.path })
     } catch (error) {
-      setFailure(error instanceof Error ? error.message : 'Could not remove the worktree')
+      setFailure(error instanceof Error ? error.message : '無法移除工作副本')
     }
     await load().catch(() => undefined)
   }
 
   const stale = data?.worktrees.filter((row) => row.stale && !row.active) ?? []
   return (
-    <section className="settings-card" aria-label="Worktrees" data-testid="worktrees-panel">
-      <h2>Worktrees</h2>
+    <section className="settings-card" aria-label="工作副本" data-testid="worktrees-panel">
+      <h2>工作副本（worktree）</h2>
       <p className="muted">
-        {data ? `${data.worktrees.length} worktree(s) using ${formatBytes(data.totalBytes)}.` : 'Loading…'}
-        {stale.length ? ` ${stale.length} idle for more than ${data?.staleAfterDays} days.` : ''}
+        {data ? `共 ${data.worktrees.length} 個，佔用 ${formatBytes(data.totalBytes)}。` : '載入中…'}
+        {stale.length ? `其中 ${stale.length} 個閒置超過 ${data?.staleAfterDays} 天。` : ''}
       </p>
       {data?.worktrees.length ? (
         <ul className="worktree-list">
@@ -782,16 +783,16 @@ function WorktreesPanel() {
                 <strong>{row.taskTitle ?? row.branch ?? row.path}</strong>
                 <span className="muted">
                   {' '}
-                  · {formatBytes(row.diskUsageBytes)} · {Math.floor(row.ageDays)} day(s) idle
-                  {row.unpushedCommitCount ? ` · ${row.unpushedCommitCount} unpushed commit(s)` : ''}
-                  {row.stale ? ' · idle' : ''}
+                  · {formatBytes(row.diskUsageBytes)} · 閒置 {Math.floor(row.ageDays)} 天
+                  {row.unpushedCommitCount ? ` · ${row.unpushedCommitCount} 個 commit 還沒推送` : ''}
+                  {row.stale ? ' · 閒置' : ''}
                 </span>
               </span>
               {row.active ? (
-                <span className="muted">running</span>
+                <span className="muted">執行中</span>
               ) : (
                 <button type="button" className="quiet-button" onClick={() => void remove(row)}>
-                  Remove
+                  移除
                 </button>
               )}
             </li>
@@ -806,7 +807,7 @@ function WorktreesPanel() {
 /** Downloads an authenticated API response as a file. */
 async function downloadFile(path: string, filename: string): Promise<void> {
   const response = await fetch(path, { headers: { authorization: `Bearer ${apiToken()}` } })
-  if (!response.ok) throw new Error(`Download failed (${response.status})`)
+  if (!response.ok) throw new Error(`下載失敗（${response.status}）`)
   const url = URL.createObjectURL(await response.blob())
   const link = document.createElement('a')
   link.href = url
@@ -827,11 +828,9 @@ function LogsPanel() {
   }, [])
 
   return (
-    <section className="settings-card" aria-label="Debug logs" data-testid="logs-panel">
-      <h2>Debug logs</h2>
-      <p className="muted">
-        One file per day, kept 14 days. Known secrets are removed before anything is written.
-      </p>
+    <section className="settings-card" aria-label="除錯紀錄" data-testid="logs-panel">
+      <h2>除錯紀錄</h2>
+      <p className="muted">每天一個檔案，保留 14 天。寫入前會先移除已知的密碼和金鑰。</p>
       <ul className="worktree-list">
         {logs.map((log) => (
           <li key={log.day} className="worktree-item">
@@ -843,16 +842,16 @@ function LogsPanel() {
               className="quiet-button"
               onClick={() =>
                 void downloadFile(`/api/logs/${log.day}`, log.name).catch((error: unknown) =>
-                  setFailure(error instanceof Error ? error.message : 'Download failed'),
+                  setFailure(error instanceof Error ? error.message : '下載失敗'),
                 )
               }
             >
-              Download
+              下載
             </button>
           </li>
         ))}
       </ul>
-      {logs.length === 0 ? <p className="muted">No logs yet.</p> : null}
+      {logs.length === 0 ? <p className="muted">還沒有紀錄。</p> : null}
       {failure ? <p className="approvals-error">{failure}</p> : null}
     </section>
   )
@@ -875,10 +874,10 @@ function BackupsPanel() {
   async function backupNow() {
     try {
       const body = await request<{ created?: string | null }>('/api/backups', { method: 'POST', body: '{}' })
-      setMessage(body.created ? 'Backup taken.' : "Today's backup already exists.")
+      setMessage(body.created ? '已備份。' : '今天已經備份過了。')
       await load()
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Backup failed')
+      setMessage(error instanceof Error ? error.message : '備份失敗')
     }
   }
 
@@ -886,14 +885,14 @@ function BackupsPanel() {
     try {
       await downloadFile('/api/export', `joy-export-${new Date().toISOString().slice(0, 10)}.json`)
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Export failed')
+      setMessage(error instanceof Error ? error.message : '匯出失敗')
     }
   }
 
   return (
-    <section className="settings-card" aria-label="Backups" data-testid="backups-panel">
-      <h2>Backups &amp; export</h2>
-      <p className="muted">Joy backs up its database once a day and keeps the last 7.</p>
+    <section className="settings-card" aria-label="備份" data-testid="backups-panel">
+      <h2>備份與匯出</h2>
+      <p className="muted">Joy 每天備份一次資料庫，保留最近 7 份。</p>
       <ul className="worktree-list">
         {backups.map((backup) => (
           <li key={backup.day} className="worktree-item">
@@ -905,14 +904,14 @@ function BackupsPanel() {
       </ul>
       <div className="project-note-actions">
         <button type="button" className="quiet-button" onClick={() => void backupNow()}>
-          Back up now
+          立即備份
         </button>
         <button type="button" className="quiet-button" onClick={() => void exportJson()}>
-          Export tasks and memories (JSON)
+          匯出任務和記憶（JSON）
         </button>
       </div>
       <p className="muted">
-        To restore: stop Joy, then run <code>pnpm joy restore 2026-11-06</code> (a day from the list).
+        還原方式：先停止 Joy，再執行 <code>pnpm joy restore 2026-11-06</code>（日期換成清單裡的一天）。
       </p>
       {message ? <p className="muted">{message}</p> : null}
     </section>
@@ -930,9 +929,9 @@ function base64UrlToBytes(value: string): Uint8Array<ArrayBuffer> {
 /** Why this browser cannot receive notifications, or undefined when it can. */
 function pushUnsupportedReason(): string | undefined {
   if (!window.isSecureContext)
-    return 'Notifications need HTTPS (or localhost). On a phone, open Joy through `tailscale serve` (see README).'
+    return '通知需要 HTTPS（或 localhost）。手機上請透過 `tailscale serve` 開 Joy（見 README）。'
   if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window))
-    return 'This browser does not support Web Push. On iPhone, add Joy to the Home Screen first.'
+    return '這個瀏覽器不支援 Web Push。iPhone 請先把 Joy 加到主畫面。'
   return undefined
 }
 
@@ -954,8 +953,7 @@ function NotificationsPanel() {
     setState('busy')
     setMessage('')
     try {
-      if ((await Notification.requestPermission()) !== 'granted')
-        throw new Error('Notifications were not allowed')
+      if ((await Notification.requestPermission()) !== 'granted') throw new Error('沒有允許通知')
       const { publicKey } = await request<{ publicKey: string }>('/api/push/key')
       const registration = await navigator.serviceWorker.ready
       const subscription = await registration.pushManager.subscribe({
@@ -969,7 +967,7 @@ function NotificationsPanel() {
       setState('on')
     } catch (error) {
       setState('off')
-      setMessage(error instanceof Error ? error.message : 'Could not turn notifications on')
+      setMessage(error instanceof Error ? error.message : '無法開啟通知')
     }
   }
 
@@ -988,23 +986,23 @@ function NotificationsPanel() {
   }
 
   return (
-    <section className="settings-card" aria-label="Notifications" data-testid="notifications-panel">
-      <h2>Notifications</h2>
-      <p className="muted">When a task finishes or needs your approval, this device gets a notification.</p>
+    <section className="settings-card" aria-label="通知" data-testid="notifications-panel">
+      <h2>通知</h2>
+      <p className="muted">任務完成或需要你同意時，這台裝置會收到通知。</p>
       {unsupported ? (
         <p className="muted">{unsupported}</p>
       ) : state === 'on' ? (
         <div className="project-note-actions">
-          <span>On for this device.</span>
+          <span>這台裝置已開啟通知。</span>
           <button
             type="button"
             className="quiet-button"
             onClick={() => void request('/api/push/test', { method: 'POST', body: '{}' })}
           >
-            Send a test
+            傳送測試通知
           </button>
           <button type="button" className="quiet-button" onClick={() => void disable()}>
-            Turn off
+            關閉
           </button>
         </div>
       ) : (
@@ -1014,7 +1012,7 @@ function NotificationsPanel() {
           disabled={state === 'busy'}
           onClick={() => void enable()}
         >
-          Turn on notifications
+          開啟通知
         </button>
       )}
       {message ? <p className="approvals-error">{message}</p> : null}
@@ -1210,14 +1208,14 @@ function MemoryPanel(props: {
       setEditing('')
       await props.onChange()
     } catch (error) {
-      props.onError(error instanceof Error ? error.message : 'Could not save the memory')
+      props.onError(error instanceof Error ? error.message : '無法儲存這筆記憶')
     }
   }
 
   return (
-    <section className="memory-panel" aria-label="Memories" data-testid="memory-panel">
-      <h3>What Joy remembers</h3>
-      {props.memories.length === 0 ? <p className="muted">Nothing yet.</p> : null}
+    <section className="memory-panel" aria-label="記憶" data-testid="memory-panel">
+      <h3>Joy 記得的事</h3>
+      {props.memories.length === 0 ? <p className="muted">還沒有。</p> : null}
       <ul>
         {props.memories.map((memory) => (
           <li key={memory.id} className={memoryInactive(memory) ? 'memory-item inactive' : 'memory-item'}>
@@ -1229,24 +1227,24 @@ function MemoryPanel(props: {
                 }}
               >
                 <input
-                  aria-label="Memory text"
+                  aria-label="記憶內容"
                   value={draft}
                   maxLength={500}
                   onChange={(event) => setDraft(event.target.value)}
                 />
                 <button type="submit" className="quiet-button">
-                  Save
+                  儲存
                 </button>
                 <button type="button" className="quiet-button" onClick={() => setEditing('')}>
-                  Cancel
+                  取消
                 </button>
               </form>
             ) : (
               <>
                 <span>{memory.content}</span>
-                {memory.supersededBy ? <span className="muted"> (replaced)</span> : null}
+                {memory.supersededBy ? <span className="muted">（已被取代）</span> : null}
                 {!memory.supersededBy && memoryInactive(memory) ? (
-                  <span className="muted"> (expired)</span>
+                  <span className="muted">（已過期）</span>
                 ) : null}
                 <button
                   type="button"
@@ -1256,15 +1254,15 @@ function MemoryPanel(props: {
                     setDraft(memory.content)
                   }}
                 >
-                  Edit
+                  編輯
                 </button>
                 <button
                   type="button"
                   className="quiet-button"
-                  aria-label={`Delete memory: ${memory.content}`}
+                  aria-label={`刪除記憶：${memory.content}`}
                   onClick={() => void deleteMemory(memory.id, props.onChange, props.onError)}
                 >
-                  Delete
+                  刪除
                 </button>
               </>
             )}
@@ -1308,15 +1306,15 @@ function ScheduledPanel(props: { onError: (message: string) => void }) {
     try {
       await request(`/api/schedules/${encodeURIComponent(id)}`, { method: 'DELETE' })
     } catch (error) {
-      props.onError(error instanceof Error ? error.message : 'Could not cancel')
+      props.onError(error instanceof Error ? error.message : '無法取消')
     }
     await load().catch(() => undefined)
   }
 
   if (items.reminders.length === 0 && items.schedules.length === 0) return null
   return (
-    <section className="memory-panel" aria-label="Scheduled" data-testid="scheduled-panel">
-      <h3>Scheduled</h3>
+    <section className="memory-panel" aria-label="排程" data-testid="scheduled-panel">
+      <h3>提醒與排程</h3>
       <ul>
         {items.reminders.map((reminder) => (
           <li key={reminder.id} className="memory-item">
@@ -1324,7 +1322,7 @@ function ScheduledPanel(props: { onError: (message: string) => void }) {
               ⏰ {reminder.text} <span className="muted">· {new Date(reminder.dueAt).toLocaleString()}</span>
             </span>
             <button type="button" className="quiet-button" onClick={() => void cancel(reminder.id)}>
-              Cancel
+              取消
             </button>
           </li>
         ))}
@@ -1333,11 +1331,11 @@ function ScheduledPanel(props: { onError: (message: string) => void }) {
             <span>
               🔁 {String(schedule.action === 'reminder' ? schedule.payload.text : schedule.payload.title)}{' '}
               <span className="muted">
-                · <code>{schedule.cron}</code> · next {new Date(schedule.nextRunAt).toLocaleString()}
+                · <code>{schedule.cron}</code> · 下次 {new Date(schedule.nextRunAt).toLocaleString()}
               </span>
             </span>
             <button type="button" className="quiet-button" onClick={() => void cancel(schedule.id)}>
-              Remove
+              移除
             </button>
           </li>
         ))}
@@ -1375,23 +1373,18 @@ function HistorySearch(props: { onOpen: (conversationId: string) => void }) {
   return (
     <div className="history-search">
       <form role="search" onSubmit={(event) => void search(event)}>
-        <input
-          name="q"
-          type="search"
-          placeholder="Search past conversations"
-          aria-label="Search past conversations"
-        />
+        <input name="q" type="search" placeholder="搜尋以前的對話" aria-label="搜尋以前的對話" />
       </form>
       {hits === null ? null : hits.length === 0 ? (
-        <p className="muted">No matches.</p>
+        <p className="muted">找不到符合的內容。</p>
       ) : (
-        <ul aria-label="Search results">
+        <ul aria-label="搜尋結果">
           {hits.map((hit, index) => (
             <li key={`${hit.conversationId}-${index}`}>
               <button type="button" className="task-row" onClick={() => props.onOpen(hit.conversationId)}>
                 <span className="muted">
-                  {hit.ts.slice(0, 10)} · {hit.title ?? 'Conversation'}
-                  {hit.kind === 'summary' ? ' · summary' : ''}
+                  {hit.ts.slice(0, 10)} · {hit.title ?? '對話'}
+                  {hit.kind === 'summary' ? ' · 摘要' : ''}
                 </span>
                 <span>{hit.snippet}</span>
               </button>
@@ -1436,7 +1429,7 @@ function AssistantActionsPanel(props: { onDecided: () => void; onError: (message
         body: '{}',
       })
     } catch (error) {
-      props.onError(error instanceof Error ? error.message : 'Could not answer')
+      props.onError(error instanceof Error ? error.message : '無法送出你的決定')
     }
     await load().catch(() => undefined)
     props.onDecided()
@@ -1444,14 +1437,14 @@ function AssistantActionsPanel(props: { onDecided: () => void; onError: (message
 
   if (actions.length === 0) return null
   return (
-    <section className="project-notes" aria-label="Waiting for your approval" data-testid="assistant-actions">
-      <h3>🔴 Waiting for your approval</h3>
+    <section className="project-notes" aria-label="需要你同意" data-testid="assistant-actions">
+      <h3>需要你同意</h3>
       {actions.map((action) => (
         <article key={action.id} className="project-note">
           <p>
             <code>{action.summary}</code>
             {action.provenance === 'external_content' ? (
-              <span className="muted"> · asked for after reading mail or calendar content</span>
+              <span className="muted"> · 這是讀了郵件或行事曆內容之後提出的要求</span>
             ) : null}
           </p>
           <div className="project-note-actions">
@@ -1460,10 +1453,10 @@ function AssistantActionsPanel(props: { onDecided: () => void; onError: (message
               className="primary-button"
               onClick={() => void decide(action.id, 'approve')}
             >
-              Approve
+              同意
             </button>
             <button type="button" className="quiet-button" onClick={() => void decide(action.id, 'deny')}>
-              Deny
+              拒絕
             </button>
           </div>
         </article>
@@ -1491,15 +1484,15 @@ function ProjectNotesPanel(props: { onError: (message: string) => void }) {
     try {
       await request(`/api/project-notes/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: '{}' })
     } catch (error) {
-      props.onError(error instanceof Error ? error.message : 'Could not update the proposal')
+      props.onError(error instanceof Error ? error.message : '無法更新這個提案')
     }
     await load().catch(() => undefined)
   }
 
   if (notes.length === 0) return null
   return (
-    <section className="project-notes" aria-label="Project note proposals" data-testid="project-notes">
-      <h3>Proposed project notes</h3>
+    <section className="project-notes" aria-label="專案守則提案" data-testid="project-notes">
+      <h3>建議加入專案守則</h3>
       {notes.map((note) => (
         <article key={note.id} className="project-note">
           <p>
@@ -1511,9 +1504,9 @@ function ProjectNotesPanel(props: { onError: (message: string) => void }) {
             </span>
           </p>
           {note.stale ? (
-            <p className="muted">The file changed since this was proposed. Reject it and ask Joy again.</p>
+            <p className="muted">提案之後檔案又改過了。請拒絕這個提案，再請 Joy 重新提一次。</p>
           ) : (
-            <pre className="diff" aria-label={`Diff for ${note.note}`}>
+            <pre className="diff" aria-label={`差異：${note.note}`}>
               {(note.diff ?? [])
                 .filter((line) => line.kind !== 'same')
                 .map((line, index) => (
@@ -1528,11 +1521,11 @@ function ProjectNotesPanel(props: { onError: (message: string) => void }) {
           <div className="project-note-actions">
             {note.stale ? null : (
               <button type="button" className="primary-button" onClick={() => void decide(note.id, 'apply')}>
-                Apply to {note.file}
+                寫進 {note.file}
               </button>
             )}
             <button type="button" className="quiet-button" onClick={() => void decide(note.id, 'reject')}>
-              Reject
+              拒絕
             </button>
           </div>
         </article>
@@ -1546,7 +1539,7 @@ async function deleteMemory(id: string, onChange: () => Promise<void>, onError: 
     await request(`/api/memories/${encodeURIComponent(id)}`, { method: 'DELETE' })
     await onChange()
   } catch (error) {
-    onError(error instanceof Error ? error.message : 'Could not delete the memory')
+    onError(error instanceof Error ? error.message : '無法刪除這筆記憶')
   }
 }
 
@@ -1634,7 +1627,7 @@ function AssistantPage() {
         body: JSON.stringify({ text }),
       })
     } catch (error) {
-      setFailure(error instanceof Error ? error.message : 'The assistant did not answer')
+      setFailure(error instanceof Error ? error.message : '助理沒有回應')
     } finally {
       setSending(false)
       if (conversationId) {
@@ -1651,9 +1644,9 @@ function AssistantPage() {
 
   return (
     <main className="assistant-page" data-testid="assistant-page">
-      <aside className="assistant-list" aria-label="Conversations">
+      <aside className="assistant-list" aria-label="對話列表">
         <button className="primary-button" type="button" onClick={() => void newConversation()}>
-          New conversation
+          新對話
         </button>
         <HistorySearch onOpen={setSelected} />
         {conversations.map((conversation) => (
@@ -1663,29 +1656,29 @@ function AssistantPage() {
             className={conversation.id === selected ? 'task-row selected' : 'task-row'}
             onClick={() => setSelected(conversation.id)}
           >
-            {conversation.title ?? 'New conversation'}
+            {conversation.title ?? '新對話'}
           </button>
         ))}
         <ScheduledPanel onError={setFailure} />
         <MemoryPanel memories={memories} onChange={loadMemories} onError={setFailure} />
       </aside>
-      <section className="assistant-chat" aria-label="Chat">
+      <section className="assistant-chat" aria-label="對話">
         <AssistantActionsPanel onError={setFailure} onDecided={() => undefined} />
         <ProjectNotesPanel onError={setFailure} />
         <div className="chat-messages">
           {messages.length === 0 ? (
             <p className="muted">
-              Ask about your repositories and tasks. The assistant brain is set in Settings.
+              可以問專案和任務的狀況、請它開任務或設提醒。助理用哪個模型可以在設定裡改。
             </p>
           ) : (
             messages.map((message) => (
               <div key={message.id} className={`chat-message chat-${message.role}`}>
                 <span className="chat-role">
-                  {message.role === 'user' ? 'You' : message.role === 'assistant' ? 'Joy' : 'Error'}
+                  {message.role === 'user' ? '你' : message.role === 'assistant' ? 'Joy' : '錯誤'}
                 </span>
                 <p>{message.content}</p>
                 {message.role === 'assistant' && message.memoryIds?.length ? (
-                  <div className="memory-chips" aria-label="Memories used">
+                  <div className="memory-chips" aria-label="用到的記憶">
                     {message.memoryIds.map((id) => {
                       const memory = memories.find((m) => m.id === id)
                       return memory ? (
@@ -1693,7 +1686,7 @@ function AssistantPage() {
                           {memory.content}
                           <button
                             type="button"
-                            aria-label={`Forget: ${memory.content}`}
+                            aria-label={`忘記：${memory.content}`}
                             onClick={() => void deleteMemory(id, loadMemories, setFailure)}
                           >
                             ×
@@ -1701,7 +1694,7 @@ function AssistantPage() {
                         </span>
                       ) : (
                         <span key={id} className="memory-chip deleted">
-                          deleted memory
+                          已刪除的記憶
                         </span>
                       )
                     })}
@@ -1710,13 +1703,13 @@ function AssistantPage() {
               </div>
             ))
           )}
-          {sending ? <p className="muted">Joy is thinking…</p> : null}
+          {sending ? <p className="muted">Joy 正在想…</p> : null}
         </div>
         {failure ? <p className="approvals-error">{failure}</p> : null}
         <form className="chat-form" onSubmit={(event) => void send(event)}>
-          <textarea name="message" rows={3} placeholder="Message Joy" required disabled={sending} />
+          <textarea name="message" rows={3} placeholder="傳訊息給 Joy" required disabled={sending} />
           <button className="primary-button" type="submit" disabled={sending}>
-            Send
+            送出
           </button>
         </form>
       </section>
@@ -1748,7 +1741,7 @@ interface ReviewerStat {
 function formatDuration(ms: number | null): string {
   if (ms === null) return '—'
   const minutes = ms / 60_000
-  return minutes >= 60 ? `${(minutes / 60).toFixed(1)} h` : `${Math.max(1, Math.round(minutes))} min`
+  return minutes >= 60 ? `${(minutes / 60).toFixed(1)} 小時` : `${Math.max(1, Math.round(minutes))} 分鐘`
 }
 
 /** How each provider and model has done (T3.9), filtered by period and repository. */
@@ -1774,7 +1767,7 @@ function StatsPage(props: { repos: Repo[] }) {
         })
       })
       .catch((error: unknown) => {
-        if (!cancelled) setFailure(error instanceof Error ? error.message : 'Could not load stats')
+        if (!cancelled) setFailure(error instanceof Error ? error.message : '無法載入統計')
       })
     return () => {
       cancelled = true
@@ -1784,11 +1777,11 @@ function StatsPage(props: { repos: Repo[] }) {
   return (
     <main className="settings-page stats-page" data-testid="stats-page">
       <div className="page-heading">
-        <h1>Model stats</h1>
+        <h1>模型統計</h1>
       </div>
       <form className="stats-filter" onSubmit={(event) => event.preventDefault()}>
         <label>
-          From
+          從
           <input
             type="date"
             value={filter.from}
@@ -1796,7 +1789,7 @@ function StatsPage(props: { repos: Repo[] }) {
           />
         </label>
         <label>
-          To
+          到
           <input
             type="date"
             value={filter.to}
@@ -1804,9 +1797,9 @@ function StatsPage(props: { repos: Repo[] }) {
           />
         </label>
         <label>
-          Repository
+          專案
           <select value={filter.repoId} onChange={(e) => setFilter({ ...filter, repoId: e.target.value })}>
-            <option value="">All</option>
+            <option value="">全部</option>
             {props.repos.map((repo) => (
               <option key={repo.id} value={repo.id}>
                 {repo.path}
@@ -1816,19 +1809,19 @@ function StatsPage(props: { repos: Repo[] }) {
         </label>
       </form>
       {failure ? <p className="approvals-error">{failure}</p> : null}
-      <h2>As implementer</h2>
-      {stats && stats.implementers.length === 0 ? <p className="muted">No attempts in this period.</p> : null}
+      <h2>擔任實作者</h2>
+      {stats && stats.implementers.length === 0 ? <p className="muted">這段期間沒有實作紀錄。</p> : null}
       {stats && stats.implementers.length ? (
-        <table className="stats-table" aria-label="Implementer stats">
+        <table className="stats-table" aria-label="實作者統計">
           <thead>
             <tr>
-              <th>Model</th>
-              <th>Mode</th>
-              <th>Attempts</th>
-              <th>Pass rate</th>
-              <th>Problems found by review</th>
-              <th>Avg time</th>
-              <th>Handoffs</th>
+              <th>模型</th>
+              <th>模式</th>
+              <th>次數</th>
+              <th>通過率</th>
+              <th>被審查找到的問題</th>
+              <th>平均耗時</th>
+              <th>交接次數</th>
             </tr>
           </thead>
           <tbody>
@@ -1837,7 +1830,7 @@ function StatsPage(props: { repos: Repo[] }) {
                 <td>
                   {row.provider} · {row.model}
                 </td>
-                <td>{row.mode}</td>
+                <td>{modeLabel(row.mode)}</td>
                 <td>{row.attempts}</td>
                 <td>
                   {row.passRate === null ? '—' : `${Math.round(row.passRate * 100)}%`}
@@ -1854,16 +1847,16 @@ function StatsPage(props: { repos: Repo[] }) {
           </tbody>
         </table>
       ) : null}
-      <h2>As reviewer</h2>
-      {stats && stats.reviewers.length === 0 ? <p className="muted">No reviews in this period.</p> : null}
+      <h2>擔任審查者</h2>
+      {stats && stats.reviewers.length === 0 ? <p className="muted">這段期間沒有審查紀錄。</p> : null}
       {stats && stats.reviewers.length ? (
-        <table className="stats-table" aria-label="Reviewer stats">
+        <table className="stats-table" aria-label="審查者統計">
           <thead>
             <tr>
-              <th>Model</th>
-              <th>Reviews</th>
-              <th>Approved</th>
-              <th>Problems found</th>
+              <th>模型</th>
+              <th>審查次數</th>
+              <th>通過</th>
+              <th>找到的問題</th>
             </tr>
           </thead>
           <tbody>
@@ -1888,10 +1881,9 @@ function StatsPage(props: { repos: Repo[] }) {
 function TokenGate() {
   return (
     <main className="token-gate" data-testid="token-gate">
-      <h1>Joy access token</h1>
+      <h1>Joy 存取權杖</h1>
       <p className="muted">
-        Paste the token from <code>~/.joy/api-token</code> on the computer that runs Joy. It is kept on this
-        device only.
+        貼上執行 Joy 那台電腦裡 <code>~/.joy/api-token</code> 的內容。權杖只會存在這台裝置。
       </p>
       <form
         onSubmit={(event) => {
@@ -1902,9 +1894,9 @@ function TokenGate() {
           window.location.reload()
         }}
       >
-        <input name="token" type="password" aria-label="Access token" autoComplete="off" required />
+        <input name="token" type="password" aria-label="存取權杖" autoComplete="off" required />
         <button className="primary-button" type="submit">
-          Continue
+          繼續
         </button>
       </form>
     </main>
@@ -1917,30 +1909,27 @@ function AccessTokenPanel() {
   const [failure, setFailure] = useState('')
 
   async function regenerate() {
-    if (!window.confirm('Regenerate the access token? Every other device and tab will need the new token.'))
-      return
+    if (!window.confirm('要重新產生存取權杖嗎？其他裝置和分頁都要改用新的權杖。')) return
     setFailure('')
     try {
       const body = await request<{ token: string }>('/api/token/rotate', { method: 'POST', body: '{}' })
       saveApiToken(body.token)
       setShown(body.token)
     } catch (error) {
-      setFailure(error instanceof Error ? error.message : 'Could not regenerate the token')
+      setFailure(error instanceof Error ? error.message : '無法重新產生權杖')
     }
   }
 
   return (
-    <section className="settings-card" aria-label="Access token" data-testid="access-token-panel">
-      <h2>Access token</h2>
-      <p className="muted">
-        Every request to Joy needs this token. For remote access (Tailscale), see the README.
-      </p>
+    <section className="settings-card" aria-label="存取權杖" data-testid="access-token-panel">
+      <h2>存取權杖</h2>
+      <p className="muted">每個送到 Joy 的請求都要帶這個權杖。要從其他裝置連線（Tailscale）請看 README。</p>
       <button type="button" className="quiet-button" onClick={() => void regenerate()}>
-        Regenerate token
+        重新產生權杖
       </button>
       {shown ? (
         <p>
-          New token (shown once): <code data-testid="new-token">{shown}</code>
+          新權杖（只顯示這一次）：<code data-testid="new-token">{shown}</code>
         </p>
       ) : null}
       {failure ? <p className="approvals-error">{failure}</p> : null}
@@ -2351,7 +2340,7 @@ function Workspace() {
       formElement.reset()
       setNotice('金鑰已安全儲存，之後不會再顯示。')
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not save OpenAI key')
+      setError(cause instanceof Error ? cause.message : '無法儲存金鑰')
     }
   }
 
@@ -2361,7 +2350,7 @@ function Workspace() {
       setSecretStatus(await request<SecretStatus>('/api/secrets/openai-api-key', { method: 'DELETE' }))
       setNotice('已移除金鑰。')
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not remove OpenAI key')
+      setError(cause instanceof Error ? cause.message : '無法移除金鑰')
     }
   }
 
@@ -2536,7 +2525,7 @@ function Workspace() {
                   {doctorReport.checks.map((check) => (
                     <li className="doctor-check" key={check.id}>
                       <div className="doctor-check-heading">
-                        <strong>{check.label}</strong>
+                        <strong>{DOCTOR_LABELS[check.id] ?? check.label}</strong>
                         <span className={`doctor-state doctor-state-${check.status}`}>
                           {doctorStatusLabel(check.status)}
                         </span>

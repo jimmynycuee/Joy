@@ -41,10 +41,10 @@ test('a proposed AGENTS.md note is shown as a diff and written only when applied
   await page.goto('/')
   await page.getByRole('button', { name: '助理' }).click()
   const panel = page.getByTestId('project-notes')
-  const diff = panel.getByLabel('Diff for Run pnpm check before committing')
+  const diff = panel.getByLabel('差異：Run pnpm check before committing')
   await expect(diff).toContainText('+ - Run pnpm check before committing')
   await expect(diff).not.toContainText('# Rules')
-  await panel.getByRole('button', { name: 'Apply to AGENTS.md' }).click()
+  await panel.getByRole('button', { name: '寫進 AGENTS.md' }).click()
   await expect(panel).toHaveCount(0)
   // The owner's click is the approval; the request carries no approval flag.
   expect(decisions).toEqual([{ path: '/api/project-notes/n1/apply', body: '{}' }])
