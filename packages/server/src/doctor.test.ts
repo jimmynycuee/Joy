@@ -120,12 +120,12 @@ describe('Windows CLI shim detection', () => {
 
     expect(checks.get('claude-cli')).toMatchObject({
       status: 'untested',
-      summary: expect.stringContaining('installed as a Windows command shim'),
-      repair: expect.stringContaining('No installation repair is needed'),
+      summary: expect.stringContaining('Windows 指令 shim'),
+      repair: expect.stringContaining('不需要重新安裝'),
     })
     expect(checks.get('codex-cli')).toMatchObject({
       status: 'untested',
-      summary: expect.stringContaining('installed as a Windows command shim'),
+      summary: expect.stringContaining('Windows 指令 shim'),
     })
   })
 })
@@ -161,7 +161,8 @@ describe('runDoctor', () => {
     expect(checks.get('node')).toMatchObject({
       status: 'ok',
       version: '22.13.0',
-      repair: 'No action needed.',
+      summary: expect.stringContaining('符合 Joy 要求'),
+      repair: '不需要處理。',
     })
     expect(checks.get('git')).toMatchObject({ status: 'ok', version: '2.48.1' })
     expect(checks.get('gh-auth')).toMatchObject({ status: 'ok' })
@@ -199,7 +200,7 @@ describe('runDoctor', () => {
 
     expect(checks.get('git')).toMatchObject({
       status: 'missing',
-      repair: expect.stringContaining('Install Git'),
+      repair: expect.stringContaining('安裝 Git'),
     })
     expect(checks.get('gh-auth')).toMatchObject({
       status: 'missing',
@@ -207,11 +208,11 @@ describe('runDoctor', () => {
     })
     expect(checks.get('claude-cli')).toMatchObject({
       status: 'missing',
-      repair: expect.stringContaining('Install Claude Code'),
+      repair: expect.stringContaining('安裝 Claude Code CLI'),
     })
     expect(checks.get('codex-cli')).toMatchObject({
       status: 'missing',
-      repair: expect.stringContaining('Install Codex'),
+      repair: expect.stringContaining('安裝 Codex CLI'),
     })
   })
 
@@ -232,8 +233,8 @@ describe('runDoctor', () => {
     expect(checks.get('node')).toMatchObject({
       status: 'missing',
       version: '20.11.1',
-      summary: expect.stringContaining("below Joy's declared runtime requirement"),
-      repair: expect.stringContaining('Upgrade to Node.js 22.13.0 or later'),
+      summary: expect.stringContaining('低於 Joy 要求的版本'),
+      repair: expect.stringContaining('升級到 Node.js 22.13.0'),
     })
     expect(checks.get('git')).toMatchObject({ status: 'untested' })
     expect(checks.get('gh-auth')).toMatchObject({ status: 'untested' })
@@ -285,7 +286,7 @@ describe('runDoctor', () => {
 
     expect(checksById(report.checks).get('data-directory')).toMatchObject({
       status: 'missing',
-      repair: expect.stringContaining('automatically when the server starts'),
+      repair: expect.stringContaining('自動建立資料目錄'),
     })
     expect(readdirSync(parent)).toEqual([])
   })

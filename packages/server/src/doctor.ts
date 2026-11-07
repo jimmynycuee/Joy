@@ -56,6 +56,8 @@ export interface DoctorOptions {
 }
 
 const MIN_NODE_VERSION = [22, 13, 0] as const
+/** The repair text of a check that needs nothing (callers compare against it). */
+export const NO_ACTION_NEEDED = '不需要處理。'
 const COMMAND_TIMEOUT_MS = 8_000
 const MAX_VERSION_OUTPUT_LENGTH = 4_096
 
@@ -87,8 +89,8 @@ function checkNode(version: string): DoctorCheck {
       id,
       label,
       status: 'untested',
-      summary: 'The running Node.js version could not be identified.',
-      repair: 'Install Node.js 22.13.0 or later, then restart Joy.',
+      summary: '無法辨識目前執行的 Node.js 版本。',
+      repair: '安裝 Node.js 22.13.0 以上版本，然後重新啟動 Joy。',
     }
   }
   const detected = parsed.join('.')
@@ -98,8 +100,8 @@ function checkNode(version: string): DoctorCheck {
       label,
       status: 'missing',
       version: detected,
-      summary: `Node.js ${detected} is below Joy's declared runtime requirement (22.13.0).`,
-      repair: 'Upgrade to Node.js 22.13.0 or later, then restart Joy.',
+      summary: `Node.js ${detected} 低於 Joy 要求的版本（22.13.0）。`,
+      repair: '升級到 Node.js 22.13.0 以上版本，然後重新啟動 Joy。',
     }
   }
   return {
@@ -107,8 +109,8 @@ function checkNode(version: string): DoctorCheck {
     label,
     status: 'ok',
     version: detected,
-    summary: `Node.js ${detected} meets Joy's declared runtime requirement.`,
-    repair: 'No action needed.',
+    summary: `Node.js ${detected} 符合 Joy 要求的版本。`,
+    repair: NO_ACTION_NEEDED,
   }
 }
 
@@ -119,8 +121,8 @@ async function checkGit(runCommand: DoctorCommandRunner): Promise<DoctorCheck> {
       id: 'git',
       label: 'Git',
       status: 'missing',
-      summary: 'Git is not available on PATH.',
-      repair: 'Install Git and ensure the `git` command is available on PATH.',
+      summary: 'PATH 上找不到 Git。',
+      repair: '安裝 Git，並確認 PATH 上可以執行 `git` 指令。',
     }
   }
   const version = result.exitCode === 0 ? parseGitVersion(result.output ?? '') : undefined
@@ -130,16 +132,16 @@ async function checkGit(runCommand: DoctorCommandRunner): Promise<DoctorCheck> {
       label: 'Git',
       status: 'ok',
       version,
-      summary: `Git ${version} is available.`,
-      repair: 'No action needed.',
+      summary: `Git ${version} 可以使用。`,
+      repair: NO_ACTION_NEEDED,
     }
   }
   return {
     id: 'git',
     label: 'Git',
     status: 'untested',
-    summary: 'Git availability or version could not be verified.',
-    repair: 'Install or repair Git, then confirm `git --version` succeeds.',
+    summary: '無法確認 Git 是否可用或其版本。',
+    repair: '安裝或修復 Git，然後確認 `git --version` 可以成功執行。',
   }
 }
 
@@ -148,28 +150,27 @@ async function checkGitHubAuth(runCommand: DoctorCommandRunner): Promise<DoctorC
   if (result.spawnErrorCode === 'ENOENT') {
     return {
       id: 'gh-auth',
-      label: 'GitHub CLI sign-in',
+      label: 'GitHub CLI 登入',
       status: 'missing',
-      summary: 'GitHub CLI is not installed or not available on PATH.',
-      repair: 'Install GitHub CLI, then run `gh auth login --hostname github.com`.',
+      summary: 'GitHub CLI 未安裝，或 PATH 上找不到。',
+      repair: '安裝 GitHub CLI，然後執行 `gh auth login --hostname github.com`。',
     }
   }
   if (result.exitCode === 0) {
     return {
       id: 'gh-auth',
-      label: 'GitHub CLI sign-in',
+      label: 'GitHub CLI 登入',
       status: 'ok',
-      summary: 'GitHub CLI authentication is available.',
-      repair: 'No action needed.',
+      summary: 'GitHub CLI 已登入。',
+      repair: NO_ACTION_NEEDED,
     }
   }
   return {
     id: 'gh-auth',
-    label: 'GitHub CLI sign-in',
+    label: 'GitHub CLI 登入',
     status: 'untested',
-    summary: 'GitHub CLI authentication could not be confirmed.',
-    repair:
-      'Run `gh auth login --hostname github.com`, then check again; a network issue can also make this inconclusive.',
+    summary: '無法確認 GitHub CLI 是否已登入。',
+    repair: '執行 `gh auth login --hostname github.com` 後再檢查一次；網路問題也可能讓這項無法判斷。',
   }
 }
 
@@ -185,8 +186,8 @@ async function checkOptionalCli(
       id,
       label: `${label} CLI`,
       status: 'untested',
-      summary: `${label} CLI is installed as a Windows command shim; Joy could not check its version without invoking a shell.`,
-      repair: 'No installation repair is needed; version detection for this Windows shim remains untested.',
+      summary: `${label} CLI 以 Windows 指令 shim 安裝；Joy 不透過 shell 就無法檢查它的版本。`,
+      repair: '不需要重新安裝；這個 Windows shim 的版本仍未檢查。',
     }
   }
   if (result.spawnErrorCode === 'ENOENT') {
@@ -194,8 +195,8 @@ async function checkOptionalCli(
       id,
       label: `${label} CLI`,
       status: 'missing',
-      summary: `${label} CLI is not installed or not available on PATH.`,
-      repair: `Install ${label} CLI or set its executable path in Joy's provider settings.`,
+      summary: `${label} CLI 未安裝，或 PATH 上找不到。`,
+      repair: `安裝 ${label} CLI，或在 Joy 的 provider 設定中指定它的執行檔路徑。`,
     }
   }
   const output = result.exitCode === 0 ? (result.output ?? '') : ''
@@ -206,8 +207,8 @@ async function checkOptionalCli(
       label: `${label} CLI`,
       status: 'ok',
       version: check.version,
-      summary: check.message,
-      repair: 'No action needed.',
+      summary: `${label} CLI ${check.version} 是測試過的版本。`,
+      repair: NO_ACTION_NEEDED,
     }
   if (check?.status === 'untested')
     return {
@@ -215,15 +216,15 @@ async function checkOptionalCli(
       label: `${label} CLI`,
       status: 'untested',
       version: check.version,
-      summary: check.message,
-      repair: check.repair,
+      summary: `${label} CLI ${check.version} 尚未和 Joy 一起測試過，輸出格式可能已經改變。`,
+      repair: `安裝測試過的版本；或用 \`${recordCommand(label)}\` 重新錄製 contract fixture、執行 \`pnpm test\`，並更新 TESTED_CLI_VERSIONS。`,
     }
   return {
     id,
     label: `${label} CLI`,
     status: 'untested',
-    summary: `${label} CLI installation or version could not be verified.`,
-    repair: `Install or repair ${label} CLI, then confirm its \`--version\` command succeeds.`,
+    summary: `無法確認 ${label} CLI 是否安裝或其版本。`,
+    repair: `安裝或修復 ${label} CLI，然後確認它的 \`--version\` 指令可以成功執行。`,
   }
 }
 
@@ -245,30 +246,30 @@ async function checkWsl(runCommand: DoctorCommandRunner): Promise<DoctorCheck> {
   if (wsl.spawnErrorCode === 'ENOENT' || wsl.exitCode !== 0)
     return {
       id: 'wsl',
-      label: 'WSL (for Codex)',
+      label: 'WSL（給 Codex 用）',
       status: 'missing',
-      summary: 'WSL is not installed or has no Linux distribution.',
+      summary: 'WSL 未安裝，或沒有 Linux 發行版。',
       repair:
-        'Only needed when Codex does not run on Windows itself: run `wsl --install`, install Codex inside WSL, then set providers.codex.wsl: true and transport: exec.',
+        '只有 Codex 無法直接在 Windows 上執行時才需要：執行 `wsl --install`，在 WSL 內安裝 Codex，然後設定 providers.codex.wsl: true 與 transport: exec。',
     }
   const codex = await safeRunCommand(runCommand, 'wsl.exe', ['-e', 'codex', '--version'], true)
   const version = codex.exitCode === 0 ? parseCliVersion(codex.output ?? '') : undefined
   return version
     ? {
         id: 'wsl',
-        label: 'WSL (for Codex)',
+        label: 'WSL（給 Codex 用）',
         status: 'ok',
         version,
-        summary: `Codex ${version} is available inside WSL.`,
-        repair: 'No action needed. Set providers.codex.wsl: true (with transport: exec) to use it.',
+        summary: `WSL 內可以使用 Codex ${version}。`,
+        repair: '不需要處理。要使用它，請設定 providers.codex.wsl: true（並設 transport: exec）。',
       }
     : {
         id: 'wsl',
-        label: 'WSL (for Codex)',
+        label: 'WSL（給 Codex 用）',
         status: 'untested',
-        summary: 'WSL is available but Codex is not installed inside it.',
+        summary: 'WSL 可以使用，但裡面沒有安裝 Codex。',
         repair:
-          'Inside WSL run `npm install -g @openai/codex` and `codex login`, if you want Joy to use Codex through WSL.',
+          '如果想讓 Joy 透過 WSL 使用 Codex，請在 WSL 內執行 `npm install -g @openai/codex` 與 `codex login`。',
       }
 }
 
@@ -281,17 +282,17 @@ async function checkKeychain(
     await lookup(`joy-doctor-probe-${randomUUID()}`)
     return {
       id: 'keychain',
-      label: 'OS keychain',
+      label: '系統鑰匙圈',
       status: 'ok',
-      summary: 'The OS keychain responded to an empty, unique availability lookup.',
-      repair: 'No action needed.',
+      summary: '系統鑰匙圈回應了一次不存在帳號的可用性查詢。',
+      repair: NO_ACTION_NEEDED,
     }
   } catch {
     return {
       id: 'keychain',
-      label: 'OS keychain',
+      label: '系統鑰匙圈',
       status: 'missing',
-      summary: 'The OS keychain could not be accessed by Joy.',
+      summary: 'Joy 無法存取系統鑰匙圈。',
       repair: keychainGuidance(platform),
     }
   }
@@ -327,19 +328,23 @@ async function checkDataDirectory(home: string): Promise<DoctorCheck> {
   return writable && probeRemoved
     ? {
         id: 'data-directory',
-        label: 'Joy data directory',
+        label: 'Joy 資料目錄',
         status: 'ok',
-        summary: 'Joy can write to its data directory.',
-        repair: 'No action needed.',
+        summary: 'Joy 可以寫入它的資料目錄。',
+        repair: NO_ACTION_NEEDED,
       }
     : {
         id: 'data-directory',
-        label: 'Joy data directory',
+        label: 'Joy 資料目錄',
         status: 'missing',
-        summary: 'Joy data directory is missing or not writable.',
+        summary: 'Joy 資料目錄不存在或無法寫入。',
         repair:
-          'Joy creates its data directory automatically when the server starts. If it already exists but is not writable, fix its permissions or set JOY_HOME to a writable folder, then restart Joy.',
+          'Joy 啟動 server 時會自動建立資料目錄。如果目錄已存在但無法寫入，請修正權限，或把 JOY_HOME 設成可寫入的資料夾，然後重新啟動 Joy。',
       }
+}
+
+function recordCommand(label: 'Claude Code' | 'Codex'): string {
+  return `node scripts/record-fixtures.mjs ${label === 'Claude Code' ? 'claude' : 'codex'}`
 }
 
 async function safeRunCommand(
@@ -360,13 +365,12 @@ async function lookupRandomKeychainAccount(account: string): Promise<unknown> {
 }
 
 function keychainGuidance(platform: NodeJS.Platform): string {
-  if (platform === 'darwin')
-    return 'Unlock the macOS login keychain and allow Joy to access it, then run the check again.'
+  if (platform === 'darwin') return '解鎖 macOS 的登入鑰匙圈並允許 Joy 存取，然後再檢查一次。'
   if (platform === 'win32')
-    return 'Sign in to Windows and ensure Credential Manager is available, then run the check again.'
+    return '登入 Windows 並確認認證管理員（Credential Manager）可以使用，然後再檢查一次。'
   if (platform === 'linux')
-    return 'Start and unlock a Secret Service such as GNOME Keyring or KWallet, then run the check again.'
-  return 'Enable the operating system credential store for this user, then run the check again.'
+    return '啟動並解鎖 Secret Service（例如 GNOME Keyring 或 KWallet），然後再檢查一次。'
+  return '為這個使用者啟用作業系統的憑證儲存區，然後再檢查一次。'
 }
 
 function parseGitVersion(output: string): string | undefined {

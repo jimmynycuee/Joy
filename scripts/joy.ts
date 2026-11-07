@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { ConfigStore, joyHome } from '../packages/config/src/index.js'
-import { runDoctor } from '../packages/server/src/doctor.js'
+import { NO_ACTION_NEEDED, runDoctor } from '../packages/server/src/doctor.js'
 import { backupNow, restoreFromBackup } from '../packages/server/src/restore.js'
 import { createJoyServer } from '../packages/server/src/server.js'
 
@@ -111,7 +111,7 @@ if (command === '--help' || args.includes('--help')) {
   const report = await runDoctor({ home, ...(commands ? { commands } : {}) })
   for (const check of report.checks) {
     console.log(`${check.status.toUpperCase()}: ${check.label} — ${check.summary}`)
-    if (check.repair !== 'No action needed.') console.log(`  Repair: ${check.repair}`)
+    if (check.repair !== NO_ACTION_NEEDED) console.log(`  修復：${check.repair}`)
   }
   if (report.checks.some((check) => check.status !== 'ok')) process.exitCode = 1
 }

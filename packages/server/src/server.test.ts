@@ -2870,7 +2870,7 @@ describe('Joy local server', () => {
       .filter((entry) => entry.level === 'warn')
     expect(warnings).toEqual([
       expect.objectContaining({
-        msg: expect.stringContaining('Codex CLI 99.0.0 has not been tested with Joy'),
+        msg: expect.stringContaining('Codex CLI 99.0.0 尚未和 Joy 一起測試過'),
         repair: expect.stringContaining('node scripts/record-fixtures.mjs codex'),
       }),
     ])
