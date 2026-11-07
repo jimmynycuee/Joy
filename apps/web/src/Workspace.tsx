@@ -1,0 +1,633 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { FormEvent } from 'react'
+import { ROLES } from '@joy/core'
+import type { RoleConfig } from '@joy/core'
+import type { JoyConfig } from '@joy/config'
+import { errorMessage, request } from './api.js'
+import { CommandPalette } from './components/CommandPalette.js'
+import type { PaletteItem } from './components/CommandPalette.js'
+import { Sidebar } from './components/Sidebar.js'
+import { Button, IconButton, Spinner } from './components/ui.js'
+import { useTaskDetails } from './hooks/useTaskDetails.js'
+import { roleModel } from './labels.js'
+import { AssistantPage } from './pages/AssistantPage.js'
+import { NewTaskPage } from './pages/NewTaskPage.js'
+import type { NewTaskInput } from './pages/NewTaskPage.js'
+import { SettingsPage } from './pages/SettingsPage.js'
+import type { SettingsSection } from './pages/SettingsPage.js'
+import { StatsPage } from './pages/StatsPage.js'
+import { TaskPage } from './pages/TaskPage.js'
+import { isTypingTarget, shortcutFor } from './shortcuts.js'
+import type { ShortcutAction } from './shortcuts.js'
+import { readStorage, useArchivedTasks, writeStorage } from './storage.js'
+import { diffFrom } from './task-info.js'
+import { THEME_LABELS, nextTheme, readTheme, saveTheme } from './theme.js'
+import type { ThemePreference } from './theme.js'
+import type { ConversationSummary, DoctorReport, Repo, SecretStatus, Task, TaskDetails } from './types.js'
+
+type Page = 'tasks' | 'assistant' | 'stats' | 'settings'
+
+const SIDEBAR_COLLAPSED_KEY = 'joy.sidebarCollapsed'
+const MOBILE_QUERY = '(max-width: 859px)'
+
+function isMobile(): boolean {
+  return typeof window.matchMedia === 'function' && window.matchMedia(MOBILE_QUERY).matches
+}
+
+export function Workspace() {
+  const [repos, setRepos] = useState<Repo[]>([])
+  const [tasks, setTasks] = useState<Task[]>([])
+  const [config, setConfig] = useState<JoyConfig | null>(null)
+  const [secretStatus, setSecretStatus] = useState<SecretStatus | null>(null)
+  const [secretStatusLoading, setSecretStatusLoading] = useState(true)
+  const [secretStatusRetry, setSecretStatusRetry] = useState(0)
+  const [doctorReport, setDoctorReport] = useState<DoctorReport | null>(null)
+  const [doctorLoading, setDoctorLoading] = useState(true)
+  const [doctorRetry, setDoctorRetry] = useState(0)
+  // Custom workflows from config.yaml (T5.6); the built-in three are the fixed options of the task form.
+  const [customWorkflows, setCustomWorkflows] = useState<Array<{ name: string; description?: string }>>([])
+  // A notification opens `/?task=<id>`; start on that task.
+  const [selectedTaskId, setSelectedTaskId] = useState(
+    () => new URLSearchParams(window.location.search).get('task') ?? '',
+  )
+  const [page, setPage] = useState<Page>('tasks')
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
+  const [showTaskForm, setShowTaskForm] = useState(false)
+  const [showRepoForm, setShowRepoForm] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [conversations, setConversations] = useState<ConversationSummary[]>([])
+  const [conversationId, setConversationId] = useState('')
+  const [pickFirstConversation, setPickFirstConversation] = useState(false)
+  const [theme, setTheme] = useState<ThemePreference>(readTheme)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readStorage(SIDEBAR_COLLAPSED_KEY) === '1')
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  // null = follow the diff (open when there is one); true/false = the owner chose.
+  const [changesOpen, setChangesOpen] = useState<boolean | null>(null)
+  const { archived, archive, restore } = useArchivedTasks()
+
+  const [details, setDetails] = useTaskDetails(selectedTaskId, setTasks, setError)
+
+  useEffect(() => {
+    request<{
+      workflows?: Array<{ name: string; description?: string; builtIn?: boolean; problems?: string[] }>
+    }>('/api/workflows')
+      .then((body) =>
+        setCustomWorkflows(
+          (Array.isArray(body.workflows) ? body.workflows : []).filter(
+            (workflow) => !workflow.builtIn && !workflow.problems?.length,
+          ),
+        ),
+      )
+      .catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return
+    const onMessage = (event: MessageEvent<{ type?: string; url?: string }>) => {
+      if (event.data?.type !== 'joy-open' || !event.data.url) return
+      const task = new URL(event.data.url, window.location.origin).searchParams.get('task')
+      if (task) {
+        setSelectedTaskId(task)
+        setShowTaskForm(false)
+        setPage('tasks')
+      }
+    }
+    navigator.serviceWorker.addEventListener('message', onMessage)
+    return () => navigator.serviceWorker.removeEventListener('message', onMessage)
+  }, [])
+
+  const refreshLists = useCallback(async () => {
+    const [repoResponse, taskResponse] = await Promise.all([
+      request<{ repos: Repo[] }>('/api/repos'),
+      request<{ tasks: Task[] }>('/api/tasks'),
+    ])
+    setRepos(repoResponse.repos)
+    setTasks(taskResponse.tasks)
+  }, [])
+
+  async function refreshSelectedTask() {
+    if (!selectedTaskId) return
+    const next = await request<TaskDetails>(`/api/tasks/${encodeURIComponent(selectedTaskId)}`)
+    setDetails((current) => (current && current.task.id === next.task.id ? next : current))
+    await refreshLists()
+  }
+
+  const loadConversations = useCallback(async () => {
+    const body = await request<{ conversations?: ConversationSummary[] }>('/api/conversations')
+    setConversations(Array.isArray(body.conversations) ? body.conversations : [])
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    void Promise.all([
+      request<{ repos: Repo[] }>('/api/repos'),
+      request<{ tasks: Task[] }>('/api/tasks'),
+      request<{ config: JoyConfig }>('/api/config'),
+    ])
+      .then(([repoResponse, taskResponse, configResponse]) => {
+        if (!active) return
+        setRepos(repoResponse.repos)
+        setTasks(taskResponse.tasks)
+        setConfig(configResponse.config)
+      })
+      .catch((cause: unknown) => {
+        if (active) setError(errorMessage(cause, '連不到 Joy server'))
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadConversations().catch(() => undefined)
+    const timer = window.setInterval(() => void loadConversations().catch(() => undefined), 20_000)
+    return () => window.clearInterval(timer)
+  }, [loadConversations])
+
+  useEffect(() => {
+    let active = true
+    void request<SecretStatus>('/api/secrets/openai-api-key')
+      .then((status) => {
+        if (!active) return
+        setSecretStatus(status)
+        setSecretStatusLoading(false)
+      })
+      .catch(() => {
+        if (!active) return
+        setSecretStatus(null)
+        setSecretStatusLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [secretStatusRetry])
+
+  useEffect(() => {
+    let active = true
+    setDoctorLoading(true)
+    void request<{ doctor: DoctorReport }>('/api/doctor')
+      .then(({ doctor }) => {
+        if (active) setDoctorReport(doctor)
+      })
+      .catch(() => {
+        if (active) setDoctorReport(null)
+      })
+      .finally(() => {
+        if (active) setDoctorLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [doctorRetry])
+
+  // Notices fade by themselves; errors stay until dismissed or replaced.
+  useEffect(() => {
+    if (!notice) return
+    const timer = window.setTimeout(() => setNotice(''), 6000)
+    return () => window.clearTimeout(timer)
+  }, [notice])
+
+  // Opening the assistant lands on the latest conversation, once the list is there.
+  useEffect(() => {
+    if (!pickFirstConversation || page !== 'assistant') return
+    const first = conversations[0]
+    if (first) {
+      setConversationId(first.id)
+      setPickFirstConversation(false)
+    }
+  }, [pickFirstConversation, page, conversations])
+
+  // Each task starts with its changes pane following the diff.
+  useEffect(() => {
+    setChangesOpen(null)
+  }, [selectedTaskId])
+
+  const composing = page === 'tasks' && (showTaskForm || !selectedTaskId)
+  const setupProblems = doctorReport?.checks.filter((check) => check.status === 'missing').length ?? 0
+  const diff = useMemo(() => diffFrom(details?.events ?? []), [details?.events])
+  const changesVisible = changesOpen ?? Boolean(diff && diff.files.length > 0)
+
+  function closeDrawer() {
+    setDrawerOpen(false)
+  }
+
+  const openComposer = useCallback(() => {
+    setPage('tasks')
+    setShowTaskForm(true)
+    setDrawerOpen(false)
+  }, [])
+
+  function openTask(id: string) {
+    setSelectedTaskId(id)
+    setShowTaskForm(false)
+    setPage('tasks')
+    closeDrawer()
+  }
+
+  function openAssistant() {
+    setPage('assistant')
+    if (!conversationId) setPickFirstConversation(true)
+    closeDrawer()
+  }
+
+  function newConversation() {
+    setPickFirstConversation(false)
+    setConversationId('')
+    setPage('assistant')
+    closeDrawer()
+  }
+
+  function openConversation(id: string) {
+    setPickFirstConversation(false)
+    setConversationId(id)
+    setPage('assistant')
+    closeDrawer()
+  }
+
+  function openSettings(section?: SettingsSection) {
+    if (section) setSettingsSection(section)
+    setPage('settings')
+    closeDrawer()
+  }
+
+  function changeTheme(next: ThemePreference) {
+    saveTheme(next)
+    setTheme(next)
+  }
+
+  const toggleSidebar = useCallback(() => {
+    if (isMobile()) {
+      setDrawerOpen((open) => !open)
+      return
+    }
+    setSidebarCollapsed((collapsed) => {
+      writeStorage(SIDEBAR_COLLAPSED_KEY, collapsed ? null : '1')
+      return !collapsed
+    })
+  }, [])
+
+  // One listener for the whole app; the ref keeps it pointing at the latest state.
+  const runShortcut = useRef<(action: ShortcutAction) => void>(() => undefined)
+  runShortcut.current = (action) => {
+    if (action === 'palette') setPaletteOpen((open) => !open)
+    else if (action === 'new-task') openComposer()
+    else if (action === 'toggle-sidebar') toggleSidebar()
+    else if (page === 'tasks' && !composing && details) setChangesOpen(!changesVisible)
+  }
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return
+      const action = shortcutFor(event, isTypingTarget(event.target))
+      if (!action) return
+      event.preventDefault()
+      runShortcut.current(action)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
+  useEffect(() => {
+    if (!drawerOpen) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setDrawerOpen(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [drawerOpen])
+
+  async function createRepo(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    setError('')
+    try {
+      await request('/api/repos', {
+        method: 'POST',
+        body: JSON.stringify({
+          path: String(form.get('path') ?? '').trim(),
+          defaultBranch: String(form.get('defaultBranch') ?? 'main').trim(),
+          ...(form.get('container') ? { container: true } : {}),
+        }),
+      })
+      await refreshLists()
+      setShowRepoForm(false)
+      setNotice('已加入專案。')
+    } catch (cause) {
+      setError(errorMessage(cause, '無法加入專案'))
+    }
+  }
+
+  async function createTask(input: NewTaskInput): Promise<boolean> {
+    setError('')
+    try {
+      const { task } = await request<{ task: Task }>('/api/tasks', {
+        method: 'POST',
+        body: JSON.stringify({
+          repoId: input.repoId,
+          title: input.title,
+          prompt: input.prompt,
+          // A custom workflow (T5.6) brings its own models and options; the built-in ones use the models chosen here.
+          ...(input.mode.startsWith('workflow:')
+            ? { workflow: input.mode.slice('workflow:'.length) }
+            : {
+                mode: input.mode,
+                roleOverrides: { implementer: input.implementer, reviewer: input.reviewer },
+              }),
+        }),
+      })
+      setShowTaskForm(false)
+      setSelectedTaskId(task.id)
+      await refreshLists()
+      setNotice('任務已建立，Joy 在獨立的工作副本裡處理。')
+      return true
+    } catch (cause) {
+      setError(errorMessage(cause, '無法建立任務'))
+      return false
+    }
+  }
+
+  async function saveConfig() {
+    if (!config) return
+    // Save what the form shows, including a legacy OpenAI implementer already shown as Claude Code.
+    const roles = { ...config.roles } as RoleConfig
+    for (const role of ROLES) roles[role] = roleModel(config, role)
+    setError('')
+    try {
+      const { config: saved } = await request<{ config: JoyConfig }>('/api/config', {
+        method: 'PUT',
+        body: JSON.stringify({ ...config, roles }),
+      })
+      setConfig(saved)
+      setNotice('設定已儲存。')
+    } catch (cause) {
+      setError(errorMessage(cause, '無法儲存設定'))
+    }
+  }
+
+  async function saveOpenAiKey(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const formElement = event.currentTarget
+    const form = new FormData(formElement)
+    const value = String(form.get('openai-key') ?? '')
+    setError('')
+    try {
+      const status = await request<SecretStatus>('/api/secrets/openai-api-key', {
+        method: 'PUT',
+        body: JSON.stringify({ value }),
+      })
+      setSecretStatus(status)
+      formElement.reset()
+      setNotice('金鑰已安全儲存，之後不會再顯示。')
+    } catch (cause) {
+      setError(errorMessage(cause, '無法儲存金鑰'))
+    }
+  }
+
+  async function removeOpenAiKey() {
+    setError('')
+    try {
+      setSecretStatus(await request<SecretStatus>('/api/secrets/openai-api-key', { method: 'DELETE' }))
+      setNotice('已移除金鑰。')
+    } catch (cause) {
+      setError(errorMessage(cause, '無法移除金鑰'))
+    }
+  }
+
+  const view = composing ? 'new-task' : page === 'tasks' ? 'task' : page
+  const title =
+    view === 'new-task'
+      ? '新任務'
+      : view === 'task'
+        ? (details?.task.title ?? '任務')
+        : view === 'assistant'
+          ? '助理'
+          : view === 'stats'
+            ? '模型統計'
+            : '設定'
+
+  const paletteItems: PaletteItem[] = [
+    { id: 'cmd:new-task', label: '新任務', hint: '指令', icon: 'plus', run: openComposer },
+    { id: 'cmd:assistant', label: '助理', hint: '指令', icon: 'chat', run: openAssistant },
+    { id: 'cmd:new-conversation', label: '新對話', hint: '指令', icon: 'plus', run: newConversation },
+    { id: 'cmd:stats', label: '統計', hint: '指令', icon: 'chart', run: () => setPage('stats') },
+    { id: 'cmd:settings', label: '設定', hint: '指令', icon: 'settings', run: () => openSettings() },
+    {
+      id: 'cmd:theme',
+      label: `切換主題（目前：${THEME_LABELS[theme]}）`,
+      hint: '指令',
+      icon: 'sun',
+      run: () => changeTheme(nextTheme(theme)),
+    },
+    { id: 'cmd:sidebar', label: '收合或展開側邊欄', hint: '指令', icon: 'panel-left', run: toggleSidebar },
+    { id: 'cmd:add-repo', label: '加入專案', hint: '指令', icon: 'folder', run: () => setShowRepoForm(true) },
+    ...(details && page === 'tasks' && !composing
+      ? [
+          {
+            id: 'cmd:changes',
+            label: '顯示或隱藏變更面板',
+            hint: '指令',
+            icon: 'panel-right' as const,
+            run: () => setChangesOpen(!changesVisible),
+          },
+        ]
+      : []),
+    ...tasks.map((task) => ({
+      id: `task:${task.id}`,
+      label: task.title,
+      hint: '任務',
+      icon: 'bolt' as const,
+      run: () => openTask(task.id),
+    })),
+    ...conversations.map((conversation) => ({
+      id: `conversation:${conversation.id}`,
+      label: conversation.title ?? '新對話',
+      hint: '對話',
+      icon: 'chat' as const,
+      run: () => openConversation(conversation.id),
+    })),
+  ]
+
+  let content
+  if (page === 'assistant') {
+    content = (
+      <AssistantPage
+        conversationId={conversationId}
+        onSelectConversation={(id) => {
+          setPickFirstConversation(false)
+          setConversationId(id)
+        }}
+        onConversationsChanged={() => void loadConversations().catch(() => undefined)}
+        onError={setError}
+      />
+    )
+  } else if (page === 'stats') {
+    content = <StatsPage repos={repos} />
+  } else if (page === 'settings') {
+    content = (
+      <SettingsPage
+        section={settingsSection}
+        onSection={setSettingsSection}
+        config={config}
+        setConfig={setConfig}
+        onSaveConfig={saveConfig}
+        secretStatus={secretStatus}
+        secretStatusLoading={secretStatusLoading}
+        onRetrySecret={() => {
+          setSecretStatusLoading(true)
+          setSecretStatusRetry((attempt) => attempt + 1)
+        }}
+        onSaveOpenAiKey={saveOpenAiKey}
+        onRemoveOpenAiKey={removeOpenAiKey}
+        doctorReport={doctorReport}
+        doctorLoading={doctorLoading}
+        onRetryDoctor={() => setDoctorRetry((retry) => retry + 1)}
+        repos={repos}
+        onAddRepo={() => setShowRepoForm(true)}
+        theme={theme}
+        onTheme={changeTheme}
+      />
+    )
+  } else if (!composing && !details) {
+    content = (
+      <main className="home-page" aria-busy="true">
+        <div className="running-indicator" role="status">
+          <Spinner />
+          正在載入任務…
+        </div>
+      </main>
+    )
+  } else if (composing || !details) {
+    content = (
+      <NewTaskPage
+        repos={repos}
+        tasks={tasks}
+        config={config}
+        customWorkflows={customWorkflows}
+        setupProblems={setupProblems}
+        onOpenSetup={() => openSettings('advanced')}
+        onAddRepo={() => setShowRepoForm(true)}
+        onOpenTask={openTask}
+        onCreate={createTask}
+      />
+    )
+  } else {
+    content = (
+      <TaskPage
+        key={details.task.id}
+        details={details}
+        changesOpen={changesOpen}
+        onToggleChanges={setChangesOpen}
+        onChanged={() => void refreshSelectedTask().catch(() => undefined)}
+        onError={setError}
+      />
+    )
+  }
+
+  return (
+    <div
+      className={`app-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}${drawerOpen ? ' drawer-open' : ''}`}
+    >
+      <Sidebar
+        repos={repos}
+        tasks={tasks}
+        conversations={conversations}
+        view={view}
+        selectedTaskId={selectedTaskId}
+        selectedConversationId={conversationId}
+        archived={archived}
+        onArchive={(id) => {
+          archive(id)
+          if (id === selectedTaskId && page === 'tasks') openComposer()
+        }}
+        onRestore={restore}
+        onNewTask={openComposer}
+        onOpenTask={openTask}
+        onOpenAssistant={openAssistant}
+        onNewConversation={newConversation}
+        onOpenConversation={openConversation}
+        onOpenStats={() => {
+          setPage('stats')
+          closeDrawer()
+        }}
+        onOpenSettings={() => openSettings()}
+        onAddRepo={() => {
+          setShowRepoForm(true)
+          closeDrawer()
+        }}
+        onCollapse={toggleSidebar}
+      />
+      <div className="sidebar-scrim" onClick={closeDrawer} aria-hidden="true" />
+
+      <div className="main-area">
+        <div className="topbar">
+          <IconButton icon="menu" label="開啟側邊欄" onClick={toggleSidebar} />
+          <span className="topbar-title">{title}</span>
+        </div>
+        {error && (
+          <div className="toast error-toast" role="alert">
+            <span>{error}</span>
+            <IconButton icon="x" label="關閉訊息" className="icon-btn-sm" onClick={() => setError('')} />
+          </div>
+        )}
+        {notice && (
+          <div className="toast notice-toast" role="status">
+            {notice}
+          </div>
+        )}
+        {content}
+      </div>
+
+      {showRepoForm && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setShowRepoForm(false)
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') setShowRepoForm(false)
+          }}
+        >
+          <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="repo-dialog-title">
+            <div className="dialog-header">
+              <h2 id="repo-dialog-title">加入專案</h2>
+              <IconButton icon="x" label="關閉" onClick={() => setShowRepoForm(false)} />
+            </div>
+            <p className="muted">填入執行 Joy 這台電腦上，Git 專案資料夾的完整路徑。</p>
+            <form className="field-stack" onSubmit={(event) => void createRepo(event)}>
+              <label>
+                專案路徑
+                <input
+                  name="path"
+                  aria-label="專案路徑"
+                  placeholder="/Users/you/project"
+                  required
+                  autoFocus
+                />
+              </label>
+              <label>
+                預設分支
+                <input name="defaultBranch" aria-label="預設分支" defaultValue="main" required />
+              </label>
+              <label className="checkbox-row">
+                <input type="checkbox" name="container" aria-label="在容器裡執行 agent" />
+                不信任的程式碼：在容器裡執行 agent（需要 Docker，見 README）
+              </label>
+              <div className="dialog-actions">
+                <Button variant="ghost" onClick={() => setShowRepoForm(false)}>
+                  取消
+                </Button>
+                <Button variant="primary" type="submit">
+                  加入專案
+                </Button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {paletteOpen && <CommandPalette items={paletteItems} onClose={() => setPaletteOpen(false)} />}
+    </div>
+  )
+}
