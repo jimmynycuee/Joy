@@ -83,6 +83,7 @@
 
 ## 已確認決策
 
+- 2026-11-07 擁有者決定：T4.1（PR #110）**等擁有者審過再合併**，agent 不合併；T4.3 Tauri **延後**，等擁有者有簽章帳號並決定安裝檔如何附帶 Node 與 Joy；P5 **暫不開始**（依 PLAN「視使用情況決定」）。
 - T1.14 採用 PR #73；PR #74 以留言「改採 #73」關閉。PR #46、#70（由 #71 取代）與重複的 #66 已於 2026-11-06 關閉。
 - T1.12 allowlist 變更於新任務建立、resume 及 provider dispatch 前檢查；既有執行中任務不因設定變更而中途取消，避免在執行期間改變 provider 選擇。
 - T1.12 provider 預檢若在建立 attempt 前拒絕，寫成 task-level failure event，不建立假的 provider attempt；此事件共用 task-wide sequence，並用獨立資料表維持無 attempt 時的事件回放。此時沒有 provider session，task 不可 resume；錯誤訊息要求修正 provider 選擇／allowlist 後建立新 task。已有 attempt 的 resume 拒絕則提示原 provider 固定，須納入 allowlist 或改建新 task。
