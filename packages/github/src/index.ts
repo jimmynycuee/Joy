@@ -17,3 +17,10 @@ export { formatPullRequestBody, GitHubPublisher } from './publisher.js'
 export type { DraftPullRequestInput, GitHubPublisherOptions, PublishedPullRequest } from './publisher.js'
 export { GhIssueSource, repositoryName } from './issues.js'
 export type { GhIssueSourceOptions, GitHubIssueSource } from './issues.js'
+export { PullRequestStatusReader, parsePullRequestStatus } from './pr-status.js'
+export type {
+  GhRunner,
+  PullRequestChecks,
+  PullRequestStatus,
+  PullRequestStatusReaderOptions,
+} from './pr-status.js'
