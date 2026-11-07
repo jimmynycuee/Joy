@@ -1,4 +1,4 @@
-import { EFFORTS, PROVIDER_KINDS, ROLES } from '@joy/core'
+import { EFFORTS, PROVIDER_KINDS, ROLES, TASK_MODES } from '@joy/core'
 import type { ModelRef, Role } from '@joy/core'
 import { effortCompatibilityError } from '@joy/model-effort'
 import { z } from 'zod'
@@ -117,6 +117,32 @@ export const configSchema = z.strictObject({
       network: z.enum(['host', 'none']).default('host'),
     })
     .default({ image: 'joy-agent:latest', network: 'host' }),
+  /**
+   * Custom workflows (T5.6), by name: a pattern (single, review_loop or compete), the model for each role it uses and
+   * its options. The built-in workflows are the three patterns themselves; these add variations, e.g. a careful review
+   * loop with Codex implementing and Claude reviewing.
+   */
+  workflows: z
+    .record(
+      z.string().regex(/^[a-z][a-z0-9_-]{0,39}$/, 'workflow names are lowercase letters, digits, - or _'),
+      z.strictObject({
+        description: z.string().max(300).optional(),
+        pattern: z.enum(TASK_MODES),
+        roles: z
+          .strictObject(
+            Object.fromEntries(ROLES.map((r) => [r, modelRef.optional()])) as {
+              [R in Role]: z.ZodOptional<typeof modelRef>
+            },
+          )
+          .optional(),
+        max_rounds: z.number().int().min(1).max(20).optional(),
+        plan_first: z.boolean().optional(),
+      }),
+    )
+    .refine((workflows) => !['single', 'review_loop', 'compete'].some((name) => name in workflows), {
+      message: 'single, review_loop and compete are built-in workflow names',
+    })
+    .default({}),
   worktrees: z
     .strictObject({
       /** Idle worktrees older than this are offered for cleanup in the UI (never removed without the owner). */

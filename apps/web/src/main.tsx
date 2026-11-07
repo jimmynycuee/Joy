@@ -1712,6 +1712,21 @@ function App() {
   const [doctorLoading, setDoctorLoading] = useState(true)
   const [doctorRetry, setDoctorRetry] = useState(0)
   // A notification opens `/?task=<id>`; start on that task.
+  // Custom workflows from config.yaml (T5.6); the built-in three are the fixed options of the task form.
+  const [customWorkflows, setCustomWorkflows] = useState<Array<{ name: string; description?: string }>>([])
+  useEffect(() => {
+    request<{
+      workflows?: Array<{ name: string; description?: string; builtIn?: boolean; problems?: string[] }>
+    }>('/api/workflows')
+      .then((body) =>
+        setCustomWorkflows(
+          (Array.isArray(body.workflows) ? body.workflows : []).filter(
+            (workflow) => !workflow.builtIn && !workflow.problems?.length,
+          ),
+        ),
+      )
+      .catch(() => undefined)
+  }, [])
   const [selectedTaskId, setSelectedTaskId] = useState(
     () => new URLSearchParams(window.location.search).get('task') ?? '',
   )
@@ -2023,8 +2038,13 @@ function App() {
           repoId: String(form.get('repoId')),
           title: String(form.get('title')).trim(),
           prompt: String(form.get('prompt')).trim(),
-          mode: String(form.get('mode')),
-          roleOverrides: { implementer: model('implementer'), reviewer: model('reviewer') },
+          // A custom workflow (T5.6) brings its own models and options; the built-in ones use the fields below.
+          ...(String(form.get('mode')).startsWith('workflow:')
+            ? { workflow: String(form.get('mode')).slice('workflow:'.length) }
+            : {
+                mode: String(form.get('mode')),
+                roleOverrides: { implementer: model('implementer'), reviewer: model('reviewer') },
+              }),
         }),
       })
       setShowTaskForm(false)
@@ -2746,6 +2766,12 @@ function App() {
                   <option value="review_loop">Implement + review</option>
                   <option value="single">Single agent</option>
                   <option value="compete">Compete (both models, judge compares)</option>
+                  {customWorkflows.map((workflow) => (
+                    <option key={workflow.name} value={`workflow:${workflow.name}`}>
+                      {workflow.name}
+                      {workflow.description ? ` — ${workflow.description}` : ''}
+                    </option>
+                  ))}
                 </select>
               </label>
               <div className="task-model-grid">

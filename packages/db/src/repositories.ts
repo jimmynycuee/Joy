@@ -31,6 +31,8 @@ export interface StoredTask extends Task {
   updatedAt: string
   /** Set when the assistant created the task: its result is reported back to this conversation. */
   originConversationId?: string
+  /** The custom workflow the task was started with (T5.6); absent for the built-in modes. */
+  workflow?: string
 }
 
 export interface TaskEventRecord {
@@ -114,6 +116,7 @@ interface TaskRow {
   created_at: string
   updated_at: string
   origin_conversation_id: string | null
+  workflow: string | null
 }
 
 interface ReviewRow {
@@ -217,13 +220,14 @@ export interface NewTask {
   planFirst?: boolean
   maxRounds?: number
   originConversationId?: string
+  workflow?: string
 }
 
 export function createTask(db: Database, input: NewTask): StoredTask {
   db.prepare(
     `INSERT INTO tasks (id, repo_id, title, prompt, mode, provenance, role_overrides, plan_first, max_rounds,
-       origin_conversation_id, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`,
+       origin_conversation_id, workflow, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`,
   ).run(
     input.id,
     input.repoId,
@@ -235,6 +239,7 @@ export function createTask(db: Database, input: NewTask): StoredTask {
     input.planFirst ? 1 : 0,
     input.maxRounds ?? 3,
     input.originConversationId ?? null,
+    input.workflow ?? null,
   )
   const stored = getTask(db, input.id)
   if (!stored) throw new Error(`Task ${input.id} was not found after insert`)
@@ -593,6 +598,7 @@ function mapTask(row: TaskRow): StoredTask {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     ...(row.origin_conversation_id ? { originConversationId: row.origin_conversation_id } : {}),
+    ...(row.workflow ? { workflow: row.workflow } : {}),
   }
 }
 
