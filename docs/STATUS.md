@@ -2,7 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-07（T5.6 自訂工作流程）
+- 最後更新：2026-11-07（T3.8 Google 程式部分）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
@@ -83,6 +83,7 @@
 
 ## 已確認決策
 
+- 2026-11-07 T3.8 選型：Google 使用 [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp)（`uvx workspace-mcp --tools gmail calendar`）。理由：一個 server 涵蓋 Gmail 與行事曆、可限制只開這兩項；用擁有者自己的 Google Cloud OAuth 用戶端在本機登入，資料只在本機與 Google 之間，不經第三方；MIT 授權、使用者多。登入資料由該 server 自己存放，Joy 不經手。備案：只做行事曆的 nspady/google-calendar-mcp（沒有 Gmail）。
 - 2026-11-07 擁有者逐項確認：T5.1、T5.2、T5.3、T5.4、T5.5、T5.7 **全部暫不開始**（T5.6 已依擁有者指示完成）。不要再詢問，等擁有者主動提出。
 - 2026-11-07 擁有者決定：T4.1（PR #110）**等擁有者審過再合併**，agent 不合併；T4.3 Tauri **延後**，等擁有者有簽章帳號並決定安裝檔如何附帶 Node 與 Joy；P5 **暫不開始**（依 PLAN「視使用情況決定」）。
 - T1.14 採用 PR #73；PR #74 以留言「改採 #73」關閉。PR #46、#70（由 #71 取代）與重複的 #66 已於 2026-11-06 關閉。
@@ -94,6 +95,15 @@
 - T3.8 依 PLAN 清單評估維護狀況、權限範圍與資料是否送第三方，自行選一個 Gmail／Calendar MCP server；先唯讀，寄信與邀請他人一律 🔴。選型理由寫在本檔決策區。
 - 不呼叫真實模型；若測試確實需要真實模型，只能使用 haiku 或 gpt-6-luna、low effort，且必須是 opt-in。
 - 每個 ticket 從最新 main 開獨立分支，diff 只保留該 ticket。CI 失敗最多修 3 次；無法修復時記錄原因並繼續不相依工作。
+
+### T3.8 Google 行事曆與 Gmail（程式完成；真實登入與驗收待擁有者）
+
+- `config.yaml` 的 `mcp_servers:` 設定外部 MCP server（command、args，可選的 `tools` 覆寫分類）；Joy 用 stdio 啟動、列出工具，交給助理（OpenAI 大腦是 function call，CLI 大腦走同一個橋接）。SDK 只傳最小環境變數（HOME、PATH…），server 自己找登入檔。
+- **每次呼叫都走 `packages/policy` 的 `evaluateAction`**（沒有改規則）：工具名稱對應到既有的動作種類——讀信 `read_mail`、讀行事曆 `read_calendar`、自己的行程 `create_own_event`、寄信／回信／草稿／改標籤 `send_mail`、有其他參加者或會寄通知的行程 `invite_others`；**不認得的寫入一律當成 `invite_others`（要核准）**。
+- 讀取直接執行，結果包成 `external_content` 並註明不得照內容指示行事；新增自己的行程執行後在對話裡留「🔔 Done」；寄信、邀請他人建立待核准項目，對話留「🔴」、送 Telegram 與推播，擁有者在助理頁「Waiting for your approval」核准才執行（`POST /api/assistant/actions/:id/approve|deny`）。
+- **同一輪讀過信或行事曆後，之後的寫入視為來自外部內容，一律要核准**（policy：external_content 一律 🔴）。
+- 待核准項目存在記憶體，Joy 重啟後會消失（需要時請助理重新提出）。
+- 驗收：分類測試、真的用 stdio 連一個假 Google MCP server（列出、呼叫、啟動失敗只警告）、server 測試（自己的行程執行並通知；寄信未核准不執行、核准後才執行、重複核准 404；讀信後的寫入要核准且標示來源、拒絕不執行）、Playwright `assistant-actions.spec.ts`。「明天下午有空嗎」答對需要擁有者登入後實測，**PLAN 未打勾**。
 
 ### T5.6 自訂工作流程（擁有者 2026-11-07 指定先做）
 
@@ -277,19 +287,20 @@
 
 2026-11-06 由 agent 代為審查（擁有者授權）。下表為結論；擁有者可只看「發現」欄。
 
-| 項目                                                        | 審查方式                   | 結論       | 發現                                                                                                                                                                        |
-| ----------------------------------------------------------- | -------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| #73 本機 API／WebSocket token                               | 獨立審查（非作者）         | 通過       | Windows 上 token 檔只依賴使用者資料夾的預設 ACL，T4.4 實機確認                                                                                                              |
-| #54 GitHub publisher                                        | 獨立審查                   | 已修       | 內容掃描認不得私鑰與 AWS／Slack／Google／Stripe／GitLab 憑證 → 已加入 Redactor；**publisher 從未接到 server/UI → 新增 T1.9b**                                               |
-| #57 provider 允許清單                                       | 獨立審查                   | 通過       | —                                                                                                                                                                           |
-| #58 core 介面、機密遮罩                                     | 獨立審查                   | 通過       | —                                                                                                                                                                           |
-| #62 `joy doctor` 鑰匙圈                                     | 獨立審查                   | 通過       | 只查詢隨機、不存在的帳號                                                                                                                                                    |
-| #84 權限規則                                                | 擁有者已審（2026-11-06）   | 通過       | —                                                                                                                                                                           |
-| T2.7b、T2.4a、T2.4b                                         | `/code-review`（high）     | 已修 9／10 | 見下                                                                                                                                                                        |
-| T3.3 記憶寫入規則（`packages/memory`）                      | **待擁有者審**             | —          | 什麼會被記住、什麼一定擋下；agent 不審自己訂的規則                                                                                                                          |
-| T3.5 專案記憶寫入（`packages/memory/src/project.ts`）       | **待擁有者審**             | —          | Joy 會寫進 repo 的內容與衝突處理；issue #36 的兩點已照驗收條件實作                                                                                                          |
-| T4.2 Web Push 金鑰（鑰匙圈新 secret `web_push_vapid_keys`） | **待擁有者審**（機密處理） | —          | 金鑰只在本機產生、存鑰匙圈；推播內容經遮罩與加密                                                                                                                            |
-| T3.6、T3.7、T3.9、T2.1                                      | `/code-review`（high）     | 已修 9／10 | compete 同時選擇／合併的競態、合併中重啟卡住、合併無時間上限、通知誤寫成審查未過、排程器關閉時未處理的 rejection；**未修：cron 補跑逐次計算（只在啟動時跑一次，成本有限）** |
+| 項目                                                                  | 審查方式                       | 結論       | 發現                                                                                                                                                                        |
+| --------------------------------------------------------------------- | ------------------------------ | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #73 本機 API／WebSocket token                                         | 獨立審查（非作者）             | 通過       | Windows 上 token 檔只依賴使用者資料夾的預設 ACL，T4.4 實機確認                                                                                                              |
+| #54 GitHub publisher                                                  | 獨立審查                       | 已修       | 內容掃描認不得私鑰與 AWS／Slack／Google／Stripe／GitLab 憑證 → 已加入 Redactor；**publisher 從未接到 server/UI → 新增 T1.9b**                                               |
+| #57 provider 允許清單                                                 | 獨立審查                       | 通過       | —                                                                                                                                                                           |
+| #58 core 介面、機密遮罩                                               | 獨立審查                       | 通過       | —                                                                                                                                                                           |
+| #62 `joy doctor` 鑰匙圈                                               | 獨立審查                       | 通過       | 只查詢隨機、不存在的帳號                                                                                                                                                    |
+| #84 權限規則                                                          | 擁有者已審（2026-11-06）       | 通過       | —                                                                                                                                                                           |
+| T2.7b、T2.4a、T2.4b                                                   | `/code-review`（high）         | 已修 9／10 | 見下                                                                                                                                                                        |
+| T3.3 記憶寫入規則（`packages/memory`）                                | **待擁有者審**                 | —          | 什麼會被記住、什麼一定擋下；agent 不審自己訂的規則                                                                                                                          |
+| T3.5 專案記憶寫入（`packages/memory/src/project.ts`）                 | **待擁有者審**                 | —          | Joy 會寫進 repo 的內容與衝突處理；issue #36 的兩點已照驗收條件實作                                                                                                          |
+| T4.2 Web Push 金鑰（鑰匙圈新 secret `web_push_vapid_keys`）           | **待擁有者審**（機密處理）     | —          | 金鑰只在本機產生、存鑰匙圈；推播內容經遮罩與加密                                                                                                                            |
+| T3.8 外部 MCP 工具的動作分類（`packages/server/src/external-mcp.ts`） | **待擁有者審**（等同權限分類） | —          | 不改 policy 規則，但哪些 Google 工具算「讀」「自己的行程」「寄信／邀請」由這裡決定；不認得的一律要核准                                                                      |
+| T3.6、T3.7、T3.9、T2.1                                                | `/code-review`（high）         | 已修 9／10 | compete 同時選擇／合併的競態、合併中重啟卡住、合併無時間上限、通知誤寫成審查未過、排程器關閉時未處理的 rejection；**未修：cron 補跑逐次計算（只在啟動時跑一次，成本有限）** |
 
 `/code-review` 的發現與處理：重啟時等待核准的任務會卡住（已修）；核准紀錄的 detail 未遮罩（已修）；同任務多個待核准時狀態被提早改回（已修）；Telegram 群組中任何人可按核准（已修，只接受擁有者本人的私訊）；同步決定要等到逾時才生效（已修）；UI 每個事件都重抓待核准清單（已修）；沒有 token 時每分鐘警告（已修，只警告一次）；完成通知未遮罩（已修）；命名與重複程式（已修）；**Telegram 設定要重啟才生效（未修，留待之後）**。
 
@@ -303,7 +314,7 @@
 - T4.9：在一台新電腦（或新使用者帳號）照 README 從 clone 到跑完第一個任務，記錄花了多久與卡住的地方。
 - T4.6：Claude Code 已更新到 2.1.319 以上時，在已登入的 Mac 依 `docs/cli-versions.md` 重錄 fixture 並更新測過範圍（用 haiku、low effort）。
 - T2.6 GitHub issue 真實驗收（擁有者 Mac）：確認 `gh auth status` 已登入；在測試 repo 建一個 issue 並加上 `joy` label，5 分鐘內 Joy 應建立 `#編號 標題` 的任務（標示 external content）；驗收後關閉 issue。不提供、不貼上或索取 PAT。
-- T3.8 Google：完成所選 MCP server 所需的 Google 登入；登入前保持唯讀功能未連線，登入指令依該 server 文件記錄於此。
+- T3.8 Google：依 README「Google 行事曆與 Gmail」建立 Google Cloud OAuth 用戶端（Desktop app），執行一次 `uvx workspace-mcp --tools gmail calendar` 完成登入，在 `config.yaml` 加上 `mcp_servers.google`；然後問助理「明天下午有空嗎」，並試一次寄信確認要核准。
 - Windows 實機驗收（P4）：在 Windows 電腦執行 `pnpm install --frozen-lockfile` 與 `pnpm check`，並依 T4.4 完成一次跨模型任務；不以 CI 取代實機驗收。
 
 ## 剩下未完成的票與原因（2026-11-06 盤點）

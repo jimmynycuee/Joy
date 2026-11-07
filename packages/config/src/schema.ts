@@ -1,4 +1,4 @@
-import { EFFORTS, PROVIDER_KINDS, ROLES, TASK_MODES } from '@joy/core'
+import { ACTION_KINDS, EFFORTS, PROVIDER_KINDS, ROLES, TASK_MODES } from '@joy/core'
 import type { ModelRef, Role } from '@joy/core'
 import { effortCompatibilityError } from '@joy/model-effort'
 import { z } from 'zod'
@@ -142,6 +142,21 @@ export const configSchema = z.strictObject({
     .refine((workflows) => !['single', 'review_loop', 'compete'].some((name) => name in workflows), {
       message: 'single, review_loop and compete are built-in workflow names',
     })
+    .default({}),
+  /**
+   * Outside MCP servers the assistant may use (T3.8), e.g. Google Workspace:
+   * `google: { command: uvx, args: [workspace-mcp, --tools, gmail, calendar] }`. Each server keeps its own login.
+   * `tools` overrides how a tool is classified for the permission rules (tool name → action kind).
+   */
+  mcp_servers: z
+    .record(
+      z.string().regex(/^[a-z][a-z0-9_]{0,19}$/, 'MCP server names are lowercase letters, digits or _'),
+      z.strictObject({
+        command: z.string().min(1),
+        args: z.array(z.string()).default([]),
+        tools: z.record(z.string(), z.enum(ACTION_KINDS)).optional(),
+      }),
+    )
     .default({}),
   worktrees: z
     .strictObject({
