@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { openSettings } from './helpers.js'
 
 const config = {
   autonomy_mode: 'normal',
@@ -48,7 +49,7 @@ test('a refused token asks for a new one, and regenerating switches this device 
   await gate.getByRole('button', { name: '繼續' }).click()
   await expect(gate).toHaveCount(0)
 
-  await page.getByRole('button', { name: '設定', exact: true }).click()
+  await openSettings(page, '進階')
   page.on('dialog', (dialog) => void dialog.accept())
   const panel = page.getByTestId('access-token-panel')
   await panel.getByRole('button', { name: '重新產生權杖' }).click()

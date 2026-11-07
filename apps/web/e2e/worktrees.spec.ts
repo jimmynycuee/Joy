@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { openSettings } from './helpers.js'
 
 const config = {
   autonomy_mode: 'normal',
@@ -61,7 +62,7 @@ test('worktrees show disk usage and are removed only after confirming unpushed c
   })
 
   await page.goto('/')
-  await page.getByRole('button', { name: '設定', exact: true }).click()
+  await openSettings(page, '資料與備份')
   const panel = page.getByTestId('worktrees-panel')
   await expect(panel).toContainText('共 1 個，佔用 3.0 MB。其中 1 個閒置超過 14 天。')
   await expect(panel).toContainText('Old experiment')

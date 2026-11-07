@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { openSettings } from './helpers.js'
 
 const repo = { id: 'repo-startup', path: '/tmp/startup-project', defaultBranch: 'main' }
 const task = {
@@ -54,7 +55,7 @@ test('workspace and settings remain usable while key status is unavailable and c
   await expect(page.getByRole('heading', { name: task.title })).toBeVisible()
   await expect(page.getByRole('alert')).toHaveCount(0)
 
-  await page.getByRole('button', { name: '設定', exact: true }).click()
+  await openSettings(page, '模型')
   await expect(page.getByRole('button', { name: '儲存設定' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'OpenAI API 金鑰' })).toBeVisible()
   await expect(page.getByRole('status').filter({ hasText: '無法取得' })).toBeVisible()

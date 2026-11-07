@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { openSettings, openSettingsSection } from './helpers.js'
 
 const config = {
   autonomy_mode: 'normal',
@@ -40,7 +41,7 @@ test('backups are listed, can be taken now, and the export downloads as JSON', a
   })
 
   await page.goto('/')
-  await page.getByRole('button', { name: '設定', exact: true }).click()
+  await openSettings(page, '資料與備份')
   const panel = page.getByTestId('backups-panel')
   await expect(panel).toContainText('2026-11-05 · 2.0 KB')
   await panel.getByRole('button', { name: '立即備份' }).click()
@@ -50,6 +51,7 @@ test('backups are listed, can be taken now, and the export downloads as JSON', a
   await panel.getByRole('button', { name: /匯出任務和記憶/ }).click()
   expect((await download).suggestedFilename()).toMatch(/^joy-export-\d{4}-\d{2}-\d{2}\.json$/)
 
+  await openSettingsSection(page, '進階')
   const logs = page.getByTestId('logs-panel')
   await expect(logs).toContainText('2026-11-06 · 512 B')
   const logDownload = page.waitForEvent('download')
