@@ -26,6 +26,7 @@
     "@joy/scheduler": "workspace:*",
     "@joy/secrets": "workspace:*",
     "@joy/tools": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "web-push": "^3.6.7",
     "ws": "^8.18.3",
     "zod": "^4.6.7"

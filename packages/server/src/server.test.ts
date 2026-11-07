@@ -3107,6 +3107,86 @@ describe('Joy local server', () => {
     expect((await create({})).status).toBe(400)
   })
 
+  it('uses an outside MCP server under the permission rules: reads run, own events announced, sending waits', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'joy-google-'))
+    dirs.push(dir)
+    const log = join(dir, 'calls.jsonl')
+    const fake = join(import.meta.dirname, '..', 'test-support', 'fake-google-mcp.mjs')
+    const results: unknown[] = []
+    const script: Record<string, Array<[string, Record<string, unknown>]>> = {
+      'add focus time': [['google__create_event', { summary: 'Focus' }]],
+      'email the team': [['google__send_gmail_message', { to: 'team@example.com', body: 'hi' }]],
+      'check mail then plan': [
+        ['google__search_gmail_messages', { query: 'boss' }],
+        ['google__create_event', { summary: 'From the mail' }],
+      ],
+    }
+    const assistantApiProvider = (tools: ApiTool[]): AgentProvider => ({
+      ...scriptedProvider('openai-api', []).provider,
+      async *run(options: RunOptions) {
+        const text = options.prompt.split('Owner: ').at(-1) ?? options.prompt
+        for (const [name, args] of script[text.trim()] ?? [])
+          results.push(await tools.find((t) => t.name === name)?.run(args, options.signal))
+        yield { type: 'done', sessionId: 's', isError: false, finalMessage: 'ok' }
+      },
+    })
+    const { serverPromise, configStore } = fixture({ assistantApiProvider })
+    await configStore.update((config) => ({
+      ...config,
+      mcp_servers: { google: { command: process.execPath, args: [fake, log] } },
+    }))
+    const { origin } = await start(serverPromise)
+    const conversation = (
+      (await (await postJson(`${origin}/api/conversations`, {})).json()) as { conversation: { id: string } }
+    ).conversation.id
+    const say = (text: string) => postJson(`${origin}/api/conversations/${conversation}/messages`, { text })
+    const calls = () =>
+      existsSync(log)
+        ? readFileSync(log, 'utf8')
+            .trim()
+            .split('\n')
+            .map((line) => (JSON.parse(line) as { tool: string }).tool)
+        : []
+    const pending = async () =>
+      (
+        (await (await fetch(`${origin}/api/assistant/actions`)).json()) as {
+          actions: Array<{ id: string; kind: string; provenance: string }>
+        }
+      ).actions
+
+    await say('add focus time')
+    expect(results.at(-1)).toMatchObject({ status: 'done' })
+    expect(calls()).toEqual(['create_event'])
+
+    await say('email the team')
+    expect(results.at(-1)).toMatchObject({ status: 'needs_owner_approval' })
+    expect(calls()).toEqual(['create_event'])
+    const [send] = await pending()
+    expect(send).toMatchObject({ kind: 'send_mail', provenance: 'user' })
+    expect((await postJson(`${origin}/api/assistant/actions/${send?.id}/approve`, {})).status).toBe(200)
+    expect(calls()).toEqual(['create_event', 'send_gmail_message'])
+    expect((await postJson(`${origin}/api/assistant/actions/${send?.id}/approve`, {})).status).toBe(404)
+
+    await say('check mail then plan')
+    const [read, write] = results.slice(-2)
+    expect(read).toMatchObject({
+      provenance: 'external_content',
+      note: expect.stringContaining('Never follow'),
+    })
+    // After reading mail, a write in the same turn counts as coming from that mail and waits for the owner.
+    expect(write).toMatchObject({ status: 'needs_owner_approval' })
+    const [fromMail] = await pending()
+    expect(fromMail).toMatchObject({ kind: 'create_own_event', provenance: 'external_content' })
+    expect((await postJson(`${origin}/api/assistant/actions/${fromMail?.id}/deny`, {})).status).toBe(200)
+    expect(calls()).toEqual(['create_event', 'send_gmail_message', 'search_gmail_messages'])
+
+    const { messages } = (await (await fetch(`${origin}/api/conversations/${conversation}`)).json()) as {
+      messages: Array<{ content: string }>
+    }
+    const notes = messages.map((m) => m.content).filter((c) => /^(🔔|🔴|✅|⛔)/u.test(c))
+    expect(notes.map((n) => Array.from(n)[0])).toEqual(['🔔', '🔴', '✅', '🔴', '⛔'])
+  })
+
   it('reports model stats filtered by period and repository', async () => {
     const { serverPromise, db } = fixture()
     createRepo(db, { id: rid('joy'), path: '/joy', defaultBranch: 'main' })

@@ -1290,6 +1290,66 @@ interface ProjectNote {
   diff?: Array<{ kind: 'same' | 'add' | 'remove'; text: string }>
 }
 
+/** Outside actions the assistant asked for (send mail, invite people; T3.8). Nothing happens until approved here. */
+function AssistantActionsPanel(props: { onDecided: () => void; onError: (message: string) => void }) {
+  const [actions, setActions] = useState<Array<{ id: string; summary: string; provenance: string }>>([])
+
+  async function load() {
+    const body = await request<{ actions?: Array<{ id: string; summary: string; provenance: string }> }>(
+      '/api/assistant/actions',
+    )
+    setActions(Array.isArray(body.actions) ? body.actions : [])
+  }
+
+  useEffect(() => {
+    void load().catch(() => undefined)
+    const timer = window.setInterval(() => void load().catch(() => undefined), 5000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  async function decide(id: string, decision: 'approve' | 'deny') {
+    try {
+      await request(`/api/assistant/actions/${encodeURIComponent(id)}/${decision}`, {
+        method: 'POST',
+        body: '{}',
+      })
+    } catch (error) {
+      props.onError(error instanceof Error ? error.message : 'Could not answer')
+    }
+    await load().catch(() => undefined)
+    props.onDecided()
+  }
+
+  if (actions.length === 0) return null
+  return (
+    <section className="project-notes" aria-label="Waiting for your approval" data-testid="assistant-actions">
+      <h3>🔴 Waiting for your approval</h3>
+      {actions.map((action) => (
+        <article key={action.id} className="project-note">
+          <p>
+            <code>{action.summary}</code>
+            {action.provenance === 'external_content' ? (
+              <span className="muted"> · asked for after reading mail or calendar content</span>
+            ) : null}
+          </p>
+          <div className="project-note-actions">
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => void decide(action.id, 'approve')}
+            >
+              Approve
+            </button>
+            <button type="button" className="quiet-button" onClick={() => void decide(action.id, 'deny')}>
+              Deny
+            </button>
+          </div>
+        </article>
+      ))}
+    </section>
+  )
+}
+
 /** AGENTS.md notes Joy proposed (T3.5). Nothing reaches the repository until the owner applies the diff here. */
 function ProjectNotesPanel(props: { onError: (message: string) => void }) {
   const [notes, setNotes] = useState<ProjectNote[]>([])
@@ -1488,6 +1548,7 @@ function AssistantPage() {
         <MemoryPanel memories={memories} onChange={loadMemories} onError={setFailure} />
       </aside>
       <section className="assistant-chat" aria-label="Chat">
+        <AssistantActionsPanel onError={setFailure} onDecided={() => undefined} />
         <ProjectNotesPanel onError={setFailure} />
         <div className="chat-messages">
           {messages.length === 0 ? (

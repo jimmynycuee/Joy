@@ -115,6 +115,23 @@ workflows:
 
 `pattern` 可用 `single`、`review_loop`、`compete`；沒寫的角色用 Settings 裡的設定。
 
+## Google 行事曆與 Gmail（選用）
+
+Joy 透過 [Google Workspace MCP server](https://github.com/taylorwilsdon/google_workspace_mcp) 讀寫你的行事曆與信件，登入資料由那個 server 存在你的電腦，Joy 不經手。
+
+1. 在 Google Cloud 建一個 OAuth 用戶端（類型 Desktop app），依該 server 的說明設定環境變數。
+2. 安裝 [uv](https://docs.astral.sh/uv/)，執行一次 `uvx workspace-mcp --tools gmail calendar` 完成登入。
+3. 在 `~/.joy/config.yaml` 加上，然後重啟 Joy：
+
+```yaml
+mcp_servers:
+  google:
+    command: uvx
+    args: [workspace-mcp, --tools, gmail, calendar]
+```
+
+助理讀信、查行事曆會直接做；替你新增自己的行程會在對話裡告訴你；**寄信、邀請別人一律等你在助理頁按 Approve**。讀過信之後同一輪要做的任何更動也都要你核准。
+
 ## 疑難排解
 
 | 狀況                          | 處理                                                                                                    |
