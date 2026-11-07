@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { policyEventKind, policyEventTitle } from './policy-events.js'
+import { policyEventIsNoise, policyEventKind, policyEventTitle } from './policy-events.js'
 
 describe('policy event labels', () => {
   it('describes policy decisions in plain words', () => {
@@ -50,5 +50,14 @@ describe('policy event labels', () => {
     ).toBe('額度用完：claude-cli 把任務交給 codex-cli，在同一個工作副本繼續')
     expect(policyEventTitle('quota.queued', {})).toBe('額度用完：等待，之後自動繼續')
     expect(policyEventKind('quota.handoff', {})).toBe('policy-notify')
+  })
+
+  it('treats auto-allowed actions as noise but keeps notices, approvals and denials visible', () => {
+    expect(policyEventIsNoise('policy.action', { kind: 'read_file', tier: 'auto' })).toBe(true)
+    expect(policyEventIsNoise('policy.action', { kind: 'local_commit', tier: 'notify' })).toBe(false)
+    expect(policyEventIsNoise('policy.action', { kind: 'send_mail', tier: 'approve' })).toBe(false)
+    expect(policyEventIsNoise('policy.action', { kind: 'send_mail' })).toBe(false)
+    expect(policyEventIsNoise('approval.decided', { status: 'denied' })).toBe(false)
+    expect(policyEventIsNoise('approval.granted', {})).toBe(false)
   })
 })
