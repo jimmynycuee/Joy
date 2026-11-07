@@ -3,6 +3,8 @@ import { lstat, mkdir, readdir, realpath, rm } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { AttemptId, DiffFile, Executor, RepoRef, TaskId, Workspace, WorkspaceDiff } from '@joy/core'
 import { KeyedMutex, git } from './git.js'
+import { runCommand } from './run.js'
+import type { RunCommandResult } from './run.js'
 
 export interface WorktreeExecutorOptions {
   /** Where worktrees are created: `<worktreesDir>/<repoId>/<taskId>-<attemptId>`. Usually `~/.joy/worktrees`. */
@@ -31,6 +33,41 @@ export interface WorktreeInfo {
   unpushedCommitCount: number
   ageDays: number
   stale: boolean
+}
+
+/** Restoring a checkpoint would drop commits made on the task branch after it. */
+export class CheckpointCommitsError extends Error {
+  constructor(readonly commitCount: number) {
+    super(
+      `Restoring this checkpoint would discard ${commitCount} commit${commitCount === 1 ? '' : 's'} made after it; confirm to continue`,
+    )
+    this.name = 'CheckpointCommitsError'
+  }
+}
+
+/** Joy's checkpoint refs: refs/joy/checkpoints/<taskId>/<n>. */
+export const CHECKPOINT_REF_PREFIX = 'refs/joy/checkpoints/'
+
+export function checkpointRef(taskId: string, n: number): string {
+  assertSafeId('task id', taskId)
+  if (!Number.isSafeInteger(n) || n < 1) throw new Error('Checkpoint numbers are positive integers')
+  return `${CHECKPOINT_REF_PREFIX}${taskId}/${n}`
+}
+
+function assertCheckpointRef(ref: string): void {
+  if (
+    !/^refs\/joy\/checkpoints\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[1-9][0-9]{0,8}$/.test(ref) ||
+    ref.includes('..')
+  )
+    throw new Error(`Not a Joy checkpoint ref: ${ref}`)
+}
+
+export interface RunInWorktreeInput {
+  command: string
+  args: string[]
+  signal?: AbortSignal
+  timeoutMs?: number
+  env?: NodeJS.ProcessEnv
 }
 
 export class UnpushedCommitsError extends Error {
@@ -109,6 +146,88 @@ export class WorktreeExecutor implements Executor {
     return (await git(ws.path, ['rev-parse', 'HEAD'])).trim()
   }
 
+  /** Runs a project command (for example the repository's check command) in the worktree, without a shell. */
+  run(ws: Workspace, input: RunInWorktreeInput): Promise<RunCommandResult> {
+    return runCommand({ ...input, cwd: ws.path })
+  }
+
+  /**
+   * Snapshots the worktree (committed, staged, unstaged and untracked files, minus ignored ones) as a commit whose
+   * parent is the current HEAD, and points `ref` at it. The task branch and HEAD do not move.
+   */
+  async checkpoint(ws: Workspace, ref: string, message: string): Promise<{ commit: string; head: string }> {
+    assertCheckpointRef(ref)
+    await git(ws.path, ['add', '--all'])
+    const tree = (await git(ws.path, ['write-tree'])).trim()
+    const head = (await git(ws.path, ['rev-parse', '--verify', 'HEAD'])).trim()
+    const commit = (
+      await git(ws.path, [
+        ...(await this.identityArgs(ws.path)),
+        'commit-tree',
+        tree,
+        '-p',
+        head,
+        '-m',
+        message,
+      ])
+    ).trim()
+    await git(ws.path, ['update-ref', ref, commit])
+    return { commit, head }
+  }
+
+  /**
+   * Resets the worktree to a checkpoint: HEAD back to the commit it was taken on, files exactly as they were.
+   * Refuses to drop commits made on the branch after the checkpoint unless `confirmDiscardCommits`. Only ever runs in
+   * the task worktree, never in the repository's main checkout.
+   */
+  async restoreCheckpoint(
+    ws: Workspace,
+    ref: string,
+    options: { confirmDiscardCommits?: boolean; expectedCommit?: string } = {},
+  ): Promise<{ commit: string; discardedCommits: number }> {
+    assertCheckpointRef(ref)
+    if (resolve(ws.path) === resolve(ws.repo.path))
+      throw new Error('Refusing to restore into the main checkout')
+    return this.locks.run(ws.repo.path, async () => {
+      const commit = (
+        await git(ws.path, ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`])
+      ).trim()
+      if (options.expectedCommit && options.expectedCommit !== commit)
+        throw new Error(`Checkpoint ${ref} no longer points at the recorded commit; refusing to restore`)
+      const parent = (await git(ws.path, ['rev-parse', '--verify', '--end-of-options', `${commit}^1`])).trim()
+      const head = (await git(ws.path, ['rev-parse', '--verify', 'HEAD'])).trim()
+      const discardedCommits = Number(
+        (await git(ws.path, ['rev-list', '--count', `${parent}..${head}`])).trim(),
+      )
+      if (discardedCommits > 0 && !options.confirmDiscardCommits)
+        throw new CheckpointCommitsError(discardedCommits)
+      await git(ws.path, ['reset', '--hard', '-q', parent])
+      // Ignored files (node_modules, build output) stay; files created after the checkpoint go.
+      await git(ws.path, ['clean', '-fdq'])
+      await git(ws.path, ['read-tree', '-u', '--reset', `${commit}^{tree}`])
+      return { commit, discardedCommits }
+    })
+  }
+
+  /** Removes every checkpoint ref of a task. */
+  async deleteCheckpoints(repo: RepoRef, taskId: TaskId): Promise<void> {
+    assertSafeId('task id', taskId)
+    const refs = (
+      await git(repo.path, ['for-each-ref', '--format=%(refname)', `${CHECKPOINT_REF_PREFIX}${taskId}/`])
+    )
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+    for (const ref of refs) await git(repo.path, ['update-ref', '-d', ref])
+  }
+
+  private async identityArgs(cwd: string): Promise<string[]> {
+    const identity: string[] = []
+    if (!(await configured(cwd, 'user.name'))) identity.push('-c', `user.name=${this.identity.name}`)
+    if (!(await configured(cwd, 'user.email'))) identity.push('-c', `user.email=${this.identity.email}`)
+    return identity
+  }
+
   /** Lists only worktrees managed under this executor's repository-specific directory. */
   async listWorktrees(repo: RepoRef): Promise<WorktreeInfo[]> {
     assertSafeId('repo id', repo.id)
@@ -180,6 +299,7 @@ export class WorktreeExecutor implements Executor {
       } catch {
         // Branch already gone.
       }
+      await this.deleteCheckpoints(ws.repo, ws.taskId).catch(() => undefined)
     })
   }
 

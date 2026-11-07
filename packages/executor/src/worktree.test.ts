@@ -265,3 +265,76 @@ describe('git output parsers', () => {
     })
   })
 })
+
+describe('WorktreeExecutor checks and checkpoints', () => {
+  it('runs a command in the worktree without a shell and keeps the output tail', async () => {
+    const { repo, executor } = await setup()
+    const ws = await executor.prepare(repo, tid('t1'), aid('a1'))
+    const ok = await executor.run(ws, {
+      command: process.execPath,
+      args: ['-e', 'console.log("x".repeat(10)); console.error(process.cwd()); process.exit(3)'],
+    })
+    expect(ok.exitCode).toBe(3)
+    expect(ok.output).toContain('xxxxxxxxxx')
+    expect(ok.output).toContain(realpathSync(ws.path))
+    const literal = await executor.run(ws, {
+      command: process.execPath,
+      args: ['-e', 'console.log(process.argv[1])', '$(echo hi) && rm -rf x'],
+    })
+    expect(literal.output.trim()).toBe('$(echo hi) && rm -rf x')
+    const slow = await executor.run(ws, {
+      command: process.execPath,
+      args: ['-e', 'setTimeout(() => {}, 10000)'],
+      timeoutMs: 50,
+    })
+    expect(slow).toMatchObject({ timedOut: true })
+    const missing = await executor.run(ws, { command: 'joy-no-such-program', args: [] })
+    expect(missing.exitCode).toBeNull()
+    expect(missing.spawnError).toBe('ENOENT')
+  })
+
+  it('checkpoints without moving the branch and restores files, refusing to drop later commits unconfirmed', async () => {
+    const { repo, executor } = await setup()
+    const ws = await executor.prepare(repo, tid('t1'), aid('a1'))
+    const branchHead = async () => (await git(ws.path, ['rev-parse', 'HEAD'])).trim()
+    const start = await branchHead()
+    writeFileSync(join(ws.path, 'a.txt'), 'checkpoint one\n')
+    writeFileSync(join(ws.path, 'new.txt'), 'untracked at checkpoint\n')
+    unlinkSync(join(ws.path, 'gone.txt'))
+    const first = await executor.checkpoint(ws, 'refs/joy/checkpoints/t1/1', 'Joy checkpoint 1')
+    expect(first.head).toBe(start)
+    expect(await branchHead()).toBe(start)
+    expect((await git(repo.path, ['status', '--porcelain'])).trim()).toBe('')
+
+    writeFileSync(join(ws.path, 'a.txt'), 'later\n')
+    writeFileSync(join(ws.path, 'later.txt'), 'created later\n')
+    writeFileSync(join(ws.path, 'gone.txt'), 'back again\n')
+    await git(ws.path, ['add', '--all'])
+    await git(ws.path, ['commit', '-qm', 'agent commit'])
+
+    await expect(executor.restoreCheckpoint(ws, 'refs/joy/checkpoints/t1/1')).rejects.toThrow(
+      'discard 1 commit',
+    )
+    const restored = await executor.restoreCheckpoint(ws, 'refs/joy/checkpoints/t1/1', {
+      confirmDiscardCommits: true,
+    })
+    expect(restored).toEqual({ commit: first.commit, discardedCommits: 1 })
+    expect(await branchHead()).toBe(start)
+    expect(readFileSync(join(ws.path, 'a.txt'), 'utf8')).toBe('checkpoint one\n')
+    expect(readFileSync(join(ws.path, 'new.txt'), 'utf8')).toBe('untracked at checkpoint\n')
+    expect(existsSync(join(ws.path, 'later.txt'))).toBe(false)
+    expect(existsSync(join(ws.path, 'gone.txt'))).toBe(false)
+    // The main checkout is untouched.
+    expect(readFileSync(join(repo.path, 'a.txt'), 'utf8')).toBe('one\ntwo\n')
+
+    await expect(executor.checkpoint(ws, 'refs/heads/main', 'nope')).rejects.toThrow(
+      'Not a Joy checkpoint ref',
+    )
+    await expect(
+      executor.restoreCheckpoint({ ...ws, path: repo.path }, 'refs/joy/checkpoints/t1/1'),
+    ).rejects.toThrow('main checkout')
+
+    await executor.cleanup(ws, { confirmedUnpushedCommits: true })
+    expect((await git(repo.path, ['for-each-ref', 'refs/joy/'])).trim()).toBe('')
+  })
+})
