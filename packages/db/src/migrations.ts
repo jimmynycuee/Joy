@@ -438,6 +438,14 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 17,
+    name: 'custom workflow name on tasks',
+    sql: /* sql */ `
+      -- The custom workflow a task was started with (T5.6); its pattern is still stored in mode.
+      ALTER TABLE tasks ADD COLUMN workflow TEXT;
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

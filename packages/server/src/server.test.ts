@@ -3034,6 +3034,79 @@ describe('Joy local server', () => {
     expect(pushed[0]?.headers.Authorization ?? pushed[0]?.headers.authorization).toMatch(/^vapid /)
   })
 
+  it('starts tasks from built-in and custom workflows with their models and options', async () => {
+    const { serverPromise, configStore, implementer, reviewer } = fixture()
+    await configStore.update((config) => ({
+      ...config,
+      workflows: {
+        careful: {
+          description: 'Plan first, many rounds',
+          pattern: 'review_loop',
+          roles: {
+            implementer: { provider: 'claude-cli', model: 'haiku', effort: 'low' },
+            reviewer: { provider: 'codex-cli', model: 'gpt-6-luna', effort: 'low' },
+          },
+          max_rounds: 5,
+          plan_first: true,
+        },
+        broken: { pattern: 'single', roles: { judge: { provider: 'claude-cli', model: 'haiku' } } },
+      },
+    }))
+    const { origin } = await start(serverPromise)
+    const { workflows } = (await (await fetch(`${origin}/api/workflows`)).json()) as {
+      workflows: Array<{ name: string; pattern: string; builtIn?: boolean; problems: string[] }>
+    }
+    expect(workflows.map((w) => [w.name, w.pattern, w.builtIn ?? false, w.problems.length])).toEqual([
+      ['single', 'single', true, 0],
+      ['review_loop', 'review_loop', true, 0],
+      ['compete', 'compete', true, 0],
+      ['careful', 'review_loop', false, 0],
+      ['broken', 'single', false, 1],
+    ])
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/tmp/workflow-repo', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    const create = (body: object) =>
+      postJson(`${origin}/api/tasks`, { repoId: repo.id, title: 'W', prompt: 'Fix add()', ...body })
+
+    const careful = (await (await create({ workflow: 'careful' })).json()) as {
+      task: {
+        id: string
+        mode: string
+        maxRounds: number
+        planFirst: boolean
+        workflow?: string
+        roleOverrides: object
+      }
+    }
+    expect(careful.task).toMatchObject({
+      mode: 'review_loop',
+      maxRounds: 5,
+      planFirst: true,
+      workflow: 'careful',
+      roleOverrides: {
+        implementer: { provider: 'claude-cli', model: 'haiku' },
+        reviewer: { provider: 'codex-cli', model: 'gpt-6-luna' },
+      },
+    })
+    await waitForStatus(origin, careful.task.id, 'done', 5_000)
+    // Plan first: the implementer's first run only plans (read-only), and it ran on the workflow's model.
+    expect(implementer.calls[0]?.autonomy).toBe('read-only')
+    expect(reviewer.calls.length).toBeGreaterThan(0)
+
+    // The built-in workflow is exactly the old mode.
+    const single = (await (await create({ workflow: 'single' })).json()) as {
+      task: { mode: string; workflow?: string; roleOverrides: object }
+    }
+    expect(single.task).toMatchObject({ mode: 'single', roleOverrides: {} })
+    expect(single.task.workflow).toBeUndefined()
+
+    expect((await create({ workflow: 'nope' })).status).toBe(422)
+    expect((await create({ workflow: 'broken' })).status).toBe(422)
+    expect((await create({ workflow: 'careful', mode: 'single' })).status).toBe(422)
+    expect((await create({})).status).toBe(400)
+  })
+
   it('reports model stats filtered by period and repository', async () => {
     const { serverPromise, db } = fixture()
     createRepo(db, { id: rid('joy'), path: '/joy', defaultBranch: 'main' })

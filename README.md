@@ -97,6 +97,24 @@ pnpm joy container-login claude
 
 Codex 要在 container 裡用，`~/.joy/config.yaml` 的 `providers.codex.transport` 要設成 `exec`。網路沒有隔離（CLI 要連模型與 Joy 的審核），保護的是檔案。
 
+## 自訂工作流程
+
+除了三種內建流程（Single agent、Implement + review、Compete），可以在 `~/.joy/config.yaml` 定義自己的組合，建立任務時就能在 Workflow 裡選：
+
+```yaml
+workflows:
+  careful:
+    description: 先規劃、Codex 實作、Claude 審查最多 5 輪
+    pattern: review_loop
+    roles:
+      implementer: { provider: codex-cli, model: gpt-6.1-sol }
+      reviewer: { provider: claude-cli, model: opus }
+    max_rounds: 5
+    plan_first: true
+```
+
+`pattern` 可用 `single`、`review_loop`、`compete`；沒寫的角色用 Settings 裡的設定。
+
 ## 疑難排解
 
 | 狀況                          | 處理                                                                                                    |

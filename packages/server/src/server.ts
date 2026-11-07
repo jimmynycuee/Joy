@@ -152,7 +152,17 @@ import type { WorktreeCleanupOptions, WorktreeInfo } from '@joy/executor'
 import { UnpushedCommitsError, WorktreeExecutor, containerRunCommand, gitCommonDir } from '@joy/executor'
 import type { Executor, WorkspaceDiff } from '@joy/core'
 import type { ContestantOutcome, Judgement, LoopEvent } from '@joy/orchestrator'
-import { compete, formatFindings, mergePrompt, reviewLoop } from '@joy/orchestrator'
+import type { Workflow } from '@joy/orchestrator'
+import {
+  BUILT_IN_WORKFLOWS,
+  compete,
+  findWorkflow,
+  formatFindings,
+  mergePrompt,
+  reviewLoop,
+  workflowProblems,
+  workflowTask,
+} from '@joy/orchestrator'
 import { sameBackend } from '@joy/core'
 import {
   ClaudeCliProvider,
@@ -224,7 +234,9 @@ const taskInputSchema = z.strictObject({
   title: z.string().trim().min(1).max(500),
   prompt: z.string().trim().min(1).max(100_000),
   provenance: z.literal('external_content').optional(),
-  mode: z.enum(['single', 'review_loop', 'compete']),
+  mode: z.enum(['single', 'review_loop', 'compete']).optional(),
+  /** A workflow by name (T5.6): built-in (single, review_loop, compete) or from config.workflows. */
+  workflow: z.string().trim().min(1).max(40).optional(),
   roleOverrides: roleOverridesSchema.optional(),
   planFirst: z.boolean().optional(),
   maxRounds: z.number().int().min(1).max(20).optional(),
@@ -1337,6 +1349,18 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       deleteMemory(db, id)
       forgetMemoryInSessions(id)
       res.writeHead(204).end()
+      return
+    }
+    if (url.pathname === '/api/workflows' && method === 'GET') {
+      const custom = configuredWorkflows(await configStore.get())
+      json(res, 200, {
+        workflows: [...BUILT_IN_WORKFLOWS.map((w) => ({ ...w, builtIn: true })), ...custom].map(
+          (workflow) => ({
+            ...workflow,
+            problems: workflowProblems(workflow),
+          }),
+        ),
+      })
       return
     }
     if (url.pathname === '/api/stats' && method === 'GET') {
@@ -2462,11 +2486,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   /** Validates and starts a task; shared by the API and the assistant's create_task tool. */
   async function startTask(
-    input: z.infer<typeof taskInputSchema>,
+    request: z.infer<typeof taskInputSchema>,
     originConversationId?: string,
   ): Promise<StoredTask> {
-    const roleOverrides = input.roleOverrides as Partial<RoleConfig> | undefined
     const config = await configStore.get()
+    const input = applyWorkflow(request, config)
+    const roleOverrides = input.roleOverrides as Partial<RoleConfig> | undefined
     const implementer = resolveRole('implementer', config.roles as RoleConfig, roleOverrides)
     const provider = providers[implementer.provider]
     if (provider && !provider.capabilities.codeEdit)
@@ -2491,9 +2516,58 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       ...(input.planFirst !== undefined ? { planFirst: input.planFirst } : {}),
       ...(input.maxRounds !== undefined ? { maxRounds: input.maxRounds } : {}),
       ...(originConversationId ? { originConversationId } : {}),
+      ...(input.customWorkflow ? { workflow: input.customWorkflow } : {}),
     })
     scheduleTask(task)
     return task
+  }
+
+  /** The workflows a task can use: the three built-in patterns, then the owner's own from config.yaml (T5.6). */
+  function configuredWorkflows(config: JoyConfig): Workflow[] {
+    return Object.entries(config.workflows).map(([name, w]) => ({
+      name,
+      pattern: w.pattern,
+      ...(w.description ? { description: w.description } : {}),
+      ...(w.roles ? { roles: w.roles as Partial<RoleConfig> } : {}),
+      ...(w.max_rounds !== undefined ? { maxRounds: w.max_rounds } : {}),
+      ...(w.plan_first !== undefined ? { planFirst: w.plan_first } : {}),
+    }))
+  }
+
+  /**
+   * Turns a task request into the mode, roles and options it runs with. A workflow supplies the defaults; anything
+   * the request states itself (roles, rounds, plan first) wins.
+   */
+  function applyWorkflow(request: z.infer<typeof taskInputSchema>, config: JoyConfig) {
+    if (!request.workflow) {
+      if (!request.mode) throw new HttpError(400, 'Choose a mode or a workflow for the task')
+      return { ...request, mode: request.mode, customWorkflow: undefined }
+    }
+    const workflow = findWorkflow(request.workflow, configuredWorkflows(config))
+    if (!workflow)
+      throw new HttpError(422, `There is no workflow named "${request.workflow}" (see GET /api/workflows)`)
+    const problems = workflowProblems(workflow)
+    if (problems.length) throw new HttpError(422, problems.join('; '))
+    if (request.mode && request.mode !== workflow.pattern)
+      throw new HttpError(
+        422,
+        `Workflow "${workflow.name}" is a ${workflow.pattern} workflow, not ${request.mode}`,
+      )
+    const derived = workflowTask(workflow)
+    const roleOverrides = {
+      ...derived.roleOverrides,
+      ...(request.roleOverrides as Partial<RoleConfig> | undefined),
+    }
+    const maxRounds = request.maxRounds ?? derived.maxRounds
+    const planFirst = request.planFirst ?? derived.planFirst
+    return {
+      ...request,
+      mode: derived.mode,
+      ...(Object.keys(roleOverrides).length ? { roleOverrides } : {}),
+      ...(maxRounds !== undefined ? { maxRounds } : {}),
+      ...(planFirst !== undefined ? { planFirst } : {}),
+      customWorkflow: BUILT_IN_WORKFLOWS.some((w) => w.name === workflow.name) ? undefined : workflow.name,
+    }
   }
 
   /** Cancels a running, queued or paused task; shared by the API and the assistant. */
@@ -2560,6 +2634,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
             title: { type: 'string', description: 'Short title' },
             prompt: { type: 'string', description: "The owner's request, complete enough to work from" },
             mode: { type: 'string', enum: ['review_loop', 'single'], description: 'Default review_loop' },
+            workflow: {
+              type: 'string',
+              description:
+                'A workflow name from config.workflows, when the owner asks for one (instead of mode)',
+            },
           },
           required: ['repo_id', 'title', 'prompt'],
         },
@@ -2568,7 +2647,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
             repoId: args.repo_id,
             title: args.title,
             prompt: args.prompt,
-            mode: args.mode ?? 'review_loop',
+            ...(typeof args.workflow === 'string' && args.workflow
+              ? { workflow: args.workflow }
+              : { mode: args.mode ?? 'review_loop' }),
           })
           const task = await startTask(input, conversationId)
           return { id: task.id, title: task.title, status: task.status, mode: task.mode }

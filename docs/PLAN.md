@@ -46,7 +46,8 @@
 - [ ] T3.8 Google 行事曆與 Gmail（需要擁有者完成 Google 登入）
 - [ ] T4.1 遠端存取（PR #110 完成且 CI 全綠；擁有者決定審過再合併）
 - [ ] T4.3 Tauri 桌面版（擁有者 2026-11-07 決定延後：需簽章帳號與安裝檔決策）
-- [ ] P5 T5.1–T5.7（擁有者 2026-11-07 決定暫不開始，依 PLAN「視使用情況決定」）
+- [x] T5.6 自訂工作流程：三種模式為內建工作流程；`config.yaml` 可自訂（模式、各角色模型、回合數、先規劃）
+- [ ] P5 其餘（T5.1–T5.5、T5.7）（擁有者 2026-11-07 決定暫不開始）
 - [x] T2.7b Codex app-server 審核接到 policy 與 UI（server 預設改用 app-server，`providers.codex.transport: exec` 可退回）
 - [x] T2.4a 核准中心與 UI（🔴 動作等擁有者在 UI 核准；逾時視為未核准）
 - [x] T2.4b Telegram 通知與核准按鈕（設定頁輸入 chat id 與 bot token，重啟後生效）
