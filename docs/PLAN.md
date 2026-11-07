@@ -475,7 +475,7 @@ tool_hub:
 
 ### 待決（不影響 P1）
 - [ ] 確認兩家實際可用的模型名稱，更新 §3.3 與 `packages/config` 預設值
-- [ ] T3.8 選定哪一個 Gmail / 行事曆 MCP server
+- [x] T3.8 選定哪一個 Gmail / 行事曆 MCP server（2026-11-07：taylorwilsdon/google_workspace_mcp，理由見 STATUS 已確認決策）
 - [ ] T5.5 前確認 LINE 推播費用
 - [ ] 如需參考 Reason 雲端產品細節，需在 session 網路設定允許 `reasonmachines.com`
 
