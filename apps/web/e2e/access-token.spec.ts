@@ -48,7 +48,7 @@ test('a refused token asks for a new one, and regenerating switches this device 
   await gate.getByRole('button', { name: 'Continue' }).click()
   await expect(gate).toHaveCount(0)
 
-  await page.getByRole('button', { name: '設定' }).click()
+  await page.getByRole('button', { name: '設定', exact: true }).click()
   page.on('dialog', (dialog) => void dialog.accept())
   const panel = page.getByTestId('access-token-panel')
   await panel.getByRole('button', { name: 'Regenerate token' }).click()

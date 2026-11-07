@@ -52,7 +52,7 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   await expect(page.getByRole('navigation', { name: '主選單' })).toBeVisible()
   await expect(page.getByRole('heading', { name: '任務' })).toBeVisible()
 
-  await page.getByRole('button', { name: '設定' }).click()
+  await page.getByRole('button', { name: '設定', exact: true }).click()
   await expect(page.getByRole('heading', { name: '設定' })).toBeVisible()
   await expect(page.getByRole('status').filter({ hasText: 'OpenAI API 不能改程式碼' })).toBeVisible()
   await page.screenshot({ path: 'test-results/t1.8-legacy-openai-implementer.png', fullPage: true })

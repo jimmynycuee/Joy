@@ -40,7 +40,7 @@ test('backups are listed, can be taken now, and the export downloads as JSON', a
   })
 
   await page.goto('/')
-  await page.getByRole('button', { name: '設定' }).click()
+  await page.getByRole('button', { name: '設定', exact: true }).click()
   const panel = page.getByTestId('backups-panel')
   await expect(panel).toContainText('2026-11-05 · 2.0 KB')
   await panel.getByRole('button', { name: 'Back up now' }).click()
