@@ -353,11 +353,21 @@ function routing(kind: ProviderKind): AgentProvider & { calls: RunOptions[] } {
   }
 }
 
+/**
+ * Resolves when the signal aborts, or at once if it already has. Listening alone misses an abort that happened before
+ * the fake run started (slow CI runners), and the test then hangs in afterEach.
+ */
+function untilAborted(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve()
+  return new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
+}
+
 async function waitForStatus(
   origin: string,
   id: string,
   status: string,
-  timeoutMs = 500,
+  // Generous: it returns as soon as the status is reached, and shared Windows/macOS CI runners can be slow.
+  timeoutMs = 10_000,
 ): Promise<TaskDetails> {
   const deadline = Date.now() + timeoutMs
   let last: TaskDetails | undefined
@@ -1901,10 +1911,7 @@ describe('Joy local server', () => {
   it('refuses to publish a task that has not finished', async () => {
     const implementer = new FakeProvider('claude-cli')
     // Keep the run going until the server shuts it down.
-    implementer.onRun = (options) =>
-      new Promise<void>((resolve) =>
-        options.signal.addEventListener('abort', () => resolve(), { once: true }),
-      )
+    implementer.onRun = (options) => untilAborted(options.signal)
     const { serverPromise } = fixture({ implementer })
     const { origin } = await start(serverPromise)
     const repoResponse = await postJson(`${origin}/api/repos`, {
@@ -2190,9 +2197,7 @@ describe('Joy local server', () => {
       async *run(options, model) {
         yield { type: 'session_started', sessionId: 'a' }
         yield { type: 'usage', inputTokens: 1, outputTokens: 1, costUsd: 5 }
-        await new Promise<void>((resolve) =>
-          options.signal.addEventListener('abort', () => resolve(), { once: true }),
-        )
+        await untilAborted(options.signal)
         yield* api.provider.run(options, model)
       },
     }
@@ -2716,7 +2721,8 @@ describe('Joy local server', () => {
     setTaskStatus(db, 't-busy' as TaskId, 'cancelled')
     expect((await postJson(`${origin}/api/tasks/t-busy/discard`, {})).status).toBe(200)
     expect(existsSync(busy.path)).toBe(false)
-  })
+    // Real git worktrees: many git processes, slow on the Windows CI runner.
+  }, 60_000)
 
   it('turns labelled GitHub issues into external_content tasks once, and imports "do #N" on request', async () => {
     const issues: Record<
