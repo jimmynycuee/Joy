@@ -2,7 +2,7 @@ import { existsSync as existsSyncFs, constants as fsConstants, realpathSync } fr
 import { createServer as createHttpServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { link, lstat, mkdir, open, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { extname, isAbsolute, join, resolve, sep } from 'node:path'
@@ -163,6 +163,7 @@ import {
   checkpointRef,
   containerRunCommand,
   gitCommonDir,
+  stopContainer,
 } from '@joy/executor'
 import type { RunCommandResult, RunInWorktreeInput } from '@joy/executor'
 import type { Executor, WorkspaceDiff } from '@joy/core'
@@ -205,6 +206,7 @@ import {
 import type { ToolHubBudget, ToolHubDispatcher } from '@joy/tools'
 import { effortCompatibilityError } from '@joy/model-effort'
 import { classifyClaudeToolAction, classifyCodexApproval, evaluateAction } from '@joy/policy'
+import { checkCommandKind, checkEnvironment } from './checks.js'
 import { cliVersionWarnings, runDoctor } from './doctor.js'
 import type { DoctorOptions } from './doctor.js'
 import { describeDisallowedRoleProvider, findDisallowedRoleProviders } from './provider-allowlist.js'
@@ -488,8 +490,6 @@ const RUN_END_EVENTS = new Set(['result', 'error', 'task.paused', 'interrupted',
 const PLAN_EVENTS = new Set(['plan.awaiting_approval', 'plan.approved', 'plan.rejected'])
 const MAX_QUEUED_MESSAGES = 20
 const MAX_CHECK_OUTPUT_CHARS = 4_000
-/** Environment variables that look like credentials are not passed to the project's check command. */
-const SECRET_ENV = /TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|CREDENTIAL/i
 
 function selectActiveRoles(
   mode: TaskMode,
@@ -587,7 +587,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   }
   const apiProvider = providers['openai-api']
   if (apiProvider) providers['openai-api'] = withMonthlyBudget(apiProvider, assertMonthlyBudget)
-  const executor = options.executor ?? new WorktreeExecutor({ worktreesDir: paths.worktrees })
+  const executor =
+    options.executor ??
+    new WorktreeExecutor({
+      worktreesDir: paths.worktrees,
+      onWarning: (message) => log.warn(redactor.redact(`[joy] ${message}`)),
+    })
   // Commits through the executor and scans with the same redactor that guards events and logs.
   const publisher =
     options.publisher ?? new GitHubPublisher({ committer: executor, redact: (text) => redactor.redact(text) })
@@ -595,6 +600,21 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const running = new Map<TaskId, ActiveTask>()
   /** Owner messages sent while a task was busy, delivered with its next agent turn or right after the run. */
   const queuedMessages = new Map<TaskId, Array<{ id: string; text: string }>>()
+  /**
+   * Tasks with an owner action in progress (message, plan decision, resume, checkpoint restore, discard). They change
+   * the worktree or start a run, so two of them on one task must not interleave.
+   */
+  const busyTasks = new Set<TaskId>()
+  async function exclusive<T>(taskId: TaskId, action: () => Promise<T>): Promise<T> {
+    if (busyTasks.has(taskId))
+      throw new HttpError(409, 'Another action on this task is still in progress; try again in a moment')
+    busyTasks.add(taskId)
+    try {
+      return await action()
+    } finally {
+      busyTasks.delete(taskId)
+    }
+  }
   const pullRequests = new PullRequestStatusReader(options.ghRunner ? { run: options.ghRunner } : {})
   /** Executors that can run commands and keep checkpoints (the real git executor; test fakes may not). */
   const commandRunner = ('run' in executor ? executor : undefined) as
@@ -710,7 +730,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const late = getApproval(db, id)
     if (!late || late.status !== 'expired' || late.decidedVia !== 'timeout') return undefined
     const task = getTask(db, late.taskId)
-    if (!task || running.has(task.id) || (task.status !== 'awaiting_approval' && task.status !== 'failed'))
+    if (
+      !task ||
+      running.has(task.id) ||
+      busyTasks.has(task.id) ||
+      (task.status !== 'awaiting_approval' && task.status !== 'failed')
+    )
       return undefined
     if (decision === 'denied') {
       if (task.status === 'awaiting_approval') setTaskStatus(db, task.id, 'failed')
@@ -1399,7 +1424,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       assertJsonContentType(req)
       const { text } = messageInputSchema.parse(await readJson(req))
       const task = requireTask(decodePathSegment(messagesMatch[1] ?? ''))
-      json(res, 202, await postTaskMessage(task, text))
+      json(res, 202, await exclusive(task.id, () => postTaskMessage(task, text)))
       return
     }
     const planMatch = /^\/api\/tasks\/([^/]+)\/plan\/(approve|reject)$/.exec(url.pathname)
@@ -1407,22 +1432,32 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       assertJsonContentType(req)
       const { note } = planDecisionSchema.parse(await readJson(req))
       const task = requireTask(decodePathSegment(planMatch[1] ?? ''))
-      const pending = pendingPlan(task)
-      if (!pending) throw new HttpError(409, 'This task has no plan waiting for approval')
-      if (planMatch[2] === 'reject') {
-        publishTaskLevel(task.id, 'plan.rejected', note ? { note } : {})
-        setTaskStatus(db, task.id, 'cancelled')
-        discardQueuedMessages(task.id, 'The plan was rejected')
-        json(res, 200, { task: getTask(db, task.id) })
-        return
-      }
-      const state = await continuationState(task)
-      if (running.has(task.id)) throw new HttpError(409, 'Task is already running')
-      publishTaskLevel(task.id, 'plan.approved', note ? { note } : {})
-      const queued = takeQueuedMessages(task.id, 'plan_approved')
-      json(res, 202, {
-        task: continueTask(task, state, 'plan_approved', approvedPlanPrompt(note, pending.review, queued)),
+      const decision = planMatch[2]
+      const result = await exclusive(task.id, async () => {
+        const pending = pendingPlan(task)
+        if (!pending) throw new HttpError(409, 'This task has no plan waiting for approval')
+        if (decision === 'reject') {
+          publishTaskLevel(task.id, 'plan.rejected', note ? { note } : {})
+          setTaskStatus(db, task.id, 'cancelled')
+          discardQueuedMessages(task.id, 'The plan was rejected')
+          return { status: 200, task: getTask(db, task.id) }
+        }
+        const state = await continuationState(task)
+        const current = assertUnchanged(task)
+        if (!pendingPlan(current)) throw new HttpError(409, 'This task has no plan waiting for approval')
+        publishTaskLevel(task.id, 'plan.approved', note ? { note } : {})
+        const queued = takeQueuedMessages(task.id, 'plan_approved')
+        return {
+          status: 202,
+          task: continueTask(
+            current,
+            state,
+            'plan_approved',
+            approvedPlanPrompt(note, pending.review, queued),
+          ),
+        }
       })
+      json(res, result.status, { task: result.task })
       return
     }
     const prMatch = /^\/api\/tasks\/([^/]+)\/pr$/.exec(url.pathname)
@@ -1461,7 +1496,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       assertJsonContentType(req)
       const { confirm } = restoreCheckpointSchema.parse(await readJson(req))
       const task = requireTask(decodePathSegment(restoreMatch[1] ?? ''))
-      json(res, 200, await restoreCheckpoint(task, Number(restoreMatch[2]), confirm ?? false))
+      const n = Number(restoreMatch[2])
+      json(res, 200, await exclusive(task.id, () => restoreCheckpoint(task, n, confirm ?? false)))
       return
     }
     const cancelMatch = /^\/api\/tasks\/([^/]+)\/cancel$/.exec(url.pathname)
@@ -1563,9 +1599,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         .strictObject({ confirmUnpushedCommits: z.boolean().optional() })
         .parse(await readJson(req))
       const task = requireTask(decodePathSegment(discardMatch[1] ?? ''))
-      const removed = await removeWorktrees(
-        listAttempts(db, task.id).map((attempt) => ({ task, attempt })),
-        input.confirmUnpushedCommits ?? false,
+      const removed = await exclusive(task.id, () =>
+        removeWorktrees(
+          listAttempts(db, task.id).map((attempt) => ({ task, attempt })),
+          input.confirmUnpushedCommits ?? false,
+        ),
       )
       publishTaskLevel(task.id, 'worktree.removed', { attemptIds: removed, discarded: true })
       json(res, 200, { removed })
@@ -1592,10 +1630,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         throw new HttpError(409, 'Compete tasks cannot be resumed; start a new compete task instead')
       if (task.status !== 'failed' && task.status !== 'cancelled')
         throw new HttpError(409, `Task cannot be resumed from ${task.status}`)
-      const state = await resumeState(task)
-      if (running.has(task.id)) throw new HttpError(409, 'Task is already running')
-      setTaskStatus(db, task.id, 'queued')
-      scheduleTask({ ...task, status: 'queued' }, state)
+      await exclusive(task.id, async () => {
+        const state = await resumeState(task)
+        const current = assertUnchanged(task)
+        setTaskStatus(db, task.id, 'queued')
+        scheduleTask({ ...current, status: 'queued' }, state)
+      })
       json(res, 202, { task: getTask(db, task.id), resumed: true })
       return
     }
@@ -1960,8 +2000,18 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   /** The owner's messages on a task, oldest first, as recorded in its events. */
   function ownerMessages(events: TaskEventRecord[]): string[] {
+    const discarded = new Set(
+      events
+        .filter((event) => event.type === 'user.message.discarded')
+        .flatMap((event) => {
+          const ids = (event.payload as { ids?: unknown }).ids
+          return Array.isArray(ids) ? ids : []
+        }),
+    )
     return events
-      .filter((event) => event.type === 'user.message')
+      .filter(
+        (event) => event.type === 'user.message' && !discarded.has((event.payload as { id?: unknown }).id),
+      )
       .map((event) => (event.payload as { text?: unknown }).text)
       .filter((text): text is string => typeof text === 'string' && text !== '')
   }
@@ -2025,6 +2075,22 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     return state
   }
 
+  /**
+   * The task as it is now, after an await: refuses when it started running, changed status or lost its worktree
+   * meanwhile.
+   */
+  function assertUnchanged(task: StoredTask): StoredTask {
+    const current = getTask(db, task.id)
+    if (!current) throw new HttpError(404, `Task ${task.id} was not found`)
+    if (running.has(task.id)) throw new HttpError(409, 'Task is already running')
+    if (current.status !== task.status)
+      throw new HttpError(409, `Task changed to ${current.status} meanwhile; try again`)
+    const attempt = latestAttempt(db, task.id)
+    if (attempt && removedWorktrees(task.id).has(attempt.id))
+      throw new HttpError(409, 'This worktree was already removed (published or discarded); start a new task')
+    return current
+  }
+
   /** Continues a finished task in the same worktree and session, then runs its workflow again. */
   function continueTask(
     task: StoredTask,
@@ -2032,6 +2098,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     kind: ContinuationKind,
     prompt: string,
   ): StoredTask | undefined {
+    // Continuing an archived task brings it back to the task list.
+    if (getTask(db, task.id)?.archived) {
+      updateTask(db, task.id, { archived: false })
+      publishTaskLevel(task.id, 'task.updated', { archived: false })
+    }
     setTaskStatus(db, task.id, 'queued')
     scheduleTask({ ...task, status: 'queued' }, { ...state, prompt, kind })
     return getTask(db, task.id)
@@ -2074,8 +2145,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (!CONTINUABLE_STATUSES.has(task.status))
       throw new HttpError(409, `Task cannot take a message while it is ${task.status}`)
     const state = await continuationState(task)
-    if (running.has(task.id)) throw new HttpError(409, 'Task is already running')
-    const kind: ContinuationKind = planApproved(task) ? 'follow_up' : 'replan'
+    const current = assertUnchanged(task)
+    const kind: ContinuationKind = planApproved(current) ? 'follow_up' : 'replan'
     const earlier = takeQueuedMessages(task.id, kind)
     publishTaskLevel(task.id, 'user.message', { id, text, provenance: 'user', delivery: kind })
     const messages = [...earlier, text]
@@ -2083,12 +2154,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       kind === 'replan'
         ? revisePlanPrompt(messages)
         : [...restoreNote(task.id), followUpPrompt(messages)].join('\n')
-    return { task: continueTask(task, state, kind, prompt), message: { id, delivery: kind } }
+    return { task: continueTask(current, state, kind, prompt), message: { id, delivery: kind } }
   }
 
   /** Messages that arrived too late for the last agent turn start a follow-up once the run ends. */
   async function continueWithQueuedMessages(taskId: TaskId): Promise<void> {
-    if (!queuedMessages.get(taskId)?.length || running.has(taskId)) return
+    if (!queuedMessages.get(taskId)?.length || running.has(taskId) || busyTasks.has(taskId)) return
     const task = getTask(db, taskId)
     if (!task) return
     // Queued (quota wait) and paused tasks pick the messages up when they resume.
@@ -2098,17 +2169,19 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       return
     }
     try {
-      const state = await continuationState(task)
-      if (running.has(taskId)) return
-      const kind: ContinuationKind = planApproved(task) ? 'follow_up' : 'replan'
-      const messages = takeQueuedMessages(taskId, kind)
-      if (!messages.length) return
-      continueTask(
-        task,
-        state,
-        kind,
-        kind === 'replan' ? revisePlanPrompt(messages) : followUpPrompt(messages),
-      )
+      await exclusive(taskId, async () => {
+        const state = await continuationState(task)
+        const current = assertUnchanged(task)
+        const kind: ContinuationKind = planApproved(current) ? 'follow_up' : 'replan'
+        const messages = takeQueuedMessages(taskId, kind)
+        if (!messages.length) return
+        continueTask(
+          current,
+          state,
+          kind,
+          kind === 'replan' ? revisePlanPrompt(messages) : followUpPrompt(messages),
+        )
+      })
     } catch (error) {
       discardQueuedMessages(
         taskId,
@@ -2191,7 +2264,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (!commandRunner) return skip('This executor cannot run commands')
     const config = await configStore.get()
     const action: ProposedAction = {
-      kind: 'run_in_worktree',
+      // Classified like an agent's command: a shell or an unknown program needs approval.
+      kind: checkCommandKind(argv),
       summary: `Run the project checks: ${argv.join(' ')}`,
       detail: { command: argv, cwd: ws.path },
       provenance: task.provenance === 'external_content' ? 'external_content' : 'user',
@@ -2223,15 +2297,18 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       }
       if (status !== 'approved') return skip(`The owner did not approve running the checks (${status})`)
     }
-    const command = repo.container
-      ? await containerCheckCommand(ws.path, argv, config)
+    const containerName = repo.container ? `joy-check-${randomUUID()}` : undefined
+    const command = containerName
+      ? await containerCheckCommand(repo, ws.path, argv, config, containerName)
       : { command: argv[0] ?? '', args: argv.slice(1) }
     const startedAt = Date.now()
     const result = await commandRunner.run(ws, {
       ...command,
       signal,
       timeoutMs: options.checkTimeoutMs ?? 15 * 60_000,
-      env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !SECRET_ENV.test(name))),
+      env: checkEnvironment(process.env),
+      // Killing the docker client leaves the container running; stop the container itself.
+      ...(containerName ? { onStop: () => void stopContainer(containerName) } : {}),
     })
     const output = result.spawnError
       ? `${result.output}\nCould not start ${argv[0] ?? 'the command'}: ${result.spawnError}`
@@ -2246,10 +2323,20 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   }
 
   /** The check command inside the agent container for an untrusted repository (T4.5). */
-  async function containerCheckCommand(cwd: string, argv: string[], config: JoyConfig) {
-    const containerHome = join(home, 'container-home', 'checks')
+  async function containerCheckCommand(
+    repo: RepoRecord,
+    cwd: string,
+    argv: string[],
+    config: JoyConfig,
+    name: string,
+  ) {
+    // One home per repository, so one untrusted repository's checks cannot read what another's left behind.
+    const repoKey = createHash('sha256').update(repo.id).digest('hex').slice(0, 16)
+    const containerHome = join(home, 'container-home', `checks-${repoKey}`)
     await mkdir(containerHome, { recursive: true, mode: 0o700 })
     return containerRunCommand({
+      init: true,
+      name,
       image: config.container.image,
       network: config.container.network,
       containerHome,
