@@ -15,6 +15,8 @@ export interface WorktreeExecutorOptions {
   staleAfterDays?: number
   /** Used for commits when the repo has no user.name / user.email configured. */
   fallbackIdentity?: { name: string; email: string }
+  /** Problems that do not fail the operation (e.g. leftover checkpoint refs). Default console.warn. */
+  onWarning?: (message: string) => void
 }
 
 export interface WorktreeCleanupOptions {
@@ -68,6 +70,8 @@ export interface RunInWorktreeInput {
   signal?: AbortSignal
   timeoutMs?: number
   env?: NodeJS.ProcessEnv
+  /** Called once when a timeout or abort stops the command (e.g. `docker kill` its container). */
+  onStop?: () => void
 }
 
 export class UnpushedCommitsError extends Error {
@@ -96,6 +100,7 @@ export class WorktreeExecutor implements Executor {
   private readonly staleAfterDays: number
   private readonly identity: { name: string; email: string }
   private readonly locks = new KeyedMutex()
+  private readonly warn: (message: string) => void
 
   constructor(options: WorktreeExecutorOptions) {
     this.dir = resolve(options.worktreesDir)
@@ -105,6 +110,7 @@ export class WorktreeExecutor implements Executor {
       throw new Error('staleAfterDays must be a finite, non-negative number')
     }
     this.identity = options.fallbackIdentity ?? { name: 'Joy', email: 'joy@localhost' }
+    this.warn = options.onWarning ?? ((message) => console.warn(message))
   }
 
   async prepare(repo: RepoRef, taskId: TaskId, attemptId: AttemptId): Promise<Workspace> {
@@ -171,7 +177,8 @@ export class WorktreeExecutor implements Executor {
         message,
       ])
     ).trim()
-    await git(ws.path, ['update-ref', ref, commit])
+    // An empty old value: fail rather than overwrite a checkpoint that already exists.
+    await git(ws.path, ['update-ref', ref, commit, ''])
     return { commit, head }
   }
 
@@ -299,7 +306,10 @@ export class WorktreeExecutor implements Executor {
       } catch {
         // Branch already gone.
       }
-      await this.deleteCheckpoints(ws.repo, ws.taskId).catch(() => undefined)
+      // The worktree is already gone; leftover refs only cost a little space, so report and carry on.
+      await this.deleteCheckpoints(ws.repo, ws.taskId).catch((error: unknown) =>
+        this.warn(`Could not delete the checkpoint refs of task ${ws.taskId}: ${String(error)}`),
+      )
     })
   }
 

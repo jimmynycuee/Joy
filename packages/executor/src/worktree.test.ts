@@ -293,6 +293,64 @@ describe('WorktreeExecutor checks and checkpoints', () => {
     expect(missing.spawnError).toBe('ENOENT')
   })
 
+  it('stops the whole process tree on timeout, even a SIGTERM-ignoring child with a grandchild holding the pipes', async () => {
+    const { repo, executor } = await setup()
+    const ws = await executor.prepare(repo, tid('t1'), aid('a1'))
+    // The grandchild inherits stdout/stderr and prints its pid; the child ignores SIGTERM.
+    const script = [
+      "const { spawn } = require('node:child_process')",
+      "process.on('SIGTERM', () => {})",
+      "spawn(process.execPath, ['-e', 'console.log(\"grandchild \" + process.pid); setTimeout(() => {}, 20000)'], { stdio: 'inherit' })",
+      'setTimeout(() => {}, 20000)',
+    ].join(';')
+    let stopped = 0
+    const started = Date.now()
+    const result = await executor.run(ws, {
+      command: process.execPath,
+      args: ['-e', script],
+      timeoutMs: 500,
+      onStop: () => stopped++,
+    })
+    const elapsed = Date.now() - started
+    expect(result.timedOut).toBe(true)
+    expect(stopped).toBe(1)
+    // 500 ms timeout + 2 s grace, with room for a slow runner; the scripts would run for 20 s.
+    expect(elapsed).toBeLessThan(6_000)
+    const pid = Number(/grandchild (\d+)/.exec(result.output)?.[1])
+    expect(pid).toBeGreaterThan(0)
+    if (process.platform !== 'win32') {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      expect(() => process.kill(pid, 0)).toThrow()
+    }
+  }, 15_000)
+
+  it('stops a running command when the signal aborts', async () => {
+    const { repo, executor } = await setup()
+    const ws = await executor.prepare(repo, tid('t1'), aid('a1'))
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), 200)
+    const started = Date.now()
+    const result = await executor.run(ws, {
+      command: process.execPath,
+      args: ['-e', 'setTimeout(() => {}, 20000)'],
+      signal: controller.signal,
+    })
+    expect(result.timedOut).toBe(false)
+    expect(Date.now() - started).toBeLessThan(5_000)
+  })
+
+  it('reports, instead of swallowing, a failure to delete checkpoint refs on cleanup', async () => {
+    const { repo, root } = await setup()
+    const warnings: string[] = []
+    const executor = new WorktreeExecutor({
+      worktreesDir: join(root, 'worktrees'),
+      onWarning: (message) => warnings.push(message),
+    })
+    const ws = await executor.prepare(repo, tid('t1'), aid('a1'))
+    await executor.cleanup({ ...ws, taskId: tid('bad..id') })
+    expect(warnings).toEqual([expect.stringContaining('checkpoint refs of task bad..id')])
+  })
+
   it('checkpoints without moving the branch and restores files, refusing to drop later commits unconfirmed', async () => {
     const { repo, executor } = await setup()
     const ws = await executor.prepare(repo, tid('t1'), aid('a1'))

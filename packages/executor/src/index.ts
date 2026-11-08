@@ -17,5 +17,5 @@ export type {
   WorktreeExecutorOptions,
   WorktreeInfo,
 } from './worktree.js'
-export { CONTAINER_HOME, containerRunCommand, gitCommonDir } from './docker.js'
+export { CONTAINER_HOME, containerRunCommand, gitCommonDir, stopContainer } from './docker.js'
 export type { ContainerMount, ContainerNetwork, ContainerRunInput } from './docker.js'
