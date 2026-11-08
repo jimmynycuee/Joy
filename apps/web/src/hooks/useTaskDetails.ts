@@ -31,6 +31,11 @@ const EXTRAS_EVENTS = new Set([
   'user.message',
   'user.message.delivered',
   'user.message.discarded',
+  'user.message.requeued',
+  'run.interrupted',
+  'started',
+  'phase',
+  'checks',
   'checkpoint.created',
   'checkpoint.restored',
   'task.updated',
@@ -49,7 +54,17 @@ export function withServerFields(current: TaskDetails, next: TaskDetails): TaskD
     ...(next.usage ? { usage: next.usage } : {}),
     pendingPlan: next.pendingPlan ?? null,
     queuedMessages: next.queuedMessages ?? [],
+    ...(next.interruptible !== undefined ? { interruptible: next.interruptible } : {}),
   }
+}
+
+/** Whether an event changes what the server derives, so the details are worth fetching again. */
+export function changesServerFields(event: TaskEvent): boolean {
+  if (EXTRAS_EVENTS.has(event.type)) return true
+  // The implementer's session starting or its turn ending changes whether a message would interrupt it.
+  if (event.type !== 'agent') return false
+  const type = record(record(event.payload)?.event)?.type
+  return type === 'session_started' || type === 'done'
 }
 
 function taskAfterEvent(task: Task, event: TaskEvent): Task {
@@ -164,7 +179,7 @@ export function useTaskDetails(
         return { ...current, task, events: mergeEvents(current.events, additions) }
       })
       if (additions.some((event) => event.type === 'result' || event.type === 'error')) refreshTaskList()
-      if (additions.some((event) => EXTRAS_EVENTS.has(event.type))) scheduleExtras()
+      if (additions.some(changesServerFields)) scheduleExtras()
     }
 
     function connect(): void {

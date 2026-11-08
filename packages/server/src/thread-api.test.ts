@@ -121,6 +121,7 @@ async function setup(
     ghRunner?: JoyServerOptions['ghRunner']
     publisher?: JoyServerOptions['publisher']
     config?: string
+    taskTimeLimitMs?: number
   } = {},
 ) {
   const home = tempDir('joy-thread-')
@@ -146,6 +147,7 @@ async function setup(
     conversationSummaries: false,
     providers: { 'claude-cli': claude.provider, 'codex-cli': codex.provider },
     ...(options.ghRunner ? { ghRunner: options.ghRunner } : {}),
+    ...(options.taskTimeLimitMs ? { taskTimeLimitMs: options.taskTimeLimitMs } : {}),
     ...(options.publisher ? { publisher: options.publisher } : {}),
   })
   servers.push(server)
@@ -501,6 +503,137 @@ describe('interrupting a running task with a message', () => {
     expect(claude.calls[1]).toMatchObject({ resumeSessionId: 'claude-cli-session', autonomy: 'read-only' })
     expect(claude.calls[1]?.prompt).toContain('Do not change any files yet')
     expect(claude.calls[1]?.prompt).toContain('Plan for Windows too')
+  })
+
+  it('continues after a provider that throws when it is stopped', async () => {
+    const { call, claude } = await setup()
+    claude.state.work = async (options, n) => {
+      if (n !== 1) return
+      await untilAborted(options)
+      throw new Error('the CLI was killed')
+    }
+    const id = await newTask(call, await newRepo(call))
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length === 1, 'running')
+    await call('POST', `/api/tasks/${id}/messages`, { text: 'Rename it' })
+    const done = await until(call, id, settled('done'), 'done')
+    expect(claude.calls).toHaveLength(2)
+    expect(claude.calls[1]?.prompt).toContain('Rename it')
+    expect(count(done, 'run.interrupted')).toBe(1)
+    expect(count(done, 'error')).toBe(0)
+    expect(done.events.filter((e) => e.type === 'result').map((e) => e.payload.status)).toEqual(['succeeded'])
+  })
+
+  it('interrupts a fix round and only gives the continued run the rounds that were left', async () => {
+    const { call, claude, codex } = await setup()
+    const reject = { approve: false, findings: [{ severity: 'major', message: 'still wrong' }] }
+    codex.verdicts.push(reject, reject, reject, reject)
+    claude.state.work = (options, n) => (n === 2 ? untilAborted(options) : undefined)
+    const id = await newTask(call, await newRepo(call), { mode: 'review_loop', maxRounds: 2 })
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length === 2, 'fix round')
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'Try a lookup table' })
+    expect(sent.body.message).toMatchObject({ delivery: 'interrupt' })
+    const ended = await until(call, id, settled('review_ready'), 'review_ready')
+    expect(claude.calls).toHaveLength(3)
+    expect(claude.calls[2]?.prompt).toContain('Try a lookup table')
+    // Round 1 reviewed, round 2 interrupted and done again, then reviewed: two reviews in all, not four.
+    expect(ended.reviews.map((review) => review.round)).toEqual([1, 2])
+    expect(codex.calls).toHaveLength(2)
+  })
+
+  it('keeps the time limit across interrupts: the task stops at the limit however often it is interrupted', async () => {
+    const { call, claude } = await setup({ taskTimeLimitMs: 400 })
+    claude.state.work = (options) => untilAborted(options)
+    const startedAt = Date.now()
+    const id = await newTask(call, await newRepo(call))
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length === 1, 'running')
+    const failed = (d: Details) => d.events.some((e) => e.type === 'result' && e.payload.status === 'failed')
+    let last = await details(call, id)
+    while (!failed(last) && Date.now() - startedAt < 3_000) {
+      if (last.task.status === 'running')
+        await call('POST', `/api/tasks/${id}/messages`, { text: 'keep going' })
+      await new Promise((resolve) => setTimeout(resolve, 250))
+      last = await details(call, id)
+    }
+    expect(failed(last)).toBe(true)
+    expect(Date.now() - startedAt).toBeLessThan(2_000)
+    expect(last.events.find((e) => e.type === 'result')?.payload.reason).toContain('ran longer than')
+    expect(count(last, 'run.interrupted')).toBeGreaterThanOrEqual(1)
+  })
+
+  it('puts the message back in the queue when a limit stops the run before the interrupt', async () => {
+    const { call, claude } = await setup({ taskTimeLimitMs: 300 })
+    const release = gate()
+    claude.state.work = (options, n) => (n === 1 ? untilAborted(options, release) : undefined)
+    const id = await newTask(call, await newRepo(call))
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length === 1, 'running')
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'one more thing' })
+    expect(sent.body.message).toMatchObject({ delivery: 'interrupt' })
+    const messageId = (sent.body.message as { id: string }).id
+    // The time limit fires while the interrupted CLI is still stopping.
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    release.open()
+    const after = await until(call, id, (d) => count(d, 'user.message.requeued') === 1, 'requeued')
+    expect(after.events.find((e) => e.type === 'user.message.requeued')?.payload).toEqual({
+      ids: [messageId],
+    })
+    expect(count(after, 'run.interrupted')).toBe(0)
+    // The stopped task is then continued with the message, as before interrupts existed.
+    const continued = await until(call, id, (d) => deliveredIds(d).includes(messageId), 'follow-up')
+    expect(continued.events.find((e) => e.type === 'user.message.delivered')?.payload).toMatchObject({
+      via: 'follow_up',
+    })
+  })
+
+  it('withdraws the messages when the continued run fails before the agent gets them', async () => {
+    const { call, claude } = await setup()
+    const release = gate()
+    claude.state.work = (options, n) => (n === 1 ? untilAborted(options, release) : undefined)
+    const repoId = await newRepo(call)
+    const id = await newTask(call, repoId)
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length === 1, 'running')
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'never seen' })
+    expect(sent.body.message).toMatchObject({ delivery: 'interrupt' })
+    expect((await call('PATCH', `/api/repos/${repoId}`, { allowedProviders: ['codex-cli'] })).status).toBe(
+      200,
+    )
+    release.open()
+    const failed = await until(call, id, (d) => count(d, 'user.message.discarded') === 1, 'discard')
+    expect(failed.task.status).toBe('failed')
+    expect(claude.calls).toHaveLength(1)
+    expect(count(failed, 'user.message.delivered')).toBe(0)
+    expect(failed.events.find((e) => e.type === 'user.message.discarded')?.payload).toMatchObject({
+      ids: [(sent.body.message as { id: string }).id],
+    })
+  })
+
+  it('tells the web app whether a message would interrupt the agent now', async () => {
+    const { call, claude, codex } = await setup()
+    const implementing = gate()
+    const reviewing = gate()
+    const finishReview = gate()
+    claude.state.work = (_options, n) => (n === 1 ? implementing.promise : undefined)
+    codex.state.reviewWork = () => {
+      reviewing.open()
+      return finishReview.promise
+    }
+    const id = await newTask(call, await newRepo(call), { mode: 'review_loop' })
+    const working = await until(
+      call,
+      id,
+      (d) =>
+        d.task.status === 'running' &&
+        claude.calls.length === 1 &&
+        d.events.some(
+          (e) => e.type === 'agent' && (e.payload.event as { type?: string }).type === 'session_started',
+        ),
+      'implementing',
+    )
+    expect(working).toMatchObject({ interruptible: true })
+    implementing.open()
+    await reviewing.promise
+    expect(await details(call, id)).toMatchObject({ interruptible: false })
+    finishReview.open()
+    expect(await until(call, id, settled('done'), 'done')).toMatchObject({ interruptible: false })
   })
 
   it('queues instead of interrupting when asked to', async () => {

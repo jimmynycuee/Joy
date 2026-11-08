@@ -27,11 +27,14 @@ export function messageDeliveryStates(
 ): Map<string, DeliveryState> {
   const delivered = new Set<string>()
   const discarded = new Set<string>()
+  const requeued = new Set<string>()
   for (const event of events) {
     if (event.type === 'user.message.delivered')
       for (const id of ids(record(event.payload))) delivered.add(id)
     if (event.type === 'user.message.discarded')
       for (const id of ids(record(event.payload))) discarded.add(id)
+    // An interrupt that did not happen (a limit stopped the run first) leaves its messages queued.
+    if (event.type === 'user.message.requeued') for (const id of ids(record(event.payload))) requeued.add(id)
   }
   const states = new Map<string, DeliveryState>()
   for (const event of events) {
@@ -40,6 +43,7 @@ export function messageDeliveryStates(
     if (typeof payload?.id !== 'string') continue
     let state: DeliveryState =
       payload.delivery === 'queued' ? 'queued' : payload.delivery === 'interrupt' ? 'interrupting' : 'sent'
+    if (state === 'interrupting' && requeued.has(payload.id)) state = 'queued'
     if (state === 'queued' || state === 'interrupting') {
       if (discarded.has(payload.id)) state = 'discarded'
       else if (delivered.has(payload.id)) state = 'delivered'
@@ -85,6 +89,8 @@ export function followUpState(input: {
   mode: string
   worktreeRemoved: boolean
   pendingPlan: boolean
+  /** From the server: a message now would interrupt the agent. Unknown means do not promise it. */
+  interruptible?: boolean
 }): FollowUpState {
   if (input.mode === 'compete')
     return {
@@ -99,9 +105,10 @@ export function followUpState(input: {
       placeholder: '',
     }
   if (input.pendingPlan) return { disabled: false, placeholder: '說明要怎麼改計畫' }
-  // A running agent is interrupted and continues with the message; waiting for an approval or a quota reset is not.
-  if (input.status === 'running')
+  // Only the implementer's own turn is interrupted; a review, checks, setup, an approval or a quota wait is not.
+  if (input.status === 'running' && input.interruptible === true)
     return { disabled: false, placeholder: '傳訊息會打斷 agent 目前這一步，帶著訊息繼續' }
+  if (input.status === 'running') return { disabled: false, placeholder: '訊息會在 agent 下一次動手時送達' }
   if (WORKING_STATUSES.has(input.status))
     return { disabled: false, placeholder: '補充指示，下一輪會帶給 agent' }
   return { disabled: false, placeholder: '接著交代…' }

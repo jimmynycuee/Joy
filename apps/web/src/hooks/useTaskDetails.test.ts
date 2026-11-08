@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { withServerFields } from './useTaskDetails.js'
+import { changesServerFields, withServerFields } from './useTaskDetails.js'
 import type { TaskDetails, TaskEvent } from '../types.js'
 
 const task = {
@@ -25,8 +25,10 @@ describe('withServerFields', () => {
       usage: { durationMs: 5, byProvider: [] },
       pendingPlan: { plan: '# plan' },
       queuedMessages: [{ id: 'm', text: 'hi' }],
+      interruptible: true,
     }
     const merged = withServerFields(current, next)
+    expect(merged.interruptible).toBe(true)
     expect(merged.task.status).toBe('review_ready')
     expect(merged.events).toEqual([event])
     expect(merged.pendingPlan).toEqual({ plan: '# plan' })
@@ -49,5 +51,19 @@ describe('withServerFields', () => {
     expect(merged.pendingPlan).toBeNull()
     expect(merged.queuedMessages).toEqual([])
     expect(merged.usage?.durationMs).toBe(9)
+  })
+})
+
+describe('changesServerFields', () => {
+  const at = (type: string, payload: unknown): TaskEvent => ({ ...event, type, payload })
+  it('refetches when the agent can newly or no longer be interrupted', () => {
+    expect(changesServerFields(at('phase', { phase: 'reviewing' }))).toBe(true)
+    expect(changesServerFields(at('run.interrupted', {}))).toBe(true)
+    expect(changesServerFields(at('agent', { role: 'implementer', event: { type: 'done' } }))).toBe(true)
+    expect(
+      changesServerFields(at('agent', { role: 'implementer', event: { type: 'session_started' } })),
+    ).toBe(true)
+    expect(changesServerFields(at('agent', { role: 'implementer', event: { type: 'message' } }))).toBe(false)
+    expect(changesServerFields(at('workspace', {}))).toBe(false)
   })
 })

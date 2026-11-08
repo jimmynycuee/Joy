@@ -78,6 +78,20 @@ describe('interrupting messages', () => {
     expect(messageDeliveryStates(events, { queuedIds: new Set(), busy: false }).get('c')).toBe('lost')
   })
 
+  it('goes back to queued when the interrupt did not happen', () => {
+    const states = messageDeliveryStates([
+      message('a', 'interrupt'),
+      event('user.message.requeued', { ids: ['a'] }),
+    ])
+    expect(states.get('a')).toBe('queued')
+    const later = messageDeliveryStates([
+      message('a', 'interrupt'),
+      event('user.message.requeued', { ids: ['a'] }),
+      event('user.message.delivered', { ids: ['a'], via: 'follow_up' }),
+    ])
+    expect(later.get('a')).toBe('delivered')
+  })
+
   it('words the note above the composer after what is pending', () => {
     expect(pendingMessagesNote(new Map())).toBeUndefined()
     expect(pendingMessagesNote(new Map([['a', 'delivered']]))).toBeUndefined()
@@ -115,9 +129,14 @@ describe('followUpState', () => {
   const base = { status: 'done', mode: 'review_loop', worktreeRemoved: false, pendingPlan: false }
 
   it('words the placeholder after what the message will do', () => {
-    expect(followUpState({ ...base, status: 'running' }).placeholder).toBe(
+    expect(followUpState({ ...base, status: 'running', interruptible: true }).placeholder).toBe(
       '傳訊息會打斷 agent 目前這一步，帶著訊息繼續',
     )
+    // A review, checks or setup, or a server that does not say: no promise to interrupt.
+    expect(followUpState({ ...base, status: 'running', interruptible: false }).placeholder).toBe(
+      '訊息會在 agent 下一次動手時送達',
+    )
+    expect(followUpState({ ...base, status: 'running' }).placeholder).toBe('訊息會在 agent 下一次動手時送達')
     expect(followUpState({ ...base, status: 'queued' }).placeholder).toBe('補充指示，下一輪會帶給 agent')
     expect(followUpState({ ...base, status: 'awaiting_approval' }).placeholder).toBe(
       '補充指示，下一輪會帶給 agent',

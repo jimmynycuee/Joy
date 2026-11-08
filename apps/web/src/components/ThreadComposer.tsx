@@ -35,6 +35,7 @@ export function ThreadComposer({
     mode: task.mode,
     worktreeRemoved: worktreeRemoved(details.events),
     pendingPlan: Boolean(details.pendingPlan),
+    ...(details.interruptible !== undefined ? { interruptible: details.interruptible } : {}),
   })
   const pendingNote = useMemo(
     () =>

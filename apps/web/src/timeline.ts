@@ -143,6 +143,7 @@ export function eventTitle(event: TaskEvent): string {
   if (event.type === 'user.message' && typeof payload?.text === 'string') return payload.text
   if (event.type === 'user.message.delivered')
     return payload?.via === 'interrupt' ? '已打斷 agent，訊息已交給它' : '訊息已交給 agent'
+  if (event.type === 'user.message.requeued') return '沒有打斷成，訊息改為等 agent 下一次動手'
   if (event.type === 'run.interrupted') return '已中斷目前這一步，帶著你的訊息繼續'
   if (event.type === 'user.message.discarded') return '訊息已撤回'
   if (event.type === 'plan.awaiting_approval') return '計畫寫好了，等你核准'
@@ -179,6 +180,7 @@ export interface TimelineOptions {
 const QUIET_EVENTS = new Set([
   'user.message.delivered',
   'user.message.discarded',
+  'user.message.requeued',
   'checkpoint.created',
   'task.updated',
 ])
