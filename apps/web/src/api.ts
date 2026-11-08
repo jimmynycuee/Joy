@@ -25,7 +25,17 @@ export function saveApiToken(token: string): void {
 /** Tells the app the token was refused, so it can ask for a new one. */
 export const UNAUTHORIZED_EVENT = 'joy-unauthorized'
 
-type ApiError = { error?: string }
+type ApiErrorBody = { error?: string }
+
+/** A failed API call; `status` lets callers treat 409 (busy, conflict) and 429 (too many) differently. */
+export class ApiError extends Error {
+  readonly status: number
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
@@ -34,8 +44,8 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { ...init, headers })
   if (response.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
   const text = await response.text()
-  const body = text ? (JSON.parse(text) as T & ApiError) : ({} as T & ApiError)
-  if (!response.ok) throw new Error(body.error ?? `請求失敗（${response.status}）`)
+  const body = text ? (JSON.parse(text) as T & ApiErrorBody) : ({} as T & ApiErrorBody)
+  if (!response.ok) throw new ApiError(body.error ?? `請求失敗（${response.status}）`, response.status)
   return body
 }
 

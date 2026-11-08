@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { JoyConfig } from '@joy/config'
 import { downloadFile, errorMessage, removeWithConfirmation, request, saveApiToken } from '../api.js'
-import { DOCTOR_LABELS, doctorStatusLabel, formatBytes } from '../labels.js'
+import { NO_ACTION_REPAIR, doctorStatusLabel, formatBytes } from '../labels.js'
 import type { DoctorReport, SecretStatus } from '../types.js'
 import { Button } from './ui.js'
 
@@ -436,13 +436,13 @@ export function DoctorChecks({
           {report.checks.map((check) => (
             <li className="doctor-check" key={check.id}>
               <div className="doctor-check-heading">
-                <strong>{DOCTOR_LABELS[check.id] ?? check.label}</strong>
+                <strong>{check.label}</strong>
                 <span className={`doctor-state doctor-state-${check.status}`}>
                   {doctorStatusLabel(check.status)}
                 </span>
               </div>
               <p>{check.summary}</p>
-              {check.repair !== 'No action needed.' && <p className="doctor-repair">{check.repair}</p>}
+              {check.repair !== NO_ACTION_REPAIR && <p className="doctor-repair">{check.repair}</p>}
             </li>
           ))}
         </ul>

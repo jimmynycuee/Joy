@@ -68,11 +68,8 @@ export const ROLE_SPEAKERS: Record<string, string> = {
   orchestrator: '調度',
 }
 
-export const DOCTOR_LABELS: Record<string, string> = {
-  'gh-auth': 'GitHub CLI 登入',
-  keychain: '作業系統鑰匙圈',
-  'data-directory': 'Joy 資料夾',
-}
+/** The `repair` text of a doctor check that needs nothing (the server's NO_ACTION_NEEDED), so it can be left out. */
+export const NO_ACTION_REPAIR = '不需要處理。'
 
 export function doctorStatusLabel(status: DoctorStatus): string {
   return status === 'ok' ? '正常' : status === 'missing' ? '缺少' : '未驗證'
@@ -86,8 +83,12 @@ export function taskTitle(title: string, prompt: string): string {
   return firstLine.length > 80 ? `${firstLine.slice(0, 80)}…` : firstLine
 }
 
-/** A compete task in review_ready is waiting for the owner to pick one, not for a fix. */
-export function statusLabel(status: string, mode?: string): string {
+/**
+ * A compete task in review_ready is waiting for the owner to pick one, not for a fix; a task with a plan waiting is
+ * waiting for approval of that plan.
+ */
+export function statusLabel(status: string, mode?: string, pendingPlan = false): string {
+  if (status === 'review_ready' && pendingPlan) return '等你核准計畫'
   if (status === 'review_ready' && mode === 'compete') return '待你挑選'
   return STATUS_LABELS[status] ?? status.replaceAll('_', ' ')
 }

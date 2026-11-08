@@ -3,6 +3,7 @@ import type { Dispatch, FormEvent, SetStateAction } from 'react'
 import { EFFORTS, ROLES } from '@joy/core'
 import type { ModelRef, ProviderKind, Role } from '@joy/core'
 import type { JoyConfig } from '@joy/config'
+import { RepoSettingsCard } from '../components/RepoSettings.js'
 import {
   AccessTokenPanel,
   BackupsPanel,
@@ -20,7 +21,6 @@ import {
   PROVIDER_LABELS,
   ROLE_LABELS,
   providersForRole,
-  repoName,
   roleModel,
 } from '../labels.js'
 import { MODEL_PRESETS, matchingPreset } from '../presets.js'
@@ -60,6 +60,7 @@ export interface SettingsPageProps {
   onRetryDoctor: () => void
   repos: Repo[]
   onAddRepo: () => void
+  onRepoSaved: (repo: Repo) => void
   theme: ThemePreference
   onTheme: (theme: ThemePreference) => void
 }
@@ -212,18 +213,11 @@ export function SettingsPage(props: SettingsPageProps) {
               還沒有專案。加入一個電腦裡的 Git 資料夾，Joy 就能在獨立的工作副本裡改程式。
             </p>
           ) : (
-            <ul className="row-list">
+            <div className="repo-list">
               {props.repos.map((repo) => (
-                <li key={repo.id} className="row-item">
-                  <span className="row-copy">
-                    <strong>{repoName(repo.path)}</strong>
-                    <span className="muted"> · 預設分支 {repo.defaultBranch}</span>
-                    <code className="block-path">{repo.path}</code>
-                    {repo.githubRemote ? <span className="muted block-path">{repo.githubRemote}</span> : null}
-                  </span>
-                </li>
+                <RepoSettingsCard key={repo.id} repo={repo} onSaved={props.onRepoSaved} />
               ))}
-            </ul>
+            </div>
           )}
         </section>
       )

@@ -78,7 +78,8 @@ export interface SidebarProps {
   view: 'new-task' | 'task' | 'assistant' | 'stats' | 'settings'
   selectedTaskId: string
   selectedConversationId: string
-  archived: ReadonlySet<string>
+  /** The task whose plan waits for approval, if the open one does: its row says so. */
+  pendingPlanTaskId?: string
   onArchive: (id: string) => void
   onRestore: (id: string) => void
   onNewTask: () => void
@@ -105,8 +106,8 @@ export function Sidebar(props: SidebarProps) {
     () => props.tasks.filter((task) => !query || contains(task.title, query) || contains(task.prompt, query)),
     [props.tasks, query],
   )
-  const activeTasks = visibleTasks.filter((task) => !props.archived.has(task.id))
-  const archivedTasks = visibleTasks.filter((task) => props.archived.has(task.id))
+  const activeTasks = visibleTasks.filter((task) => !task.archived)
+  const archivedTasks = visibleTasks.filter((task) => task.archived)
   const conversations = props.conversations.filter(
     (conversation) => !query || contains(conversation.title ?? '新對話', query),
   )
@@ -127,13 +128,14 @@ export function Sidebar(props: SidebarProps) {
   function taskRow(task: Task, archivedRow: boolean) {
     const selected = props.view === 'task' && props.selectedTaskId === task.id
     const waiting = task.status === 'awaiting_approval' || task.status === 'review_ready'
+    const label = statusLabel(task.status, task.mode, props.pendingPlanTaskId === task.id)
     return (
       <div className={`nav-row-wrap${selected ? ' selected' : ''}`} key={task.id}>
         <button
           type="button"
           className="task-row"
           aria-current={selected ? 'page' : undefined}
-          title={`${statusLabel(task.status, task.mode)} · ${modeLabel(task.mode)}`}
+          title={`${label} · ${modeLabel(task.mode)}`}
           onClick={() => props.onOpenTask(task.id)}
         >
           {task.status === 'running' || task.status === 'queued' ? (
@@ -143,11 +145,7 @@ export function Sidebar(props: SidebarProps) {
           )}
           <span className="task-row-copy">
             <span className="task-title">{task.title}</span>
-            {waiting ? (
-              <span className={`task-meta status-text-${task.status}`}>
-                {statusLabel(task.status, task.mode)}
-              </span>
-            ) : null}
+            {waiting ? <span className={`task-meta status-text-${task.status}`}>{label}</span> : null}
           </span>
           <span className="task-time">{relativeTime(task.createdAt)}</span>
         </button>

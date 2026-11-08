@@ -1,4 +1,4 @@
-// Per-viewer conveniences kept in localStorage: unsent drafts, archived tasks, theme, layout. Storage can be missing
+// Per-viewer conveniences kept in localStorage: unsent drafts, theme, layout. Storage can be missing
 // or throw (private windows, blocked site data), so every access is guarded and the UI works without it.
 
 import { useCallback, useEffect, useState } from 'react'
@@ -51,44 +51,24 @@ export function useDraft(context: string): [string, (text: string) => void, () =
   return [text, update, clear]
 }
 
-/*
- * 封存 (archive) is client-side only for now: the ids live in this browser's localStorage and the task stays on the
- * server. Replace with a server-side archive flag once the backend has one.
- */
-const ARCHIVED_KEY = 'joy.archivedTasks'
+// Before the server had an archive flag, 封存 lived in this key. It is only read once, to move old choices to the
+// server (see `migrateLegacyArchive` in Workspace), and then deleted.
+const LEGACY_ARCHIVED_KEY = 'joy.archivedTasks'
 
-export function readArchivedTaskIds(): string[] {
+/** Task ids from the old localStorage archive; anything that is not a list of strings counts as empty. */
+export function parseLegacyArchivedIds(raw: string | null): string[] {
   try {
-    const parsed: unknown = JSON.parse(readStorage(ARCHIVED_KEY) ?? '[]')
+    const parsed: unknown = JSON.parse(raw ?? '[]')
     return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : []
   } catch {
     return []
   }
 }
 
-export function writeArchivedTaskIds(ids: readonly string[]): void {
-  writeStorage(ARCHIVED_KEY, JSON.stringify(ids))
+export function readLegacyArchivedIds(): string[] {
+  return parseLegacyArchivedIds(readStorage(LEGACY_ARCHIVED_KEY))
 }
 
-export function useArchivedTasks(): {
-  archived: ReadonlySet<string>
-  archive: (id: string) => void
-  restore: (id: string) => void
-} {
-  const [ids, setIds] = useState<string[]>(readArchivedTaskIds)
-  const archive = useCallback((id: string) => {
-    setIds((current) => {
-      const next = current.includes(id) ? current : [...current, id]
-      writeArchivedTaskIds(next)
-      return next
-    })
-  }, [])
-  const restore = useCallback((id: string) => {
-    setIds((current) => {
-      const next = current.filter((existing) => existing !== id)
-      writeArchivedTaskIds(next)
-      return next
-    })
-  }, [])
-  return { archived: new Set(ids), archive, restore }
+export function clearLegacyArchivedIds(): void {
+  writeStorage(LEGACY_ARCHIVED_KEY, null)
 }

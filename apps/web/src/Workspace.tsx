@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import { ROLES } from '@joy/core'
 import type { RoleConfig } from '@joy/core'
 import type { JoyConfig } from '@joy/config'
-import { errorMessage, request } from './api.js'
+import { ApiError, errorMessage, request } from './api.js'
 import { CommandPalette } from './components/CommandPalette.js'
 import type { PaletteItem } from './components/CommandPalette.js'
 import { Sidebar } from './components/Sidebar.js'
@@ -19,7 +19,7 @@ import { StatsPage } from './pages/StatsPage.js'
 import { TaskPage } from './pages/TaskPage.js'
 import { isTypingTarget, shortcutFor } from './shortcuts.js'
 import type { ShortcutAction } from './shortcuts.js'
-import { readStorage, useArchivedTasks, writeStorage } from './storage.js'
+import { clearLegacyArchivedIds, readLegacyArchivedIds, readStorage, writeStorage } from './storage.js'
 import { diffFrom } from './task-info.js'
 import { THEME_LABELS, nextTheme, readTheme, saveTheme } from './theme.js'
 import type { ThemePreference } from './theme.js'
@@ -29,6 +29,30 @@ type Page = 'tasks' | 'assistant' | 'stats' | 'settings'
 
 const SIDEBAR_COLLAPSED_KEY = 'joy.sidebarCollapsed'
 const MOBILE_QUERY = '(max-width: 859px)'
+
+/** Every task, archived ones included (each has `archived`); the sidebar sorts them into 任務 and 已封存. */
+const TASKS_PATH = '/api/tasks?archived=1'
+
+/**
+ * Archiving used to live in this browser's localStorage. Moves those choices to the server once, then forgets the old
+ * key. Tasks that are gone, running, or already archived are skipped; a failed PATCH is not worth stopping for.
+ */
+async function migrateLegacyArchive(tasks: readonly Task[]): Promise<boolean> {
+  const ids = readLegacyArchivedIds()
+  const todo = ids.filter((id) => tasks.some((task) => task.id === id && !task.archived))
+  const results = await Promise.all(
+    todo.map((id) =>
+      request(`/api/tasks/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ archived: true }),
+      })
+        .then(() => true)
+        .catch(() => false),
+    ),
+  )
+  clearLegacyArchivedIds()
+  return results.some(Boolean)
+}
 
 function isMobile(): boolean {
   return typeof window.matchMedia === 'function' && window.matchMedia(MOBILE_QUERY).matches
@@ -65,7 +89,6 @@ export function Workspace() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   // null = follow the diff (open when there is one); true/false = the owner chose.
   const [changesOpen, setChangesOpen] = useState<boolean | null>(null)
-  const { archived, archive, restore } = useArchivedTasks()
 
   const [details, setDetails] = useTaskDetails(selectedTaskId, setTasks, setError)
 
@@ -101,7 +124,7 @@ export function Workspace() {
   const refreshLists = useCallback(async () => {
     const [repoResponse, taskResponse] = await Promise.all([
       request<{ repos: Repo[] }>('/api/repos'),
-      request<{ tasks: Task[] }>('/api/tasks'),
+      request<{ tasks: Task[] }>(TASKS_PATH),
     ])
     setRepos(repoResponse.repos)
     setTasks(taskResponse.tasks)
@@ -123,7 +146,7 @@ export function Workspace() {
     let active = true
     void Promise.all([
       request<{ repos: Repo[] }>('/api/repos'),
-      request<{ tasks: Task[] }>('/api/tasks'),
+      request<{ tasks: Task[] }>(TASKS_PATH),
       request<{ config: JoyConfig }>('/api/config'),
     ])
       .then(([repoResponse, taskResponse, configResponse]) => {
@@ -131,6 +154,9 @@ export function Workspace() {
         setRepos(repoResponse.repos)
         setTasks(taskResponse.tasks)
         setConfig(configResponse.config)
+        void migrateLegacyArchive(taskResponse.tasks).then((changed) => {
+          if (changed && active) void refreshLists().catch(() => undefined)
+        })
       })
       .catch((cause: unknown) => {
         if (active) setError(errorMessage(cause, '連不到 Joy server'))
@@ -206,6 +232,7 @@ export function Workspace() {
 
   const composing = page === 'tasks' && (showTaskForm || !selectedTaskId)
   const setupProblems = doctorReport?.checks.filter((check) => check.status === 'missing').length ?? 0
+  const activeTasks = useMemo(() => tasks.filter((task) => !task.archived), [tasks])
   const diff = useMemo(() => diffFrom(details?.events ?? []), [details?.events])
   const changesVisible = changesOpen ?? Boolean(diff && diff.files.length > 0)
 
@@ -333,6 +360,7 @@ export function Workspace() {
             : {
                 mode: input.mode,
                 roleOverrides: { implementer: input.implementer, reviewer: input.reviewer },
+                ...(input.planFirst ? { planFirst: true } : {}),
               }),
         }),
       })
@@ -345,6 +373,34 @@ export function Workspace() {
       setError(errorMessage(cause, '無法建立任務'))
       return false
     }
+  }
+
+  /** Renames or (un)archives a task on the server, then mirrors the answer in the list and the open thread. */
+  async function patchTask(id: string, patch: { title?: string; archived?: boolean }): Promise<boolean> {
+    setError('')
+    try {
+      const { task } = await request<{ task: Task }>(`/api/tasks/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      })
+      setTasks((current) => current.map((item) => (item.id === id ? { ...item, ...task } : item)))
+      setDetails((current) =>
+        current && current.task.id === id ? { ...current, task: { ...current.task, ...task } } : current,
+      )
+      return true
+    } catch (cause) {
+      setError(
+        cause instanceof ApiError && cause.status === 409 && patch.archived
+          ? '進行中的任務不能封存，請先停止它'
+          : errorMessage(cause, patch.title !== undefined ? '無法重新命名' : '無法更新任務'),
+      )
+      return false
+    }
+  }
+
+  async function archiveTask(id: string) {
+    const ok = await patchTask(id, { archived: true })
+    if (ok && id === selectedTaskId && page === 'tasks') openComposer()
   }
 
   async function saveConfig() {
@@ -484,6 +540,9 @@ export function Workspace() {
         onRetryDoctor={() => setDoctorRetry((retry) => retry + 1)}
         repos={repos}
         onAddRepo={() => setShowRepoForm(true)}
+        onRepoSaved={(saved) =>
+          setRepos((current) => current.map((repo) => (repo.id === saved.id ? { ...repo, ...saved } : repo)))
+        }
         theme={theme}
         onTheme={changeTheme}
       />
@@ -501,7 +560,7 @@ export function Workspace() {
     content = (
       <NewTaskPage
         repos={repos}
-        tasks={tasks}
+        tasks={activeTasks}
         config={config}
         customWorkflows={customWorkflows}
         setupProblems={setupProblems}
@@ -520,6 +579,7 @@ export function Workspace() {
         onToggleChanges={setChangesOpen}
         onChanged={() => void refreshSelectedTask().catch(() => undefined)}
         onError={setError}
+        onRename={(next) => patchTask(details.task.id, { title: next })}
       />
     )
   }
@@ -535,12 +595,9 @@ export function Workspace() {
         view={view}
         selectedTaskId={selectedTaskId}
         selectedConversationId={conversationId}
-        archived={archived}
-        onArchive={(id) => {
-          archive(id)
-          if (id === selectedTaskId && page === 'tasks') openComposer()
-        }}
-        onRestore={restore}
+        pendingPlanTaskId={details?.pendingPlan ? details.task.id : ''}
+        onArchive={(id) => void archiveTask(id)}
+        onRestore={(id) => void patchTask(id, { archived: false })}
         onNewTask={openComposer}
         onOpenTask={openTask}
         onOpenAssistant={openAssistant}

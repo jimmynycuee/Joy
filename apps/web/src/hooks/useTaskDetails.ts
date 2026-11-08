@@ -21,6 +21,37 @@ export function mergeEvents(first: TaskEvent[], second: TaskEvent[]): TaskEvent[
   })
 }
 
+/** Events after which the server's derived fields (usage, pending plan, queued messages) are worth asking for again. */
+const EXTRAS_EVENTS = new Set([
+  'result',
+  'error',
+  'plan.awaiting_approval',
+  'plan.approved',
+  'plan.rejected',
+  'user.message',
+  'user.message.delivered',
+  'user.message.discarded',
+  'checkpoint.created',
+  'checkpoint.restored',
+  'task.updated',
+])
+
+/**
+ * The parts of the task details the event log does not carry, which the server derives. Merged into the details
+ * without touching `events` or `task`, so the live stream's bookkeeping stays intact.
+ */
+export function withServerFields(current: TaskDetails, next: TaskDetails): TaskDetails {
+  return {
+    ...current,
+    repo: next.repo,
+    attempts: next.attempts,
+    reviews: next.reviews,
+    ...(next.usage ? { usage: next.usage } : {}),
+    pendingPlan: next.pendingPlan ?? null,
+    queuedMessages: next.queuedMessages ?? [],
+  }
+}
+
 function taskAfterEvent(task: Task, event: TaskEvent): Task {
   const payload = record(event.payload)
   if (event.type === 'error') return { ...task, status: 'failed' }
@@ -60,6 +91,7 @@ export function useTaskDetails(
     let reconnectAttempts = 0
     let reconnectTimer: number | undefined
     let stableConnectionTimer: number | undefined
+    let extrasTimers: number[] = []
     let socket: WebSocket | undefined
     setDetails(null)
     const socketProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -68,9 +100,26 @@ export function useTaskDetails(
     }
 
     function refreshTaskList(): void {
-      void request<{ tasks: Task[] }>('/api/tasks')
+      void request<{ tasks: Task[] }>('/api/tasks?archived=1')
         .then(({ tasks: updated }) => setTasks(updated))
         .catch(() => {})
+    }
+
+    // The server only finishes a run's bookkeeping after the last event, so ask once soon and once a bit later.
+    function scheduleExtras(): void {
+      for (const timer of extrasTimers) window.clearTimeout(timer)
+      extrasTimers = [500, 3000].map((delay) =>
+        window.setTimeout(() => {
+          void request<TaskDetails>(`/api/tasks/${encodeURIComponent(selectedTaskId)}`)
+            .then((next) => {
+              if (!active) return
+              setDetails((current) =>
+                current && current.task.id === selectedTaskId ? withServerFields(current, next) : current,
+              )
+            })
+            .catch(() => {})
+        }, delay),
+      )
     }
 
     function advanceSequence(event: TaskEvent): void {
@@ -115,6 +164,7 @@ export function useTaskDetails(
         return { ...current, task, events: mergeEvents(current.events, additions) }
       })
       if (additions.some((event) => event.type === 'result' || event.type === 'error')) refreshTaskList()
+      if (additions.some((event) => EXTRAS_EVENTS.has(event.type))) scheduleExtras()
     }
 
     function connect(): void {
@@ -213,6 +263,7 @@ export function useTaskDetails(
       active = false
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer)
       if (stableConnectionTimer !== undefined) window.clearTimeout(stableConnectionTimer)
+      for (const timer of extrasTimers) window.clearTimeout(timer)
       socket?.close()
     }
     // setTasks and setError are stable setters from the parent, so only the task id restarts the stream.

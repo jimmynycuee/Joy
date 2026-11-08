@@ -15,10 +15,26 @@
 - 助理頁不再有第二個側邊欄：對話移到主側邊欄的「對話」群組（含「新對話」），側邊欄頂端的搜尋框同時篩選任務與對話；以前對話的全文搜尋留在助理頁上方；記憶與排程收進右側可收合面板。統計移到側邊欄底部（設定旁）。側邊欄的 OpenAI 用量只在本月花費達上限 80% 或有 provider 額度用完時才出現。
 - 設定頁改成左側分類：一般（外觀、快速鍵）、模型、權限與自主、通知、專案、資料與備份、進階（環境檢查、存取權杖、除錯紀錄）。模型分類提供三組預設（平衡 / 省額度 / 最強）一鍵填滿六個角色，逐一設定收在「各角色的詳細設定」。主題可選系統 / 淺色 / 深色，寫入 `<html data-theme>`，CSS token 同時支援 `prefers-color-scheme` 與 `[data-theme]`。寬度小於 860px 時側邊欄變成抽屜，頂端有選單按鈕。
 - 任務頁：任務進行中有「停止」（`POST /api/tasks/:id/cancel`），失敗或取消（非 compete）有「重試／繼續」（`POST /api/tasks/:id/resume`），失敗時顯示錯誤卡片。標題列顯示該任務實際的分支與工作副本（取自 attempt 的 `branch`、`worktreePath`，可複製），不再把 repo 預設分支當成任務分支。工具呼叫顯示指令（`$ pnpm test`）或檔案路徑，並把後面的 `tool_result` 收成可展開的輸出。審查結果是結構化卡片（通過 / 要求修改、摘要、問題清單）。權限事件 tier 為 auto 的歸入「顯示細節」。執行中顯示目前角色、輪數與經過時間。核准卡片移到時間軸最後。變更面板沒有 diff 時預設收合、diff 出現時自動展開，含依目錄分組的檔案樹與逐行上色的 unified diff；已開的 PR 多一顆「查看 PR」。`review_ready` 顯示為「審查有意見」，顏色與「等你同意」不同。時間軸項目的時間放在 title。
-- 側邊欄與新任務頁：任務依專案、今天 / 昨天 / 更早分組，顯示相對時間、執行中轉圈、可搜尋。「封存」目前只存在這個瀏覽器的 localStorage（`joy.archivedTasks`），程式碼裡已標註，等後端有封存欄位再換掉。新任務頁加入「模型組合」選擇（同設定頁的三組預設，對應 implementer / reviewer 的 roleOverrides）、快速開始建議、最近的任務，以及有任務等待同意 / 有審查意見 / 進行中時的「需要你處理」。快速鍵：⌘/Ctrl+K 命令面板、⌘/Ctrl+N 新任務、⌘/Ctrl+B 收合側邊欄、⌘/Ctrl+\ 變更面板（輸入文字時只有 ⌘K 生效）。
-- 未做：新任務頁的「基底分支」（API 還不支援）、PR 的 CI 狀態、後端封存。環境檢查的說明與修復建議仍是 server 產生的英文，由另一條工作改成中文。
+- 側邊欄與新任務頁：任務依專案、今天 / 昨天 / 更早分組，顯示相對時間、執行中轉圈、可搜尋。「封存」已改成後端欄位（見下方「任務對話式介面接線」）。新任務頁加入「模型組合」選擇（同設定頁的三組預設，對應 implementer / reviewer 的 roleOverrides）、快速開始建議、最近的任務，以及有任務等待同意 / 有審查意見 / 進行中時的「需要你處理」。快速鍵：⌘/Ctrl+K 命令面板、⌘/Ctrl+N 新任務、⌘/Ctrl+B 收合側邊欄、⌘/Ctrl+\ 變更面板（輸入文字時只有 ⌘K 生效）。
+- 未做：新任務頁的「基底分支」（API 還不支援）。
 - `main.tsx` 拆成 `Workspace.tsx`、`pages/`、`components/`、`hooks/` 與數個純函式模組（`markdown.ts`、`tool-calls.ts`、`timeline.ts`、`task-info.ts`、`diff.ts`、`dates.ts`、`presets.ts`、`shortcuts.ts`），新增的純函式都有 vitest 單元測試。
 - 驗證：`pnpm check` 通過（格式、lint、typecheck、vitest）。e2e 規格已依新的分類與標籤更新，並新增 `thread.spec.ts`、`shell.spec.ts`。因為 5173 / 4317 被擁有者的 dev server 佔用，沒有用專案的 Playwright 設定在本機跑；改用不提交的暫時設定與 harness 在 5199 / 4399 跑過 25 個測試（`origin-proxy.spec.ts` 固定連 5173，沒跑），全部通過，最後仍以 CI 的 web E2E 為準。深色模式與手機寬度只用瀏覽器面板抽查，沒有逐頁視覺比對。
+
+### 任務對話式介面接線（前端）
+
+把「任務對話式 API（後端）」那一節的端點全部接到 `apps/web`，沒有改 `packages/**`。
+
+- **接續／插話**：任務頁底部是共用的 `Composer`（`ThreadComposer`），送出 `POST /api/tasks/:id/messages`。`user.message` 事件是時間軸裡靠右的氣泡；`delivery: queued` 的訊息在收到 `user.message.delivered` 前標「排隊中」，`user.message.discarded` 標「已撤回」，Joy 重啟後伺服器已不記得的排隊訊息標「未送達」（純函式在 `messages.ts`）。`queuedMessages` 顯示成輸入框上方的一行說明。輸入框提示依狀態變：執行中「補充指示，下一輪會帶給 agent」、已結束「接著交代…」、計畫待核准「說明要怎麼改計畫」；compete 任務與工作副本已移除時停用並說明原因。409（另一個動作進行中）顯示「這個任務正在處理另一個動作，請稍後再送」、429 顯示排隊太多，兩者都保留草稿。
+- **先規劃**：新任務頁輸入框的「先規劃」切換鈕送出 `planFirst: true`（兩家比賽與自訂流程停用）。`details.pendingPlan` 有值時，時間軸最後出現計畫卡片（Markdown 計畫、計畫審查摘要、「核准並開始實作」→ `/plan/approve`、「取消任務」→ `/plan/reject`）；這時送出的訊息改寫計畫。`plan.awaiting_approval`／`plan.approved`／`plan.rejected` 都在時間軸上（過去版本的計畫可展開）。有待核准計畫的任務狀態顯示「等你核准計畫」。WebSocket 收到相關事件後會重新讀 `usage`、`pendingPlan`、`queuedMessages`（`hooks/useTaskDetails.ts`）。
+- **封存／重新命名**：封存改用 `PATCH /api/tasks/:id {archived}`，任務清單用 `GET /api/tasks?archived=1` 一次取回全部、依 `archived` 分到「已封存」區（執行中封存會回 409，顯示中文訊息）。舊的 `joy.archivedTasks` localStorage 在第一次載入時搬到伺服器（只搬還存在且尚未封存的任務），搬完刪掉該 key，相關程式碼已移除。任務標題連點兩下或按鉛筆圖示就地編輯，Enter／離開輸入框儲存、Esc 取消，送出 `PATCH {title}`。
+- **PR／CI**：任務有 `publish.done` 時，`GET /api/tasks/:id/pr` 每 60 秒輪詢（頁面可見時；PR 合併或關閉、或所有檢查都結束就停），顯示 Draft／已開啟／已合併／已關閉與「通過 n / 失敗 n / 進行中 n」及失敗的檢查名稱。失敗時有「請 agent 修正 CI」，送出帶失敗檢查名稱的 follow-up 訊息。**注意**：伺服器在開 PR 成功後會移除工作副本（`worktree.removed`），之後任何 follow-up 都會 409；所以這時按鈕改成說明加「複製修正 CI 的說明」，請開新任務處理。要讓 agent 真的能修 CI，後端得在開 PR 後保留工作副本，這是待擁有者決定的後端行為。
+- **專案檢查**：`checks` 事件是時間軸卡片（通過／失敗／逾時、結束碼、耗時、可展開的 `outputTail`），`checks.skipped` 是淡色步驟。設定 → 專案每個專案一張卡片，可編輯 GitHub 網址（`githubRemote`）、允許的服務（`allowedProviders`，至少一個）與送審前檢查指令（`checkCommand`，單行以空白切成 argv，不經 shell；說明哪些指令需要核准），用 `PATCH /api/repos/:id` 只送有改的欄位（清空送 `null`）。
+- **檢查點**：任務頁標題列的「檢查點」彈出清單（`GET /checkpoints`，新的在前，標籤翻成中文），「還原到這裡」→ `POST /checkpoints/:n/restore`；回 409 且訊息說會丟掉 commit 時，在頁面內（不用 `window.confirm`）說明「會丟掉之後的 N 個 commit」，確認後帶 `{confirm: true}` 重送。任務執行中停用。`checkpoint.created` 在「顯示細節」，`checkpoint.restored` 是可見步驟，變更面板的 diff 也跟著還原後的內容。
+- **用量**：標題列「用量」彈出耗時、輸入／輸出 token、估計花費與各 provider／model 明細；CLI 的花費標「估算」。
+- **環境檢查**：移除前端的 `DOCTOR_LABELS`，直接顯示伺服器的中文 `label`／`summary`／`repair`（`repair` 等於「不需要處理。」時不顯示）；doctor e2e 改用中文資料。
+- 新的純函式都有 vitest：`messages.ts`、`pr-status.ts`、`checkpoints.ts`、`usage.ts`、`check-command.ts`、`repo-patch.ts`、`timeline.ts` 的新事件、`storage.ts` 的舊封存解析、`hooks/useTaskDetails.ts` 的 `withServerFields`。e2e 新增 `thread-api.spec.ts`（接續、排隊、409、停用原因、計畫核准／取消、PR 狀態、檢查點還原確認、檢查卡片、用量）、`repo-settings.spec.ts`，`shell.spec.ts` 加入伺服器端封存、舊 localStorage 搬移、重新命名、先規劃。
+
+- 驗證：`pnpm check` 的格式、lint、typecheck 通過，vitest 688 passed、4 skipped；web 專案 120 個測試全過。唯一失敗的是和這次無關的 `packages/executor` `worktree.test.ts`「commits with a fallback identity」，在機器忙碌時超過 5 秒 timeout，單獨重跑 24/24 通過。因為 5173 / 4317 被擁有者的 dev server 佔用，e2e 用不提交的暫時設定在 5199 / 4399 跑（vite proxy 改寫 Origin）：43 個測試中 42 通過，唯一失敗的 `origin-proxy.spec.ts` 固定連 5173、被改寫 Origin 的 proxy 影響，沒有意義；最後仍以 CI 的 web E2E 為準。深色模式與手機寬度只用截圖抽查。
 
 ### 任務對話式 API（後端）
 

@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { failureMessage, runProgress, taskBranchInfo, tasksNeedingAttention } from './task-info.js'
-import { buildTimeline } from './timeline.js'
+import {
+  diffFrom,
+  failureMessage,
+  runProgress,
+  taskBranchInfo,
+  tasksNeedingAttention,
+  worktreeRemoved,
+} from './task-info.js'
+import { buildTimeline, planReviewView } from './timeline.js'
 import type { Task, TaskEvent } from './types.js'
 
 let seq = 0
@@ -178,5 +185,103 @@ describe('tasksNeedingAttention', () => {
         task('e', 'failed'),
       ]).map((t) => t.id),
     ).toEqual(['d', 'c', 'b'])
+  })
+})
+
+describe('buildTimeline: thread messages, plans, checks and checkpoints', () => {
+  const stamp = '2026-11-08T10:00:00.000Z'
+  const e = (type: string, payload: unknown) => event(type, payload, stamp)
+
+  it('renders owner messages as user entries with their delivery state', () => {
+    const entries = buildTimeline([
+      e('user.message', { id: 'm1', text: 'also add a test', provenance: 'user', delivery: 'queued' }),
+      e('user.message', { id: 'm2', text: 'and docs', provenance: 'user', delivery: 'queued' }),
+      e('user.message.delivered', { ids: ['m1'], via: 'next_turn' }),
+      e('user.message', { id: 'm3', text: 'next', provenance: 'user', delivery: 'follow_up' }),
+    ])
+    expect(entries.map((entry) => entry.kind)).toEqual(['user', 'user', 'noise', 'user'])
+    expect(
+      entries.filter((entry) => entry.kind === 'user').map((entry) => entry.kind === 'user' && entry.state),
+    ).toEqual(['delivered', 'queued', 'sent'])
+  })
+
+  it('shows plan events, folding past plans but not the one with its own card', () => {
+    const events = [
+      e('plan.awaiting_approval', { plan: '# v1' }),
+      e('user.message', { id: 'm1', text: 'smaller', provenance: 'user', delivery: 'replan' }),
+      e('plan.awaiting_approval', { plan: '# v2' }),
+    ]
+    const withCard = buildTimeline(events, undefined, { pendingPlan: true })
+    expect(withCard[0]).toMatchObject({ kind: 'step', text: '計畫寫好了，等你核准', detail: '# v1' })
+    expect(withCard[2]?.kind === 'step' && withCard[2].detail).toBeUndefined()
+    const withoutCard = buildTimeline(events)
+    expect(withoutCard[2]?.kind === 'step' && withoutCard[2].detail).toBe('# v2')
+
+    const decided = buildTimeline([e('plan.approved', {}), e('plan.rejected', { note: 'too big' })])
+    expect(decided[0]).toMatchObject({ kind: 'step', tone: 'ok', text: '你核准了計畫，開始實作' })
+    expect(decided[1]).toMatchObject({ kind: 'step', tone: 'bad', text: '你取消了計畫：too big' })
+  })
+
+  it('turns checks into a card and skipped checks into a muted step', () => {
+    const entries = buildTimeline([
+      e('checks', {
+        type: 'checks',
+        round: 2,
+        ok: false,
+        exitCode: 1,
+        outputTail: 'FAIL x',
+        durationMs: 4200,
+      }),
+      e('checks.skipped', { round: 1, reason: 'The owner did not approve running the checks (denied)' }),
+    ])
+    expect(entries[0]).toMatchObject({
+      kind: 'checks',
+      round: 2,
+      ok: false,
+      exitCode: 1,
+      outputTail: 'FAIL x',
+      durationMs: 4200,
+      timedOut: false,
+    })
+    expect(entries[1]).toMatchObject({ kind: 'step', tone: 'muted' })
+  })
+
+  it('keeps checkpoint creation quiet and shows a restore as a step', () => {
+    const entries = buildTimeline([
+      e('checkpoint.created', { n: 2, label: 'implementer turn' }),
+      e('checkpoint.restored', { n: 1, savedAs: 2, discardedCommits: 2, diff: { files: [], patch: '' } }),
+      e('task.updated', { archived: true }),
+    ])
+    expect(entries.map((entry) => entry.kind)).toEqual(['noise', 'step', 'noise'])
+    expect(entries[1]).toMatchObject({ text: '已還原到檢查點 1，丟掉 2 個 commit', tone: 'ok' })
+  })
+})
+
+describe('diffFrom with restored checkpoints', () => {
+  const diff = (path: string) => ({
+    files: [{ path, status: 'modified', additions: 1, deletions: 0 }],
+    patch: '',
+  })
+  it('prefers the diff a restore left behind over the older result', () => {
+    const events = [
+      event('result', { status: 'succeeded', diff: diff('old.ts') }),
+      event('checkpoint.restored', { n: 1, diff: diff('restored.ts') }),
+    ]
+    expect(diffFrom(events)?.files[0]?.path).toBe('restored.ts')
+    expect(worktreeRemoved(events)).toBe(false)
+    expect(worktreeRemoved([...events, event('worktree.removed', { attemptIds: ['a'] })])).toBe(true)
+  })
+})
+
+describe('planReviewView', () => {
+  it('turns a plan review verdict into a card model', () => {
+    expect(
+      planReviewView({
+        approve: true,
+        summary: 'Looks fine',
+        findings: [{ severity: 'nit', message: 'typo' }],
+      }),
+    ).toMatchObject({ target: 'plan', approve: true, summary: 'Looks fine', findings: [{ severity: 'nit' }] })
+    expect(planReviewView(undefined)).toBeNull()
   })
 })

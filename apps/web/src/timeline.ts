@@ -1,4 +1,6 @@
 import { PHASE_LABELS, ROLE_SPEAKERS } from './labels.js'
+import { messageDeliveryStates } from './messages.js'
+import type { DeliveryState } from './messages.js'
 import { policyEventIsNoise, policyEventKind, policyEventTitle } from './policy-events.js'
 import { summarizeToolCall, toolCallLabel, toolOutputText } from './tool-calls.js'
 import type { ToolOutput, ToolSummary } from './tool-calls.js'
@@ -10,6 +12,15 @@ export interface ReviewFindingView {
   message: string
   file?: string
   line?: number
+}
+
+/** What a review card shows; a timeline review entry and the review of a pending plan both fit. */
+export interface ReviewView {
+  target: 'plan' | 'change'
+  round: number
+  approve: boolean | undefined
+  summary: string
+  findings: ReviewFindingView[]
 }
 
 interface EntryBase {
@@ -40,7 +51,18 @@ export type TimelineEntry =
       findings: ReviewFindingView[]
     })
   | (EntryBase & { kind: 'error'; text: string })
-  | (EntryBase & { kind: 'step'; text: string; tone?: string })
+  | (EntryBase & { kind: 'user'; id: string; text: string; state: DeliveryState })
+  | (EntryBase & {
+      kind: 'checks'
+      round: number
+      ok: boolean
+      exitCode: number | null
+      durationMs?: number
+      outputTail: string
+      timedOut: boolean
+    })
+  /** `detail` is Markdown that the step folds away (a past version of the plan). */
+  | (EntryBase & { kind: 'step'; text: string; tone?: string; detail?: string })
   | (EntryBase & { kind: 'noise'; text: string })
 
 const SEVERITIES = new Set(['blocker', 'major', 'minor', 'nit'])
@@ -62,6 +84,19 @@ export function reviewFindings(value: unknown): ReviewFindingView[] {
     })
   }
   return findings
+}
+
+/** A plan's review (the verdict the reviewer gave) as a card model; null when there is none. */
+export function planReviewView(review: unknown): ReviewView | null {
+  const verdict = record(review)
+  if (!verdict) return null
+  return {
+    target: 'plan',
+    round: 0,
+    approve: typeof verdict.approve === 'boolean' ? verdict.approve : undefined,
+    summary: typeof verdict.summary === 'string' ? verdict.summary : '',
+    findings: reviewFindings(verdict.findings),
+  }
 }
 
 /** Plain-language title of a raw task event. Events without a good title fall back to their type. */
@@ -94,6 +129,23 @@ export function eventTitle(event: TaskEvent): string {
   if (event.type === 'worktree.removed') return '已清除工作副本'
   if (event.type === 'compete.judgement') return '裁判已比較兩個方案'
   if (event.type === 'compete.chosen') return '你選好了一個方案'
+  if (event.type === 'user.message' && typeof payload?.text === 'string') return payload.text
+  if (event.type === 'user.message.delivered') return '訊息已交給 agent'
+  if (event.type === 'user.message.discarded') return '訊息已撤回'
+  if (event.type === 'plan.awaiting_approval') return '計畫寫好了，等你核准'
+  if (event.type === 'plan.approved')
+    return typeof payload?.note === 'string' ? `你核准了計畫：${payload.note}` : '你核准了計畫，開始實作'
+  if (event.type === 'plan.rejected')
+    return typeof payload?.note === 'string' ? `你取消了計畫：${payload.note}` : '你取消了計畫'
+  if (event.type === 'checks') return payload?.ok === true ? '專案檢查通過' : '專案檢查失敗'
+  if (event.type === 'checks.skipped')
+    return `略過專案檢查${typeof payload?.reason === 'string' ? `：${payload.reason}` : ''}`
+  if (event.type === 'checkpoint.created') return `已建立檢查點 ${String(payload?.n ?? '')}`.trim()
+  if (event.type === 'checkpoint.restored') {
+    const dropped = typeof payload?.discardedCommits === 'number' ? payload.discardedCommits : 0
+    return `已還原到檢查點 ${String(payload?.n ?? '')}${dropped > 0 ? `，丟掉 ${dropped} 個 commit` : ''}`
+  }
+  if (event.type === 'task.updated') return '任務已更新'
   return event.type.replaceAll('_', ' ')
 }
 
@@ -101,9 +153,42 @@ export function eventTitle(event: TaskEvent): string {
  * Turns the raw event log into what a person needs to read. Tool results are folded into the call they answer;
  * low-level chatter becomes "noise" (hidden behind 顯示細節).
  */
-export function buildTimeline(events: readonly TaskEvent[], worktreePath?: string): TimelineEntry[] {
+export interface TimelineOptions {
+  /** Ids the server still holds as queued messages, to tell a lost queued message from a waiting one. */
+  queuedIds?: ReadonlySet<string>
+  /** Whether the task is running; a queued message waits only while it is. */
+  busy?: boolean
+  /** The plan is shown as its own card at the end, so its timeline step does not repeat it. */
+  pendingPlan?: boolean
+}
+
+/** Events that only change state; they stay behind 顯示細節. */
+const QUIET_EVENTS = new Set([
+  'user.message.delivered',
+  'user.message.discarded',
+  'checkpoint.created',
+  'task.updated',
+])
+
+const STEP_TONES: Record<string, string> = {
+  'plan.approved': 'ok',
+  'plan.rejected': 'bad',
+  'checkpoint.restored': 'ok',
+  'checks.skipped': 'muted',
+}
+
+export function buildTimeline(
+  events: readonly TaskEvent[],
+  worktreePath?: string,
+  options: TimelineOptions = {},
+): TimelineEntry[] {
   const entries: TimelineEntry[] = []
   const toolEntries = new Map<string, Extract<TimelineEntry, { kind: 'tool' }>>()
+  const deliveries = messageDeliveryStates(events, {
+    ...(options.queuedIds ? { queuedIds: options.queuedIds } : {}),
+    ...(options.busy !== undefined ? { busy: options.busy } : {}),
+  })
+  const lastPlanIndex = events.findLastIndex((event) => event.type === 'plan.awaiting_approval')
 
   events.forEach((event, index) => {
     const base = { key: `${event.seq}-${index}`, seq: event.seq, ts: event.ts }
@@ -165,11 +250,39 @@ export function buildTimeline(events: readonly TaskEvent[], worktreePath?: strin
       entries.push({ ...base, kind: 'error', text })
       return
     }
+    if (event.type === 'user.message' && typeof payload?.text === 'string') {
+      const id = typeof payload.id === 'string' ? payload.id : base.key
+      entries.push({ ...base, kind: 'user', id, text: payload.text, state: deliveries.get(id) ?? 'sent' })
+      return
+    }
+    if (event.type === 'checks') {
+      entries.push({
+        ...base,
+        kind: 'checks',
+        round: typeof payload?.round === 'number' ? payload.round : 0,
+        ok: payload?.ok === true,
+        exitCode: typeof payload?.exitCode === 'number' ? payload.exitCode : null,
+        ...(typeof payload?.durationMs === 'number' ? { durationMs: payload.durationMs } : {}),
+        outputTail: typeof payload?.outputTail === 'string' ? payload.outputTail : '',
+        timedOut: payload?.timedOut === true,
+      })
+      return
+    }
+    if (QUIET_EVENTS.has(event.type)) {
+      entries.push({ ...base, kind: 'noise', text })
+      return
+    }
+    if (event.type === 'plan.awaiting_approval') {
+      const plan = typeof payload?.plan === 'string' ? payload.plan : ''
+      const showPlan = plan && !(options.pendingPlan && index === lastPlanIndex)
+      entries.push({ ...base, kind: 'step', text, ...(showPlan ? { detail: plan } : {}) })
+      return
+    }
     if (policyEventIsNoise(event.type, payload) || event.type === 'compete.result') {
       entries.push({ ...base, kind: 'noise', text })
       return
     }
-    const tone = policyEventKind(event.type, payload)
+    const tone = STEP_TONES[event.type] ?? policyEventKind(event.type, payload)
     entries.push({ ...base, kind: 'step', text, ...(tone ? { tone } : {}) })
   })
   return entries

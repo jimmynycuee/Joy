@@ -15,6 +15,7 @@ export function Composer({
   textareaLabel,
   sendLabel,
   busy = false,
+  disabled = false,
   autoFocus = false,
   rows = 2,
   bar,
@@ -30,6 +31,8 @@ export function Composer({
   textareaLabel: string
   sendLabel: string
   busy?: boolean
+  /** Turns the box off (no typing, no sending); the page says why. */
+  disabled?: boolean
   autoFocus?: boolean
   rows?: number
   /** Controls on the left of the bottom bar (selects, chips). */
@@ -54,13 +57,13 @@ export function Composer({
     // keyCode 229 is how Safari reports the Enter that confirms an IME candidate.
     if (event.nativeEvent.isComposing || event.keyCode === 229) return
     event.preventDefault()
-    if (busy || !value.trim()) return
+    if (busy || disabled || !value.trim()) return
     event.currentTarget.form?.requestSubmit()
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (busy || !value.trim()) return
+    if (busy || disabled || !value.trim()) return
     void onSubmit(new FormData(event.currentTarget))
   }
 
@@ -74,13 +77,20 @@ export function Composer({
         rows={rows}
         value={value}
         autoFocus={autoFocus}
+        disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={onKeyDown}
       />
       <div className="composer-bar">
         {bar}
         <span className="composer-spacer" />
-        <button type="submit" className="send-btn" aria-label={sendLabel} title={sendLabel} disabled={busy}>
+        <button
+          type="submit"
+          className="send-btn"
+          aria-label={sendLabel}
+          title={sendLabel}
+          disabled={busy || disabled}
+        >
           {busy ? <Spinner /> : <Icon name="arrow-up" size={18} />}
         </button>
       </div>

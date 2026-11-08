@@ -34,17 +34,31 @@ const tasks = [
   },
 ]
 
-async function mockApi(page: Page, created: unknown[] = []) {
+interface Patch {
+  path: string
+  body: Record<string, unknown>
+}
+
+async function mockApi(page: Page, created: unknown[] = [], patches: Patch[] = []) {
+  // The server keeps the archive flag and the title; the mock does too.
+  const list: Array<Record<string, unknown>> = tasks.map((task) => ({ ...task, archived: false }))
   await page.route('**/api/**', async (route) => {
     const request = route.request()
     const path = new URL(request.url()).pathname
-    if (path === '/api/repos') {
+    if (request.method() === 'PATCH' && path.startsWith('/api/tasks/')) {
+      const body = request.postDataJSON() as Record<string, unknown>
+      patches.push({ path, body })
+      const task = list.find((item) => `/api/tasks/${String(item.id)}` === path)
+      if (task) Object.assign(task, body)
+      await route.fulfill({ json: { task } })
+    } else if (path === '/api/repos') {
       await route.fulfill({ json: { repos: [repo] } })
     } else if (path === '/api/tasks' && request.method() === 'POST') {
       created.push(request.postDataJSON())
       await route.fulfill({ status: 201, json: { task: { ...tasks[0], id: 'created' } } })
     } else if (path === '/api/tasks') {
-      await route.fulfill({ json: { tasks } })
+      const withArchived = new URL(request.url()).searchParams.get('archived') === '1'
+      await route.fulfill({ json: { tasks: list.filter((task) => withArchived || !task.archived) } })
     } else if (path === '/api/config') {
       await route.fulfill({ json: { config } })
     } else if (path === '/api/conversations') {
@@ -109,8 +123,9 @@ test('Enter sends, Shift+Enter adds a line, and the model preset fills implement
   })
 })
 
-test('the sidebar groups tasks by day, filters them, and archives locally', async ({ page }) => {
-  await mockApi(page)
+test('the sidebar groups tasks by day, filters them, and archives on the server', async ({ page }) => {
+  const patches: Patch[] = []
+  await mockApi(page, [], patches)
   await page.goto('/')
   const sidebar = page.getByRole('navigation', { name: '主選單' })
   await expect(sidebar.getByText('今天', { exact: true })).toBeVisible()
@@ -124,9 +139,72 @@ test('the sidebar groups tasks by day, filters them, and archives locally', asyn
 
   await sidebar.getByRole('button', { name: '封存：Last week chore' }).click()
   await expect(sidebar.getByRole('button', { name: /^Last week chore/ })).toHaveCount(0)
+  expect(patches).toEqual([{ path: '/api/tasks/older', body: { archived: true } }])
+  await sidebar.getByRole('button', { name: /已封存（1）/ }).click()
+  await expect(sidebar.getByRole('button', { name: /^Last week chore/ })).toBeVisible()
+  // The flag is on the server: a reload keeps the task in 已封存.
+  await page.reload()
+  await expect(sidebar.getByRole('button', { name: /^Last week chore/ })).toHaveCount(0)
   await sidebar.getByRole('button', { name: /已封存（1）/ }).click()
   await sidebar.getByRole('button', { name: '取消封存：Last week chore' }).click()
   await expect(sidebar.getByRole('button', { name: /已封存/ })).toHaveCount(0)
+  expect(patches.at(-1)).toEqual({ path: '/api/tasks/older', body: { archived: false } })
+})
+
+test('archive choices an older version kept in localStorage move to the server once', async ({ page }) => {
+  const patches: Patch[] = []
+  await mockApi(page, [], patches)
+  await page.addInitScript(() => {
+    if (!window.localStorage.getItem('joy.archivedTasks.seeded')) {
+      window.localStorage.setItem('joy.archivedTasks', JSON.stringify(['older', 'gone']))
+      window.localStorage.setItem('joy.archivedTasks.seeded', '1')
+    }
+  })
+  await page.goto('/')
+  const sidebar = page.getByRole('navigation', { name: '主選單' })
+  await expect(sidebar.getByRole('button', { name: /已封存（1）/ })).toBeVisible()
+  // Only the task that still exists is sent, and the old key is gone.
+  expect(patches).toEqual([{ path: '/api/tasks/older', body: { archived: true } }])
+  expect(await page.evaluate(() => window.localStorage.getItem('joy.archivedTasks'))).toBeNull()
+})
+
+test('a thread title can be renamed in place', async ({ page }) => {
+  const patches: Patch[] = []
+  await mockApi(page, [], patches)
+  await page.goto('/?task=waiting')
+  const title = page.getByRole('heading', { name: 'Waiting for you' })
+  await title.dblclick()
+  const input = page.getByLabel('任務標題')
+  await input.fill('Renamed task')
+  await input.press('Enter')
+  await expect(page.getByRole('heading', { name: 'Renamed task' })).toBeVisible()
+  expect(patches).toEqual([{ path: '/api/tasks/waiting', body: { title: 'Renamed task' } }])
+
+  // Escape cancels without a request.
+  await page.getByRole('button', { name: '重新命名' }).click()
+  await page.getByLabel('任務標題').fill('Never saved')
+  await page.getByLabel('任務標題').press('Escape')
+  await expect(page.getByRole('heading', { name: 'Renamed task' })).toBeVisible()
+  expect(patches).toHaveLength(1)
+})
+
+test('先規劃 asks for a plan first, and is off for the compete mode', async ({ page }) => {
+  const created: unknown[] = []
+  await mockApi(page, created)
+  await page.goto('/')
+  const form = page.locator('form.composer-home')
+  const chip = form.getByRole('button', { name: '先規劃' })
+  await expect(chip).toHaveAttribute('aria-pressed', 'false')
+  await chip.click()
+  await expect(chip).toHaveAttribute('aria-pressed', 'true')
+  await form.getByLabel('任務內容').fill('refactor the parser')
+  await form.getByLabel('任務內容').press('Enter')
+  await expect.poll(() => created.length).toBe(1)
+  expect(created[0]).toMatchObject({ prompt: 'refactor the parser', mode: 'review_loop', planFirst: true })
+
+  await page.goto('/')
+  await form.getByLabel('模式').selectOption('compete')
+  await expect(form.getByRole('button', { name: '先規劃' })).toBeDisabled()
 })
 
 test('theme can be set by hand, the command palette jumps around, and shortcuts work', async ({ page }) => {

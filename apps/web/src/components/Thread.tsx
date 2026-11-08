@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react'
 import { formatElapsed, parseTimestamp } from '../dates.js'
 import { PHASE_LABELS } from '../labels.js'
+import { deliveryTag } from '../messages.js'
+import type { DeliveryState } from '../messages.js'
 import { runProgress } from '../task-info.js'
-import type { TimelineEntry } from '../timeline.js'
+import type { ReviewView, TimelineEntry } from '../timeline.js'
+import { formatSpent } from '../usage.js'
 import type { TaskEvent } from '../types.js'
 import { Markdown } from './Markdown.js'
 import { Icon, Spinner } from './ui.js'
@@ -10,10 +13,20 @@ import { Icon, Spinner } from './ui.js'
 // The message presentation shared by the task thread and the assistant chat:
 // the owner's words are a right-aligned bubble, the agent's words are plain prose.
 
-export function UserBubble({ text }: { text: string }) {
+export function UserBubble({ text, state }: { text: string; state?: DeliveryState }) {
+  const tag = state ? deliveryTag(state) : undefined
   return (
     <div className="msg-row msg-row-user">
-      <div className="user-bubble">{text}</div>
+      <div className="user-column">
+        <div className={`user-bubble${state === 'discarded' || state === 'lost' ? ' user-bubble-off' : ''}`}>
+          {text}
+        </div>
+        {tag ? (
+          <span className={`bubble-tag bubble-tag-${state}`} data-testid="message-tag">
+            {tag}
+          </span>
+        ) : null}
+      </div>
     </div>
   )
 }
@@ -65,7 +78,8 @@ function ToolRow({ entry }: { entry: Extract<TimelineEntry, { kind: 'tool' }> })
   )
 }
 
-function ReviewCard({ entry }: { entry: Extract<TimelineEntry, { kind: 'review' }> }) {
+/** A reviewer's verdict: pass or changes requested, the summary and the findings. */
+export function ReviewCard({ entry }: { entry: ReviewView }) {
   const subject = entry.target === 'plan' ? '計畫' : '程式變更'
   const verdict =
     entry.approve === undefined
@@ -108,6 +122,40 @@ function ReviewCard({ entry }: { entry: Extract<TimelineEntry, { kind: 'review' 
   )
 }
 
+function ChecksCard({ entry }: { entry: Extract<TimelineEntry, { kind: 'checks' }> }) {
+  const verdict = entry.timedOut ? '專案檢查逾時' : entry.ok ? '專案檢查通過' : '專案檢查失敗'
+  const facts = [
+    entry.round > 0 ? `第 ${entry.round} 輪` : '',
+    entry.exitCode !== null ? `結束碼 ${entry.exitCode}` : '',
+    entry.durationMs !== undefined ? `耗時 ${formatSpent(entry.durationMs)}` : '',
+  ].filter(Boolean)
+  const header = (
+    <>
+      <span className={entry.ok ? 'tool-state' : 'tool-state tool-state-error'}>
+        <Icon name={entry.ok ? 'check' : 'alert'} size={14} />
+      </span>
+      <strong>{verdict}</strong>
+      <span className="muted">{facts.join(' · ')}</span>
+    </>
+  )
+  return (
+    <section
+      className={`card checks-card ${entry.ok ? 'review-ok' : 'review-changes'}`}
+      aria-label="專案檢查"
+      data-testid="checks-card"
+    >
+      {entry.outputTail ? (
+        <details>
+          <summary className="checks-head">{header}</summary>
+          <pre className="tool-output checks-output">{entry.outputTail}</pre>
+        </details>
+      ) : (
+        <div className="checks-head">{header}</div>
+      )}
+    </section>
+  )
+}
+
 /** The event log as a conversation: prose, collapsible tool calls, phase markers and review cards. */
 export function TimelineView({ entries, showDetails }: { entries: TimelineEntry[]; showDetails: boolean }) {
   return (
@@ -129,8 +177,20 @@ export function TimelineView({ entries, showDetails }: { entries: TimelineEntry[
             <ToolRow entry={entry} />
           ) : entry.kind === 'review' ? (
             <ReviewCard entry={entry} />
+          ) : entry.kind === 'user' ? (
+            <UserBubble text={entry.text} state={entry.state} />
+          ) : entry.kind === 'checks' ? (
+            <ChecksCard entry={entry} />
           ) : entry.kind === 'phase' ? (
             <span className="phase-label">{entry.text}</span>
+          ) : entry.kind === 'step' && entry.detail ? (
+            <details className="step-detail">
+              <summary>
+                <span className="timeline-mark" aria-hidden="true" />
+                <span className="timeline-text">{entry.text}</span>
+              </summary>
+              <Markdown text={entry.detail} />
+            </details>
           ) : (
             <>
               <span className="timeline-mark" aria-hidden="true" />

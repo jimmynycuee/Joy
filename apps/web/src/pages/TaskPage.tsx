@@ -1,14 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage, request } from '../api.js'
 import { DiffBrowser, DiffStat } from '../components/DiffView.js'
+import { CheckpointsPopover } from '../components/CheckpointsPopover.js'
+import { PlanCard } from '../components/PlanCard.js'
+import { PrStatusCard } from '../components/PrStatusCard.js'
 import { RunningIndicator, TimelineView, UserBubble } from '../components/Thread.js'
+import { ThreadComposer } from '../components/ThreadComposer.js'
+import { TitleEditor } from '../components/TitleEditor.js'
+import { UsagePopover } from '../components/UsagePopover.js'
 import { ApprovalsPanel, ComparePanel, DiscardButton, PublishPanel } from '../components/task-panels.js'
 import { Button, CopyButton, Icon, IconButton } from '../components/ui.js'
 import { diffTotals } from '../diff.js'
 import { modeLabel, repoName, statusLabel } from '../labels.js'
-import { diffFrom, failureMessage, taskBranchInfo } from '../task-info.js'
+import { followUpState } from '../messages.js'
+import { diffFrom, failureMessage, taskBranchInfo, worktreeRemoved } from '../task-info.js'
 import { buildTimeline } from '../timeline.js'
 import type { TaskDetails } from '../types.js'
+import { parseUsage } from '../usage.js'
 
 /** One task as a conversation: what you asked, what the agents did, and what is waiting for you. */
 export function TaskPage({
@@ -17,12 +25,14 @@ export function TaskPage({
   onToggleChanges,
   onChanged,
   onError,
+  onRename,
 }: {
   details: TaskDetails
   changesOpen: boolean | null
   onToggleChanges: (open: boolean) => void
   onChanged: () => void
   onError: (message: string) => void
+  onRename: (title: string) => Promise<boolean>
 }) {
   const { task, repo } = details
   const [showDetails, setShowDetails] = useState(false)
@@ -31,10 +41,30 @@ export function TaskPage({
   const stickToBottom = useRef(true)
 
   const branch = useMemo(() => taskBranchInfo(details.attempts), [details.attempts])
-  const entries = useMemo(
-    () => buildTimeline(details.events, branch.worktreePath),
-    [details.events, branch.worktreePath],
+  const working = task.status === 'queued' || task.status === 'running'
+  const pendingPlan = details.pendingPlan ?? null
+  const queuedIds = useMemo(
+    () => (details.queuedMessages ? new Set(details.queuedMessages.map((message) => message.id)) : undefined),
+    [details.queuedMessages],
   )
+  const entries = useMemo(
+    () =>
+      buildTimeline(details.events, branch.worktreePath, {
+        ...(queuedIds ? { queuedIds } : {}),
+        busy: task.status === 'queued' || task.status === 'running' || task.status === 'awaiting_approval',
+        pendingPlan: pendingPlan !== null,
+      }),
+    [details.events, branch.worktreePath, queuedIds, task.status, pendingPlan],
+  )
+  const usage = useMemo(() => parseUsage(details.usage), [details.usage])
+  const checkpointCount = details.events.filter((event) => event.type === 'checkpoint.created').length
+  const published = details.events.some((event) => event.type === 'publish.done')
+  const canAskAgent = !followUpState({
+    status: task.status,
+    mode: task.mode,
+    worktreeRemoved: worktreeRemoved(details.events),
+    pendingPlan: pendingPlan !== null,
+  }).disabled
   const hiddenCount = entries.filter((entry) => entry.kind === 'noise').length
   const diff = useMemo(() => diffFrom(details.events), [details.events])
   const totals = diffTotals(diff?.files ?? [])
@@ -42,7 +72,6 @@ export function TaskPage({
   const hasDiff = Boolean(diff && diff.files.length > 0)
   const paneOpen = changesOpen ?? hasDiff
 
-  const working = task.status === 'queued' || task.status === 'running'
   const canResume = (task.status === 'failed' || task.status === 'cancelled') && task.mode !== 'compete'
 
   useEffect(() => {
@@ -66,7 +95,7 @@ export function TaskPage({
     <main className="thread" aria-label="任務進度">
       <header className="thread-header">
         <div className="thread-heading">
-          <h1>{task.title}</h1>
+          <TitleEditor title={task.title} onRename={onRename} />
           <div className="thread-sub">
             <span>{repoName(repo?.path)}</span>
             <span aria-hidden="true">·</span>
@@ -87,11 +116,22 @@ export function TaskPage({
             ) : null}
           </div>
         </div>
-        <span className={`status-pill status-${task.status}`}>{statusLabel(task.status, task.mode)}</span>
+        <span className={`status-pill status-${task.status}`}>
+          {statusLabel(task.status, task.mode, pendingPlan !== null)}
+        </span>
         {working ? (
           <Button icon="stop" disabled={acting} onClick={() => void act('cancel')}>
             停止
           </Button>
+        ) : null}
+        {usage ? <UsagePopover usage={usage} /> : null}
+        {checkpointCount > 0 ? (
+          <CheckpointsPopover
+            taskId={task.id}
+            count={checkpointCount}
+            working={working || task.status === 'awaiting_approval'}
+            onChanged={onChanged}
+          />
         ) : null}
         <Button
           icon="panel-right"
@@ -104,68 +144,82 @@ export function TaskPage({
         </Button>
       </header>
       <div className="thread-body">
-        <div
-          className="thread-scroll"
-          ref={scrollRef}
-          onScroll={(event) => {
-            const element = event.currentTarget
-            stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 140
-          }}
-        >
-          <div className="thread-column">
-            <UserBubble text={task.prompt} />
-            <TimelineView entries={entries} showDetails={showDetails} />
-            {hiddenCount > 0 ? (
-              <button
-                type="button"
-                className="btn btn-ghost details-toggle"
-                onClick={() => setShowDetails((open) => !open)}
-              >
-                {showDetails ? '隱藏細節' : `顯示細節（${hiddenCount} 筆）`}
-              </button>
-            ) : null}
-            <ApprovalsPanel
-              taskId={task.id}
-              taskStatus={task.status}
-              approvalEvents={details.events.filter((event) => event.type.startsWith('approval.')).length}
-            />
-            {task.status === 'failed' ? (
-              <section className="card error-card" aria-label="任務失敗">
-                <Icon name="alert" size={18} />
-                <div className="error-card-copy">
-                  <strong>任務失敗</strong>
-                  <p>{failureMessage(details.events) ?? '沒有收到更詳細的錯誤訊息。'}</p>
-                </div>
-                {canResume ? (
-                  <Button icon="retry" disabled={acting} onClick={() => void act('resume')}>
-                    重試
-                  </Button>
-                ) : null}
-              </section>
-            ) : null}
-            {task.status === 'cancelled' ? (
-              <section className="card note-card" aria-label="任務已取消">
-                <Icon name="stop" size={18} />
-                <div className="error-card-copy">
-                  <strong>任務已取消</strong>
-                  <p>可以從原本的進度接著做。</p>
-                </div>
-                {canResume ? (
-                  <Button icon="retry" disabled={acting} onClick={() => void act('resume')}>
-                    繼續
-                  </Button>
-                ) : null}
-              </section>
-            ) : null}
-            {working ? <RunningIndicator events={details.events} createdAt={task.createdAt} /> : null}
-            {task.mode === 'compete' && task.status !== 'done' ? (
-              <ComparePanel details={details} onChanged={onChanged} />
-            ) : null}
-            <div className="thread-actions">
-              <PublishPanel details={details} onChanged={onChanged} />
-              <DiscardButton details={details} onChanged={onChanged} />
+        <div className="thread-main">
+          <div
+            className="thread-scroll"
+            ref={scrollRef}
+            onScroll={(event) => {
+              const element = event.currentTarget
+              stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 140
+            }}
+          >
+            <div className="thread-column">
+              <UserBubble text={task.prompt} />
+              <TimelineView entries={entries} showDetails={showDetails} />
+              {hiddenCount > 0 ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost details-toggle"
+                  onClick={() => setShowDetails((open) => !open)}
+                >
+                  {showDetails ? '隱藏細節' : `顯示細節（${hiddenCount} 筆）`}
+                </button>
+              ) : null}
+              {pendingPlan && !working ? (
+                <PlanCard taskId={task.id} plan={pendingPlan} onChanged={onChanged} onError={onError} />
+              ) : null}
+              <ApprovalsPanel
+                taskId={task.id}
+                taskStatus={task.status}
+                approvalEvents={details.events.filter((event) => event.type.startsWith('approval.')).length}
+              />
+              {task.status === 'failed' ? (
+                <section className="card error-card" aria-label="任務失敗">
+                  <Icon name="alert" size={18} />
+                  <div className="error-card-copy">
+                    <strong>任務失敗</strong>
+                    <p>{failureMessage(details.events) ?? '沒有收到更詳細的錯誤訊息。'}</p>
+                  </div>
+                  {canResume ? (
+                    <Button icon="retry" disabled={acting} onClick={() => void act('resume')}>
+                      重試
+                    </Button>
+                  ) : null}
+                </section>
+              ) : null}
+              {task.status === 'cancelled' ? (
+                <section className="card note-card" aria-label="任務已取消">
+                  <Icon name="stop" size={18} />
+                  <div className="error-card-copy">
+                    <strong>任務已取消</strong>
+                    <p>可以從原本的進度接著做。</p>
+                  </div>
+                  {canResume ? (
+                    <Button icon="retry" disabled={acting} onClick={() => void act('resume')}>
+                      繼續
+                    </Button>
+                  ) : null}
+                </section>
+              ) : null}
+              {working ? <RunningIndicator events={details.events} createdAt={task.createdAt} /> : null}
+              {task.mode === 'compete' && task.status !== 'done' ? (
+                <ComparePanel details={details} onChanged={onChanged} />
+              ) : null}
+              {published ? (
+                <PrStatusCard
+                  taskId={task.id}
+                  canAskAgent={canAskAgent}
+                  onChanged={onChanged}
+                  onError={onError}
+                />
+              ) : null}
+              <div className="thread-actions">
+                <PublishPanel details={details} onChanged={onChanged} />
+                <DiscardButton details={details} onChanged={onChanged} />
+              </div>
             </div>
           </div>
+          <ThreadComposer details={details} onChanged={onChanged} onError={onError} />
         </div>
         {paneOpen ? (
           <aside className="diff-pane" aria-label="檔案變更">

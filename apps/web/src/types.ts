@@ -1,6 +1,14 @@
-import type { RoleConfig } from '@joy/core'
+import type { ProviderKind, RoleConfig } from '@joy/core'
 
-export type Repo = { id: string; path: string; defaultBranch: string; githubRemote?: string }
+export type Repo = {
+  id: string
+  path: string
+  defaultBranch: string
+  githubRemote?: string
+  allowedProviders?: ProviderKind[]
+  /** argv run without a shell before review, e.g. ['pnpm', 'check']. */
+  checkCommand?: string[]
+}
 export type Task = {
   id: string
   repoId: string
@@ -11,6 +19,9 @@ export type Task = {
   status: string
   roleOverrides?: Partial<RoleConfig>
   createdAt: string
+  updatedAt?: string
+  /** Server-side archive flag; missing means not archived. */
+  archived?: boolean
 }
 export type TaskEvent = {
   taskId: string
@@ -23,12 +34,38 @@ export type TaskEvent = {
 }
 export type DiffFile = { path: string; status: string; additions: number; deletions: number }
 export type WorkspaceDiff = { files: DiffFile[]; patch: string }
+export interface ProviderUsage {
+  provider: string
+  model: string
+  inputTokens?: number
+  outputTokens?: number
+  costUsd?: number
+}
+export interface TaskUsage {
+  durationMs: number
+  inputTokens?: number
+  outputTokens?: number
+  costUsd?: number
+  byProvider: ProviderUsage[]
+}
+export interface PendingPlan {
+  plan: string
+  review?: unknown
+}
+export interface QueuedMessage {
+  id: string
+  text: string
+}
+/** The task as `GET /api/tasks/:id` returns it. The fields after `events` are missing from older servers. */
 export type TaskDetails = {
   task: Task
   repo: Repo | null
   attempts: unknown[]
   reviews: unknown[]
   events: TaskEvent[]
+  usage?: TaskUsage
+  pendingPlan?: PendingPlan | null
+  queuedMessages?: QueuedMessage[]
 }
 export type SecretStatus = { set: boolean; source?: 'env' | 'keychain' }
 export type DoctorStatus = 'ok' | 'missing' | 'untested'

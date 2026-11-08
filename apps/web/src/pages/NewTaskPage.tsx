@@ -30,6 +30,8 @@ export interface NewTaskInput {
   mode: string
   implementer: ModelRef
   reviewer: ModelRef
+  /** The agent writes a plan first and waits for the owner's approval before changing code. */
+  planFirst: boolean
 }
 
 const STARTERS = [
@@ -78,6 +80,7 @@ export function NewTaskPage({
   const [repoId, setRepoId] = useState('')
   const [mode, setMode] = useState('review_loop')
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const [planFirst, setPlanFirst] = useState(false)
   const [busy, setBusy] = useState(false)
   // null = use the models from Settings; otherwise this task's own implementer and reviewer.
   const [overrides, setOverrides] = useState<Record<'implementer' | 'reviewer', ModelRef> | null>(null)
@@ -91,6 +94,14 @@ export function NewTaskPage({
     ? (matchingTaskPreset(models.implementer, models.reviewer)?.id ?? 'custom')
     : 'default'
   const isWorkflow = mode.startsWith('workflow:')
+  // Plan-first works for the two built-in single-agent modes; compete tasks and custom workflows do not take it.
+  const planFirstDisabledReason =
+    mode === 'compete'
+      ? '兩家比賽不支援先規劃'
+      : isWorkflow
+        ? '自訂流程請在設定檔裡設定 plan_first'
+        : undefined
+  const planFirstOn = planFirst && !planFirstDisabledReason
   const activeRepoId = repos.some((repo) => repo.id === repoId) ? repoId : (repos[0]?.id ?? '')
 
   const attention = useMemo(() => tasksNeedingAttention(tasks), [tasks])
@@ -126,6 +137,7 @@ export function NewTaskPage({
         mode,
         implementer: models.implementer,
         reviewer: models.reviewer,
+        planFirst: planFirstOn,
       })
       if (ok) clearPrompt()
     } finally {
@@ -214,6 +226,17 @@ export function NewTaskPage({
                       </option>
                     ))}
                   </select>
+                  <button
+                    type="button"
+                    className={`chip-toggle${planFirstOn ? ' on' : ''}`}
+                    aria-pressed={planFirstOn}
+                    disabled={planFirstDisabledReason !== undefined}
+                    title={planFirstDisabledReason ?? '先寫計畫，等你核准才開始改程式'}
+                    onClick={() => setPlanFirst((on) => !on)}
+                  >
+                    <Icon name="book" size={14} />
+                    先規劃
+                  </button>
                   <select
                     aria-label="模型組合"
                     className="select"
@@ -314,7 +337,10 @@ export function NewTaskPage({
                 </div>
               }
             />
-            <p className="composer-hint">{MODE_HINTS[mode] ?? '照這個自訂流程的設定執行。'}</p>
+            <p className="composer-hint">
+              {MODE_HINTS[mode] ?? '照這個自訂流程的設定執行。'}
+              {planFirstOn ? ' 先規劃：agent 會先寫計畫，等你核准才開始改程式。' : ''}
+            </p>
 
             <div className="starter-row" role="group" aria-label="快速開始">
               {STARTERS.map((starter) => (

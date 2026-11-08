@@ -84,7 +84,15 @@ export function tasksNeedingAttention(tasks: readonly Task[]): Task[] {
     .sort((a, b) => ATTENTION_ORDER.indexOf(a.status) - ATTENTION_ORDER.indexOf(b.status))
 }
 
-/** The diff to show: the attempt the owner chose in a compete task, else the latest result's diff. */
+/** Whether Joy removed the task's worktree (after publishing or discarding), so it can no longer be continued. */
+export function worktreeRemoved(events: readonly TaskEvent[]): boolean {
+  return events.some((event) => event.type === 'worktree.removed')
+}
+
+/**
+ * The diff to show: the attempt the owner chose in a compete task, else the newest diff, which is the latest result's
+ * or the one a restored checkpoint left behind.
+ */
 export function diffFrom(events: readonly TaskEvent[]): WorkspaceDiff | null {
   const asDiff = (value: unknown): WorkspaceDiff | null =>
     record(value) && Array.isArray((value as WorkspaceDiff).files) ? (value as WorkspaceDiff) : null
@@ -96,7 +104,7 @@ export function diffFrom(events: readonly TaskEvent[]): WorkspaceDiff | null {
     if (diff) return diff
   }
   for (const event of newestFirst) {
-    if (event.type !== 'result') continue
+    if (event.type !== 'result' && event.type !== 'checkpoint.restored') continue
     const diff = asDiff(record(event.payload)?.diff)
     if (diff) return diff
   }
