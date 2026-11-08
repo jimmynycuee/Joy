@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { deliveryTag, followUpState, messageDeliveryStates, ownerActionError } from './messages.js'
+import {
+  deliveryTag,
+  followUpState,
+  messageDeliveryStates,
+  ownerActionError,
+  pendingMessagesNote,
+} from './messages.js'
 import type { TaskEvent } from './types.js'
 
 let seq = 0
@@ -58,9 +64,46 @@ describe('messageDeliveryStates', () => {
   })
 })
 
+describe('interrupting messages', () => {
+  it('stays interrupting until the delivered event, and can be withdrawn or lost like a queued one', () => {
+    const events = [message('a', 'interrupt'), message('b', 'interrupt'), message('c', 'interrupt')]
+    expect(messageDeliveryStates(events).get('a')).toBe('interrupting')
+    const states = messageDeliveryStates([
+      ...events,
+      event('user.message.delivered', { ids: ['a'], via: 'interrupt' }),
+      event('user.message.discarded', { ids: ['b'], reason: 'The task was cancelled' }),
+    ])
+    expect(states.get('a')).toBe('delivered')
+    expect(states.get('b')).toBe('discarded')
+    expect(messageDeliveryStates(events, { queuedIds: new Set(), busy: false }).get('c')).toBe('lost')
+  })
+
+  it('words the note above the composer after what is pending', () => {
+    expect(pendingMessagesNote(new Map())).toBeUndefined()
+    expect(pendingMessagesNote(new Map([['a', 'delivered']]))).toBeUndefined()
+    expect(
+      pendingMessagesNote(
+        new Map([
+          ['a', 'queued'],
+          ['b', 'queued'],
+        ]),
+      ),
+    ).toContain('2 則訊息排隊中')
+    expect(
+      pendingMessagesNote(
+        new Map([
+          ['a', 'queued'],
+          ['b', 'interrupting'],
+        ]),
+      ),
+    ).toBe('正在打斷 agent 目前這一步，停下來後會帶著你的訊息繼續')
+  })
+})
+
 describe('deliveryTag', () => {
   it('only tags the states the owner should notice', () => {
     expect(deliveryTag('queued')).toBe('排隊中')
+    expect(deliveryTag('interrupting')).toBe('正在打斷 agent…')
     expect(deliveryTag('discarded')).toBe('已撤回')
     expect(deliveryTag('lost')).toBe('未送達')
     expect(deliveryTag('delivered')).toBeUndefined()
@@ -72,7 +115,10 @@ describe('followUpState', () => {
   const base = { status: 'done', mode: 'review_loop', worktreeRemoved: false, pendingPlan: false }
 
   it('words the placeholder after what the message will do', () => {
-    expect(followUpState({ ...base, status: 'running' }).placeholder).toBe('補充指示，下一輪會帶給 agent')
+    expect(followUpState({ ...base, status: 'running' }).placeholder).toBe(
+      '傳訊息會打斷 agent 目前這一步，帶著訊息繼續',
+    )
+    expect(followUpState({ ...base, status: 'queued' }).placeholder).toBe('補充指示，下一輪會帶給 agent')
     expect(followUpState({ ...base, status: 'awaiting_approval' }).placeholder).toBe(
       '補充指示，下一輪會帶給 agent',
     )

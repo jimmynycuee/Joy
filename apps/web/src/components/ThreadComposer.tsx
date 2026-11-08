@@ -1,16 +1,17 @@
 import { ApiError, errorMessage, request } from '../api.js'
-import { followUpState, ownerActionError } from '../messages.js'
+import { followUpState, messageDeliveryStates, ownerActionError, pendingMessagesNote } from '../messages.js'
 import { useDraft } from '../storage.js'
 import { taskModels, worktreeRemoved } from '../task-info.js'
 import type { TaskDetails } from '../types.js'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Composer } from './Composer.js'
 
 const MAX_MESSAGE_CHARS = 20_000
 
 /**
- * The message box at the bottom of a task thread. A message steers a running task (it reaches the agent's next
- * turn), continues a finished one, or revises a plan that waits for approval. The draft survives a failed send.
+ * The message box at the bottom of a task thread. A message steers a running task (it interrupts the agent's current
+ * step, or waits for its next turn during a review, checks or an approval), continues a finished one, or revises a plan
+ * that waits for approval. The draft survives a failed send.
  */
 export function ThreadComposer({
   details,
@@ -35,7 +36,16 @@ export function ThreadComposer({
     worktreeRemoved: worktreeRemoved(details.events),
     pendingPlan: Boolean(details.pendingPlan),
   })
-  const queued = details.queuedMessages?.length ?? 0
+  const pendingNote = useMemo(
+    () =>
+      pendingMessagesNote(
+        messageDeliveryStates(details.events, {
+          ...(details.queuedMessages ? { queuedIds: new Set(details.queuedMessages.map((m) => m.id)) } : {}),
+          busy: task.status === 'queued' || task.status === 'running' || task.status === 'awaiting_approval',
+        }),
+      ),
+    [details.events, details.queuedMessages, task.status],
+  )
   const models = taskModels(details)
 
   async function send(): Promise<void> {
@@ -69,9 +79,9 @@ export function ThreadComposer({
 
   return (
     <div className="thread-composer" data-testid="thread-composer">
-      {queued > 0 ? (
+      {pendingNote ? (
         <p className="queued-note" role="status" data-testid="queued-messages">
-          {queued} 則訊息排隊中，下一輪會帶給 agent
+          {pendingNote}
         </p>
       ) : null}
       <Composer

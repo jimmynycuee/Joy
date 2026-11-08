@@ -51,7 +51,10 @@ interface Verdict {
 function fakeProvider(kind: ProviderKind) {
   const calls: RunOptions[] = []
   const verdicts: Verdict[] = []
-  const state: { work?: ((options: RunOptions, call: number) => Promise<void> | void) | undefined } = {}
+  const state: {
+    work?: ((options: RunOptions, call: number) => Promise<void> | void) | undefined
+    reviewWork?: ((options: RunOptions) => Promise<void> | void) | undefined
+  } = {}
   const provider: AgentProvider = {
     kind,
     capabilities: {
@@ -66,6 +69,7 @@ function fakeProvider(kind: ProviderKind) {
     async *run(options: RunOptions): AsyncGenerator<AgentEvent> {
       calls.push(options)
       if (options.outputSchema === REVIEW_SCHEMA) {
+        await state.reviewWork?.(options)
         const verdict = verdicts.shift() ?? { approve: true }
         yield { type: 'usage', inputTokens: 10, outputTokens: 1 }
         yield {
@@ -296,7 +300,10 @@ describe('follow-up messages and steering', () => {
     codex.verdicts.push({ approve: false, findings: [{ severity: 'major', message: 'handle NaN' }] })
     const id = await newTask(call, await newRepo(call), { mode: 'review_loop' })
     await until(call, id, settled('running'), 'running')
-    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'Keep the public API' })
+    const sent = await call('POST', `/api/tasks/${id}/messages`, {
+      text: 'Keep the public API',
+      interrupt: false,
+    })
     expect(sent.body.message).toMatchObject({ delivery: 'queued' })
     expect((await details(call, id)).queuedMessages).toHaveLength(1)
     wait.open()
@@ -315,7 +322,7 @@ describe('follow-up messages and steering', () => {
     claude.state.work = (_options, n) => (n === 1 ? wait.promise : undefined)
     const id = await newTask(call, await newRepo(call))
     await until(call, id, settled('running'), 'running')
-    await call('POST', `/api/tasks/${id}/messages`, { text: 'Add a changelog entry' })
+    await call('POST', `/api/tasks/${id}/messages`, { text: 'Add a changelog entry', interrupt: false })
     wait.open()
     await until(call, id, (d) => d.task.status === 'done' && count(d, 'result') === 2, 'auto follow-up')
     expect(claude.calls[1]).toMatchObject({ resumeSessionId: 'claude-cli-session' })
@@ -328,7 +335,7 @@ describe('follow-up messages and steering', () => {
       new Promise((resolve) => options.signal.addEventListener('abort', () => resolve(), { once: true }))
     const id = await newTask(call, await newRepo(call))
     await until(call, id, settled('running'), 'running')
-    await call('POST', `/api/tasks/${id}/messages`, { text: 'never mind' })
+    await call('POST', `/api/tasks/${id}/messages`, { text: 'never mind', interrupt: false })
     await call('POST', `/api/tasks/${id}/cancel`)
     const cancelled = await until(call, id, (d) => count(d, 'user.message.discarded') === 1, 'discard')
     expect(cancelled.task.status).toBe('cancelled')
@@ -347,6 +354,173 @@ describe('follow-up messages and steering', () => {
   })
 })
 
+/** Work that runs until it is stopped; with `release`, it only stops once the gate opens (a slow-to-stop CLI). */
+const untilAborted = (options: RunOptions, release?: Gate) =>
+  new Promise<void>((resolve) =>
+    options.signal.addEventListener(
+      'abort',
+      () => void (release ? release.promise.then(resolve) : resolve()),
+      {
+        once: true,
+      },
+    ),
+  )
+const deliveredIds = (d: Details) =>
+  d.events.filter((e) => e.type === 'user.message.delivered').flatMap((e) => e.payload.ids as string[])
+
+describe('interrupting a running task with a message', () => {
+  it('stops the current turn and continues the same session with the message, without cancelling the task', async () => {
+    const { call, claude } = await setup()
+    claude.state.work = (options, n) => (n === 1 ? untilAborted(options) : undefined)
+    const id = await newTask(call, await newRepo(call))
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length === 1, 'running')
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'Use BigInt instead' })
+    expect(sent).toMatchObject({ status: 202, body: { message: { delivery: 'interrupt' } } })
+    const done = await until(call, id, settled('done'), 'done after the interrupt')
+    expect(claude.calls[0]?.signal.aborted).toBe(true)
+    expect(claude.calls).toHaveLength(2)
+    expect(claude.calls[1]).toMatchObject({ resumeSessionId: 'claude-cli-session', cwd: '/fake/worktree' })
+    expect(claude.calls[1]?.prompt).toContain('The owner interrupted your previous step')
+    expect(claude.calls[1]?.prompt).toContain('Use BigInt instead')
+    // One run was interrupted, not cancelled: a single result, and the timeline says why the run stopped.
+    const types = done.events.map((e) => e.type)
+    expect(done.events.filter((e) => e.type === 'result').map((e) => e.payload.status)).toEqual(['succeeded'])
+    expect(types.filter((t) => t === 'run.interrupted')).toHaveLength(1)
+    expect(types.filter((t) => t === 'started')).toHaveLength(2)
+    expect(types.indexOf('run.interrupted')).toBeLessThan(types.lastIndexOf('started'))
+    expect(done.events.find((e) => e.type === 'user.message')?.payload).toMatchObject({
+      delivery: 'interrupt',
+    })
+    expect(done.events.find((e) => e.type === 'user.message.delivered')?.payload).toMatchObject({
+      via: 'interrupt',
+    })
+    expect(done.attempts).toHaveLength(1)
+    expect(done.attempts[0]).toMatchObject({ status: 'succeeded' })
+    expect(done.queuedMessages).toEqual([])
+  })
+
+  it('delivers two quick messages once each, in the same continuation', async () => {
+    const { call, claude } = await setup()
+    const release = gate()
+    claude.state.work = (options, n) => (n === 1 ? untilAborted(options, release) : undefined)
+    const id = await newTask(call, await newRepo(call))
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length === 1, 'running')
+    const first = await call('POST', `/api/tasks/${id}/messages`, { text: 'first note' })
+    const second = await call('POST', `/api/tasks/${id}/messages`, { text: 'second note' })
+    expect(first.body.message).toMatchObject({ delivery: 'interrupt' })
+    expect(second.body.message).toMatchObject({ delivery: 'interrupt' })
+    expect((await details(call, id)).task.status).toBe('running')
+    release.open()
+    const done = await until(call, id, settled('done'), 'done')
+    expect(claude.calls).toHaveLength(2)
+    expect(claude.calls[1]?.prompt).toContain('first note')
+    expect(claude.calls[1]?.prompt).toContain('second note')
+    const ids = [first.body.message, second.body.message].map((m) => (m as { id: string }).id)
+    expect(deliveredIds(done).sort()).toEqual([...ids].sort())
+    expect(count(done, 'user.message.delivered')).toBe(1)
+    expect(count(done, 'run.interrupted')).toBe(1)
+  })
+
+  it('lets a cancel win over an interrupt that is still stopping, and withdraws the message', async () => {
+    const { call, claude } = await setup()
+    const release = gate()
+    claude.state.work = (options, n) => (n === 1 ? untilAborted(options, release) : undefined)
+    const id = await newTask(call, await newRepo(call))
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length === 1, 'running')
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'actually stop' })
+    expect(sent.body.message).toMatchObject({ delivery: 'interrupt' })
+    expect((await call('POST', `/api/tasks/${id}/cancel`)).status).toBe(200)
+    release.open()
+    const cancelled = await until(call, id, (d) => count(d, 'user.message.discarded') === 1, 'discard')
+    expect(cancelled.task.status).toBe('cancelled')
+    expect(claude.calls).toHaveLength(1)
+    expect(count(cancelled, 'user.message.delivered')).toBe(0)
+    expect(count(cancelled, 'run.interrupted')).toBe(0)
+    expect(cancelled.events.find((e) => e.type === 'user.message.discarded')?.payload).toMatchObject({
+      ids: [(sent.body.message as { id: string }).id],
+    })
+  })
+
+  it('interrupts the implementer in a review loop, then reviews the continued work with the message in the brief', async () => {
+    const { call, claude, codex } = await setup()
+    claude.state.work = (options, n) => (n === 1 ? untilAborted(options) : undefined)
+    const id = await newTask(call, await newRepo(call), { mode: 'review_loop' })
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length === 1, 'implementing')
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'Keep it in one file' })
+    expect(sent.body.message).toMatchObject({ delivery: 'interrupt' })
+    const done = await until(call, id, settled('done'), 'done')
+    expect(claude.calls).toHaveLength(2)
+    expect(claude.calls[1]).toMatchObject({ resumeSessionId: 'claude-cli-session' })
+    expect(claude.calls[1]?.prompt).toContain('Keep it in one file')
+    // The interrupted turn was never reviewed; the continued one was, with the owner's message in the task brief.
+    expect(codex.calls).toHaveLength(1)
+    expect(codex.calls[0]?.prompt).toContain('Keep it in one file')
+    expect(done.reviews.map((review) => review.round)).toEqual([1])
+    expect(done.events.filter((e) => e.type === 'result').map((e) => e.payload.status)).toEqual(['succeeded'])
+  })
+
+  it('does not interrupt a review: the message waits and reaches the implementer afterwards', async () => {
+    const { call, claude, codex } = await setup()
+    const reviewing = gate()
+    const finishReview = gate()
+    codex.state.reviewWork = () => {
+      if (codex.calls.length !== 1) return undefined
+      reviewing.open()
+      return finishReview.promise
+    }
+    const id = await newTask(call, await newRepo(call), { mode: 'review_loop' })
+    await reviewing.promise
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'Also update the README' })
+    expect(sent.body.message).toMatchObject({ delivery: 'queued' })
+    finishReview.open()
+    const done = await until(
+      call,
+      id,
+      (d) => d.task.status === 'done' && d.reviews.length === 2,
+      'follow-up after the review',
+    )
+    expect(codex.calls[0]?.signal.aborted).toBe(false)
+    expect(claude.calls).toHaveLength(2)
+    expect(claude.calls[1]?.prompt).toContain('Also update the README')
+    expect(count(done, 'run.interrupted')).toBe(0)
+    expect(done.events.find((e) => e.type === 'user.message.delivered')?.payload).toMatchObject({
+      via: 'follow_up',
+    })
+  })
+
+  it('keeps writing a plan after an interrupt, still read-only, and then waits for approval', async () => {
+    const { call, claude } = await setup()
+    claude.state.work = (options, n) => (n === 1 ? untilAborted(options) : undefined)
+    const id = await newTask(call, await newRepo(call), { planFirst: true })
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length === 1, 'planning')
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'Plan for Windows too' })
+    expect(sent.body.message).toMatchObject({ delivery: 'interrupt' })
+    const waiting = await until(call, id, (d) => d.pendingPlan !== null, 'plan')
+    expect(waiting.task.status).toBe('review_ready')
+    expect(claude.calls).toHaveLength(2)
+    expect(claude.calls[1]).toMatchObject({ resumeSessionId: 'claude-cli-session', autonomy: 'read-only' })
+    expect(claude.calls[1]?.prompt).toContain('Do not change any files yet')
+    expect(claude.calls[1]?.prompt).toContain('Plan for Windows too')
+  })
+
+  it('queues instead of interrupting when asked to', async () => {
+    const { call, claude } = await setup()
+    const wait = gate()
+    claude.state.work = (_options, n) => (n === 1 ? wait.promise : undefined)
+    const id = await newTask(call, await newRepo(call))
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length === 1, 'running')
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'later', interrupt: false })
+    expect(sent.body.message).toMatchObject({ delivery: 'queued' })
+    expect(claude.calls[0]?.signal.aborted).toBe(false)
+    expect((await call('POST', `/api/tasks/${id}/messages`, { text: 'x', interrupt: 'yes' })).status).toBe(
+      400,
+    )
+    wait.open()
+    await until(call, id, (d) => d.task.status === 'done' && count(d, 'result') === 2, 'follow-up')
+    expect(claude.calls[1]?.prompt).toContain('later')
+  })
+})
+
 describe('owner messages that were not delivered', () => {
   it('leaves discarded messages out of what the reviewer is told later', async () => {
     const { call, claude, codex } = await setup()
@@ -356,7 +530,7 @@ describe('owner messages that were not delivered', () => {
         : undefined
     const id = await newTask(call, await newRepo(call), { mode: 'review_loop' })
     await until(call, id, settled('running'), 'running')
-    await call('POST', `/api/tasks/${id}/messages`, { text: 'DISCARDED-INSTRUCTION' })
+    await call('POST', `/api/tasks/${id}/messages`, { text: 'DISCARDED-INSTRUCTION', interrupt: false })
     await call('POST', `/api/tasks/${id}/cancel`)
     await until(
       call,
