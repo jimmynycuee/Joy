@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { errorMessage, removeWithConfirmation, request } from '../api.js'
 import { safeHref } from '../markdown.js'
+import { hasUnpublishedChanges, worktreeRemoved } from '../task-info.js'
 import { policyEventTitle } from '../policy-events.js'
 import { record } from '../types.js'
 import type { TaskDetails, WorkspaceDiff } from '../types.js'
@@ -288,6 +289,8 @@ export function PublishPanel({ details, onChanged }: { details: TaskDetails; onC
   // Only open links that are http(s); the URL comes from the GitHub CLI's output.
   const prUrl = typeof prPayload === 'string' ? safeHref(prPayload) : undefined
   const remote = details.repo?.githubRemote
+  const canPushUpdate =
+    Boolean(prUrl) && !worktreeRemoved(details.events) && hasUnpublishedChanges(details.events)
 
   if (details.task.status !== 'done' || !details.repo) return null
 
@@ -328,8 +331,13 @@ export function PublishPanel({ details, onChanged }: { details: TaskDetails; onC
       {prUrl ? (
         <div className="pr-row">
           <a href={prUrl} target="_blank" rel="noreferrer noopener" className="pr-link">
-            已開 draft PR
+            已開 PR
           </a>
+          {canPushUpdate ? (
+            <Button variant="primary" icon="git-pr" disabled={busy} onClick={() => void publishTask()}>
+              {busy ? '正在推送…' : '推送更新到 PR'}
+            </Button>
+          ) : null}
           <ButtonLink href={prUrl} variant="secondary" icon="external">
             查看 PR
           </ButtonLink>

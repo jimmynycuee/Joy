@@ -27,7 +27,7 @@
 - **接續／插話**：任務頁底部是共用的 `Composer`（`ThreadComposer`），送出 `POST /api/tasks/:id/messages`。`user.message` 事件是時間軸裡靠右的氣泡；`delivery: queued` 的訊息在收到 `user.message.delivered` 前標「排隊中」，`user.message.discarded` 標「已撤回」，Joy 重啟後伺服器已不記得的排隊訊息標「未送達」（純函式在 `messages.ts`）。`queuedMessages` 顯示成輸入框上方的一行說明。輸入框提示依狀態變：執行中「補充指示，下一輪會帶給 agent」、已結束「接著交代…」、計畫待核准「說明要怎麼改計畫」；compete 任務與工作副本已移除時停用並說明原因。409（另一個動作進行中）顯示「這個任務正在處理另一個動作，請稍後再送」、429 顯示排隊太多，兩者都保留草稿。
 - **先規劃**：新任務頁輸入框的「先規劃」切換鈕送出 `planFirst: true`（兩家比賽與自訂流程停用）。`details.pendingPlan` 有值時，時間軸最後出現計畫卡片（Markdown 計畫、計畫審查摘要、「核准並開始實作」→ `/plan/approve`、「取消任務」→ `/plan/reject`）；這時送出的訊息改寫計畫。`plan.awaiting_approval`／`plan.approved`／`plan.rejected` 都在時間軸上（過去版本的計畫可展開）。有待核准計畫的任務狀態顯示「等你核准計畫」。WebSocket 收到相關事件後會重新讀 `usage`、`pendingPlan`、`queuedMessages`（`hooks/useTaskDetails.ts`）。
 - **封存／重新命名**：封存改用 `PATCH /api/tasks/:id {archived}`，任務清單用 `GET /api/tasks?archived=1` 一次取回全部、依 `archived` 分到「已封存」區（執行中封存會回 409，顯示中文訊息）。舊的 `joy.archivedTasks` localStorage 在第一次載入時搬到伺服器（只搬還存在且尚未封存的任務），搬完刪掉該 key，相關程式碼已移除。任務標題連點兩下或按鉛筆圖示就地編輯，Enter／離開輸入框儲存、Esc 取消，送出 `PATCH {title}`。
-- **PR／CI**：任務有 `publish.done` 時，`GET /api/tasks/:id/pr` 每 60 秒輪詢（頁面可見時；PR 合併或關閉、或所有檢查都結束就停），顯示 Draft／已開啟／已合併／已關閉與「通過 n / 失敗 n / 進行中 n」及失敗的檢查名稱。失敗時有「請 agent 修正 CI」，送出帶失敗檢查名稱的 follow-up 訊息。**注意**：伺服器在開 PR 成功後會移除工作副本（`worktree.removed`），之後任何 follow-up 都會 409；所以這時按鈕改成說明加「複製修正 CI 的說明」，請開新任務處理。要讓 agent 真的能修 CI，後端得在開 PR 後保留工作副本，這是待擁有者決定的後端行為。
+- **PR／CI**：任務有 `publish.done` 時，`GET /api/tasks/:id/pr` 每 60 秒輪詢（頁面可見時；PR 合併或關閉、或所有檢查都結束就停），顯示 Draft／已開啟／已合併／已關閉與「通過 n / 失敗 n / 進行中 n」及失敗的檢查名稱。失敗時有「請 agent 修正 CI」，送出帶失敗檢查名稱的 follow-up 訊息。開 PR 後工作副本會保留到 PR 合併或關閉（`GET /pr` 讀到 `MERGED`／`CLOSED` 時移除並發 `worktree.removed {published:true, pullRequestState}`），所以可以直接請 agent 修 CI；agent 再做事後，PR 列出現「推送更新到 PR」，推到同一個分支、沿用同一個 PR（已不是 draft 也可以）。工作副本已移除時才改成「複製修正 CI 的說明」。
 - **專案檢查**：`checks` 事件是時間軸卡片（通過／失敗／逾時、結束碼、耗時、可展開的 `outputTail`），`checks.skipped` 是淡色步驟。設定 → 專案每個專案一張卡片，可編輯 GitHub 網址（`githubRemote`）、允許的服務（`allowedProviders`，至少一個）與送審前檢查指令（`checkCommand`，單行以空白切成 argv，不經 shell；說明哪些指令需要核准），用 `PATCH /api/repos/:id` 只送有改的欄位（清空送 `null`）。
 - **檢查點**：任務頁標題列的「檢查點」彈出清單（`GET /checkpoints`，新的在前，標籤翻成中文），「還原到這裡」→ `POST /checkpoints/:n/restore`；回 409 且訊息說會丟掉 commit 時，在頁面內（不用 `window.confirm`）說明「會丟掉之後的 N 個 commit」，確認後帶 `{confirm: true}` 重送。任務執行中停用。`checkpoint.created` 在「顯示細節」，`checkpoint.restored` 是可見步驟，變更面板的 diff 也跟著還原後的內容。
 - **用量**：標題列「用量」彈出耗時、輸入／輸出 token、估計花費與各 provider／model 明細；CLI 的花費標「估算」。
@@ -150,7 +150,8 @@
 
 ## 已確認決策
 
-- 2026-11-08 任務對話式 API（agent 決定，待擁有者確認）：(1) `planFirst`／`plan_first` 一律表示「計畫要擁有者核准才實作」，設定檔工作流程的行為因此改變；(2) 執行中插話在下一次 agent 輪送達，沒有下一輪就在結束後自動 follow-up；(3) 送審前檢查失敗時，審查通過也不算完成；外部內容任務的檢查要核准、未核准就略過；(4) 檢查點用 `refs/joy/checkpoints/<task>/<n>`，還原前一定先另存目前狀態；(5) 不改 `packages/core`：executor 的 `run`／`checkpoint`／`restoreCheckpoint` 以 duck typing 偵測（同 `listWorktrees`）。
+- 2026-11-08 擁有者決定：(1) 開 PR 後**保留工作副本**，直到 PR 合併或關閉才移除（取代 T2.8「開 PR 後立刻移除」）；有未推送的 commit 時不會移除；(2) `planFirst`／`plan_first` 的任務**一律停下來等擁有者核准計畫**（確認下一條的第 1 點）。
+- 2026-11-08 任務對話式 API（agent 決定；第 1 點已由擁有者確認）：(1) `planFirst`／`plan_first` 一律表示「計畫要擁有者核准才實作」，設定檔工作流程的行為因此改變；(2) 執行中插話在下一次 agent 輪送達，沒有下一輪就在結束後自動 follow-up；(3) 送審前檢查失敗時，審查通過也不算完成；外部內容任務的檢查要核准、未核准就略過；(4) 檢查點用 `refs/joy/checkpoints/<task>/<n>`，還原前一定先另存目前狀態；(5) 不改 `packages/core`：executor 的 `run`／`checkpoint`／`restoreCheckpoint` 以 duck typing 偵測（同 `listWorktrees`）。
 - 2026-11-07 T3.8 選型：Google 使用 [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp)（`uvx workspace-mcp --tools gmail calendar`）。理由：一個 server 涵蓋 Gmail 與行事曆、可限制只開這兩項；用擁有者自己的 Google Cloud OAuth 用戶端在本機登入，資料只在本機與 Google 之間，不經第三方；MIT 授權、使用者多。登入資料由該 server 自己存放，Joy 不經手。備案：只做行事曆的 nspady/google-calendar-mcp（沒有 Gmail）。
 - 2026-11-07 擁有者逐項確認：T5.1、T5.2、T5.3、T5.4、T5.5、T5.7 **全部暫不開始**（T5.6 已依擁有者指示完成）。不要再詢問，等擁有者主動提出。
 - 2026-11-07 擁有者審過 T4.1 並合併 PR #110（含審查修正：拒絕 0.0.0.0、`remote.https_hosts`、bridge 檢查 loopback Host）。
@@ -256,7 +257,7 @@
 
 ### T2.8 worktree 清理
 
-- 開 PR 成功後立即刪除該嘗試的 worktree（分支已在 GitHub），記為 `worktree.removed`；之後再按「開 PR」回 409。compete 選定後其他嘗試照舊立即清除。
+- ~~開 PR 成功後立即刪除~~（2026-11-08 擁有者改為）：開 PR 後保留 worktree，`GET /api/tasks/:id/pr` 讀到 PR 已合併或關閉時才刪除並記為 `worktree.removed`；只在有人看這個任務（UI 輪詢 PR 狀態）時觸發，沒人看的已合併任務留到設定頁手動清。PR 開著時可再按「推送更新到 PR」。compete 選定後其他嘗試照舊立即清除。
 - 設定頁「Worktrees」：每個 Joy worktree 的任務、大小、閒置天數、未推送 commit 數與總磁碟用量；閒置超過 `worktrees.stale_after_days`（預設 14，可改）標成 idle。**只在擁有者按 Remove 時刪除**，不會自動刪。
 - 任務完成（done／review_ready／failed／cancelled）且未開 PR 時有「Discard worktree」。
 - **有未推送 commit 的 worktree 一律先回 409**，UI 再問一次，確認後才帶 `confirmUnpushedCommits: true` 刪除；執行中的任務不能刪；只接受 Joy 自己列出的路徑（`POST /api/worktrees/remove`、`POST /api/tasks/:id/discard`）。

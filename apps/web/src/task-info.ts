@@ -89,6 +89,18 @@ export function worktreeRemoved(events: readonly TaskEvent[]): boolean {
   return events.some((event) => event.type === 'worktree.removed')
 }
 
+/** Whether the agent worked again after the last publish, so the open PR is behind the worktree. */
+export function hasUnpublishedChanges(events: readonly TaskEvent[]): boolean {
+  let lastPublish = -1
+  events.forEach((event, index) => {
+    if (event.type === 'publish.done') lastPublish = index
+  })
+  if (lastPublish < 0) return false
+  return events
+    .slice(lastPublish + 1)
+    .some((event) => ['result', 'checkpoint.created', 'checkpoint.restored'].includes(event.type))
+}
+
 /**
  * The diff to show: the attempt the owner chose in a compete task, else the newest diff, which is the latest result's
  * or the one a restored checkpoint left behind.

@@ -1402,13 +1402,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           pullRequestUrl: result.pullRequestUrl,
           commitSha: result.commitSha,
         })
-        // The branch is on GitHub now; the local worktree is no longer needed (T2.8).
-        const cleaned = await removeWorktree(repo, attempt).catch((error: unknown) => {
-          log.warn(redactor.redact(`[joy] could not remove worktree after publishing: ${String(error)}`))
-          return false
-        })
-        if (cleaned)
-          publishTaskLevel(task.id, 'worktree.removed', { attemptIds: [attempt.id], published: true })
+        // The worktree stays while the PR is open, so the owner can ask the agent to fix CI or review comments and
+        // publish again to the same branch. It goes once the PR is merged or closed (see GET /pr).
         json(res, 200, { pullRequestUrl: result.pullRequestUrl, commitSha: result.commitSha })
       } catch (error) {
         const message = redactor.redact(error instanceof Error ? error.message : 'Publishing failed')
@@ -1470,6 +1465,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (typeof prUrl !== 'string') throw new HttpError(404, 'This task has no pull request yet')
       try {
         const status = await pullRequests.get(prUrl)
+        const prState = status.state.toUpperCase()
+        if (prState === 'MERGED' || prState === 'CLOSED') await cleanUpAfterPullRequest(task, prState)
         json(res, 200, {
           url: status.url,
           state: status.state,
@@ -2552,6 +2549,30 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     | undefined
 
   const ACTIVE_TASK_STATUSES = new Set(['queued', 'running', 'awaiting_approval'])
+
+  /** A merged or closed PR no longer needs its local worktree (T2.8); a running or busy task keeps it for now. */
+  async function cleanUpAfterPullRequest(task: StoredTask, state: 'MERGED' | 'CLOSED'): Promise<void> {
+    if (running.has(task.id) || publishing.has(task.id)) return
+    const repo = getRepo(db, task.repoId)
+    const attempt = task.mode === 'compete' ? chosenAttempt(task) : latestAttempt(db, task.id)
+    if (!repo || !attempt?.worktreePath || removedWorktrees(task.id).has(attempt.id)) return
+    await exclusive(task.id, async () => {
+      if (running.has(task.id) || removedWorktrees(task.id).has(attempt.id)) return
+      const cleaned = await removeWorktree(repo, attempt).catch((error: unknown) => {
+        log.warn(redactor.redact(`[joy] could not remove worktree after the PR closed: ${String(error)}`))
+        return false
+      })
+      if (cleaned)
+        publishTaskLevel(task.id, 'worktree.removed', {
+          attemptIds: [attempt.id],
+          published: true,
+          pullRequestState: state.toLowerCase(),
+        })
+    }).catch((error: unknown) => {
+      // Busy with something else: the next status check tries again.
+      log.warn(redactor.redact(`[joy] skipped worktree cleanup after the PR closed: ${String(error)}`))
+    })
+  }
 
   /** Attempts whose worktree Joy already removed. */
   function removedWorktrees(taskId: TaskId): Set<string> {

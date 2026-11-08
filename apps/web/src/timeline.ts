@@ -125,8 +125,12 @@ export function eventTitle(event: TaskEvent): string {
   if (event.type === 'warning' && typeof payload?.message === 'string') return payload.message
   if (event.type === 'started') return '任務開始'
   if (event.type === 'workspace') return '已準備好獨立的工作副本'
-  if (event.type === 'publish.done') return '已開 draft PR'
-  if (event.type === 'worktree.removed') return '已清除工作副本'
+  if (event.type === 'publish.done') return '已推送到 PR'
+  if (event.type === 'worktree.removed') {
+    if (payload?.pullRequestState === 'merged') return 'PR 已合併，已清除工作副本'
+    if (payload?.pullRequestState === 'closed') return 'PR 已關閉，已清除工作副本'
+    return '已清除工作副本'
+  }
   if (event.type === 'compete.judgement') return '裁判已比較兩個方案'
   if (event.type === 'compete.chosen') return '你選好了一個方案'
   if (event.type === 'user.message' && typeof payload?.text === 'string') return payload.text

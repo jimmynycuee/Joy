@@ -499,6 +499,35 @@ describe('pull request status', () => {
     expect(ghCalls).toEqual([['pr', 'view', prUrl, '--json', 'url,state,isDraft,statusCheckRollup']])
   })
 
+  it('keeps the worktree while the PR is open and removes it once the PR is merged', async () => {
+    const prUrl = 'https://github.com/owner/repo/pull/14'
+    let state = 'OPEN'
+    const { call, claude } = await setup({
+      ghRunner: async () => JSON.stringify({ url: prUrl, state, isDraft: false, statusCheckRollup: [] }),
+      publisher: { publish: async () => ({ pullRequestUrl: prUrl, commitSha: 'abc', body: 'b' }) },
+    })
+    const repoId = await newRepo(call, '/tmp/thread-repo', { githubRemote: 'https://github.com/owner/repo' })
+    const id = await newTask(call, repoId)
+    await until(call, id, settled('done'), 'done')
+    expect((await call('POST', `/api/tasks/${id}/publish`, {})).status).toBe(200)
+
+    // Still there: the owner can ask the agent to fix CI and publish again to the same PR.
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'Fix the failing test check' })
+    expect(sent).toMatchObject({ status: 202, body: { message: { delivery: 'follow_up' } } })
+    await until(call, id, (d) => d.task.status === 'done' && count(d, 'result') === 2, 'follow-up')
+    expect(claude.calls[1]).toMatchObject({ cwd: '/fake/worktree' })
+    expect((await call('POST', `/api/tasks/${id}/publish`, {})).status).toBe(200)
+
+    state = 'MERGED'
+    expect((await call('GET', `/api/tasks/${id}/pr`)).body).toMatchObject({ state: 'MERGED' })
+    const merged = await details(call, id)
+    expect(merged.events.find((e) => e.type === 'worktree.removed')?.payload).toMatchObject({
+      published: true,
+      pullRequestState: 'merged',
+    })
+    expect((await call('POST', `/api/tasks/${id}/messages`, { text: 'one more' })).status).toBe(409)
+  })
+
   it('answers 502 when gh fails', async () => {
     const prUrl = 'https://github.com/owner/repo/pull/13'
     const { call } = await setup({
