@@ -1,7 +1,7 @@
 import { ApiError, errorMessage, request } from '../api.js'
 import { followUpState, ownerActionError } from '../messages.js'
 import { useDraft } from '../storage.js'
-import { worktreeRemoved } from '../task-info.js'
+import { taskModels, worktreeRemoved } from '../task-info.js'
 import type { TaskDetails } from '../types.js'
 import { useState } from 'react'
 import { Composer } from './Composer.js'
@@ -16,10 +16,15 @@ export function ThreadComposer({
   details,
   onChanged,
   onError,
+  onStop,
+  stopping = false,
 }: {
   details: TaskDetails
   onChanged: () => void
   onError: (message: string) => void
+  /** Set while the task runs: an empty box shows a stop button. */
+  onStop?: () => void
+  stopping?: boolean
 }) {
   const { task } = details
   const [draft, setDraft, clearDraft] = useDraft(`task-${task.id}`)
@@ -31,6 +36,7 @@ export function ThreadComposer({
     pendingPlan: Boolean(details.pendingPlan),
   })
   const queued = details.queuedMessages?.length ?? 0
+  const models = taskModels(details)
 
   async function send(): Promise<void> {
     const text = draft.trim()
@@ -78,6 +84,19 @@ export function ThreadComposer({
         sendLabel="送出"
         busy={busy}
         disabled={state.disabled}
+        {...(onStop ? { onStop, stopping, stopLabel: '停止任務' } : {})}
+        trailing={
+          models.implementer ? (
+            <span
+              className="composer-model-label"
+              data-testid="task-models"
+              title={models.reviewer ? `實作：${models.implementer}，審查：${models.reviewer}` : undefined}
+            >
+              {models.implementer}
+              {models.reviewer ? <span className="muted"> · 審查 {models.reviewer}</span> : null}
+            </span>
+          ) : null
+        }
       />
       {state.reason ? <p className="composer-note">{state.reason}</p> : null}
     </div>

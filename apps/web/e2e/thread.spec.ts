@@ -185,7 +185,7 @@ test('a running task shows progress, can be stopped, and keeps the changes pane 
   await toggle.click()
   await expect(page.getByRole('complementary', { name: '檔案變更' })).toContainText('還沒有變更')
 
-  await page.getByRole('button', { name: '停止' }).click()
+  await page.getByRole('button', { name: '停止任務' }).click()
   await expect.poll(() => posts).toEqual([`/api/tasks/${task.id}/cancel`])
 })
 

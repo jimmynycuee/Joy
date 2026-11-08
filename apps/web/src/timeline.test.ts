@@ -21,6 +21,36 @@ const event = (type: string, payload: unknown, ts = '2026-11-08T10:00:00.000Z'):
 const agent = (role: string, inner: unknown) => event('agent', { role, event: inner })
 
 describe('buildTimeline', () => {
+  it('joins a streamed reply into one message and one line of thinking', () => {
+    const entries = buildTimeline([
+      agent('implementer', { type: 'thinking', text: '先看' }),
+      agent('implementer', { type: 'thinking', text: '專案' }),
+      agent('implementer', { type: 'message', text: '我會' }),
+      agent('implementer', { type: 'message', text: '先查看' }),
+      agent('implementer', { type: 'tool_call', id: 'c1', name: 'Bash', input: { command: 'ls' } }),
+      agent('implementer', { type: 'message', text: '好了。' }),
+      agent('reviewer', { type: 'message', text: '看起來沒問題' }),
+    ])
+    expect(entries.map((entry) => [entry.kind, 'text' in entry ? entry.text : undefined])).toEqual([
+      ['noise', '先看專案'],
+      ['message', '我會先查看'],
+      ['tool', undefined],
+      ['message', '好了。'],
+      ['message', '看起來沒問題'],
+    ])
+  })
+
+  it('says the same-model warning in Chinese', () => {
+    const [entry] = buildTimeline([
+      event('warning', {
+        message: 'Implementer and reviewer use the same model: this is not a cross-model review.',
+      }),
+    ])
+    expect(entry && 'text' in entry ? entry.text : undefined).toBe(
+      '實作和審查用同一個模型，這次不是跨模型審查。',
+    )
+  })
+
   it('shows a tool call as its command and folds the matching result into it', () => {
     const entries = buildTimeline([
       agent('implementer', { type: 'tool_call', id: 'c1', name: 'Bash', input: { command: 'pnpm test' } }),

@@ -345,6 +345,14 @@ fieldset {
 .send-btn:hover:not(:disabled) {
   opacity: 0.86;
 }
+.composer-model-label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--fs-13);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .disclosure-toggle {
   display: inline-flex;
   align-items: center;

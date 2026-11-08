@@ -1,7 +1,10 @@
 import { ROLE_SPEAKERS } from './labels.js'
 import { parseTimestamp } from './dates.js'
+import { effortLabel } from './effort.js'
+import { modelLabel } from './models.js'
 import { record } from './types.js'
-import type { Task, TaskEvent, WorkspaceDiff } from './types.js'
+import type { Task, TaskDetails, TaskEvent, WorkspaceDiff } from './types.js'
+import type { ProviderKind } from '@joy/core'
 
 export interface BranchInfo {
   branch?: string
@@ -121,4 +124,35 @@ export function diffFrom(events: readonly TaskEvent[]): WorkspaceDiff | null {
     if (diff) return diff
   }
   return null
+}
+
+const PROVIDERS: readonly string[] = ['claude-cli', 'codex-cli', 'openai-api']
+
+function modelRef(provider: unknown, model: unknown): { provider: ProviderKind; model: string } | undefined {
+  return typeof provider === 'string' && PROVIDERS.includes(provider) && typeof model === 'string' && model
+    ? { provider: provider as ProviderKind, model }
+    : undefined
+}
+
+/**
+ * Which models this task is using, for the header: the implementer of the newest attempt (with the effort the owner
+ * picked, if any) and the newest reviewer. Undefined parts are left out; an older server may send none.
+ */
+export function taskModels(details: TaskDetails): { implementer?: string; reviewer?: string } {
+  const attempt = record(details.attempts.at(-1))
+  const override = details.task.roleOverrides?.implementer
+  const implementerRef =
+    modelRef(attempt?.provider, attempt?.model) ?? modelRef(override?.provider, override?.model)
+  const effort = override?.effort
+  const review = record(details.reviews.at(-1))
+  const reviewerOverride = details.task.roleOverrides?.reviewer
+  const reviewerRef =
+    modelRef(review?.reviewerProvider, review?.reviewerModel) ??
+    modelRef(reviewerOverride?.provider, reviewerOverride?.model)
+  return {
+    ...(implementerRef
+      ? { implementer: `${modelLabel(implementerRef)}${effort ? ` · ${effortLabel(effort)}` : ''}` }
+      : {}),
+    ...(reviewerRef ? { reviewer: modelLabel(reviewerRef) } : {}),
+  }
 }

@@ -165,6 +165,7 @@
 ## 已確認決策
 
 - 2026-11-08 新任務頁模型選單（agent 決定）：(1) 沒選模型就不送 `roleOverrides`，照設定由伺服器解析；(2) 只送被選的角色，不送 `orchestrator`；(3) 投入程度五檔沿用 `EFFORT_LABELS`（低／中／高／很高／最高），不另外叫「極高」；(4) web 複製 `@joy/model-effort` 的 effort 表並以測試比對，不新增 workspace 依賴；(5) 「照設定」「平衡」「省額度」「最強」放在選單的快速套用，其中「照設定」是回到不覆寫的方式。
+- 2026-11-08 任務頁：串流回覆（Codex、OpenAI API 逐段送的 `message`／`thinking`）在時間軸合併成一則；輸入框右下顯示實作與審查模型；停止鍵移到輸入框（執行中、輸入框空白時送出鍵變停止），標頭不再有停止鈕。
 - 2026-11-08 擁有者決定：(1) 開 PR 後**保留工作副本**，直到 PR 合併或關閉才移除（取代 T2.8「開 PR 後立刻移除」）；有未推送的 commit 時不會移除；(2) `planFirst`／`plan_first` 的任務**一律停下來等擁有者核准計畫**（確認下一條的第 1 點）。
 - 2026-11-08 任務對話式 API（agent 決定；第 1 點已由擁有者確認）：(1) `planFirst`／`plan_first` 一律表示「計畫要擁有者核准才實作」，設定檔工作流程的行為因此改變；(2) 執行中插話在下一次 agent 輪送達，沒有下一輪就在結束後自動 follow-up；(3) 送審前檢查失敗時，審查通過也不算完成；外部內容任務的檢查要核准、未核准就略過；(4) 檢查點用 `refs/joy/checkpoints/<task>/<n>`，還原前一定先另存目前狀態；(5) 不改 `packages/core`：executor 的 `run`／`checkpoint`／`restoreCheckpoint` 以 duck typing 偵測（同 `listWorktrees`）。
 - 2026-11-07 T3.8 選型：Google 使用 [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp)（`uvx workspace-mcp --tools gmail calendar`）。理由：一個 server 涵蓋 Gmail 與行事曆、可限制只開這兩項；用擁有者自己的 Google Cloud OAuth 用戶端在本機登入，資料只在本機與 Google 之間，不經第三方；MIT 授權、使用者多。登入資料由該 server 自己存放，Joy 不經手。備案：只做行事曆的 nspady/google-calendar-mcp（沒有 Gmail）。

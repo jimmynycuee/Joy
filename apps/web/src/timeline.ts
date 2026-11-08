@@ -31,7 +31,7 @@ interface EntryBase {
 }
 
 export type TimelineEntry =
-  | (EntryBase & { kind: 'message'; text: string; role?: string })
+  | (EntryBase & { kind: 'message'; text: string; role?: string; attemptId?: string })
   | (EntryBase & {
       kind: 'tool'
       name: string
@@ -99,6 +99,12 @@ export function planReviewView(review: unknown): ReviewView | null {
   }
 }
 
+/** Server warnings that are fixed English sentences, in plain Chinese. */
+const WARNING_LABELS: Record<string, string> = {
+  'Implementer and reviewer use the same model: this is not a cross-model review.':
+    '實作和審查用同一個模型，這次不是跨模型審查。',
+}
+
 /** Plain-language title of a raw task event. Events without a good title fall back to their type. */
 export function eventTitle(event: TaskEvent): string {
   const payload = record(event.payload)
@@ -122,7 +128,8 @@ export function eventTitle(event: TaskEvent): string {
     if (typeof summary === 'string' && summary) return `審查：${summary}`
   }
   if (event.type === 'error' && typeof payload?.message === 'string') return payload.message
-  if (event.type === 'warning' && typeof payload?.message === 'string') return payload.message
+  if (event.type === 'warning' && typeof payload?.message === 'string')
+    return WARNING_LABELS[payload.message] ?? payload.message
   if (event.type === 'started') return '任務開始'
   if (event.type === 'workspace') return '已準備好獨立的工作副本'
   if (event.type === 'publish.done') return '已推送到 PR'
@@ -193,6 +200,7 @@ export function buildTimeline(
     ...(options.busy !== undefined ? { busy: options.busy } : {}),
   })
   const lastPlanIndex = events.findLastIndex((event) => event.type === 'plan.awaiting_approval')
+  let lastThinking: Extract<TimelineEntry, { kind: 'noise' }> | undefined
 
   events.forEach((event, index) => {
     const base = { key: `${event.seq}-${index}`, seq: event.seq, ts: event.ts }
@@ -204,7 +212,19 @@ export function buildTimeline(
       const role = typeof payload?.role === 'string' ? ROLE_SPEAKERS[payload.role] : undefined
       const type = agentEvent?.type
       if (type === 'message' && typeof agentEvent?.text === 'string') {
-        entries.push({ ...base, kind: 'message', text, ...(role ? { role } : {}) })
+        // Codex and the OpenAI API stream a reply as many small `message` events; one reply is one bubble.
+        const last = entries.at(-1)
+        if (last?.kind === 'message' && last.role === role && last.attemptId === event.attemptId) {
+          last.text += agentEvent.text
+          return
+        }
+        entries.push({
+          ...base,
+          kind: 'message',
+          text,
+          ...(role ? { role } : {}),
+          ...(event.attemptId ? { attemptId: event.attemptId } : {}),
+        })
       } else if (type === 'tool_call' && typeof agentEvent?.name === 'string') {
         const summary = summarizeToolCall(agentEvent.name, agentEvent.input, worktreePath)
         const entry: Extract<TimelineEntry, { kind: 'tool' }> = {
@@ -227,6 +247,16 @@ export function buildTimeline(
         }
       } else if (type === 'error') {
         entries.push({ ...base, kind: 'error', text })
+      } else if (type === 'thinking' && typeof agentEvent?.text === 'string') {
+        // Reasoning streams in fragments too: keep one detail line per stretch of thinking.
+        const last = entries.at(-1)
+        if (lastThinking && last === lastThinking) {
+          lastThinking.text += agentEvent.text
+          return
+        }
+        const entry: Extract<TimelineEntry, { kind: 'noise' }> = { ...base, kind: 'noise', text }
+        entries.push(entry)
+        lastThinking = entry
       } else {
         entries.push({ ...base, kind: 'noise', text })
       }
