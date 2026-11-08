@@ -234,6 +234,26 @@ describe('reviewLoop', () => {
     expect(result).toMatchObject({ approved: true })
   })
 
+  it('lets the owner steer the implementer turns only, never the reviews', async () => {
+    const impl = new FakeProvider('claude-cli', [() => ok('s1'), () => ok('s1')])
+    const rev = new FakeProvider('codex-cli', [verdict(false, [major]), verdict(true)])
+    const onSteer = () => {}
+    await run(input({ onSteer }), impl, rev, new FakeExecutor([changed(), changed()]))
+    expect(impl.calls.map((call) => call.onSteer)).toEqual([onSteer, onSteer])
+    expect(rev.calls.map((call) => call.onSteer)).toEqual([undefined, undefined])
+  })
+
+  it('reads the review brief again before each review', async () => {
+    const impl = new FakeProvider('claude-cli', [() => ok('s1'), () => ok('s1')])
+    const rev = new FakeProvider('codex-cli', [verdict(false, [major]), verdict(true)])
+    let brief = 'Fix add()'
+    const reviewBrief = () => brief
+    const loop = run(input({ reviewBrief }), impl, rev, new FakeExecutor([changed(), changed()]))
+    brief = 'Fix add() + owner: keep it in one file'
+    await loop
+    expect(rev.calls.map((call) => call.prompt.includes('keep it in one file'))).toEqual([true, true])
+  })
+
   it('runs the project checks before each review, shows them to the reviewer and fixes failures', async () => {
     const impl = new FakeProvider('claude-cli', [() => ok('s1'), () => ok('s1')])
     const rev = new FakeProvider('codex-cli', [verdict(true), verdict(true)])

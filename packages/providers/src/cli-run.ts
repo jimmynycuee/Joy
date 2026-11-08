@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import type { AgentEvent, ProviderKind } from '@joy/core'
-import type { ProcessExit } from './process.js'
+import type { ProcessExit, ProcessInput } from './process.js'
 import { runJsonlProcess } from './process.js'
 
 /**
@@ -18,7 +18,8 @@ export type CommandWrapper = (run: {
 export interface StreamParser {
   readonly finished: boolean
   push(line: unknown): AgentEvent[]
-  finish(reason: string): AgentEvent[]
+  /** `exit.stopped`: the process was cancelled or timed out rather than ending on its own. */
+  finish(reason: string, exit?: { stopped: boolean }): AgentEvent[]
 }
 
 export interface CliRunSpec {
@@ -32,6 +33,8 @@ export interface CliRunSpec {
   signal: AbortSignal
   timeoutMs: number
   parser: StreamParser
+  /** Keeps stdin open and hands it over once the process started (streaming input). */
+  onInput?: (input: ProcessInput) => void
 }
 
 /**
@@ -46,7 +49,9 @@ export async function* runCli(spec: CliRunSpec): AsyncGenerator<AgentEvent> {
     signal: spec.signal,
     timeoutMs: spec.timeoutMs,
     ...(spec.env ? { env: spec.env } : {}),
+    ...(spec.onInput ? { stdin: true } : {}),
   })
+  if (spec.onInput && proc.input) spec.onInput(proc.input)
   for await (const line of proc.lines) {
     if (!line.ok) {
       yield { type: 'raw', source: spec.source, payload: line.line }
@@ -56,7 +61,8 @@ export async function* runCli(spec: CliRunSpec): AsyncGenerator<AgentEvent> {
   }
   const exit = await proc.exit
   if (exit.spawnError) throw spawnFailure(spec, exit)
-  if (!spec.parser.finished) yield* spec.parser.finish(exitReason(spec, exit))
+  if (!spec.parser.finished)
+    yield* spec.parser.finish(exitReason(spec, exit), { stopped: exit.aborted || exit.timedOut })
 }
 
 function spawnFailure(spec: CliRunSpec, exit: ProcessExit): Error {

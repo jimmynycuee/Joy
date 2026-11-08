@@ -25,6 +25,12 @@ claude -p <prompt>
 
 - **stdin 一定要關閉**（spawn 時 `stdio: ['ignore', 'pipe', 'pipe']`）。否則 CLI 會等 stdin 3 秒並印出警告。
 - 多輪對話可以用 `--input-format stream-json` 保持行程常駐；MVP 先用「每輪一個行程 + `--resume`」，比較簡單也容易恢復。
+- **2026-11-09 起，實作者的 run 用 streaming input 讓擁有者即時補充（steer）**：
+  - 旗標（本機 `claude --help`，2.1.319 確認）：`--input-format stream-json`（只能配 `-p`）；另有 `--replay-user-messages`（Joy 沒用）。
+  - stdin 一行一個 `{"type":"user","message":{"role":"user","content":"<text>"},"parent_tool_use_id":null}`（Agent SDK streaming input 文件的訊息形狀）；prompt 是第一則，命令列不再有 `-- <prompt>`，stdin 要 `pipe`。
+  - 官方文件（code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode）：streaming input 支援 queued messages、依序處理；範例在輸入結束後仍會回覆兩則訊息，Joy 據此在第一個 `result` 就關 stdin，之後的訊息由 server 排到下一輪。
+  - **未驗證**：turn 進行中收到的訊息是插在工具呼叫之間，還是排成下一個 turn（只有第三方資料與 GitHub issue 提到 CLI 會在工具呼叫之間取用）；兩種情況 Joy 都能處理（多個 `result` 時 `done` 只發一次、取最後一個）。多輪時 `total_cost_usd` 是否累計也未確認。
+  - 要錄的 fixture：一個 turn 進行中送第二則訊息、以及第一個 result 後才關 stdin 的完整輸出。
 
 ## 事件格式（stdout JSONL）
 
@@ -66,3 +72,4 @@ claude -p <prompt>
 - [ ] 在使用者的 Mac 上用訂閱帳號重錄一次（`init` 事件裡的 plugins / skills 會不同）
 - [ ] 撞到額度上限時的事件（T2.5）
 - [ ] Windows 原生：`claude` 是 `.cmd` 還是原生執行檔，影響 spawn 方式（T1.1）
+- [ ] `--input-format stream-json` 下 turn 進行中送訊息的真實事件（steer，見上）

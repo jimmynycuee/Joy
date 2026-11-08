@@ -20,6 +20,7 @@ interface ThreadState {
   usage?: unknown
   pendingPlan?: unknown
   queuedMessages?: unknown[]
+  steerable?: boolean
   interruptible?: boolean
   pr?: { status: number; json: unknown }
   checkpoints?: unknown[]
@@ -77,6 +78,7 @@ async function mockThread(page: Page, state: ThreadState, calls: Call[]) {
           usage: state.usage,
           pendingPlan: state.pendingPlan ?? null,
           queuedMessages: state.queuedMessages ?? [],
+          ...(state.steerable !== undefined ? { steerable: state.steerable } : {}),
           ...(state.interruptible !== undefined ? { interruptible: state.interruptible } : {}),
         },
       })
@@ -123,51 +125,52 @@ test('a follow-up on a finished task is sent from the thread and shows as a bubb
   await expect(composer).toHaveAttribute('placeholder', '訊息會在 agent 下一次動手時送達')
 })
 
-test('a message to a running agent interrupts its current step and is handed over', async ({ page }) => {
+test('a message to a running agent reaches it while it keeps working', async ({ page }) => {
   const state: ThreadState = {
     task: taskOf('running', 'steer-task'),
+    steerable: true,
     interruptible: true,
     events: [event('steer-task', 'started', {})],
   }
   const calls: Call[] = []
-  state.post = async (_path, body) => {
+  let answer: () => void = () => {}
+  state.post = async (_path, body, route) => {
     const text = (body as { text: string }).text
-    state.queuedMessages = [{ id: 's1', text }]
     state.events.push(
-      event('steer-task', 'user.message', { id: 's1', text, provenance: 'user', delivery: 'interrupt' }, 1),
+      event('steer-task', 'user.message', { id: 's1', text, provenance: 'user', delivery: 'steer' }, 1),
     )
+    // Hold the answer so the "being sent" state can be seen.
+    await new Promise<void>((resolve) => (answer = resolve))
+    state.events.push(event('steer-task', 'user.message.delivered', { ids: ['s1'], via: 'steer' }, 0))
+    await route.fulfill({ status: 202, json: { task: state.task, message: { id: 's1', delivery: 'steer' } } })
+    return true
   }
   await mockThread(page, state, calls)
 
   await page.goto('/?task=steer-task')
   const composer = page.getByLabel('傳訊息給任務')
-  await expect(composer).toHaveAttribute('placeholder', '傳訊息會打斷 agent 目前這一步，帶著訊息繼續')
-  await composer.fill('Stop, use the existing helper')
+  await expect(composer).toHaveAttribute('placeholder', '補充指示或提問，agent 會邊做邊參考')
+  await composer.fill('Use the existing helper; why did you add a new one?')
   await composer.press('Enter')
 
-  // The web app sends the default (interrupt) without asking for it explicitly.
-  await expect.poll(() => calls.map((call) => call.body)).toEqual([{ text: 'Stop, use the existing helper' }])
-  const bubble = page.locator('.user-column', { hasText: 'Stop, use the existing helper' })
-  await expect(bubble.getByTestId('message-tag')).toHaveText('正在打斷 agent…')
-  await expect(page.getByTestId('queued-messages')).toContainText('正在打斷 agent 目前這一步')
-
-  // The step stopped and the agent continued with the message.
-  state.queuedMessages = []
-  state.events.push(
-    event('steer-task', 'run.interrupted', { reason: 'owner_message' }, 0),
-    event('steer-task', 'user.message.delivered', { ids: ['s1'], via: 'interrupt' }, 0),
-    event('steer-task', 'started', {}, 0),
-  )
+  // The web app does not ask to interrupt: the default hands the message to the working agent.
+  await expect
+    .poll(() => calls.map((call) => call.body))
+    .toEqual([{ text: 'Use the existing helper; why did you add a new one?' }])
+  answer()
   await page.reload()
-  await expect(page.getByTestId('event-stream')).toContainText('已中斷目前這一步，帶著你的訊息繼續')
-  await expect(page.getByTestId('message-tag')).toHaveCount(0)
+  const bubble = page.locator('.user-column', { hasText: 'Use the existing helper' })
+  await expect(bubble.getByTestId('message-tag')).toHaveText('已送給 agent')
   await expect(page.getByTestId('queued-messages')).toHaveCount(0)
+  await expect(page.getByTestId('event-stream')).not.toContainText('已中斷目前這一步')
+  // The stop button is still there for an empty box.
+  await expect(page.getByRole('button', { name: '停止任務' })).toBeVisible()
 })
 
 test('a message during a review is queued until the next turn', async ({ page }) => {
   const state: ThreadState = {
     task: taskOf('running', 'queue-task'),
-    interruptible: false,
+    steerable: false,
     events: [event('queue-task', 'started', {})],
   }
   state.post = async (_path, body) => {
@@ -193,8 +196,9 @@ test('a message during a review is queued until the next turn', async ({ page })
   state.queuedMessages = []
   state.events.push(event('queue-task', 'user.message.delivered', { ids: ['q1'], via: 'next_turn' }, 0))
   await page.reload()
-  await expect(page.locator('.user-column', { hasText: 'Use the existing helper' })).toBeVisible()
-  await expect(page.getByTestId('message-tag')).toHaveCount(0)
+  const delivered = page.locator('.user-column', { hasText: 'Use the existing helper' })
+  await expect(delivered.getByTestId('message-tag')).toHaveText('已送給 agent')
+  await expect(page.getByTestId('queued-messages')).toHaveCount(0)
 })
 
 test('a busy task answers 409: a toast explains and the draft stays', async ({ page }) => {

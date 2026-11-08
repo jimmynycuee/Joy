@@ -64,6 +64,27 @@ describe('messageDeliveryStates', () => {
   })
 })
 
+describe('steered messages', () => {
+  it('is being sent until delivered, and falls back to the queue when the steer fails', () => {
+    const events = [message('a', 'steer')]
+    expect(messageDeliveryStates(events).get('a')).toBe('steering')
+    expect(
+      messageDeliveryStates([...events, event('user.message.delivered', { ids: ['a'], via: 'steer' })]).get(
+        'a',
+      ),
+    ).toBe('delivered')
+    const requeued = [...events, event('user.message.requeued', { ids: ['a'], reason: 'steer_failed' })]
+    expect(messageDeliveryStates(requeued).get('a')).toBe('queued')
+    expect(
+      messageDeliveryStates([
+        ...requeued,
+        event('user.message.delivered', { ids: ['a'], via: 'next_turn' }),
+      ]).get('a'),
+    ).toBe('delivered')
+    expect(messageDeliveryStates(events, { queuedIds: new Set(), busy: false }).get('a')).toBe('lost')
+  })
+})
+
 describe('interrupting messages', () => {
   it('stays interrupting until the delivered event, and can be withdrawn or lost like a queued one', () => {
     const events = [message('a', 'interrupt'), message('b', 'interrupt'), message('c', 'interrupt')]
@@ -111,6 +132,7 @@ describe('interrupting messages', () => {
         ]),
       ),
     ).toBe('正在打斷 agent 目前這一步，停下來後會帶著你的訊息繼續')
+    expect(pendingMessagesNote(new Map([['a', 'steering']]))).toBe('正在把訊息交給 agent，它不會停下來')
   })
 })
 
@@ -120,7 +142,8 @@ describe('deliveryTag', () => {
     expect(deliveryTag('interrupting')).toBe('正在打斷 agent…')
     expect(deliveryTag('discarded')).toBe('已撤回')
     expect(deliveryTag('lost')).toBe('未送達')
-    expect(deliveryTag('delivered')).toBeUndefined()
+    expect(deliveryTag('steering')).toBe('正在送給 agent…')
+    expect(deliveryTag('delivered')).toBe('已送給 agent')
     expect(deliveryTag('sent')).toBeUndefined()
   })
 })
@@ -129,11 +152,11 @@ describe('followUpState', () => {
   const base = { status: 'done', mode: 'review_loop', worktreeRemoved: false, pendingPlan: false }
 
   it('words the placeholder after what the message will do', () => {
-    expect(followUpState({ ...base, status: 'running', interruptible: true }).placeholder).toBe(
-      '傳訊息會打斷 agent 目前這一步，帶著訊息繼續',
+    expect(followUpState({ ...base, status: 'running', steerable: true }).placeholder).toBe(
+      '補充指示或提問，agent 會邊做邊參考',
     )
-    // A review, checks or setup, or a server that does not say: no promise to interrupt.
-    expect(followUpState({ ...base, status: 'running', interruptible: false }).placeholder).toBe(
+    // A review, checks or setup, a backend that cannot steer, or a server that does not say: no promise.
+    expect(followUpState({ ...base, status: 'running', steerable: false }).placeholder).toBe(
       '訊息會在 agent 下一次動手時送達',
     )
     expect(followUpState({ ...base, status: 'running' }).placeholder).toBe('訊息會在 agent 下一次動手時送達')

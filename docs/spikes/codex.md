@@ -65,9 +65,16 @@ codex exec resume --json [-m <model>] <thread_id> <prompt>
 - 沒有網路時，Codex 會持續重試（WebSocket → HTTPS fallback → 等待網路），**不會自己結束**。adapter 一定要有逾時與取消。
 - `error` 事件與 `item.completed` 裡的 `error` item 都出現了，兩者都不是致命錯誤。
 
+## app-server：執行中補充（`turn/steer`，2026-11-09）
+
+- 以本機 codex-cli 0.166.0 的 `codex app-server generate-json-schema` 確認：`turn/steer` 參數 `{threadId, expectedTurnId, input: UserInput[], clientUserMessageId?}`（前三者必填），回應 `{turnId}`；`expectedTurnId` 與目前進行中的 turn 不符就失敗。另有 `turn/interrupt`（Joy 沒用）。
+- Joy 用 `turn/start` 回應裡的 `turn.id` 當 `expectedTurnId`，`turn/completed` 後就不再送。
+- **未驗證**：真實 app-server 對 steer 的事件（是否另有通知、agent 何時讀到）；contract test 用的是合成的假 app-server。
+
 ## 待確認（要在使用者的 Mac 上做）
 
 - [ ] 執行 `node scripts/record-fixtures.mjs codex`，錄下 edit / mcp / resume 的真實事件
 - [ ] 確認 MCP 用 `-c` 注入在 `exec` 模式下可用
 - [ ] Windows 原生是否可用；不行就走 WSL（T4.4）
 - [ ] 確認可用的模型名稱，更新 PLAN §3.3
+- [ ] 錄一次 app-server 的 `turn/steer`（turn 進行中送補充訊息）

@@ -118,6 +118,20 @@ export function withOwnerMessages(prompt: string, messages: string[]): string {
   ].join('\n')
 }
 
+/**
+ * An owner message handed to the agent while it keeps working (steering). It does not stop the agent, so it says how
+ * to fit the message in: weigh it in, answer a question, then go on with the task.
+ */
+export function steerMessage(text: string): string {
+  return [
+    'The owner sent this message while you were working. You were not stopped; keep your current work.',
+    'Take it into account from now on (it takes priority over earlier instructions). If it is a question, answer it briefly first, then carry on with the task unless it tells you to stop.',
+    '',
+    "The owner's message:",
+    text,
+  ].join('\n')
+}
+
 /** The owner continues a finished task in the same session and worktree. */
 export function followUpPrompt(messages: string[]): string {
   return [

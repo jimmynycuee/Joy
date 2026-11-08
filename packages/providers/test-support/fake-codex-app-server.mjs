@@ -65,6 +65,14 @@ lines.on('line', (line) => {
   }
   if (message.method === 'turn/start') {
     send({ id: message.id, result: { turn: { id: 'turn-synthetic-1' } } })
+    // 'steer' / 'steer-reject': the turn waits for a `turn/steer` before it goes on (synthetic; not yet recorded).
+    if (!process.env.FAKE_APP_SERVER_MODE?.startsWith('steer')) streamTurn()
+    return
+  }
+  if (message.method === 'turn/steer') {
+    if (process.env.FAKE_APP_SERVER_MODE === 'steer-reject')
+      send({ id: message.id, error: { code: -32600, message: 'expected turn is not active' } })
+    else send({ id: message.id, result: { turnId: message.params.expectedTurnId } })
     streamTurn()
     return
   }

@@ -7,6 +7,7 @@ export {
   interruptedPrompt,
   planPrompt,
   revisePlanPrompt,
+  steerMessage,
   withOwnerMessages,
 } from './prompts.js'
 export type { ChecksResult } from './prompts.js'

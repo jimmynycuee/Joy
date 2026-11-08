@@ -141,9 +141,19 @@ export function eventTitle(event: TaskEvent): string {
   if (event.type === 'compete.judgement') return '裁判已比較兩個方案'
   if (event.type === 'compete.chosen') return '你選好了一個方案'
   if (event.type === 'user.message' && typeof payload?.text === 'string') return payload.text
-  if (event.type === 'user.message.delivered')
-    return payload?.via === 'interrupt' ? '已打斷 agent，訊息已交給它' : '訊息已交給 agent'
-  if (event.type === 'user.message.requeued') return '沒有打斷成，訊息改為等 agent 下一次動手'
+  if (event.type === 'user.message.delivered') {
+    if (payload?.via === 'interrupt') return '已打斷 agent，訊息已交給它'
+    if (payload?.via === 'steer') return '訊息已送給 agent，它會邊做邊參考'
+    return '訊息已交給 agent'
+  }
+  if (event.type === 'user.message.requeued')
+    return payload?.reason === 'steer_failed'
+      ? '沒能即時送給 agent，訊息改為等它下一次動手'
+      : '沒有打斷成，訊息改為等 agent 下一次動手'
+  if (event.type === 'steer.available')
+    return payload?.available === true
+      ? 'agent 可以邊做邊收你的訊息'
+      : 'agent 這一步結束，訊息改為下一次動手時送達'
   if (event.type === 'run.interrupted') return '已中斷目前這一步，帶著你的訊息繼續'
   if (event.type === 'user.message.discarded') return '訊息已撤回'
   if (event.type === 'plan.awaiting_approval') return '計畫寫好了，等你核准'
@@ -181,6 +191,7 @@ const QUIET_EVENTS = new Set([
   'user.message.delivered',
   'user.message.discarded',
   'user.message.requeued',
+  'steer.available',
   'checkpoint.created',
   'task.updated',
 ])

@@ -2,13 +2,29 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-08（執行中插話會打斷目前這一步）
+- 最後更新：2026-11-09（執行中插話改為即時補充，不打斷 agent）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
 ## 驗證結果
 
-### 執行中插話會打斷目前這一步（後端＋前端）
+### 執行中插話改為即時補充（steer，不打斷 agent）
+
+擁有者不要 #132 的「打斷再接續」當預設。現在任務執行中送訊息，預設**直接交給正在工作的實作者，agent 不停下來**，邊做邊參考（是問題就先簡短回答再繼續）。#132 的中斷機制保留，只在 `POST /messages` 明確帶 `interrupt: true` 時使用。
+
+- **core 介面（擁有者待審）**：`RunOptions` 加可選的 `onSteer?: (steer: Steer | undefined) => void`，新型別 `Steer = (text) => Promise<boolean>`。provider 能接受補充時呼叫 `onSteer(fn)`，不能再接受時呼叫 `onSteer(undefined)`；不支援的 provider（Codex `exec --json`、OpenAI API、container 包裝的 Claude）從不呼叫，等同「沒有這個能力」。沒有改 `ProviderCapabilities`、`AgentProvider`。
+- **Codex app-server**：`turn/start` 回應的 `turn.id` 拿到後提供 steer，送 `turn/steer {threadId, expectedTurnId, input:[{type:'text', text, text_elements:[]}]}`（schema 以本機 codex-cli 0.166.0 的 `codex app-server generate-json-schema` 確認：三者必填，回應 `{turnId}`；不是 experimental 方法）。回錯誤（例如 turn 已結束、`expectedTurnId` 不符）就回 false；`turn/completed` 後、或 run 結束時撤回 steer。`exec` fallback 不提供。
+- **Claude Code**：只有呼叫端給 `onSteer`（也就是實作者的 run）才改用 `--input-format stream-json`：prompt 不再放命令列，而是 stdin 第一則 `{"type":"user","message":{"role":"user","content":…},"parent_tool_use_id":null}`；擁有者訊息是之後的同格式 JSONL。**第一個 `result` 出現就關 stdin**，之後的 steer 回 false；CLI 收到 EOF 後仍會處理已收到、排隊中的訊息再結束（官方 streaming input 文件的範例即是產生器結束後兩則都有回覆）。parser 的 `multiTurn` 模式下每個 `result` 照常發 `usage`（失敗時另發 `error`），`done` 延到行程結束、用最後一個 `result`；行程被取消／逾時則照舊回失敗的 `done`。審查者、助理、其他角色仍是原本的一次一行程 `-p … -- <prompt>`。容器模式（`wrap`）不改：`docker run` 沒有 `-i`，stdin 傳不進去。取消（kill process tree）、`--resume`、Windows `.cmd` shim（仍不經 shell、仍用 `resolveCommandCached`）沿用同一個 `runJsonlProcess`，只是 stdin 改成 `pipe`。
+- **server 流程**（`postTaskMessage`，`interrupt` 預設改為 `false`）：任務在跑、實作者那一輪正在進行（`implementerTurn`）、狀態 `running`、沒有被取消／上限停下／暫停／打斷、且 run 提供了 steer（`canSteer`）→ 發 `user.message {delivery:'steer'}`，把訊息包上 `steerMessage()`（「擁有者在你工作時傳來這則訊息，你沒有被停下；之後要參考它、優先於先前指示；是問題就先簡短回答再繼續」）交給 steer（15 秒逾時）。成功發 `user.message.delivered {via:'steer'}`，回 `delivery: 'steer'`；失敗、逾時或丟錯就放進排隊、發 `user.message.requeued {ids, reason:'steer_failed'}`，回 `delivery: 'queued'`，照舊在下一次實作者動手或結束後 follow-up 送達。路由在 `exclusive` 結束後再呼叫一次 `continueWithQueuedMessages`，處理「steer 期間 run 剛好結束」的訊息。審查、送審前檢查、等待核准、額度排隊、不支援的 provider：照舊排隊、不打斷。`interrupt: true` 走 #132 原路徑（不 steer）。外部內容任務沒有另外的分支：擁有者的訊息仍是 `provenance: 'user'`，任務提出的動作照舊依 `external_content` 分類。
+- **steer 的生命週期**：`steerHook(taskId)` 給 single、先規劃、review_loop（只給實作者的 run：規劃、實作、修正；`reviewLoop` 新輸入 `onSteer`）。provider 提供／撤回 steer 時發安靜事件 `steer.available {available}`（讓前端重新讀取 `steerable`）。`GET /api/tasks/:id` 新增 `steerable`；`interruptible` 保留，表示 `interrupt: true` 現在是否會打斷。
+- **審查者看得到 steer 的訊息**：`reviewLoop` 新輸入 `reviewBrief: () => string`，每次審查前重新讀任務說明（server 傳 `taskBrief(task)`，包含擁有者每則未撤回的訊息）。以前說明在 run 開始時固定，同一個 run 裡補充的指示審查者看不到，會把照指示做的改動當成偏題。
+- **前端**：輸入框提示依 `steerable`：可即時補充「補充指示或提問，agent 會邊做邊參考」，執行中但不行「訊息會在 agent 下一次動手時送達」。新的送達狀態 `steering`（標「正在送給 agent…」），送達後標「已送給 agent」（所有送達的訊息都標）；steer 失敗退回排隊時標「排隊中」。時間軸顯示細節：`user.message.delivered {via:'steer'}` 是「訊息已送給 agent，它會邊做邊參考」，`requeued {reason:'steer_failed'}` 是「沒能即時送給 agent，訊息改為等它下一次動手」，`steer.available` 是安靜事件。前端只送 `{text}`（不再暗中依賴打斷）；「停止任務」鍵不變；修 CI 仍送 `interrupt: false`。
+- **測試**：providers：Codex `turn/steer` 合成 contract（參數、成功、被拒回 false、turn 結束後回 false、不給 `onSteer` 就不送）；Claude streaming（stdin 內容與旗標、run 中 steer、第一個 result 後關 stdin 並拒收、CLI 把訊息排成下一輪時兩個 result 只有一個 `done`、沒補充時等同一次性 run、取消、`wrap` 時維持舊命令列）。假 CLI：`fake-cli.mjs` 的 `FAKE_MODE=stream`、`fake-codex-app-server.mjs` 的 `steer`／`steer-reject` 模式（都標明是合成、未錄製）。orchestrator：只有實作者拿到 `onSteer`、每次審查重讀 `reviewBrief`。server `thread-api.test.ts` 新增 8 個：steer 送達且 run 未被中止、只有一個 result、`steer.available` 與 `steerable`；連發兩則各送達一次；不支援時排隊不中止；steer 失敗退回排隊並在下一輪送達；steer 進行中 run 結束仍 follow-up；取消與進行中的 steer 競態（取消優先、訊息撤回）；review_loop 實作中 steer、審查中排隊、審查者沒有 `onSteer` 且說明含補充；`interrupt: true` 在可 steer 時仍打斷。原本 #132 的 12 個打斷測試改成明確送 `interrupt: true`。web vitest（`messages`、`timeline`、`useTaskDetails`）與 e2e `thread-api.spec.ts`（「執行中送訊息會在 agent 工作時送達」、審查中排隊、送達標「已送給 agent」）。
+- **沒驗證到（真實 CLI）**：(1) Claude Code 在 `--input-format stream-json` 下，turn 進行中收到的使用者訊息是在工具呼叫之間插入、還是排成下一個 turn（兩種都已用假 CLI 涵蓋，但真實行為只有第三方資料，官方文件只寫 queued messages 依序處理）；(2) EOF 後 CLI 是否一定處理完已收到的訊息才結束（依官方範例推論）；(3) 多輪時 `result.total_cost_usd` 是累計還是單輪（目前每個 result 照加，若是累計則 UI 的估計成本會多算；Claude 訂閱不計費，不影響上限）；(4) Codex `turn/steer` 的真實回應與事件只依 schema。需要擁有者用 `scripts/record-fixtures.mjs` 錄製後再確認。
+
+### 執行中插話會打斷目前這一步（#132；現在只在 `interrupt: true` 時）
+
+> 2026-11-09 起不是預設，見上一節。以下是 #132 當時的說明。
 
 擁有者在任務執行中送的訊息，以前要等下一輪才送達；現在預設**打斷實作者目前這一輪，同一個 worktree、同一個 session 帶著訊息接續**（跟 Claude Code／Codex 的體驗一樣）。沒有改 `packages/core`、`packages/policy`。
 
@@ -181,6 +197,7 @@
 
 ## 已確認決策
 
+- 2026-11-09 執行中插話改為即時補充（擁有者要求不打斷；細節為 agent 決定，待擁有者確認）：(1) `POST /messages` 預設 `interrupt: false`，可即時補充就 steer，不行就排隊，#132 打斷只在 `interrupt: true`；(2) 只 steer 實作者，審查／檢查／核准／額度排隊時照舊排隊；(3) Claude 只有實作者的 run 用 `--input-format stream-json`，第一個 `result` 就關 stdin，之後的訊息退回排隊；容器模式不用；(4) steer 失敗或 15 秒逾時就退回排隊（逾時後 CLI 若仍收到，可能送達兩次）；(5) 改 `packages/core` 的 `RunOptions`（可選 `onSteer`、新型別 `Steer`），列入擁有者待審；(6) 每次審查重讀任務說明，讓審查者看到同一 run 中補充的指示。
 - 2026-11-08 執行中插話（agent 決定，待擁有者確認）：(1) 預設打斷實作者目前這一輪、同一 session 帶著訊息接續，`interrupt: false` 保留排隊；(2) 審查、送審前檢查、等待核准、額度排隊、建立 worktree 時不打斷，照舊排隊；(3) 取消優先於打斷，訊息撤回；(4) 打斷後接續沿用原本的截止時間與剩下的審查輪數（reviewer 審查後改定，取代「從頭算」）；(5) 不改 `packages/core`：新事件 `run.interrupted` 與 `delivery: 'interrupt'`／`via: 'interrupt'` 只是事件 payload。
 - 2026-11-08 新任務頁模型選單（agent 決定）：(1) 沒選模型就不送 `roleOverrides`，照設定由伺服器解析；(2) 只送被選的角色，不送 `orchestrator`；(3) 投入程度五檔沿用 `EFFORT_LABELS`（低／中／高／很高／最高），不另外叫「極高」；(4) web 複製 `@joy/model-effort` 的 effort 表並以測試比對，不新增 workspace 依賴；(5) 「照設定」「平衡」「省額度」「最強」放在選單的快速套用，其中「照設定」是回到不覆寫的方式。
 - 2026-11-08 任務頁：串流回覆（Codex、OpenAI API 逐段送的 `message`／`thinking`）在時間軸合併成一則；輸入框右下顯示實作與審查模型；停止鍵移到輸入框（執行中、輸入框空白時送出鍵變停止），標頭不再有停止鈕。
@@ -402,21 +419,22 @@
 
 2026-11-06 由 agent 代為審查（擁有者授權）。下表為結論；擁有者可只看「發現」欄。
 
-| 項目                                                                  | 審查方式                       | 結論       | 發現                                                                                                                                                                        |
-| --------------------------------------------------------------------- | ------------------------------ | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| #73 本機 API／WebSocket token                                         | 獨立審查（非作者）             | 通過       | Windows 上 token 檔只依賴使用者資料夾的預設 ACL，T4.4 實機確認                                                                                                              |
-| #54 GitHub publisher                                                  | 獨立審查                       | 已修       | 內容掃描認不得私鑰與 AWS／Slack／Google／Stripe／GitLab 憑證 → 已加入 Redactor；**publisher 從未接到 server/UI → 新增 T1.9b**                                               |
-| #57 provider 允許清單                                                 | 獨立審查                       | 通過       | —                                                                                                                                                                           |
-| #58 core 介面、機密遮罩                                               | 獨立審查                       | 通過       | —                                                                                                                                                                           |
-| #62 `joy doctor` 鑰匙圈                                               | 獨立審查                       | 通過       | 只查詢隨機、不存在的帳號                                                                                                                                                    |
-| #84 權限規則                                                          | 擁有者已審（2026-11-06）       | 通過       | —                                                                                                                                                                           |
-| T2.7b、T2.4a、T2.4b                                                   | `/code-review`（high）         | 已修 9／10 | 見下                                                                                                                                                                        |
-| T3.3 記憶寫入規則（`packages/memory`）                                | **待擁有者審**                 | —          | 什麼會被記住、什麼一定擋下；agent 不審自己訂的規則                                                                                                                          |
-| T3.5 專案記憶寫入（`packages/memory/src/project.ts`）                 | **待擁有者審**                 | —          | Joy 會寫進 repo 的內容與衝突處理；issue #36 的兩點已照驗收條件實作                                                                                                          |
-| T4.1 遠端存取（`remote` 設定、token 重新產生、`packages/server`）     | 已審（2026-11-07）             | —          | 預設關閉；開啟前請確認只填 Tailscale IP，並看過 Host／Origin 與 401 的處理                                                                                                  |
-| T4.2 Web Push 金鑰（鑰匙圈新 secret `web_push_vapid_keys`）           | **待擁有者審**（機密處理）     | —          | 金鑰只在本機產生、存鑰匙圈；推播內容經遮罩與加密                                                                                                                            |
-| T3.8 外部 MCP 工具的動作分類（`packages/server/src/external-mcp.ts`） | **待擁有者審**（等同權限分類） | —          | 不改 policy 規則，但哪些 Google 工具算「讀」「自己的行程」「寄信／邀請」由這裡決定；不認得的一律要核准                                                                      |
-| T3.6、T3.7、T3.9、T2.1                                                | `/code-review`（high）         | 已修 9／10 | compete 同時選擇／合併的競態、合併中重啟卡住、合併無時間上限、通知誤寫成審查未過、排程器關閉時未處理的 rejection；**未修：cron 補跑逐次計算（只在啟動時跑一次，成本有限）** |
+| 項目                                                                           | 審查方式                       | 結論       | 發現                                                                                                                                                                        |
+| ------------------------------------------------------------------------------ | ------------------------------ | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #73 本機 API／WebSocket token                                                  | 獨立審查（非作者）             | 通過       | Windows 上 token 檔只依賴使用者資料夾的預設 ACL，T4.4 實機確認                                                                                                              |
+| #54 GitHub publisher                                                           | 獨立審查                       | 已修       | 內容掃描認不得私鑰與 AWS／Slack／Google／Stripe／GitLab 憑證 → 已加入 Redactor；**publisher 從未接到 server/UI → 新增 T1.9b**                                               |
+| #57 provider 允許清單                                                          | 獨立審查                       | 通過       | —                                                                                                                                                                           |
+| #58 core 介面、機密遮罩                                                        | 獨立審查                       | 通過       | —                                                                                                                                                                           |
+| #62 `joy doctor` 鑰匙圈                                                        | 獨立審查                       | 通過       | 只查詢隨機、不存在的帳號                                                                                                                                                    |
+| #84 權限規則                                                                   | 擁有者已審（2026-11-06）       | 通過       | —                                                                                                                                                                           |
+| T2.7b、T2.4a、T2.4b                                                            | `/code-review`（high）         | 已修 9／10 | 見下                                                                                                                                                                        |
+| T3.3 記憶寫入規則（`packages/memory`）                                         | **待擁有者審**                 | —          | 什麼會被記住、什麼一定擋下；agent 不審自己訂的規則                                                                                                                          |
+| T3.5 專案記憶寫入（`packages/memory/src/project.ts`）                          | **待擁有者審**                 | —          | Joy 會寫進 repo 的內容與衝突處理；issue #36 的兩點已照驗收條件實作                                                                                                          |
+| T4.1 遠端存取（`remote` 設定、token 重新產生、`packages/server`）              | 已審（2026-11-07）             | —          | 預設關閉；開啟前請確認只填 Tailscale IP，並看過 Host／Origin 與 401 的處理                                                                                                  |
+| T4.2 Web Push 金鑰（鑰匙圈新 secret `web_push_vapid_keys`）                    | **待擁有者審**（機密處理）     | —          | 金鑰只在本機產生、存鑰匙圈；推播內容經遮罩與加密                                                                                                                            |
+| T3.8 外部 MCP 工具的動作分類（`packages/server/src/external-mcp.ts`）          | **待擁有者審**（等同權限分類） | —          | 不改 policy 規則，但哪些 Google 工具算「讀」「自己的行程」「寄信／邀請」由這裡決定；不認得的一律要核准                                                                      |
+| 執行中即時補充：`packages/core` 的 `RunOptions.onSteer`／`Steer`（2026-11-09） | **待擁有者審**（core 介面）    | —          | 可選欄位，不支援的 provider 不用動；另需擁有者錄 Claude stream-json 與 Codex `turn/steer` 的真實 fixture                                                                    |
+| T3.6、T3.7、T3.9、T2.1                                                         | `/code-review`（high）         | 已修 9／10 | compete 同時選擇／合併的競態、合併中重啟卡住、合併無時間上限、通知誤寫成審查未過、排程器關閉時未處理的 rejection；**未修：cron 補跑逐次計算（只在啟動時跑一次，成本有限）** |
 
 `/code-review` 的發現與處理：重啟時等待核准的任務會卡住（已修）；核准紀錄的 detail 未遮罩（已修）；同任務多個待核准時狀態被提早改回（已修）；Telegram 群組中任何人可按核准（已修，只接受擁有者本人的私訊）；同步決定要等到逾時才生效（已修）；UI 每個事件都重抓待核准清單（已修）；沒有 token 時每分鐘警告（已修，只警告一次）；完成通知未遮罩（已修）；命名與重複程式（已修）；**Telegram 設定要重啟才生效（未修，留待之後）**。
 

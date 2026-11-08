@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { AgentEvent, RunOptions } from '@joy/core'
+import type { AgentEvent, RunOptions, Steer } from '@joy/core'
 import { afterEach, describe, expect, it } from 'vitest'
 import { fakeCli, fixturePath } from '../../test-support/fixtures.js'
 import { ClaudeCliProvider } from './provider.js'
@@ -118,6 +118,123 @@ describe('ClaudeCliProvider.run', () => {
   it('throws a helpful error when the CLI is not installed', async () => {
     const provider = new ClaudeCliProvider({ command: 'joy-definitely-not-installed' })
     await expect(collect(provider.run(opts(tmpdir()), model))).rejects.toThrow(/Claude Code CLI not found/)
+  })
+})
+
+// Streaming input (`--input-format stream-json`) against a synthetic stand-in: the real CLI's handling of a message
+// that arrives mid-turn is not recorded yet (docs/spikes/claude-code.md).
+describe('ClaudeCliProvider.run with steering', () => {
+  function steered(env: Record<string, string> = {}) {
+    const out = mkdtempSync(join(tmpdir(), 'joy-claude-stdin-'))
+    dirs.push(out)
+    const stdinOut = join(out, 'stdin.jsonl')
+    const s = setup({ FAKE_MODE: 'stream', FAKE_STDIN_OUT: stdinOut, ...env })
+    const stdin = () =>
+      readFileSync(stdinOut, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as unknown)
+    return { ...s, stdin }
+  }
+  async function run(
+    provider: ClaudeCliProvider,
+    dir: string,
+    onEvent: (event: AgentEvent, steer: Steer | undefined) => void,
+  ) {
+    const offered: Array<Steer | undefined> = []
+    const events: AgentEvent[] = []
+    for await (const event of provider.run(
+      opts(dir, { resumeSessionId: 'abc', onSteer: (steer) => offered.push(steer) }),
+      model,
+    )) {
+      events.push(event)
+      onEvent(event, offered.at(-1))
+    }
+    return { events, offered }
+  }
+
+  it('sends the prompt on stdin, keeps the process for owner messages, then closes stdin at the result', async () => {
+    const { dir, provider, received, stdin } = steered()
+    const results: Array<Promise<boolean>> = []
+    const { events, offered } = await run(provider, dir, (event, steer) => {
+      if (event.type === 'session_started' && steer) results.push(steer('also update the docs'))
+    })
+    expect(await Promise.all(results)).toEqual([true])
+    const args = received().args
+    expect(args).toEqual(expect.arrayContaining(['--input-format', 'stream-json', '--resume', 'abc']))
+    expect(args).not.toContain('--')
+    expect(args).not.toContain('fix it')
+    expect(stdin()).toEqual([
+      { type: 'user', message: { role: 'user', content: 'fix it' }, parent_tool_use_id: null },
+      {
+        type: 'user',
+        message: { role: 'user', content: 'also update the docs' },
+        parent_tool_use_id: null,
+      },
+    ])
+    expect(events.some((e) => e.type === 'message' && e.text === 'steered: also update the docs')).toBe(true)
+    expect(events.filter((e) => e.type === 'done')).toEqual([
+      expect.objectContaining({ type: 'done', isError: false, finalMessage: 'turn 1 done' }),
+    ])
+    expect(offered.map((steer) => typeof steer)).toEqual(['function', 'undefined'])
+    expect(await offered[0]?.('too late')).toBe(false)
+  })
+
+  it('answers a message the CLI queued as its own turn before exiting, with a single done', async () => {
+    const { dir, provider } = steered({ FAKE_STREAM_QUEUE: '1' })
+    let sent = false
+    const { events } = await run(provider, dir, (event, steer) => {
+      if (event.type === 'message' && !sent && steer) {
+        sent = true
+        void steer('and the changelog')
+      }
+    })
+    expect(events.filter((e) => e.type === 'usage')).toHaveLength(2)
+    expect(events.filter((e) => e.type === 'done')).toEqual([
+      expect.objectContaining({ isError: false, finalMessage: 'turn 2 done' }),
+    ])
+    expect(events.some((e) => e.type === 'message' && e.text === 'got: and the changelog')).toBe(true)
+  })
+
+  it('ends without owner messages like a one-shot run', async () => {
+    const { dir, provider, stdin } = steered()
+    const { events } = await run(provider, dir, () => {})
+    expect(stdin()).toHaveLength(1)
+    expect(events[0]?.type).toBe('session_started')
+    expect(events.filter((e) => e.type === 'done')).toHaveLength(1)
+  })
+
+  it('cancels a streaming run and refuses messages afterwards', async () => {
+    const { dir, provider, received } = steered({ FAKE_STREAM_HOLD_MS: '60000' })
+    const controller = new AbortController()
+    let steer: Steer | undefined
+    const events: AgentEvent[] = []
+    for await (const event of provider.run(
+      opts(dir, { signal: controller.signal, onSteer: (s) => (steer ??= s) }),
+      model,
+    )) {
+      events.push(event)
+      if (event.type === 'session_started') controller.abort()
+    }
+    expect(events.at(-1)).toMatchObject({ type: 'done', isError: true })
+    expect(await steer?.('late')).toBe(false)
+    await waitFor(() => !alive(received().pid))
+  })
+
+  it('keeps the one-shot command line when the run is wrapped (containers do not forward stdin)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'joy-claude-test-'))
+    dirs.push(dir)
+    const argsOut = join(dir, 'args.json')
+    const provider = new ClaudeCliProvider({
+      command: process.execPath,
+      env: { ...process.env, FAKE_ARGS_OUT: argsOut, FAKE_REPLAY: fixturePath('claude', 'edit') },
+      wrap: ({ command, args }) => Promise.resolve({ command, args: [fakeCli, ...args] }),
+    })
+    const offered: unknown[] = []
+    await collect(provider.run(opts(dir, { onSteer: (steer) => offered.push(steer) }), model))
+    const { args } = JSON.parse(readFileSync(argsOut, 'utf8')) as { args: string[] }
+    expect(args.slice(-2)).toEqual(['--', 'fix it'])
+    expect(offered).toEqual([])
   })
 })
 

@@ -14,6 +14,11 @@ const DROPPED = new Set(['stream_event'])
 export interface ClaudeParserOptions {
   /** Worktree path; file paths inside it are reported relative to it. */
   cwd?: string
+  /**
+   * Streaming input (`--input-format stream-json`): the process may answer several user messages, each ending with a
+   * `result`, so `done` is held until the process exits and then reflects the last result.
+   */
+  multiTurn?: boolean
 }
 
 export class ClaudeStreamParser {
@@ -23,6 +28,8 @@ export class ClaudeStreamParser {
   /** Claude emits a few events before `system/init`; hold them so `session_started` is always first. */
   private beforeInit: AgentEvent[] = []
   private readonly pendingFileTools = new Map<string, { path: string; tool: string }>()
+  /** Multi-turn: the `done` of the latest result, emitted when the process exits. */
+  private lastDone: AgentEvent | undefined
 
   constructor(private readonly options: ClaudeParserOptions = {}) {}
 
@@ -77,10 +84,14 @@ export class ClaudeStreamParser {
     return [{ type: 'raw', source: 'claude-cli', payload: line }]
   }
 
-  /** Call when the process has exited. Emits a failing `done` if the CLI never sent `result`. */
-  finish(reason: string): AgentEvent[] {
+  /**
+   * Call when the process has exited. Emits a failing `done` if the CLI never sent `result`; in multi-turn mode a
+   * process that was not stopped ends with the last result's `done`.
+   */
+  finish(reason: string, exit: { stopped: boolean } = { stopped: true }): AgentEvent[] {
     if (this.done) return []
     this.done = true
+    if (this.lastDone && !exit.stopped) return [...this.flushHeld(), this.lastDone]
     return [
       ...this.flushHeld(),
       { type: 'error', message: reason, recoverable: false },
@@ -184,7 +195,7 @@ export class ClaudeStreamParser {
   }
 
   private result(line: Rec): AgentEvent[] {
-    this.done = true
+    if (!this.options.multiTurn) this.done = true
     const usage = rec(line.usage)
     const isError = line.is_error === true
     const final = str(line.result)
@@ -205,13 +216,15 @@ export class ClaudeStreamParser {
         recoverable: false,
       })
     }
-    events.push({
+    const done: AgentEvent = {
       type: 'done',
       sessionId: str(line.session_id) ?? this.sessionId ?? '',
       isError,
       ...opt('finalMessage', final),
       ...opt('structured', line.structured_output ?? undefined),
-    })
+    }
+    if (this.options.multiTurn) this.lastDone = done
+    else events.push(done)
     return events
   }
 

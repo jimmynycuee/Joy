@@ -8,10 +8,13 @@ import type {
   ProviderCapabilities,
   ProviderHealth,
   RunOptions,
+  Steer,
 } from '@joy/core'
-import type { CommandWrapper } from '../cli-run.js'
+import type { CommandWrapper, StreamParser } from '../cli-run.js'
 import { probeVersion, runCli } from '../cli-run.js'
-import { buildClaudeArgs, mcpConfigJson } from './args.js'
+import { isRecord } from '../guards.js'
+import type { ProcessInput } from '../process.js'
+import { buildClaudeArgs, claudeUserMessage, mcpConfigJson } from './args.js'
 import { ClaudeStreamParser } from './parse.js'
 
 export interface ClaudeCliOptions {
@@ -53,6 +56,9 @@ export class ClaudeCliProvider implements AgentProvider {
   }
 
   async *run(opts: RunOptions, model: ModelRef): AsyncGenerator<AgentEvent> {
+    // Streaming input only when the caller can steer: the one-shot `-p <prompt>` path stays as recorded in the
+    // fixtures. A wrapped (container) run keeps it too, since `docker run` without `-i` does not forward stdin.
+    const steering = opts.onSteer && !this.wrap ? new ClaudeSteering(opts) : undefined
     let tmp: string | undefined
     try {
       let mcpConfigPath: string | undefined
@@ -66,16 +72,20 @@ export class ClaudeCliProvider implements AgentProvider {
         source: 'claude-cli',
         label: 'Claude Code',
         ...(await this.commandLine(
-          [...this.argsPrefix, ...buildClaudeArgs(opts, model, mcpConfigPath)],
+          [...this.argsPrefix, ...buildClaudeArgs(opts, model, mcpConfigPath, Boolean(steering))],
           opts.cwd,
         )),
         cwd: opts.cwd,
         signal: opts.signal,
         timeoutMs: this.timeoutMs,
-        parser: new ClaudeStreamParser({ cwd: opts.cwd }),
+        parser: steering
+          ? steering.watch(new ClaudeStreamParser({ cwd: opts.cwd, multiTurn: true }))
+          : new ClaudeStreamParser({ cwd: opts.cwd }),
+        ...(steering ? { onInput: (input: ProcessInput) => steering.start(input) } : {}),
         ...(this.env ? { env: this.env } : {}),
       })
     } finally {
+      steering?.close()
       if (tmp) await rm(tmp, { recursive: true, force: true })
     }
   }
@@ -96,5 +106,51 @@ export class ClaudeCliProvider implements AgentProvider {
       ...(probe.version ? { version: probe.version } : {}),
       ...(probe.detail ? { detail: probe.detail } : {}),
     }
+  }
+}
+
+/**
+ * Streaming input for one run: the prompt is the first stdin message, owner messages follow while the agent works.
+ * Claude Code queues a message that arrives mid-turn and handles it in the same process (between tool calls, or as the
+ * next turn), so stdin is closed at the first `result`: the CLI still answers what it already received, then exits.
+ * A message that comes after that is refused, and the caller delivers it another way.
+ */
+class ClaudeSteering {
+  private input: ProcessInput | undefined
+  private closed = false
+
+  constructor(private readonly opts: RunOptions) {}
+
+  readonly steer: Steer = (text) => {
+    if (this.closed || !this.input || this.opts.signal.aborted) return Promise.resolve(false)
+    return Promise.resolve(this.input.writeLine(claudeUserMessage(text)))
+  }
+
+  start(input: ProcessInput): void {
+    this.input = input
+    input.writeLine(claudeUserMessage(this.opts.prompt))
+    if (!this.closed) this.opts.onSteer?.(this.steer)
+  }
+
+  /** Closes stdin once the CLI reports a result. */
+  watch(parser: ClaudeStreamParser): StreamParser {
+    return {
+      get finished() {
+        return parser.finished
+      },
+      push: (line) => {
+        const events = parser.push(line)
+        if (isRecord(line) && line.type === 'result') this.close()
+        return events
+      },
+      finish: (reason, exit) => parser.finish(reason, exit),
+    }
+  }
+
+  close(): void {
+    if (this.closed) return
+    this.closed = true
+    this.input?.end()
+    this.opts.onSteer?.(undefined)
   }
 }

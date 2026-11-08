@@ -24,6 +24,7 @@ import type {
   Role,
   RoleConfig,
   RunOptions,
+  Steer,
   TaskId,
   TaskMode,
   TaskStatus,
@@ -179,6 +180,7 @@ import {
   interruptedPrompt,
   planPrompt,
   revisePlanPrompt,
+  steerMessage,
   withOwnerMessages,
   mergePrompt,
   reviewLoop,
@@ -317,7 +319,10 @@ function actionFingerprint(action: { kind: string; detail: unknown }): string {
 const conversationInputSchema = z.strictObject({ title: z.string().trim().min(1).max(200).optional() })
 const messageInputSchema = z.strictObject({
   text: z.string().trim().min(1).max(20_000),
-  /** false: wait for the agent's next turn instead of interrupting the current one. */
+  /**
+   * true: stop the implementer's current step and continue with the message (#132). Default false: hand it to the
+   * running agent without stopping it when its backend can take it, else wait for the agent's next turn.
+   */
   interrupt: z.boolean().optional(),
 })
 const projectNoteStatusSchema = z.enum(['pending', 'applied', 'rejected', 'conflict']).optional()
@@ -484,6 +489,8 @@ interface ActiveTask {
   cancelled?: boolean
   /** Set by the run once it stopped for an interrupt: the worktree and session to continue. */
   continueWith?: ResumeState
+  /** Offered by the implementer's run while it can take owner messages without stopping (steering). */
+  steer?: Steer
 }
 
 interface ResumeState {
@@ -516,6 +523,8 @@ const RUN_END_EVENTS = new Set([
 ])
 const PLAN_EVENTS = new Set(['plan.awaiting_approval', 'plan.approved', 'plan.rejected'])
 const MAX_QUEUED_MESSAGES = 20
+/** How long a steer may take before the message falls back to the queue. */
+const STEER_TIMEOUT_MS = 15_000
 /** Review-loop phases in which the implementer works (and an owner message may interrupt it). */
 const IMPLEMENTER_PHASES = new Set<string>(['planning', 'implementing', 'fixing'])
 const MAX_CHECK_OUTPUT_CHARS = 4_000
@@ -1335,7 +1344,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         usage: taskUsage(events, attempts, running.has(task.id)),
         pendingPlan: pendingPlan(task, events) ?? null,
         queuedMessages: queuedMessages.get(task.id) ?? [],
-        // Whether a message sent now would interrupt the agent (else it waits for the agent's next turn).
+        // Whether a message sent now reaches the running agent at once (else it waits for the agent's next turn).
+        steerable: canSteer(task),
+        // Whether `interrupt: true` would stop the agent's current step now.
         interruptible: canInterrupt(task),
       })
       return
@@ -1450,7 +1461,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       assertJsonContentType(req)
       const { text, interrupt } = messageInputSchema.parse(await readJson(req))
       const task = requireTask(decodePathSegment(messagesMatch[1] ?? ''))
-      json(res, 202, await exclusive(task.id, () => postTaskMessage(task, text, interrupt ?? true)))
+      json(res, 202, await exclusive(task.id, () => postTaskMessage(task, text, interrupt ?? false)))
+      // A steer that fell back to the queue after the run ended: nothing else will pick the message up.
+      void continueWithQueuedMessages(task.id)
       return
     }
     const planMatch = /^\/api\/tasks\/([^/]+)\/plan\/(approve|reject)$/.exec(url.pathname)
@@ -2064,6 +2077,49 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     return providers[attempt.provider]?.capabilities.resume === true
   }
 
+  /**
+   * The owner's message can go to the running agent at once: the implementer's run offered a steer (its backend can
+   * take input mid-run) and the task is running, not waiting for an approval or being stopped.
+   */
+  function canSteer(task: StoredTask): boolean {
+    const active = running.get(task.id)
+    if (!active?.steer || !active.implementerTurn) return false
+    if (active.cancelled || active.stoppedFor || active.pausedFor || active.interrupted) return false
+    if (task.mode !== 'single' && task.mode !== 'review_loop') return false
+    return getTask(db, task.id)?.status === 'running'
+  }
+
+  /** `RunOptions.onSteer` for one implementer run of a task: keeps the run's steer on the active task. */
+  function steerHook(taskId: TaskId): (steer: Steer | undefined) => void {
+    const active = running.get(taskId)
+    let own: Steer | undefined
+    return (steer) => {
+      if (!active) return
+      if (steer) {
+        own = steer
+        active.steer = steer
+      } else if (own && active.steer === own) {
+        delete active.steer
+        own = undefined
+      } else return
+      if (running.get(taskId) === active) publishTaskLevel(taskId, 'steer.available', { available: !!steer })
+    }
+  }
+
+  async function steerWithTimeout(steer: Steer, text: string): Promise<boolean> {
+    let timer: NodeJS.Timeout | undefined
+    try {
+      return await Promise.race([
+        steer(text).catch(() => false),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), STEER_TIMEOUT_MS)
+        }),
+      ])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   function interruptRun(taskId: TaskId): void {
     const active = running.get(taskId)
     if (!active || active.interrupted) return
@@ -2295,7 +2351,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
    * The owner writes in a task's thread. A busy task queues the message for its next agent turn; a finished one is
    * continued in the same worktree and session (a plan that is not approved yet is revised instead).
    */
-  async function postTaskMessage(task: StoredTask, text: string, interrupt = true) {
+  async function postTaskMessage(task: StoredTask, text: string, interrupt = false) {
     if (task.mode === 'compete')
       throw new HttpError(409, 'Compete tasks cannot take messages; choose an attempt or start a new task')
     const id = randomUUID()
@@ -2306,10 +2362,26 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           429,
           'Too many messages are waiting for this task; wait for the agent to pick them up',
         )
+      const steer = !interrupt && canSteer(task) ? running.get(task.id)?.steer : undefined
+      if (steer) {
+        // Steering: the agent gets the message while it keeps working. If the run cannot take it after all (its turn
+        // just ended, it was cancelled), the message waits for the next turn like any other.
+        publishTaskLevel(task.id, 'user.message', { id, text, provenance: 'user', delivery: 'steer' })
+        if (await steerWithTimeout(steer, steerMessage(text))) {
+          publishTaskLevel(task.id, 'user.message.delivered', { ids: [id], via: 'steer' })
+          return { task: getTask(db, task.id), message: { id, delivery: 'steer' } }
+        }
+        const waiting = queuedMessages.get(task.id) ?? []
+        waiting.push({ id, text })
+        queuedMessages.set(task.id, waiting)
+        publishTaskLevel(task.id, 'user.message.requeued', { ids: [id], reason: 'steer_failed' })
+        return { task: getTask(db, task.id), message: { id, delivery: 'queued' } }
+      }
       queue.push({ id, text })
       queuedMessages.set(task.id, queue)
-      // Interrupting stops the implementer's turn; the run then continues in the same session with every queued
-      // message. Anywhere else (review, checks, approvals, quota wait) the message waits for the next turn.
+      // Interrupting (only when asked) stops the implementer's turn; the run then continues in the same session with
+      // every queued message. Otherwise (review, checks, approvals, quota wait, a backend that cannot steer) the
+      // message waits for the next turn.
       const delivery = interrupt && canInterrupt(task) ? 'interrupt' : 'queued'
       publishTaskLevel(task.id, 'user.message', { id, text, provenance: 'user', delivery })
       if (delivery === 'interrupt') interruptRun(task.id)
@@ -3246,6 +3318,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         signal: controller.signal,
         firstRound,
         takeMessages: () => takeQueuedMessages(task.id, 'next_turn'),
+        onSteer: steerHook(task.id),
+        // Re-read before each review: a message steered to the implementer during this run belongs in it.
+        reviewBrief: () => taskBrief(task),
         runChecks: (ws, round) => runProjectChecks(task, repo, attempt, ws, round, controller.signal),
         ...(resume ? { resumeWorkspace: resume.workspace, resumeSessionId: resume.sessionId } : {}),
         ...(resume && planning ? { replanPrompt: resume.prompt ?? planPrompt(brief) } : {}),
@@ -4765,6 +4840,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         ? { approvalTool: TOOL_HUB_APPROVAL_TOOL_NAME }
         : {}),
       ...(resume ? { resumeSessionId: resume.sessionId } : {}),
+      onSteer: steerHook(task.id),
     }
     let done: Extract<AgentEvent, { type: 'done' }> | undefined
     let failure: string | undefined
@@ -4884,6 +4960,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           autonomy: 'read-only',
           signal: controller.signal,
           ...(resume ? { resumeSessionId: resume.sessionId } : {}),
+          onSteer: steerHook(task.id),
         },
         model,
       )) {

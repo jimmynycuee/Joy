@@ -4,8 +4,15 @@ import { effortCompatibilityError } from '@joy/model-effort'
 /**
  * Builds the `claude` argument list. Pure, so it is unit-tested directly.
  * `mcpConfigPath` is the JSON file written from `opts.mcpServers` (see provider.ts).
+ * `streamingInput`: the prompt and later owner messages go to stdin as JSONL (`--input-format stream-json`) instead
+ * of the command line, so the process can take more input while it works.
  */
-export function buildClaudeArgs(opts: RunOptions, model: ModelRef, mcpConfigPath?: string): string[] {
+export function buildClaudeArgs(
+  opts: RunOptions,
+  model: ModelRef,
+  mcpConfigPath?: string,
+  streamingInput = false,
+): string[] {
   if (model.provider !== 'claude-cli') {
     throw new Error(`Claude Code cannot run model provider '${model.provider}'.`)
   }
@@ -15,6 +22,7 @@ export function buildClaudeArgs(opts: RunOptions, model: ModelRef, mcpConfigPath
   }
 
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--model', model.model]
+  if (streamingInput) args.push('--input-format', 'stream-json')
   if (model.effort) args.push('--effort', model.effort)
 
   if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId)
@@ -40,8 +48,17 @@ export function buildClaudeArgs(opts: RunOptions, model: ModelRef, mcpConfigPath
   if (opts.outputSchema) args.push('--json-schema', JSON.stringify(opts.outputSchema))
 
   // `--` so a prompt starting with "-" is never read as a flag.
-  args.push('--', opts.prompt)
+  if (!streamingInput) args.push('--', opts.prompt)
   return args
+}
+
+/** One user message on stdin in `--input-format stream-json` (the Agent SDK's streaming input shape). */
+export function claudeUserMessage(text: string): string {
+  return JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: text },
+    parent_tool_use_id: null,
+  })
 }
 
 /** Claude's `--mcp-config` file format. */

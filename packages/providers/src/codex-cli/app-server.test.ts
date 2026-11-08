@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { AgentEvent, RunOptions } from '@joy/core'
+import type { AgentEvent, RunOptions, Steer } from '@joy/core'
 import { afterEach, describe, expect, it } from 'vitest'
 import { fixturePath, fakeCodexAppServer } from '../../test-support/fixtures.js'
 import { syntheticCodexAppServerFixture } from '../../test-support/codex-app-server-fixtures.js'
@@ -257,5 +257,69 @@ describe('Codex app-server', () => {
       timeoutMs: 100,
     })
     await expect(collect(provider.run(opts(dir), model))).rejects.toThrow(/Codex app-server did not finish/)
+  })
+
+  // Synthetic contract for `turn/steer` (schema from `codex app-server generate-json-schema`, codex-cli 0.166.0);
+  // still to be checked against a recorded real session.
+  describe('turn/steer', () => {
+    async function steeredRun(mode: 'steer' | 'steer-reject') {
+      const { dir, env, rpcPath, readLines } = setup({ FAKE_APP_SERVER_MODE: mode })
+      const provider = new CodexAppServerProvider({
+        command: process.execPath,
+        argsPrefix: [fakeCodexAppServer],
+        env,
+        timeoutMs: 5_000,
+        approvalHandler: () => 'accept',
+      })
+      const offered: Array<Steer | undefined> = []
+      const results: boolean[] = []
+      const events: AgentEvent[] = []
+      for await (const event of provider.run(
+        opts(dir, {
+          onSteer: (steer) => {
+            offered.push(steer)
+            // The fake turn waits for this steer before it goes on.
+            if (steer) void steer('also update the docs').then((ok) => results.push(ok))
+          },
+        }),
+        model,
+      ))
+        events.push(event)
+      const late = await offered[0]?.('too late')
+      return { events, offered, results, late, requests: readLines(rpcPath) }
+    }
+
+    it('adds owner input to the turn in flight and stops offering it once the turn ends', async () => {
+      const { events, offered, results, late, requests } = await steeredRun('steer')
+      expect(requests.find((request) => request.method === 'turn/steer')?.params).toEqual({
+        threadId: 'thread-synthetic-1',
+        expectedTurnId: 'turn-synthetic-1',
+        input: [{ type: 'text', text: 'also update the docs', text_elements: [] }],
+      })
+      expect(results).toEqual([true])
+      expect(offered.map((steer) => typeof steer)).toEqual(['function', 'undefined'])
+      expect(late).toBe(false)
+      expect(requests.filter((request) => request.method === 'turn/steer')).toHaveLength(1)
+      expect(events.filter((event) => event.type === 'done')).toHaveLength(1)
+      expect(events.at(-1)).toMatchObject({ type: 'done', isError: false })
+    })
+
+    it('reports false when the app-server refuses the steer, and the turn still finishes', async () => {
+      const { events, results } = await steeredRun('steer-reject')
+      expect(results).toEqual([false])
+      expect(events.at(-1)).toMatchObject({ type: 'done', isError: false })
+    })
+
+    it('offers nothing when the caller does not steer', async () => {
+      const { dir, env, rpcPath, readLines } = setup()
+      const provider = new CodexAppServerProvider({
+        command: process.execPath,
+        argsPrefix: [fakeCodexAppServer],
+        env,
+        timeoutMs: 5_000,
+      })
+      await collect(provider.run(opts(dir), model))
+      expect(readLines(rpcPath).some((request) => request.method === 'turn/steer')).toBe(false)
+    })
   })
 })

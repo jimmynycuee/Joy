@@ -5,13 +5,17 @@ import type { TaskEvent } from './types.js'
 // wording for each task state, and the toast text for the errors the messages endpoint can answer with.
 
 /**
- * `sent`: the agent got it right away (follow-up or plan revision). `interrupting`: the message stops the agent's
- * current step and is handed to it as soon as the step has stopped. `queued`: the task was busy with something that is
- * not interrupted (a review, checks, an approval, a quota wait) and the message waits for the agent's next turn.
+ * `sent`: the agent got it right away (follow-up or plan revision). `steering`: being handed to the working agent,
+ * which keeps going and takes it into account. `interrupting`: the owner asked to stop the agent's current step; the
+ * message is handed to it as soon as the step has stopped. `queued`: the agent could not take it now (a review, checks,
+ * an approval, a quota wait, a backend that cannot take input mid-run) and it waits for the agent's next turn.
  * `delivered` and `discarded` end a pending message's life.
  * `lost`: still unresolved although the server no longer holds it (Joy restarted; the queue is in memory only).
  */
-export type DeliveryState = 'sent' | 'interrupting' | 'queued' | 'delivered' | 'discarded' | 'lost'
+export type DeliveryState =
+  'sent' | 'steering' | 'interrupting' | 'queued' | 'delivered' | 'discarded' | 'lost'
+
+const PENDING_STATES = new Set<DeliveryState>(['steering', 'interrupting', 'queued'])
 
 function ids(payload: Record<string, unknown> | null): string[] {
   return Array.isArray(payload?.ids) ? payload.ids.filter((id): id is string => typeof id === 'string') : []
@@ -33,7 +37,7 @@ export function messageDeliveryStates(
       for (const id of ids(record(event.payload))) delivered.add(id)
     if (event.type === 'user.message.discarded')
       for (const id of ids(record(event.payload))) discarded.add(id)
-    // An interrupt that did not happen (a limit stopped the run first) leaves its messages queued.
+    // A steer or an interrupt that did not happen (the turn ended, a limit stopped the run) leaves the message queued.
     if (event.type === 'user.message.requeued') for (const id of ids(record(event.payload))) requeued.add(id)
   }
   const states = new Map<string, DeliveryState>()
@@ -42,9 +46,15 @@ export function messageDeliveryStates(
     const payload = record(event.payload)
     if (typeof payload?.id !== 'string') continue
     let state: DeliveryState =
-      payload.delivery === 'queued' ? 'queued' : payload.delivery === 'interrupt' ? 'interrupting' : 'sent'
-    if (state === 'interrupting' && requeued.has(payload.id)) state = 'queued'
-    if (state === 'queued' || state === 'interrupting') {
+      payload.delivery === 'queued'
+        ? 'queued'
+        : payload.delivery === 'interrupt'
+          ? 'interrupting'
+          : payload.delivery === 'steer'
+            ? 'steering'
+            : 'sent'
+    if ((state === 'interrupting' || state === 'steering') && requeued.has(payload.id)) state = 'queued'
+    if (PENDING_STATES.has(state)) {
       if (discarded.has(payload.id)) state = 'discarded'
       else if (delivered.has(payload.id)) state = 'delivered'
       else if (options.queuedIds && !options.busy && !options.queuedIds.has(payload.id)) state = 'lost'
@@ -56,6 +66,8 @@ export function messageDeliveryStates(
 
 /** The small tag under a bubble; only the states the owner should notice have one. */
 export function deliveryTag(state: DeliveryState): string | undefined {
+  if (state === 'steering') return '正在送給 agent…'
+  if (state === 'delivered') return '已送給 agent'
   if (state === 'interrupting') return '正在打斷 agent…'
   if (state === 'queued') return '排隊中'
   if (state === 'discarded') return '已撤回'
@@ -69,8 +81,9 @@ export function pendingMessagesNote(states: ReadonlyMap<string, DeliveryState>):
   const interrupting = values.filter((state) => state === 'interrupting').length
   const queued = values.filter((state) => state === 'queued').length
   if (interrupting > 0) return '正在打斷 agent 目前這一步，停下來後會帶著你的訊息繼續'
+  if (values.includes('steering')) return '正在把訊息交給 agent，它不會停下來'
   if (queued > 0)
-    return `${queued} 則訊息排隊中，agent 下一次動手時會帶給它（審查、檢查與等待核准時不會打斷）`
+    return `${queued} 則訊息排隊中，agent 下一次動手時會帶給它（審查、檢查與等待核准時不能即時補充）`
   return undefined
 }
 
@@ -89,8 +102,8 @@ export function followUpState(input: {
   mode: string
   worktreeRemoved: boolean
   pendingPlan: boolean
-  /** From the server: a message now would interrupt the agent. Unknown means do not promise it. */
-  interruptible?: boolean
+  /** From the server: a message now reaches the working agent at once. Unknown means do not promise it. */
+  steerable?: boolean
 }): FollowUpState {
   if (input.mode === 'compete')
     return {
@@ -105,9 +118,9 @@ export function followUpState(input: {
       placeholder: '',
     }
   if (input.pendingPlan) return { disabled: false, placeholder: '說明要怎麼改計畫' }
-  // Only the implementer's own turn is interrupted; a review, checks, setup, an approval or a quota wait is not.
-  if (input.status === 'running' && input.interruptible === true)
-    return { disabled: false, placeholder: '傳訊息會打斷 agent 目前這一步，帶著訊息繼續' }
+  // Only the implementer's own turn takes messages at once, and only on a backend that can; the rest waits.
+  if (input.status === 'running' && input.steerable === true)
+    return { disabled: false, placeholder: '補充指示或提問，agent 會邊做邊參考' }
   if (input.status === 'running') return { disabled: false, placeholder: '訊息會在 agent 下一次動手時送達' }
   if (WORKING_STATUSES.has(input.status))
     return { disabled: false, placeholder: '補充指示，下一輪會帶給 agent' }

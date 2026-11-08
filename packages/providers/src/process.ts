@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
+import type { Readable } from 'node:stream'
 import { resolveCommandCached } from './windows.js'
 
 export interface ProcessSpec {
@@ -10,6 +11,8 @@ export interface ProcessSpec {
   signal: AbortSignal
   /** Kill the process after this long. Codex retries forever without a network, so every run needs one. */
   timeoutMs: number
+  /** Keep stdin open for writing (Claude's streaming input). Default: stdin is closed. */
+  stdin?: boolean
 }
 
 export interface ProcessExit {
@@ -28,35 +31,49 @@ export type JsonlLine = { ok: true; value: unknown } | { ok: false; line: string
 export interface JsonlProcess {
   lines: AsyncIterable<JsonlLine>
   exit: Promise<ProcessExit>
+  /** Present when `stdin` was requested. */
+  input?: ProcessInput
+}
+
+export interface ProcessInput {
+  /** Writes one line; false when stdin is already closed (ended, or the process is gone). */
+  writeLine(line: string): boolean
+  /** Closes stdin (EOF). Safe to call more than once. */
+  end(): void
+  readonly closed: boolean
 }
 
 const STDERR_TAIL = 4096
 
 /**
- * Spawns a CLI without a shell, stdin closed, and yields each stdout line parsed as JSON.
+ * Spawns a CLI without a shell, stdin closed unless `spec.stdin`, and yields each stdout line parsed as JSON.
  * Aborting or timing out kills the whole process tree.
  */
 export function runJsonlProcess(spec: ProcessSpec): JsonlProcess {
   const isWindows = process.platform === 'win32'
   // Windows .cmd shims cannot start without a shell; run the script they point at instead (T4.4).
   const resolved = isWindows ? resolveCommandCached(spec.command) : { command: spec.command, prefix: [] }
+  const stdio: ['pipe' | 'ignore', 'pipe', 'pipe'] = [spec.stdin ? 'pipe' : 'ignore', 'pipe', 'pipe']
   const child = spawn(resolved.command, [...resolved.prefix, ...spec.args], {
     cwd: spec.cwd,
     env: spec.env ?? process.env,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio,
     shell: false,
     windowsHide: true,
     // Own process group on POSIX so we can kill the CLI and everything it started.
     detached: !isWindows,
   })
+  // stdout and stderr are always piped; only stdin varies, which widens the spawn overload's types.
+  const stdout = child.stdout as Readable
+  const stderr = child.stderr as Readable
 
   let stderrTail = ''
   let aborted = false
   let timedOut = false
   let spawnError: Error | undefined
 
-  child.stderr.setEncoding('utf8')
-  child.stderr.on('data', (chunk: string) => {
+  stderr.setEncoding('utf8')
+  stderr.on('data', (chunk: string) => {
     stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL)
   })
 
@@ -89,7 +106,7 @@ export function runJsonlProcess(spec: ProcessSpec): JsonlProcess {
   })
 
   async function* lines(): AsyncGenerator<JsonlLine> {
-    const rl = createInterface({ input: child.stdout, crlfDelay: Infinity })
+    const rl = createInterface({ input: stdout, crlfDelay: Infinity })
     for await (const raw of rl) {
       const line = raw.trim()
       if (line === '') continue
@@ -101,7 +118,35 @@ export function runJsonlProcess(spec: ProcessSpec): JsonlProcess {
     }
   }
 
-  return { lines: lines(), exit }
+  let input: ProcessInput | undefined
+  const stdin = child.stdin
+  if (spec.stdin && stdin) {
+    let closed = false
+    // EPIPE when the CLI exits before reading everything: the run's result says what happened.
+    stdin.on('error', () => {
+      closed = true
+    })
+    void exit.then(() => {
+      closed = true
+    })
+    input = {
+      writeLine(line) {
+        if (closed || stdin.destroyed || stdin.writableEnded) return false
+        stdin.write(`${line}\n`)
+        return true
+      },
+      end() {
+        if (closed) return
+        closed = true
+        stdin.end()
+      },
+      get closed() {
+        return closed || stdin.destroyed || stdin.writableEnded
+      },
+    }
+  }
+
+  return { lines: lines(), exit, ...(input ? { input } : {}) }
 }
 
 export function killProcessTree(pid: number | undefined, isWindows = process.platform === 'win32'): void {
