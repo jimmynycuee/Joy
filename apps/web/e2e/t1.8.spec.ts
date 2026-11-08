@@ -111,10 +111,14 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   const taskDialog = page.locator('form.composer-home')
   await taskDialog.getByRole('button', { name: '進階' }).click()
   await expect(taskDialog.getByLabel('實作者的服務').locator('option[value="openai-api"]')).toHaveCount(0)
-  await taskDialog.getByLabel('專案').selectOption({ index: 0 })
   await taskDialog.getByLabel('任務標題').fill('Show the fake diff')
   await taskDialog.getByLabel('任務內容').fill('Update the greeting and explain the result.')
-  expect(await taskDialog.locator('option[value="compete"]').getAttribute('disabled')).toBeNull()
+  await taskDialog.getByRole('button', { name: /^做法/ }).click()
+  await expect(page.getByRole('menuitemradio', { name: /兩家比賽/ })).not.toHaveAttribute(
+    'aria-disabled',
+    'true',
+  )
+  await page.keyboard.press('Escape')
   await taskDialog.getByRole('button', { name: '開始任務' }).click()
 
   await expect(page.getByRole('heading', { name: 'Show the fake diff' })).toBeVisible()
@@ -137,14 +141,12 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
     headers: { authorization: `Bearer ${E2E_API_TOKEN}` },
   })
   const details = (await detailResponse.json()) as {
-    task: { roleOverrides: { implementer: ModelRef } }
+    task: { roleOverrides?: { implementer?: ModelRef } }
     attempts: Array<{ provider: string; model: string }>
     events: Array<{ payload: unknown }>
   }
-  expect(details.task.roleOverrides.implementer).toMatchObject({
-    provider: 'claude-cli',
-    model: 'claude-opus-4-6',
-  })
+  // Nothing was picked in the model menu, so the task follows Settings instead of freezing the models into overrides.
+  expect(details.task.roleOverrides?.implementer).toBeUndefined()
   expect(details.attempts[0]).toMatchObject({ provider: 'claude-cli', model: 'claude-opus-4-6' })
   expect(JSON.stringify(details.events)).not.toContain(secret)
   expect((await page.locator('body').innerText()).includes(E2E_API_TOKEN)).toBe(false)

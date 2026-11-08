@@ -19,6 +19,7 @@ export function Composer({
   autoFocus = false,
   rows = 2,
   bar,
+  trailing,
   advanced,
   textareaRef,
 }: {
@@ -37,6 +38,8 @@ export function Composer({
   rows?: number
   /** Controls on the left of the bottom bar (selects, chips). */
   bar?: ReactNode
+  /** Controls on the right of the bottom bar, next to the send button (the model entry). */
+  trailing?: ReactNode
   /** Extra content under the bar, for example the 進階 fields. */
   advanced?: ReactNode
   textareaRef?: RefObject<HTMLTextAreaElement | null>
@@ -84,6 +87,7 @@ export function Composer({
       <div className="composer-bar">
         {bar}
         <span className="composer-spacer" />
+        {trailing}
         <button
           type="submit"
           className="send-btn"

@@ -1,9 +1,22 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { EFFORTS } from '@joy/core'
 import type { ModelRef, ProviderKind, Role } from '@joy/core'
 import type { JoyConfig } from '@joy/config'
+import { ApproachMenu, ModelMenu, ProjectMenu } from '../components/ComposerMenus.js'
 import { Composer } from '../components/Composer.js'
 import { Button, Icon } from '../components/ui.js'
+import {
+  COMPOSER_STORAGE_KEY,
+  applyAllowlist,
+  buildRoleOverrides,
+  parseStoredChoice,
+  planFirstDisabledReason,
+  resolveModels,
+  serializeChoice,
+  setRoleModel,
+  validMode,
+} from '../composer-choice.js'
+import type { ComposerChoice, RoleDefaults, TaskModels } from '../composer-choice.js'
 import { relativeTime } from '../dates.js'
 import {
   EFFORT_LABELS,
@@ -12,13 +25,11 @@ import {
   PROVIDER_LABELS,
   ROLE_LABELS,
   providersForRole,
-  repoName,
   roleModel,
   statusLabel,
   taskTitle,
 } from '../labels.js'
-import { MODEL_PRESETS, findPreset, matchingTaskPreset } from '../presets.js'
-import { useDraft } from '../storage.js'
+import { readStorage, useDraft, writeStorage } from '../storage.js'
 import { tasksNeedingAttention } from '../task-info.js'
 import type { Repo, Task } from '../types.js'
 
@@ -28,8 +39,8 @@ export interface NewTaskInput {
   prompt: string
   /** `workflow:<name>` for a custom workflow, else a built-in mode. */
   mode: string
-  implementer: ModelRef
-  reviewer: ModelRef
+  /** Only the roles the owner picked for this task; undefined means every role follows Settings. */
+  roleOverrides?: TaskModels
   /** The agent writes a plan first and waits for the owner's approval before changing code. */
   planFirst: boolean
 }
@@ -78,31 +89,36 @@ export function NewTaskPage({
 }) {
   const [prompt, setPrompt, clearPrompt] = useDraft('new-task')
   const [repoId, setRepoId] = useState('')
-  const [mode, setMode] = useState('review_loop')
   const [showAdvanced, setShowAdvanced] = useState(false)
-  const [planFirst, setPlanFirst] = useState(false)
   const [busy, setBusy] = useState(false)
-  // null = use the models from Settings; otherwise this task's own implementer and reviewer.
-  const [overrides, setOverrides] = useState<Record<'implementer' | 'reviewer', ModelRef> | null>(null)
+  // What the owner picked last time (models, mode, 先規劃) is the starting point; roles without a pick follow Settings.
+  const [choice, setChoice] = useState<ComposerChoice>(() =>
+    parseStoredChoice(readStorage(COMPOSER_STORAGE_KEY)),
+  )
+  useEffect(() => {
+    writeStorage(COMPOSER_STORAGE_KEY, serializeChoice(choice))
+  }, [choice])
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
-  const models = {
-    implementer: overrides?.implementer ?? roleModel(config, 'implementer'),
-    reviewer: overrides?.reviewer ?? roleModel(config, 'reviewer'),
-  }
-  const presetValue = overrides
-    ? (matchingTaskPreset(models.implementer, models.reviewer)?.id ?? 'custom')
-    : 'default'
-  const isWorkflow = mode.startsWith('workflow:')
-  // Plan-first works for the two built-in single-agent modes; compete tasks and custom workflows do not take it.
-  const planFirstDisabledReason =
-    mode === 'compete'
-      ? '兩家比賽不支援先規劃'
-      : isWorkflow
-        ? '自訂流程請在設定檔裡設定 plan_first'
-        : undefined
-  const planFirstOn = planFirst && !planFirstDisabledReason
   const activeRepoId = repos.some((repo) => repo.id === repoId) ? repoId : (repos[0]?.id ?? '')
+  const activeRepo = repos.find((repo) => repo.id === activeRepoId)
+  const allowedProviders = activeRepo?.allowedProviders
+  const defaults: RoleDefaults = useMemo(
+    () => ({ implementer: roleModel(config, 'implementer'), reviewer: roleModel(config, 'reviewer') }),
+    [config],
+  )
+  const mode = validMode(
+    choice.mode,
+    customWorkflows.map((workflow) => workflow.name),
+  )
+  // Picks the repository does not allow are left out, so they fall back to Settings instead of failing the task.
+  const effective = useMemo(() => applyAllowlist(choice, allowedProviders), [choice, allowedProviders])
+  const models = useMemo(() => {
+    const resolved = resolveModels(effective.models, defaults)
+    return { implementer: resolved.implementer.ref, reviewer: resolved.reviewer.ref }
+  }, [effective, defaults])
+  const planFirstDisabledText = planFirstDisabledReason(mode)
+  const planFirstOn = choice.planFirst && !planFirstDisabledText
 
   const attention = useMemo(() => tasksNeedingAttention(tasks), [tasks])
   const recent = useMemo(
@@ -115,19 +131,11 @@ export function NewTaskPage({
   )
 
   function setModel(role: 'implementer' | 'reviewer', next: ModelRef) {
-    setOverrides({ ...models, [role]: next })
-  }
-
-  function choosePreset(value: string) {
-    const preset = findPreset(value)
-    if (!preset) {
-      setOverrides(null)
-      return
-    }
-    setOverrides({ implementer: preset.roles.implementer, reviewer: preset.roles.reviewer })
+    setChoice((current) => setRoleModel(current, role, next, defaults))
   }
 
   async function submit(form: FormData): Promise<void> {
+    const roleOverrides = buildRoleOverrides(effective, mode)
     setBusy(true)
     try {
       const ok = await onCreate({
@@ -135,8 +143,7 @@ export function NewTaskPage({
         title: taskTitle(String(form.get('title') ?? ''), prompt),
         prompt: prompt.trim(),
         mode,
-        implementer: models.implementer,
-        reviewer: models.reviewer,
+        ...(roleOverrides ? { roleOverrides } : {}),
         planFirst: planFirstOn,
       })
       if (ok) clearPrompt()
@@ -198,68 +205,39 @@ export function NewTaskPage({
               rows={3}
               bar={
                 <>
-                  <select
-                    aria-label="專案"
-                    className="select"
-                    value={activeRepoId}
-                    onChange={(event) => setRepoId(event.target.value)}
-                  >
-                    {repos.map((repo) => (
-                      <option key={repo.id} value={repo.id}>
-                        {repoName(repo.path)} · {repo.defaultBranch}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    aria-label="模式"
-                    className="select"
-                    value={mode}
-                    onChange={(event) => setMode(event.target.value)}
-                  >
-                    <option value="review_loop">實作＋審查</option>
-                    <option value="single">單人</option>
-                    <option value="compete">兩家比賽</option>
-                    {customWorkflows.map((workflow) => (
-                      <option key={workflow.name} value={`workflow:${workflow.name}`}>
-                        {workflow.name}
-                        {workflow.description ? ` — ${workflow.description}` : ''}
-                      </option>
-                    ))}
-                  </select>
+                  <ProjectMenu
+                    repos={repos}
+                    activeId={activeRepoId}
+                    onSelect={setRepoId}
+                    onAddRepo={onAddRepo}
+                  />
+                  <ApproachMenu
+                    mode={mode}
+                    planFirst={choice.planFirst}
+                    workflows={customWorkflows}
+                    onMode={(value) => setChoice((current) => ({ ...current, mode: value }))}
+                    onPlanFirst={(on) => setChoice((current) => ({ ...current, planFirst: on }))}
+                  />
                   <button
                     type="button"
-                    className={`chip-toggle${planFirstOn ? ' on' : ''}`}
-                    aria-pressed={planFirstOn}
-                    disabled={planFirstDisabledReason !== undefined}
-                    title={planFirstDisabledReason ?? '先寫計畫，等你核准才開始改程式'}
-                    onClick={() => setPlanFirst((on) => !on)}
-                  >
-                    <Icon name="book" size={14} />
-                    先規劃
-                  </button>
-                  <select
-                    aria-label="模型組合"
-                    className="select"
-                    value={presetValue}
-                    disabled={isWorkflow}
-                    onChange={(event) => choosePreset(event.target.value)}
-                  >
-                    <option value="default">模型：照設定</option>
-                    {MODEL_PRESETS.map((preset) => (
-                      <option key={preset.id} value={preset.id}>
-                        模型：{preset.label}
-                      </option>
-                    ))}
-                    {presetValue === 'custom' ? <option value="custom">模型：自訂</option> : null}
-                  </select>
-                  <Button
-                    variant="ghost"
+                    className="btn btn-ghost composer-trigger"
+                    aria-label="進階"
                     aria-expanded={showAdvanced}
                     onClick={() => setShowAdvanced((open) => !open)}
                   >
-                    進階
-                  </Button>
+                    <Icon name="settings" size={14} />
+                    <span className="trigger-text hide-narrow">進階</span>
+                  </button>
                 </>
+              }
+              trailing={
+                <ModelMenu
+                  choice={effective}
+                  defaults={defaults}
+                  allowed={allowedProviders}
+                  mode={mode}
+                  onChange={setChoice}
+                />
               }
               advanced={
                 <div className="composer-advanced" hidden={!showAdvanced}>

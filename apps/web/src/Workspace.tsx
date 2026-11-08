@@ -359,7 +359,8 @@ export function Workspace() {
             ? { workflow: input.mode.slice('workflow:'.length) }
             : {
                 mode: input.mode,
-                roleOverrides: { implementer: input.implementer, reviewer: input.reviewer },
+                // Only the roles the owner picked; the rest follow Settings on the server.
+                ...(input.roleOverrides ? { roleOverrides: input.roleOverrides } : {}),
                 ...(input.planFirst ? { planFirst: true } : {}),
               }),
         }),
