@@ -313,7 +313,7 @@ test('a repository that does not allow Codex turns those models off and says why
   const sol = implementerModels(page).getByRole('menuitemradio', { name: /GPT-6\.1 Sol/ })
   await expect(sol).toHaveAttribute('aria-disabled', 'true')
   await expect(sol).toContainText('專案不允許 Codex')
-  await expect(sol).toHaveAttribute('title', /不允許使用 Codex/)
+  await expect(sol).toHaveAttribute('title', /不允許 Codex/)
   // The digit does nothing on a row that is off.
   await page.keyboard.press('4')
   await expect(modelMenu(page)).toBeVisible()
