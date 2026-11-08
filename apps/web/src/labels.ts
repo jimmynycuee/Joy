@@ -1,6 +1,7 @@
 import { PROVIDER_KINDS } from '@joy/core'
 import type { ModelRef, ProviderKind, Role } from '@joy/core'
 import type { JoyConfig } from '@joy/config'
+import { MODEL_CATALOG } from './models.js'
 import type { DoctorStatus } from './types.js'
 
 export const ROLE_LABELS: Record<Role, string> = {
@@ -16,11 +17,13 @@ export const PROVIDER_LABELS: Record<ProviderKind, string> = {
   'claude-cli': 'Claude Code',
   'codex-cli': 'Codex',
 }
-export const MODEL_SUGGESTIONS: Record<ProviderKind, string[]> = {
-  'openai-api': ['gpt-6-luna'],
-  'claude-cli': ['opus', 'sonnet', 'haiku'],
-  'codex-cli': ['gpt-6.1-sol', 'gpt-6-luna'],
-}
+/** Model names to suggest per provider, in catalog order (`models.ts` is the one table of model names). */
+export const MODEL_SUGGESTIONS: Record<ProviderKind, string[]> = Object.fromEntries(
+  PROVIDER_KINDS.map((provider) => [
+    provider,
+    MODEL_CATALOG.filter((entry) => entry.provider === provider).map((entry) => entry.model),
+  ]),
+) as Record<ProviderKind, string[]>
 export const EFFORT_LABELS: Record<string, string> = {
   low: '低',
   medium: '中',

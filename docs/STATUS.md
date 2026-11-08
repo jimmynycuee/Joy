@@ -2,11 +2,25 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-08（介面改版第二階段、任務對話式 API 與介面接線）
+- 最後更新：2026-11-08（新任務頁輸入框工具列與模型選單）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
 ## 驗證結果
+
+### 新任務頁輸入框工具列與模型選單（前端）
+
+只改 `apps/web`，沒有動 `packages/**`、後端與 API。
+
+- **工具列**：四個有外框的下拉改成無外框的 ghost 入口（滑過才有底色），都用新的共用選單：左邊「專案 · 分支」（選單末有「加入專案」），中間「做法」（合併模式與先規劃，顯示「實作＋審查 · 先規劃」；先規劃是選單裡的核取項，兩家比賽與自訂流程時停用並寫原因），右邊緊貼送出鍵的模型入口，直接顯示實際模型與投入程度（「Opus 5.5 · 中」）。沒選過時顯示設定檔解析後的模型並標「（預設）」。「進階」（逐角色的服務／模型／思考程度欄位）保留，變成圖示加文字的 ghost 鈕。窄螢幕（< 640px）做法與進階收成圖示、「（預設）」隱藏，工具列不會水平捲動。自訂流程使用自己的模型，模型入口停用並顯示「自訂流程」。
+- **模型選單**（`components/ComposerMenus.tsx`）：上半是實作模型（`models.ts` 的目錄：Opus／Sonnet／Haiku 5.5、GPT-6.1 Sol、GPT-6 Luna；顯示名稱、簡稱、說明集中在這張表，`labels.ts` 的 `MODEL_SUGGESTIONS` 改由它衍生），打勾標目前選擇、右側 1–5 快捷；專案的 `allowedProviders` 不允許的 provider 停用，第二行與 tooltip 寫原因。中間「投入程度 ›」（開啟投入程度 popover）與「審查模型 ›」（子選單，單人模式停用）。下半「快速套用」：照設定／平衡／省額度／最強，每項第二行寫實際組合（「Opus 中 實作 · Sol 審查」）。設定檔裡不在目錄的模型（例如 `claude-opus-4-6`）照原名顯示並勾選。
+- **投入程度 popover**（`components/EffortPanel.tsx`）：標題是目前檔位（低／中／高／很高／最高，沿用設定頁的 `EFFORT_LABELS`，共五檔，對應 `EFFORTS`），下一行可點的模型名稱（點了回到模型清單、焦點在已勾選的模型），五段滑桿（拖曳、點段落、方向鍵、Home／End、數字 1–5），右上「重設」回到預設檔位。目前模型不支援的檔位變灰、不能選（Codex 模型沒有「最高」）；沒驗證過的模型整條停用並說明，送出時不帶 effort。
+- **共用選單**（`components/Menu.tsx`）：`Menu`／`MenuItem`／`MenuGroup`／`MenuSeparator`／`SubMenu`；內距 6px、項目最低 32px、與觸發鈕 4px、陰影無外框（新 token `--menu-surface`、`--menu-shadow`，深淺色都有）。面板用 portal 放在 `<body>` 並以 fixed 定位（`menu-position.ts` 的純函式：優先方向、空間不夠時翻面、子選單右側放不下改左側、一律限制在視窗內），不會被父層 overflow 裁掉。鍵盤：上下鍵、Home／End 移動，Enter／空白選取，數字鍵選有該快捷的項目，右鍵開子選單、左鍵或 Esc 關子選單，Esc 關主選單並把焦點還給觸發鈕，Tab 關閉；點外面關閉但不搶焦點。ARIA：`menu`／`menuitem`／`menuitemradio`／`menuitemcheckbox`／`group`／`separator`，子選單列有 `aria-haspopup`／`aria-expanded`，停用的項目用 `aria-disabled`（仍可用鍵盤移到上面，能讀到原因）。其他頁面的 `Popover`（用量、檢查點）是內含按鈕與表單的對話面板，不是選單，沒有遷移，仍用原本的元件。
+- **送出內容**（`composer-choice.ts`）：沒選任何東西就不送 `roleOverrides`（以前會把解析後的實作／審查模型整組凍結進任務），由伺服器照設定解析；選了才只送被選的角色（`implementer`、`reviewer`），單人模式不送 `reviewer`，自訂流程只送 `workflow`。不送 `orchestrator`：任務執行路徑不使用這個角色（只在換手與 peer 的候選順序裡出現），所以「跟隨實作者」沒有意義。選到與設定完全相同的模型與投入程度時視為「照設定」。換模型時沿用目前的投入程度，新模型不支援就移到最接近的檔位。
+- **記住選擇**：模型、投入程度、審查模型、做法、先規劃存在 `localStorage['joy.composer.v1']`（讀寫都包 try/catch；壞掉或過期的內容丟掉該欄位用預設，例如記住的 OpenAI API 實作者、已不存在的自訂流程、模型不支援的檔位）。專案不允許的記憶選擇只在畫面與送出時略過，不會被覆寫。選單的「照設定」把模型選擇全部清掉；投入程度的「重設」只把投入程度回到預設（設定檔的檔位，或換了模型時用 medium）。
+- **後端資料**：設定檔各角色的預設模型可從 `GET /api/config`（`config.roles`）讀到，已用來顯示「（預設）」；專案的 `allowedProviders` 在 `GET /api/repos`。effort 相容規則：web 不依賴 `@joy/model-effort`（會動 `pnpm-lock.yaml`，超出這次的範圍），改在 `effort.ts` 複製那張表，`effort.test.ts` 逐一比對兩邊對每個模型與每個 effort 的判斷，不一致會測試失敗。
+- 純函式都有 vitest（`models`、`effort`、`composer-choice`、`menu-position`）；e2e 新增 `composer-model.spec.ts`（預設標示、鍵盤操作、ARIA、投入程度滑桿的鍵盤／滑鼠／拖曳／灰階檔位／重設、審查模型、快速套用、`allowedProviders` 停用、單人模式、記住選擇與照設定、壞掉的記憶、設定檔手動模型、手機寬度；送出的 `roleOverrides` 內容用 route mock 逐一比對），並更新 `shell`、`t1.8`、`workflows` 三個規格。
+- 驗證：`pnpm check` 的格式、lint、typecheck 通過，vitest 743 passed、4 skipped；唯一失敗的是與這次無關的 `packages/executor` `worktree.test.ts`「commits with a fallback identity」（機器忙碌時超過 5 秒 timeout），單獨重跑 executor 29/29 通過。因為 5173 / 4317 被擁有者佔用，e2e 用不提交的暫時 harness 在 5199 / 4399 跑（proxy 改寫 Origin）：54 個測試（略過固定連 5173 的 `origin-proxy.spec.ts`）全過，其中 `composer-model.spec.ts` 12 個。淺色、深色、手機寬度（375px）都用截圖檢查過選單、投入程度與工具列。最後仍以 CI 的 web E2E 為準。
 
 ### 介面改版第二階段：設計語言統一與任務頁補強
 
@@ -150,6 +164,7 @@
 
 ## 已確認決策
 
+- 2026-11-08 新任務頁模型選單（agent 決定）：(1) 沒選模型就不送 `roleOverrides`，照設定由伺服器解析；(2) 只送被選的角色，不送 `orchestrator`；(3) 投入程度五檔沿用 `EFFORT_LABELS`（低／中／高／很高／最高），不另外叫「極高」；(4) web 複製 `@joy/model-effort` 的 effort 表並以測試比對，不新增 workspace 依賴；(5) 「照設定」「平衡」「省額度」「最強」放在選單的快速套用，其中「照設定」是回到不覆寫的方式。
 - 2026-11-08 擁有者決定：(1) 開 PR 後**保留工作副本**，直到 PR 合併或關閉才移除（取代 T2.8「開 PR 後立刻移除」）；有未推送的 commit 時不會移除；(2) `planFirst`／`plan_first` 的任務**一律停下來等擁有者核准計畫**（確認下一條的第 1 點）。
 - 2026-11-08 任務對話式 API（agent 決定；第 1 點已由擁有者確認）：(1) `planFirst`／`plan_first` 一律表示「計畫要擁有者核准才實作」，設定檔工作流程的行為因此改變；(2) 執行中插話在下一次 agent 輪送達，沒有下一輪就在結束後自動 follow-up；(3) 送審前檢查失敗時，審查通過也不算完成；外部內容任務的檢查要核准、未核准就略過；(4) 檢查點用 `refs/joy/checkpoints/<task>/<n>`，還原前一定先另存目前狀態；(5) 不改 `packages/core`：executor 的 `run`／`checkpoint`／`restoreCheckpoint` 以 duck typing 偵測（同 `listWorktrees`）。
 - 2026-11-07 T3.8 選型：Google 使用 [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp)（`uvx workspace-mcp --tools gmail calendar`）。理由：一個 server 涵蓋 Gmail 與行事曆、可限制只開這兩項；用擁有者自己的 Google Cloud OAuth 用戶端在本機登入，資料只在本機與 Google 之間，不經第三方；MIT 授權、使用者多。登入資料由該 server 自己存放，Joy 不經手。備案：只做行事曆的 nspady/google-calendar-mcp（沒有 Gmail）。
