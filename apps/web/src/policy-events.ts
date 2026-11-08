@@ -79,3 +79,11 @@ export function policyEventKind(type: string, payload: Payload): string | undefi
   if (type === 'approval.decided') return payload?.status === 'approved' ? 'policy-auto' : 'policy-approve'
   return undefined
 }
+
+/**
+ * Actions the policy let through without a word (tier `auto`) are noise: every file read would otherwise add a line.
+ * Notices, approval requests and denials stay visible.
+ */
+export function policyEventIsNoise(type: string, payload: Payload): boolean {
+  return type === 'policy.action' && (text(payload?.tier) ?? 'approve') === 'auto'
+}

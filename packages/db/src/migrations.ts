@@ -446,6 +446,23 @@ export const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE tasks ADD COLUMN workflow TEXT;
     `,
   },
+  {
+    version: 18,
+    name: 'archived tasks',
+    sql: /* sql */ `
+      -- Archived tasks are hidden from the default task list; nothing else about them changes.
+      ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1));
+    `,
+  },
+  {
+    version: 19,
+    name: 'project check command per repository',
+    sql: /* sql */ `
+      -- argv (a JSON array of strings, run without a shell) Joy runs in the worktree before each review.
+      ALTER TABLE repos ADD COLUMN check_command TEXT
+        CHECK (check_command IS NULL OR (json_valid(check_command) AND json_type(check_command) = 'array'));
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

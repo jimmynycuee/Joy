@@ -24,7 +24,9 @@ import {
   planPrompt,
   planReviewPrompt,
   reviewPrompt,
+  withOwnerMessages,
 } from './prompts.js'
+import type { ChecksResult } from './prompts.js'
 
 export type Phase = 'preparing' | 'planning' | 'plan_review' | 'implementing' | 'reviewing' | 'fixing'
 
@@ -33,6 +35,7 @@ export type LoopEvent =
   | { type: 'phase'; phase: Phase; round: number; role?: Role; model?: ModelRef }
   | { type: 'agent'; role: Role; round: number; event: AgentEvent }
   | { type: 'review'; round: number; target: 'plan' | 'change'; verdict: ReviewVerdict }
+  | ({ type: 'checks'; round: number } & ChecksResult)
   | { type: 'warning'; message: string }
   | {
       type: 'result'
@@ -42,6 +45,10 @@ export type LoopEvent =
       rounds: number
       diff?: WorkspaceDiff
       reason?: string
+      /** The run stopped after the plan: the owner approves it (or sends feedback) before any code is written. */
+      awaitingPlanApproval?: true
+      plan?: string
+      planReview?: ReviewVerdict
     }
 
 export interface ReviewLoopInput {
@@ -60,6 +67,16 @@ export interface ReviewLoopInput {
   /** Reuse a persisted worktree and resume the implementer's last CLI session after server restart. */
   resumeWorkspace?: Workspace
   resumeSessionId?: string
+  /** What the resumed session is told first; defaults to the implement prompt for `prompt`. */
+  resumePrompt?: string
+  /** Plan again in the resumed session with this prompt (owner feedback on a plan), then stop for approval. */
+  replanPrompt?: string
+  /** Number of the first round of this run, so a continued task does not reuse earlier round numbers. Default 1. */
+  firstRound?: number
+  /** Owner messages that arrived during the run; appended to the next implementer turn. */
+  takeMessages?: () => string[]
+  /** The project's checks, run after each implementer turn and before each review. undefined = not run. */
+  runChecks?: (ws: Workspace, round: number) => Promise<ChecksResult | undefined>
 }
 
 export interface ReviewLoopDeps {
@@ -108,11 +125,10 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
       ...over,
     })
 
-    // Optional plan, reviewed before any code is written.
-    let plan: string | undefined
-    let planVerdict: ReviewVerdict | undefined
+    // Optional plan, reviewed before any code is written. The run then stops: the owner approves the plan first.
     let session: string | undefined = input.resumeSessionId
-    if (input.planFirst && !input.resumeSessionId) {
+    const take = () => input.takeMessages?.() ?? []
+    if ((input.planFirst && !input.resumeSessionId) || input.replanPrompt) {
       yield { type: 'phase', phase: 'planning', round: 0, role: 'implementer', model: input.implementer }
       const planned = yield* runAgent(
         implementer,
@@ -120,15 +136,14 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
         'implementer',
         0,
         base({
-          prompt: planPrompt(input.prompt),
+          prompt: withOwnerMessages(input.replanPrompt ?? planPrompt(input.prompt), take()),
           autonomy: 'read-only',
-          ...presetSession(implementer),
+          ...(session ? { resumeSessionId: session } : presetSession(implementer)),
         }),
       )
-      plan = planned.finalMessage ?? ''
-      session = planned.sessionId
+      const plan = planned.finalMessage ?? ''
       yield { type: 'phase', phase: 'plan_review', round: 0, role: 'reviewer', model: input.reviewer }
-      planVerdict = yield* review(
+      const planVerdict = yield* review(
         reviewer,
         input.reviewer,
         0,
@@ -138,24 +153,49 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
         }),
       )
       yield { type: 'review', round: 0, target: 'plan', verdict: planVerdict }
+      yield {
+        type: 'result',
+        status: 'succeeded',
+        approved: false,
+        rounds: 0,
+        awaitingPlanApproval: true,
+        plan,
+        planReview: planVerdict,
+        reason: 'The plan is ready for your approval',
+      }
+      return
     }
 
-    yield { type: 'phase', phase: 'implementing', round: 1, role: 'implementer', model: input.implementer }
+    const first = input.firstRound ?? 1
+    yield {
+      type: 'phase',
+      phase: 'implementing',
+      round: first,
+      role: 'implementer',
+      model: input.implementer,
+    }
     const implemented = yield* runAgent(
       implementer,
       input.implementer,
       'implementer',
-      1,
+      first,
       base({
-        prompt: implementPrompt(input.prompt, plan, planVerdict),
+        prompt: withOwnerMessages(
+          session && input.resumePrompt ? input.resumePrompt : implementPrompt(input.prompt),
+          take(),
+        ),
         ...(session ? { resumeSessionId: session } : presetSession(implementer)),
       }),
     )
     session = implemented.sessionId || session
 
-    for (rounds = 1; ; rounds++) {
+    for (rounds = first; ; rounds++) {
       const diff = await deps.executor.diff(ws)
       if (diff.files.length === 0) throw new StopLoop('failed', 'The implementer made no changes')
+
+      const checks = input.runChecks ? await input.runChecks(ws, rounds) : undefined
+      if (input.signal.aborted) throw new StopLoop('cancelled', 'Cancelled')
+      if (checks) yield { type: 'checks', round: rounds, ...checks }
 
       yield { type: 'phase', phase: 'reviewing', round: rounds, role: 'reviewer', model: input.reviewer }
       const verdict = yield* review(
@@ -163,24 +203,27 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
         input.reviewer,
         rounds,
         base({
-          prompt: reviewPrompt(input.prompt, diff.patch),
+          prompt: reviewPrompt(input.prompt, diff.patch, checks),
           autonomy: 'read-only',
         }),
       )
       yield { type: 'review', round: rounds, target: 'change', verdict }
 
-      if (verdict.approve) {
+      const checksFailed = checks !== undefined && !checks.ok
+      if (verdict.approve && !checksFailed) {
         yield { type: 'result', status: 'succeeded', approved: true, rounds, diff }
         return
       }
-      if (rounds >= input.maxRounds) {
+      if (rounds - first + 1 >= input.maxRounds) {
         yield {
           type: 'result',
           status: 'succeeded',
           approved: false,
           rounds,
           diff,
-          reason: `Reviewer still had findings after ${rounds} round(s); needs a human decision`,
+          reason: verdict.approve
+            ? `The project checks still failed after ${rounds - first + 1} round(s); needs a human decision`
+            : `Reviewer still had findings after ${rounds - first + 1} round(s); needs a human decision`,
         }
         return
       }
@@ -198,7 +241,7 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
         'implementer',
         rounds + 1,
         base({
-          prompt: fixPrompt(verdict),
+          prompt: withOwnerMessages(fixPrompt(verdict, checks), take()),
           ...(session && implementer.capabilities.resume ? { resumeSessionId: session } : {}),
         }),
       )

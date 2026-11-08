@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 import type { ModelRef } from '@joy/core'
 import { E2E_API_TOKEN } from './fakes.js'
+import { openSettings, openSettingsSection } from './helpers.js'
 
 test('settings, secure key status, and a complete fake-provider task flow', async ({ page, request }) => {
   const apiRequests: Array<{ method: string; url: string; authorization: string | undefined }> = []
@@ -50,19 +51,26 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   })
   await page.goto('/')
   await expect(page.getByRole('navigation', { name: '主選單' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: '任務' })).toBeVisible()
+  // No project yet: the home page asks for one.
+  await expect(page.getByRole('heading', { name: '先加入一個專案' })).toBeVisible()
 
-  await page.getByRole('button', { name: '設定', exact: true }).click()
+  await openSettings(page)
   await expect(page.getByRole('heading', { name: '設定' })).toBeVisible()
+  await openSettingsSection(page, '模型')
   await expect(page.getByRole('status').filter({ hasText: 'OpenAI API 不能改程式碼' })).toBeVisible()
   await page.screenshot({ path: 'test-results/t1.8-legacy-openai-implementer.png', fullPage: true })
+  // The six roles live behind the disclosure under the model presets.
+  await page.getByRole('button', { name: '各角色的詳細設定' }).click()
   for (const role of ['助理大腦', '背景工作', '調度者', '實作者', '審查者', '裁判']) {
     await expect(page.getByLabel(`${role}的服務`)).toBeVisible()
     await expect(page.getByLabel(`${role}的模型`)).toBeVisible()
   }
+  await openSettingsSection(page, '權限與自主')
   const autonomyMode = page.getByLabel('自主程度')
   await expect(autonomyMode).toHaveValue('normal')
   await autonomyMode.selectOption('careful')
+  // One draft is shared by both sections: saving from 模型 also saves the autonomy mode.
+  await openSettingsSection(page, '模型')
   const settingsImplementerProvider = page.getByLabel('實作者的服務')
   await expect(settingsImplementerProvider.locator('option[value="openai-api"]')).toHaveCount(0)
   await settingsImplementerProvider.selectOption('claude-cli')
@@ -113,7 +121,8 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   await expect(page.getByTestId('event-stream')).toContainText(
     'Fake provider completed: claude-cli:claude-opus-4-6',
   )
-  await expect(page.getByTestId('event-stream')).toContainText('審查：Fake review approved')
+  await expect(page.getByTestId('event-stream')).toContainText('程式變更審查通過')
+  await expect(page.getByTestId('event-stream')).toContainText('Fake review approved')
   await expect(page.getByTestId('diff-patch')).toContainText('hello from fake')
   await expect(page.locator('.thread-header .status-pill')).toHaveText('完成')
   await expect(page.locator('body')).not.toContainText(secret)

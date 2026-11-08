@@ -141,18 +141,146 @@ describe('reviewLoop', () => {
     expect(impl.calls).toHaveLength(2)
   })
 
-  it('plans first, has the plan reviewed, then implements in the planning session', async () => {
-    const impl = new FakeProvider('claude-cli', [() => ok('s1', '1. edit math.js'), () => ok('s1')])
+  it('plans first, has the plan reviewed, then stops for the owner before writing code', async () => {
+    const impl = new FakeProvider('claude-cli', [() => ok('s1', '1. edit math.js')])
     const rev = new FakeProvider('codex-cli', [
       verdict(true, [{ severity: 'minor', file: null, line: null, message: 'add a test' }]),
-      verdict(true),
     ])
-    const { events } = await run(input({ planFirst: true }), impl, rev, new FakeExecutor([changed()]))
+    const { events, result } = await run(input({ planFirst: true }), impl, rev, new FakeExecutor([changed()]))
     expect(impl.calls[0]).toMatchObject({ autonomy: 'read-only' })
+    expect(impl.calls).toHaveLength(1)
     expect(rev.calls[0]?.prompt).toContain('1. edit math.js')
-    expect(impl.calls[1]).toMatchObject({ resumeSessionId: 's1' })
-    expect(impl.calls[1]?.prompt).toContain('[minor] add a test')
     expect(events.find((e) => e.type === 'review')).toMatchObject({ target: 'plan' })
+    expect(result).toMatchObject({
+      type: 'result',
+      status: 'succeeded',
+      approved: false,
+      rounds: 0,
+      awaitingPlanApproval: true,
+      plan: '1. edit math.js',
+      planReview: { approve: true, findings: [{ severity: 'minor', message: 'add a test' }] },
+    })
+  })
+
+  it('revises a plan in the same session when the owner sends feedback', async () => {
+    const impl = new FakeProvider('claude-cli', [() => ok('s1', '2. smaller plan')])
+    const rev = new FakeProvider('codex-cli', [verdict(true)])
+    const workspace: Workspace = {
+      repo: { id: 'r1' as RepoId, path: '/repo', defaultBranch: 'main' },
+      taskId: 't1' as TaskId,
+      attemptId: 'a1' as AttemptId,
+      path: '/persisted/worktree',
+      branch: 'joy/t1/a1',
+      baseCommit: 'base',
+    }
+    const { result } = await run(
+      input({
+        planFirst: true,
+        resumeWorkspace: workspace,
+        resumeSessionId: 's1',
+        replanPrompt: 'Revise: keep it small',
+      }),
+      impl,
+      rev,
+      new FakeExecutor([]),
+    )
+    expect(impl.calls[0]).toMatchObject({ autonomy: 'read-only', resumeSessionId: 's1' })
+    expect(impl.calls[0]?.prompt).toContain('Revise: keep it small')
+    expect(result).toMatchObject({ awaitingPlanApproval: true, plan: '2. smaller plan' })
+  })
+
+  it('continues a finished task with a follow-up prompt and later round numbers', async () => {
+    const impl = new FakeProvider('claude-cli', [() => ok('s1'), () => ok('s1')])
+    const rev = new FakeProvider('codex-cli', [verdict(false, [major]), verdict(false, [major])])
+    const workspace: Workspace = {
+      repo: { id: 'r1' as RepoId, path: '/repo', defaultBranch: 'main' },
+      taskId: 't1' as TaskId,
+      attemptId: 'a1' as AttemptId,
+      path: '/persisted/worktree',
+      branch: 'joy/t1/a1',
+      baseCommit: 'base',
+    }
+    const { events, result } = await run(
+      input({
+        resumeWorkspace: workspace,
+        resumeSessionId: 's1',
+        resumePrompt: 'Also rename add() to sum()',
+        firstRound: 4,
+        maxRounds: 2,
+      }),
+      impl,
+      rev,
+      new FakeExecutor([changed(), changed()]),
+    )
+    expect(impl.calls[0]).toMatchObject({ resumeSessionId: 's1', prompt: 'Also rename add() to sum()' })
+    expect(events.filter((e) => e.type === 'review').map((e) => (e as { round: number }).round)).toEqual([
+      4, 5,
+    ])
+    expect(result).toMatchObject({ approved: false, rounds: 5, reason: expect.stringMatching(/2 round/) })
+  })
+
+  it('delivers owner messages with the next implementer turn', async () => {
+    const impl = new FakeProvider('claude-cli', [() => ok('s1'), () => ok('s1')])
+    const rev = new FakeProvider('codex-cli', [verdict(false, [major]), verdict(true)])
+    const queue = ['first note']
+    const { result } = await run(
+      input({ takeMessages: () => queue.splice(0) }),
+      impl,
+      rev,
+      new FakeExecutor([changed(), changed()]),
+    )
+    expect(impl.calls[0]?.prompt).toContain('- first note')
+    expect(impl.calls[1]?.prompt).not.toContain('first note')
+    expect(result).toMatchObject({ approved: true })
+  })
+
+  it('runs the project checks before each review, shows them to the reviewer and fixes failures', async () => {
+    const impl = new FakeProvider('claude-cli', [() => ok('s1'), () => ok('s1')])
+    const rev = new FakeProvider('codex-cli', [verdict(true), verdict(true)])
+    const results = [
+      { ok: false, exitCode: 1, outputTail: 'FAIL math.test.js' },
+      { ok: true, exitCode: 0, outputTail: 'all good' },
+    ]
+    const rounds: number[] = []
+    const { events, result } = await run(
+      input({
+        runChecks: async (_ws, round) => {
+          rounds.push(round)
+          return results.shift()
+        },
+      }),
+      impl,
+      rev,
+      new FakeExecutor([changed(), changed()]),
+    )
+    expect(rounds).toEqual([1, 2])
+    expect(events.filter((e) => e.type === 'checks')).toMatchObject([
+      { round: 1, ok: false, exitCode: 1, outputTail: 'FAIL math.test.js' },
+      { round: 2, ok: true },
+    ])
+    expect(rev.calls[0]?.prompt).toContain('FAIL math.test.js')
+    expect(impl.calls[1]?.prompt).toContain('project checks failed')
+    expect(impl.calls[1]?.prompt).toContain('FAIL math.test.js')
+    expect(result).toMatchObject({ approved: true, rounds: 2 })
+  })
+
+  it('does not approve while checks fail and stops at the round limit', async () => {
+    const impl = new FakeProvider('claude-cli', [() => ok('s1')])
+    const rev = new FakeProvider('codex-cli', [verdict(true)])
+    const { result } = await run(
+      input({
+        maxRounds: 1,
+        runChecks: async () => ({ ok: false, exitCode: 2, outputTail: 'lint error' }),
+      }),
+      impl,
+      rev,
+      new FakeExecutor([changed()]),
+    )
+    expect(result).toMatchObject({
+      status: 'succeeded',
+      approved: false,
+      reason: expect.stringMatching(/checks still failed/),
+    })
   })
 
   it('reuses a persisted worktree and resumes the implementer session after restart', async () => {

@@ -2,18 +2,77 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-08（介面改版第一階段）
+- 最後更新：2026-11-08（介面改版第二階段、任務對話式 API 與介面接線）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
 ## 驗證結果
+
+### 介面改版第二階段：設計語言統一與任務頁補強
+
+- 擁有者審閱後認為設計語言不一致，這一輪統一：圓角（6 / 10 / 14 / 20，只有狀態標籤用膠囊）、字級（12 / 13 / 14 / 15 / 18 / 22 / 28）、字重（400 / 500，大標題才用 600）都改成 CSS token，移除 9 / 10 / 11px；按鈕只有 primary / secondary / ghost / danger 四種（高度 34px、大型 40px），危險動作（移除、刪除、丟掉變更、拒絕）用 danger；圖示統一成一組內嵌 SVG（取代 emoji 與 ×、＋、↗）。
+- 新任務頁與助理頁共用同一個輸入框元件：Enter 送出、Shift+Enter 換行（輸入法組字中不送出），未送出的草稿依頁面存在 localStorage。任務紀錄與助理對話共用同一種訊息呈現：使用者的話靠右氣泡，agent 與助理的話是 Markdown 散文。Markdown 用自己寫的小型解析器（`markdown.ts`），產出資料樹再由 React 轉成元素，不使用 `dangerouslySetInnerHTML`；原始 HTML 只會當文字顯示，連結只保留 http(s) 與 mailto。
+- 助理頁不再有第二個側邊欄：對話移到主側邊欄的「對話」群組（含「新對話」），側邊欄頂端的搜尋框同時篩選任務與對話；以前對話的全文搜尋留在助理頁上方；記憶與排程收進右側可收合面板。統計移到側邊欄底部（設定旁）。側邊欄的 OpenAI 用量只在本月花費達上限 80% 或有 provider 額度用完時才出現。
+- 設定頁改成左側分類：一般（外觀、快速鍵）、模型、權限與自主、通知、專案、資料與備份、進階（環境檢查、存取權杖、除錯紀錄）。模型分類提供三組預設（平衡 / 省額度 / 最強）一鍵填滿六個角色，逐一設定收在「各角色的詳細設定」。主題可選系統 / 淺色 / 深色，寫入 `<html data-theme>`，CSS token 同時支援 `prefers-color-scheme` 與 `[data-theme]`。寬度小於 860px 時側邊欄變成抽屜，頂端有選單按鈕。
+- 任務頁：任務進行中有「停止」（`POST /api/tasks/:id/cancel`），失敗或取消（非 compete）有「重試／繼續」（`POST /api/tasks/:id/resume`），失敗時顯示錯誤卡片。標題列顯示該任務實際的分支與工作副本（取自 attempt 的 `branch`、`worktreePath`，可複製），不再把 repo 預設分支當成任務分支。工具呼叫顯示指令（`$ pnpm test`）或檔案路徑，並把後面的 `tool_result` 收成可展開的輸出。審查結果是結構化卡片（通過 / 要求修改、摘要、問題清單）。權限事件 tier 為 auto 的歸入「顯示細節」。執行中顯示目前角色、輪數與經過時間。核准卡片移到時間軸最後。變更面板沒有 diff 時預設收合、diff 出現時自動展開，含依目錄分組的檔案樹與逐行上色的 unified diff；已開的 PR 多一顆「查看 PR」。`review_ready` 顯示為「審查有意見」，顏色與「等你同意」不同。時間軸項目的時間放在 title。
+- 側邊欄與新任務頁：任務依專案、今天 / 昨天 / 更早分組，顯示相對時間、執行中轉圈、可搜尋。「封存」已改成後端欄位（見下方「任務對話式介面接線」）。新任務頁加入「模型組合」選擇（同設定頁的三組預設，對應 implementer / reviewer 的 roleOverrides）、快速開始建議、最近的任務，以及有任務等待同意 / 有審查意見 / 進行中時的「需要你處理」。快速鍵：⌘/Ctrl+K 命令面板、⌘/Ctrl+N 新任務、⌘/Ctrl+B 收合側邊欄、⌘/Ctrl+\ 變更面板（輸入文字時只有 ⌘K 生效）。
+- 未做：新任務頁的「基底分支」（API 還不支援）。
+- `main.tsx` 拆成 `Workspace.tsx`、`pages/`、`components/`、`hooks/` 與數個純函式模組（`markdown.ts`、`tool-calls.ts`、`timeline.ts`、`task-info.ts`、`diff.ts`、`dates.ts`、`presets.ts`、`shortcuts.ts`），新增的純函式都有 vitest 單元測試。
+- 驗證：`pnpm check` 通過（格式、lint、typecheck、vitest）。e2e 規格已依新的分類與標籤更新，並新增 `thread.spec.ts`、`shell.spec.ts`。因為 5173 / 4317 被擁有者的 dev server 佔用，沒有用專案的 Playwright 設定在本機跑；改用不提交的暫時設定與 harness 在 5199 / 4399 跑過 25 個測試（`origin-proxy.spec.ts` 固定連 5173，沒跑），全部通過，最後仍以 CI 的 web E2E 為準。深色模式與手機寬度只用瀏覽器面板抽查，沒有逐頁視覺比對。
+
+### 任務對話式介面接線（前端）
+
+把「任務對話式 API（後端）」那一節的端點全部接到 `apps/web`，沒有改 `packages/**`。
+
+- **接續／插話**：任務頁底部是共用的 `Composer`（`ThreadComposer`），送出 `POST /api/tasks/:id/messages`。`user.message` 事件是時間軸裡靠右的氣泡；`delivery: queued` 的訊息在收到 `user.message.delivered` 前標「排隊中」，`user.message.discarded` 標「已撤回」，Joy 重啟後伺服器已不記得的排隊訊息標「未送達」（純函式在 `messages.ts`）。`queuedMessages` 顯示成輸入框上方的一行說明。輸入框提示依狀態變：執行中「補充指示，下一輪會帶給 agent」、已結束「接著交代…」、計畫待核准「說明要怎麼改計畫」；compete 任務與工作副本已移除時停用並說明原因。409（另一個動作進行中）顯示「這個任務正在處理另一個動作，請稍後再送」、429 顯示排隊太多，兩者都保留草稿。
+- **先規劃**：新任務頁輸入框的「先規劃」切換鈕送出 `planFirst: true`（兩家比賽與自訂流程停用）。`details.pendingPlan` 有值時，時間軸最後出現計畫卡片（Markdown 計畫、計畫審查摘要、「核准並開始實作」→ `/plan/approve`、「取消任務」→ `/plan/reject`）；這時送出的訊息改寫計畫。`plan.awaiting_approval`／`plan.approved`／`plan.rejected` 都在時間軸上（過去版本的計畫可展開）。有待核准計畫的任務狀態顯示「等你核准計畫」。WebSocket 收到相關事件後會重新讀 `usage`、`pendingPlan`、`queuedMessages`（`hooks/useTaskDetails.ts`）。
+- **封存／重新命名**：封存改用 `PATCH /api/tasks/:id {archived}`，任務清單用 `GET /api/tasks?archived=1` 一次取回全部、依 `archived` 分到「已封存」區（執行中封存會回 409，顯示中文訊息）。舊的 `joy.archivedTasks` localStorage 在第一次載入時搬到伺服器（只搬還存在且尚未封存的任務），搬完刪掉該 key，相關程式碼已移除。任務標題連點兩下或按鉛筆圖示就地編輯，Enter／離開輸入框儲存、Esc 取消，送出 `PATCH {title}`。
+- **PR／CI**：任務有 `publish.done` 時，`GET /api/tasks/:id/pr` 每 60 秒輪詢（頁面可見時；PR 合併或關閉、或所有檢查都結束就停），顯示 Draft／已開啟／已合併／已關閉與「通過 n / 失敗 n / 進行中 n」及失敗的檢查名稱。失敗時有「請 agent 修正 CI」，送出帶失敗檢查名稱的 follow-up 訊息。**注意**：伺服器在開 PR 成功後會移除工作副本（`worktree.removed`），之後任何 follow-up 都會 409；所以這時按鈕改成說明加「複製修正 CI 的說明」，請開新任務處理。要讓 agent 真的能修 CI，後端得在開 PR 後保留工作副本，這是待擁有者決定的後端行為。
+- **專案檢查**：`checks` 事件是時間軸卡片（通過／失敗／逾時、結束碼、耗時、可展開的 `outputTail`），`checks.skipped` 是淡色步驟。設定 → 專案每個專案一張卡片，可編輯 GitHub 網址（`githubRemote`）、允許的服務（`allowedProviders`，至少一個）與送審前檢查指令（`checkCommand`，單行以空白切成 argv，不經 shell；說明哪些指令需要核准），用 `PATCH /api/repos/:id` 只送有改的欄位（清空送 `null`）。
+- **檢查點**：任務頁標題列的「檢查點」彈出清單（`GET /checkpoints`，新的在前，標籤翻成中文），「還原到這裡」→ `POST /checkpoints/:n/restore`；回 409 且訊息說會丟掉 commit 時，在頁面內（不用 `window.confirm`）說明「會丟掉之後的 N 個 commit」，確認後帶 `{confirm: true}` 重送。任務執行中停用。`checkpoint.created` 在「顯示細節」，`checkpoint.restored` 是可見步驟，變更面板的 diff 也跟著還原後的內容。
+- **用量**：標題列「用量」彈出耗時、輸入／輸出 token、估計花費與各 provider／model 明細；CLI 的花費標「估算」。
+- **環境檢查**：移除前端的 `DOCTOR_LABELS`，直接顯示伺服器的中文 `label`／`summary`／`repair`（`repair` 等於「不需要處理。」時不顯示）；doctor e2e 改用中文資料。
+- 新的純函式都有 vitest：`messages.ts`、`pr-status.ts`、`checkpoints.ts`、`usage.ts`、`check-command.ts`、`repo-patch.ts`、`timeline.ts` 的新事件、`storage.ts` 的舊封存解析、`hooks/useTaskDetails.ts` 的 `withServerFields`。e2e 新增 `thread-api.spec.ts`（接續、排隊、409、停用原因、計畫核准／取消、PR 狀態、檢查點還原確認、檢查卡片、用量）、`repo-settings.spec.ts`，`shell.spec.ts` 加入伺服器端封存、舊 localStorage 搬移、重新命名、先規劃。
+
+- 驗證：`pnpm check` 的格式、lint、typecheck 通過，vitest 688 passed、4 skipped；web 專案 120 個測試全過。唯一失敗的是和這次無關的 `packages/executor` `worktree.test.ts`「commits with a fallback identity」，在機器忙碌時超過 5 秒 timeout，單獨重跑 24/24 通過。因為 5173 / 4317 被擁有者的 dev server 佔用，e2e 用不提交的暫時設定在 5199 / 4399 跑（vite proxy 改寫 Origin）：43 個測試中 42 通過，唯一失敗的 `origin-proxy.spec.ts` 固定連 5173、被改寫 Origin 的 proxy 影響，沒有意義；最後仍以 CI 的 web E2E 為準。深色模式與手機寬度只用截圖抽查。
+
+### 任務對話式 API（後端）
+
+給新版對話式介面用的後端 API。所有端點都要 Bearer token；POST／PATCH 要 `content-type: application/json` 與允許的 Origin。事件同時寫進 `GET /api/tasks/:id` 的 `events`，並經 WebSocket 推送（payload 一律經 Redactor）。
+
+| 端點                                         | 請求                                                                      | 回應                                                                                                                                                                                       | 事件                                                                                                                                                                                                          |
+| -------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PATCH /api/tasks/:id`                       | `{title?: string(1–500), archived?: boolean}`（至少一個）                 | 200 `{task}`；執行中封存 409                                                                                                                                                               | `task.updated`（請求內容）                                                                                                                                                                                    |
+| `GET /api/tasks`                             | `?archived=1` 才包含已封存                                                | `{tasks}`，每筆有 `archived: boolean`                                                                                                                                                      | —                                                                                                                                                                                                             |
+| `GET /api/tasks/:id`                         | —                                                                         | 原有欄位，加上 `usage`、`pendingPlan`（`{plan, review?}` 或 `null`）、`queuedMessages`（`[{id, text}]`）；`attempts[]` 已有 `branch`、`worktreePath`；`task` 已有 `createdAt`、`updatedAt` | —                                                                                                                                                                                                             |
+| `POST /api/tasks/:id/messages`               | `{text: string(1–20000)}`                                                 | 202 `{task, message: {id, delivery}}`；`delivery` 為 `queued`（任務忙碌中）、`follow_up`（接續已結束任務）、`replan`（計畫尚未核准，改寫計畫）；compete 任務 409；worktree 已移除 409      | `user.message` `{id, text, provenance: 'user', delivery}`；送達時 `user.message.delivered` `{ids, via: 'next_turn'\|'follow_up'\|'replan'\|'plan_approved'}`；丟棄時 `user.message.discarded` `{ids, reason}` |
+| `POST /api/tasks/:id/plan/approve`           | `{note?: string}`                                                         | 202 `{task}`；沒有等待核准的計畫 409                                                                                                                                                       | `plan.approved` `{note?}`，接著同一 session 開始實作                                                                                                                                                          |
+| `POST /api/tasks/:id/plan/reject`            | `{note?: string}`                                                         | 200 `{task}`（`cancelled`）                                                                                                                                                                | `plan.rejected` `{note?}`                                                                                                                                                                                     |
+| `GET /api/tasks/:id/pr`                      | —                                                                         | 200 `{url, state, isDraft, checks: {passing, failing, pending, failingNames[]}, fetchedAt}`；沒開過 PR 404；`gh` 失敗 502                                                                  | —                                                                                                                                                                                                             |
+| `GET /api/tasks/:id/checkpoints`             | —                                                                         | `{checkpoints: [{n, ref, commit, head, round, label, attemptId, createdAt, available}]}`                                                                                                   | —                                                                                                                                                                                                             |
+| `POST /api/tasks/:id/checkpoints/:n/restore` | `{confirm?: boolean}`                                                     | 200 `{restored, savedAs, discardedCommits}`；執行中 409；找不到 404；會丟掉之後的 commit 而沒 `confirm` 409                                                                                | 先 `checkpoint.created`（目前狀態另存為新檢查點），再 `checkpoint.restored` `{n, commit, savedAs, discardedCommits, diff}`                                                                                    |
+| `PATCH /api/repos/:id`、`POST /api/repos`    | 新增 `checkCommand: string[]`（argv，不經 shell；PATCH 可用 `null` 清除） | `{repo}`，有設定時 `repo.checkCommand`                                                                                                                                                     | —                                                                                                                                                                                                             |
+
+其他新事件：`plan.awaiting_approval` `{plan, review?}`（任務狀態 `review_ready`，同時 `result` 帶 `awaitingPlanApproval: true`）；`checks` `{type: 'checks', round, ok, exitCode, outputTail, durationMs, timedOut?}`；`checks.skipped` `{round, reason}`；`checkpoint.created` `{n, ref, commit, head, round, label}`。
+
+- **接續（follow-up）**：done／review_ready／failed／cancelled 的非 compete 任務，用同一個 worktree 與 provider session 接續，然後照原本的流程再跑一次（review_loop 會再審查；回合編號接在之前之後，最多再跑 `maxRounds` 輪）。審查者看到的任務說明＝原始需求＋擁有者之後的每一則訊息。任務的 provenance 不變（外部內容任務仍照外部內容規則審核）。
+- **同一任務一次一個擁有者動作**：傳訊息、核准／拒絕計畫、`/resume`、還原檢查點、`/discard` 共用一個每任務的鎖；同時第二個請求回 409「Another action on this task is still in progress」。await 之後會重新讀取任務狀態與 worktree，有變就 409。已封存的任務被接續時自動取消封存（`task.updated {archived: false}`）。被丟棄的訊息不會出現在之後給審查者的任務說明。
+- **執行中插話（steer）的實際語意**：CLI adapter 無法在一輪中途插入訊息，所以訊息先排隊，**在下一次 agent 輪開始時**附在提示後面送出（review_loop 的修正輪、暫停／額度排隊後的接續）。如果這次執行已經沒有下一輪（例如 single 模式、或審查已通過），執行一結束就自動用這些訊息做一次 follow-up；任務被取消則丟棄並記 `user.message.discarded`。排隊中的訊息只存在記憶體，Joy 重啟會遺失（事件仍在）。
+- **送審前檢查**：repo 設定 `checkCommand` 後，review_loop 在每次實作／修正之後、審查之前於 worktree 執行；結果給審查者看，失敗就算審查通過也不算完成，失敗輸出送回實作者當作下一輪修正（受原本回合上限限制）。single 模式只執行並回報、不改變結果。走 executor（不經 shell；container repo 在 agent container 內以 `--init` 執行，每個 repo 有自己的 container home，停止時 `docker kill` 該 container）。policy 動作種類用 `packages/policy` 的 `isSafeWorktreeCommand` 判斷：只有像 `pnpm check`、`npm test` 這種已知只在 worktree 內的指令是 `run_in_worktree`；shell（`bash -c …`）、不認得的程式、或任何含空白或 shell 符號的參數都算 `run_outside_worktree`，要擁有者核准；外部內容任務一律要核准；未核准則略過檢查（`checks.skipped`）。逾時、取消或任務上限會停掉整個 process tree（POSIX 用 process group，SIGTERM 後 2 秒 SIGKILL；Windows 用 `taskkill /T /F`），不等殘留子程序的 pipe。輸出經 Redactor、只留最後 4000 字；預設 15 分鐘逾時。**已知限制**：環境變數是黑名單過濾（名稱結尾 `_KEY`／`_SECRET`／`_TOKEN`、含 PASSWORD／SECRET／TOKEN／CREDENTIAL、`AWS_*`、`GH_*`、`GITHUB_*`、`SSH_AUTH_SOCK`、`DATABASE_URL`），名稱不尋常的機密仍會傳給檢查指令；非 container repo 的檢查在本機執行，不是沙箱。
+- **PR／CI 狀態**：`packages/github` 的 `PullRequestStatusReader` 以 `gh pr view <url> --json url,state,isDraft,statusCheckRollup` 讀取（不經 shell、可注入 runner），每個 URL 快取 60 秒，失敗不快取。
+- **先規劃（planFirst）**：`POST /api/tasks` 的 `planFirst: true` 可用於 single 與 review_loop（compete 回 422）。實作者先唯讀寫計畫（review_loop 另有審查者審計畫），任務停在 `review_ready` 並帶 `pendingPlan`；核准後在同一 session 實作，傳訊息則改寫計畫。**行為變更**：設定檔工作流程的 `plan_first` 也一樣會停下來等核准（以前是審完計畫直接實作），因為「先規劃」只有一個意思。計畫核准前，任何接續（含 `/resume`）都只會重新規劃，不會寫程式。
+- **檢查點**：每次實作者成功的一輪後，在 worktree 建立 `refs/joy/checkpoints/<taskId>/<n>`（快照包含未追蹤檔、不含被忽略的檔；不移動任務分支、不動主 checkout）。還原只在任務沒在執行時可用：先把目前狀態另存成新檢查點，再把 HEAD 移回該檢查點建立時的 commit 並還原檔案；之後如有 commit 會被丟掉，需要 `confirm: true`。接下來的 follow-up 會告訴 agent 檔案已被還原。檢查點 ref 只建立不覆蓋（已存在就失敗）。移除 worktree 時一併刪除該任務的檢查點 ref。compete 任務不建立檢查點。
+- **用量**：`usage` = `{durationMs, inputTokens?, outputTokens?, costUsd?, byProvider: [{provider, model, inputTokens?, outputTokens?, costUsd?}]}`，只從任務事件裡 provider 回報的 `usage` 加總（CLI 的 costUsd 是估算，不是實際花費）；沒回報的欄位不出現。`durationMs` 是每次 `started` 到結束事件的實際時間加總。policy 預審、ask_peer 的用量沒有寫進任務事件，所以不算在內。
+- **環境檢查**：`joy doctor` 與 `/api/doctor` 的 `label`、`summary`、`repair` 改成繁體中文（指令與識別字維持英文）；`NO_ACTION_NEEDED` 匯出供 `pnpm joy doctor` 比對。
+- Migration 18（`tasks.archived`）、19（`repos.check_command`，JSON 陣列 CHECK）。`packages/core` 介面沒有改。
+- 驗證：見下方「驗證」列。
 
 ### 介面改版（Codex / Claude Code 風格、繁體中文）
 
 - 擁有者要求介面改成和 Claude Code、Codex 桌面版相近：左側欄（新任務、助理、統計、依專案分組的任務、加入專案、設定），中間對話式任務進度，右側可收合的變更面板；新任務改成一個置中的大輸入框，模型與思考程度收進「進階」。
 - 改成淺色中性配色（跟隨系統深色模式），移除紫色漸層。工作區、設定頁主要區塊、權限事件文字、加入專案對話框改為繁體中文。
 - 環境檢查移到設定頁；新任務頁只在有「缺少」項目時顯示提示。原始 agent 事件（usage、raw 等）預設隱藏在「顯示細節」。
-- 第二階段已把助理頁、統計頁、設定頁其餘面板（Telegram、存取權杖、通知、工作副本、備份、除錯紀錄）、平行競賽比較面板、存取權杖頁翻成繁體中文。仍是英文：server 產生的訊息（環境檢查的說明與修復建議、API 錯誤訊息）。agent 回覆的 Markdown 還是純文字顯示。
+- 第二階段已把助理頁、統計頁、設定頁其餘面板（Telegram、存取權杖、通知、工作副本、備份、除錯紀錄）、平行競賽比較面板、存取權杖頁翻成繁體中文。仍是英文：API 錯誤訊息（環境檢查已改為中文）。
 - 驗證：`pnpm check` 通過（541 passed、4 skipped）；e2e 規格已依新標籤更新，由 CI 的 web E2E 驗證（本機 5173 被擁有者的 dev server 佔用，未在本機跑）。
 
 ### main Windows CI publisher 測試
@@ -91,6 +150,7 @@
 
 ## 已確認決策
 
+- 2026-11-08 任務對話式 API（agent 決定，待擁有者確認）：(1) `planFirst`／`plan_first` 一律表示「計畫要擁有者核准才實作」，設定檔工作流程的行為因此改變；(2) 執行中插話在下一次 agent 輪送達，沒有下一輪就在結束後自動 follow-up；(3) 送審前檢查失敗時，審查通過也不算完成；外部內容任務的檢查要核准、未核准就略過；(4) 檢查點用 `refs/joy/checkpoints/<task>/<n>`，還原前一定先另存目前狀態；(5) 不改 `packages/core`：executor 的 `run`／`checkpoint`／`restoreCheckpoint` 以 duck typing 偵測（同 `listWorktrees`）。
 - 2026-11-07 T3.8 選型：Google 使用 [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp)（`uvx workspace-mcp --tools gmail calendar`）。理由：一個 server 涵蓋 Gmail 與行事曆、可限制只開這兩項；用擁有者自己的 Google Cloud OAuth 用戶端在本機登入，資料只在本機與 Google 之間，不經第三方；MIT 授權、使用者多。登入資料由該 server 自己存放，Joy 不經手。備案：只做行事曆的 nspady/google-calendar-mcp（沒有 Gmail）。
 - 2026-11-07 擁有者逐項確認：T5.1、T5.2、T5.3、T5.4、T5.5、T5.7 **全部暫不開始**（T5.6 已依擁有者指示完成）。不要再詢問，等擁有者主動提出。
 - 2026-11-07 擁有者審過 T4.1 並合併 PR #110（含審查修正：拒絕 0.0.0.0、`remote.https_hosts`、bridge 檢查 loopback Host）。

