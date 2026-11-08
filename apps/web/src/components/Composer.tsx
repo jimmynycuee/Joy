@@ -22,6 +22,9 @@ export function Composer({
   trailing,
   advanced,
   textareaRef,
+  onStop,
+  stopLabel = '停止',
+  stopping = false,
 }: {
   className?: string
   value: string
@@ -43,6 +46,10 @@ export function Composer({
   /** Extra content under the bar, for example the 進階 fields. */
   advanced?: ReactNode
   textareaRef?: RefObject<HTMLTextAreaElement | null>
+  /** While the agent works and the box is empty, the send button becomes a stop button that calls this. */
+  onStop?: () => void
+  stopLabel?: string
+  stopping?: boolean
 }) {
   const ownRef = useRef<HTMLTextAreaElement | null>(null)
   const ref = textareaRef ?? ownRef
@@ -88,15 +95,28 @@ export function Composer({
         {bar}
         <span className="composer-spacer" />
         {trailing}
-        <button
-          type="submit"
-          className="send-btn"
-          aria-label={sendLabel}
-          title={sendLabel}
-          disabled={busy || disabled}
-        >
-          {busy ? <Spinner /> : <Icon name="arrow-up" size={18} />}
-        </button>
+        {onStop && !value.trim() ? (
+          <button
+            type="button"
+            className="send-btn stop-btn"
+            aria-label={stopLabel}
+            title={stopLabel}
+            disabled={stopping}
+            onClick={onStop}
+          >
+            {stopping ? <Spinner /> : <Icon name="stop" size={16} />}
+          </button>
+        ) : (
+          <button
+            type="submit"
+            className="send-btn"
+            aria-label={sendLabel}
+            title={sendLabel}
+            disabled={busy || disabled}
+          >
+            {busy ? <Spinner /> : <Icon name="arrow-up" size={18} />}
+          </button>
+        )}
       </div>
       {advanced}
     </form>

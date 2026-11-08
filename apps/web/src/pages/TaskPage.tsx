@@ -119,11 +119,6 @@ export function TaskPage({
         <span className={`status-pill status-${task.status}`}>
           {statusLabel(task.status, task.mode, pendingPlan !== null)}
         </span>
-        {working ? (
-          <Button icon="stop" disabled={acting} onClick={() => void act('cancel')}>
-            停止
-          </Button>
-        ) : null}
         {usage ? <UsagePopover usage={usage} /> : null}
         {checkpointCount > 0 ? (
           <CheckpointsPopover
@@ -219,7 +214,12 @@ export function TaskPage({
               </div>
             </div>
           </div>
-          <ThreadComposer details={details} onChanged={onChanged} onError={onError} />
+          <ThreadComposer
+            details={details}
+            onChanged={onChanged}
+            onError={onError}
+            {...(working ? { onStop: () => void act('cancel'), stopping: acting } : {})}
+          />
         </div>
         {paneOpen ? (
           <aside className="diff-pane" aria-label="檔案變更">
