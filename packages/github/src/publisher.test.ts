@@ -211,6 +211,32 @@ describe('GitHubPublisher', () => {
     expect((await readCalls(fixture)).some((call) => call.args[1] === 'create')).toBe(false)
   })
 
+  it('pushes to a matching PR that is already ready for review without changing its state', async () => {
+    const fixture = await createFixture()
+    await writeFile(
+      fixture.ghState,
+      JSON.stringify([
+        {
+          url: 'https://github.com/example/joy/pull/41',
+          state: 'OPEN',
+          isDraft: false,
+          headRefName: fixture.workspace.branch,
+          headRepositoryOwner: { login: 'example' },
+          headRepository: { name: 'joy' },
+          baseRefName: 'main',
+          body: 'Ready for review.',
+        },
+      ]),
+    )
+    await writeFile(join(fixture.workspace.path, 'change.txt'), 'follow-up fix\n')
+
+    const result = await createPublisher(fixture).publish(fixture.workspace, input())
+
+    expect(result.pullRequestUrl).toBe('https://github.com/example/joy/pull/41')
+    const calls = await readCalls(fixture)
+    expect(calls.some((call) => call.args[1] === 'create' || call.args[1] === 'ready')).toBe(false)
+  })
+
   it('returns the saved body when reusing the matching open draft', async () => {
     const fixture = await createFixture()
     const existingBody = 'Original PR body includes test-secret-value.'

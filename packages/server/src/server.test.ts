@@ -1897,15 +1897,13 @@ describe('Joy local server', () => {
       baseBranch: 'develop',
       summary: 'Fix add()',
     })
-    // The branch is on GitHub; the local worktree is removed right away (T2.8).
-    expect(executor.cleaned).toEqual([calls[1]?.workspace.attemptId])
-
-    // Published and cleaned up: there is nothing left to publish.
-    expect((await postJson(`${origin}/api/tasks/${task.id}/publish`, {})).status).toBe(409)
+    // The worktree stays while the PR is open, so follow-up fixes can be published to the same branch.
+    expect(executor.cleaned).toEqual([])
+    expect((await postJson(`${origin}/api/tasks/${task.id}/publish`, {})).status).toBe(200)
 
     const details = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
     const types = details.events.map((event) => (event as { type?: string }).type)
-    expect(types.filter((t) => t === 'publish.done')).toHaveLength(1)
+    expect(types.filter((t) => t === 'publish.done')).toHaveLength(2)
     expect(types.filter((t) => t === 'publish.failed')).toHaveLength(1)
   })
 

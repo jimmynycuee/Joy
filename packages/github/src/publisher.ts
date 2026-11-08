@@ -215,7 +215,7 @@ export class GitHubPublisher {
       )
     }
     if (existing !== undefined) {
-      this.assertDraft(existing)
+      this.assertOpen(existing)
       return {
         commitSha: currentHead,
         pullRequestUrl: validatePullRequestUrl(existing.url, target),
@@ -522,15 +522,10 @@ export class GitHubPublisher {
     return open[0] ?? matchingBase[0]
   }
 
-  private assertDraft(existing: ExistingPullRequest): void {
+  private assertOpen(existing: ExistingPullRequest): void {
     if (existing.state.toUpperCase() !== 'OPEN') {
       throw new Error(
         `A matching pull request already exists at ${existing.url} in ${existing.state.toLowerCase()} state; refusing to create a duplicate.`,
-      )
-    }
-    if (!existing.isDraft) {
-      throw new Error(
-        'A pull request already exists for this branch but is not a draft; refusing to change its review state.',
       )
     }
   }
