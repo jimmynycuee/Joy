@@ -148,7 +148,7 @@ export function providerBlockedReason(
   allowed: readonly ProviderKind[] | undefined,
 ): string | undefined {
   if (!allowed || allowed.includes(provider)) return undefined
-  return `專案不允許使用 ${PROVIDER_LABELS[provider]}（設定 → 專案）`
+  return `專案不允許 ${PROVIDER_LABELS[provider]}`
 }
 
 /** Leaves out picks the repository does not allow, so they fall back to Settings instead of failing the task. */
