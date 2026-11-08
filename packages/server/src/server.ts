@@ -2143,7 +2143,13 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   }
 
   /** The continued run is about to hand its prompt to the agent: the interrupt's messages are delivered now. */
-  function deliverInterruptMessages(taskId: TaskId, resume: ResumeState | undefined): void {
+  function deliverInterruptMessages(
+    taskId: TaskId,
+    resume: ResumeState | undefined,
+    signal: AbortSignal,
+  ): void {
+    // Stopped before the agent started: the run's end withdraws the messages instead.
+    if (signal.aborted) return
     const ids = resume?.interrupted?.messageIds.splice(0) ?? []
     if (ids.length) publishTaskLevel(taskId, 'user.message.delivered', { ids, via: 'interrupt' })
   }
@@ -3252,7 +3258,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         const implementing = IMPLEMENTER_PHASES.has(event.phase) && event.role === 'implementer'
         if (implementing) {
           implementerRound = event.round
-          deliverInterruptMessages(task.id, resume)
+          deliverInterruptMessages(task.id, resume, controller.signal)
         }
         setImplementerTurn(task.id, implementing)
       }
@@ -4765,7 +4771,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const runStartedAt = Date.now()
     const approvalKey = resolve(workspace.path)
     if (toolHub) codexApprovalHandlers.set(approvalKey, toolHub.codexApproval)
-    deliverInterruptMessages(task.id, resume)
+    deliverInterruptMessages(task.id, resume, controller.signal)
     setImplementerTurn(task.id, true)
     try {
       for await (const event of provider.run(options, model)) {
@@ -4865,7 +4871,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     })
     let done: Extract<AgentEvent, { type: 'done' }> | undefined
     let failure: string | undefined
-    deliverInterruptMessages(task.id, resume)
+    deliverInterruptMessages(task.id, resume, controller.signal)
     setImplementerTurn(task.id, true)
     try {
       for await (const event of provider.run(
