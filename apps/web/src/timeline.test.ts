@@ -235,6 +235,25 @@ describe('buildTimeline: thread messages, plans, checks and checkpoints', () => 
     ).toEqual(['delivered', 'queued', 'sent'])
   })
 
+  it('shows an interrupted step and the message it carried', () => {
+    const entries = buildTimeline([
+      e('user.message', { id: 'm1', text: 'use BigInt', provenance: 'user', delivery: 'interrupt' }),
+      e('run.interrupted', { reason: 'owner_message' }),
+      e('user.message.delivered', { ids: ['m1'], via: 'interrupt' }),
+    ])
+    expect(entries[0]).toMatchObject({ kind: 'user', state: 'delivered' })
+    expect(entries[1]).toMatchObject({
+      kind: 'step',
+      text: '已中斷目前這一步，帶著你的訊息繼續',
+      tone: 'muted',
+    })
+    expect(entries[2]).toMatchObject({ kind: 'noise', text: '已打斷 agent，訊息已交給它' })
+    const pending = buildTimeline([
+      e('user.message', { id: 'm1', text: 'use BigInt', provenance: 'user', delivery: 'interrupt' }),
+    ])
+    expect(pending[0]).toMatchObject({ kind: 'user', state: 'interrupting' })
+  })
+
   it('shows plan events, folding past plans but not the one with its own card', () => {
     const events = [
       e('plan.awaiting_approval', { plan: '# v1' }),

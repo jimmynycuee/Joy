@@ -46,7 +46,8 @@ export function PrStatusCard({
     try {
       await request(`/api/tasks/${encodeURIComponent(taskId)}/messages`, {
         method: 'POST',
-        body: JSON.stringify({ text: ciFixMessage(status.checks.failingNames) }),
+        // A CI fix can wait for the agent's next turn; it should not stop what the agent is doing.
+        body: JSON.stringify({ text: ciFixMessage(status.checks.failingNames), interrupt: false }),
       })
       onChanged()
     } catch (cause) {

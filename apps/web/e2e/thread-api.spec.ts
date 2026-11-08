@@ -20,6 +20,7 @@ interface ThreadState {
   usage?: unknown
   pendingPlan?: unknown
   queuedMessages?: unknown[]
+  interruptible?: boolean
   pr?: { status: number; json: unknown }
   checkpoints?: unknown[]
   /** Answers a POST under /api/tasks/:id/; the default is 202 with the task. */
@@ -76,6 +77,7 @@ async function mockThread(page: Page, state: ThreadState, calls: Call[]) {
           usage: state.usage,
           pendingPlan: state.pendingPlan ?? null,
           queuedMessages: state.queuedMessages ?? [],
+          ...(state.interruptible !== undefined ? { interruptible: state.interruptible } : {}),
         },
       })
     } else if (path === `/api/tasks/${id}/pr`) {
@@ -118,12 +120,54 @@ test('a follow-up on a finished task is sent from the thread and shows as a bubb
   // Sent straight to the agent, so there is no 排隊中 tag, and the draft is gone.
   await expect(page.getByTestId('message-tag')).toHaveCount(0)
   await expect(composer).toHaveValue('')
-  await expect(composer).toHaveAttribute('placeholder', '補充指示，下一輪會帶給 agent')
+  await expect(composer).toHaveAttribute('placeholder', '訊息會在 agent 下一次動手時送達')
 })
 
-test('a message to a running task is queued until the next turn', async ({ page }) => {
+test('a message to a running agent interrupts its current step and is handed over', async ({ page }) => {
+  const state: ThreadState = {
+    task: taskOf('running', 'steer-task'),
+    interruptible: true,
+    events: [event('steer-task', 'started', {})],
+  }
+  const calls: Call[] = []
+  state.post = async (_path, body) => {
+    const text = (body as { text: string }).text
+    state.queuedMessages = [{ id: 's1', text }]
+    state.events.push(
+      event('steer-task', 'user.message', { id: 's1', text, provenance: 'user', delivery: 'interrupt' }, 1),
+    )
+  }
+  await mockThread(page, state, calls)
+
+  await page.goto('/?task=steer-task')
+  const composer = page.getByLabel('傳訊息給任務')
+  await expect(composer).toHaveAttribute('placeholder', '傳訊息會打斷 agent 目前這一步，帶著訊息繼續')
+  await composer.fill('Stop, use the existing helper')
+  await composer.press('Enter')
+
+  // The web app sends the default (interrupt) without asking for it explicitly.
+  await expect.poll(() => calls.map((call) => call.body)).toEqual([{ text: 'Stop, use the existing helper' }])
+  const bubble = page.locator('.user-column', { hasText: 'Stop, use the existing helper' })
+  await expect(bubble.getByTestId('message-tag')).toHaveText('正在打斷 agent…')
+  await expect(page.getByTestId('queued-messages')).toContainText('正在打斷 agent 目前這一步')
+
+  // The step stopped and the agent continued with the message.
+  state.queuedMessages = []
+  state.events.push(
+    event('steer-task', 'run.interrupted', { reason: 'owner_message' }, 0),
+    event('steer-task', 'user.message.delivered', { ids: ['s1'], via: 'interrupt' }, 0),
+    event('steer-task', 'started', {}, 0),
+  )
+  await page.reload()
+  await expect(page.getByTestId('event-stream')).toContainText('已中斷目前這一步，帶著你的訊息繼續')
+  await expect(page.getByTestId('message-tag')).toHaveCount(0)
+  await expect(page.getByTestId('queued-messages')).toHaveCount(0)
+})
+
+test('a message during a review is queued until the next turn', async ({ page }) => {
   const state: ThreadState = {
     task: taskOf('running', 'queue-task'),
+    interruptible: false,
     events: [event('queue-task', 'started', {})],
   }
   state.post = async (_path, body) => {
@@ -137,7 +181,7 @@ test('a message to a running task is queued until the next turn', async ({ page 
 
   await page.goto('/?task=queue-task')
   const composer = page.getByLabel('傳訊息給任務')
-  await expect(composer).toHaveAttribute('placeholder', '補充指示，下一輪會帶給 agent')
+  await expect(composer).toHaveAttribute('placeholder', '訊息會在 agent 下一次動手時送達')
   await composer.fill('Use the existing helper')
   await composer.press('Enter')
 
@@ -292,6 +336,8 @@ test('a published task shows its PR state and checks, and can be asked to fix CI
   await expect.poll(() => calls.length).toBe(1)
   expect(calls[0]?.path).toBe(`/api/tasks/${id}/messages`)
   expect((calls[0]?.body as { text: string }).text).toContain('windows-latest')
+  // A CI fix waits for the agent's next turn instead of interrupting it.
+  expect(calls[0]?.body).toMatchObject({ interrupt: false })
 })
 
 test('after the worktree was removed, failing CI points at a new task instead of the agent', async ({

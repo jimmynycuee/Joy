@@ -176,6 +176,7 @@ import {
   findWorkflow,
   followUpPrompt,
   formatFindings,
+  interruptedPrompt,
   planPrompt,
   revisePlanPrompt,
   withOwnerMessages,
@@ -314,7 +315,11 @@ function actionFingerprint(action: { kind: string; detail: unknown }): string {
 }
 
 const conversationInputSchema = z.strictObject({ title: z.string().trim().min(1).max(200).optional() })
-const messageInputSchema = z.strictObject({ text: z.string().trim().min(1).max(20_000) })
+const messageInputSchema = z.strictObject({
+  text: z.string().trim().min(1).max(20_000),
+  /** false: wait for the agent's next turn instead of interrupting the current one. */
+  interrupt: z.boolean().optional(),
+})
 const projectNoteStatusSchema = z.enum(['pending', 'applied', 'rejected', 'conflict']).optional()
 const statsDay = z
   .string()
@@ -469,6 +474,16 @@ interface ActiveTask {
   /** Set when the task was stopped by a cost or time limit. */
   stoppedFor?: string
   timeLimit?: NodeJS.Timeout
+  /** When the time limit stops the task (epoch ms); an interrupted run continues with what is left of it. */
+  deadline?: number
+  /** The implementer's turn is in flight (not the review, checks or setup): an owner message may interrupt it. */
+  implementerTurn?: boolean
+  /** An owner message stopped the current turn; the run continues in the same session with the messages. */
+  interrupted?: boolean
+  /** The owner cancelled the task; wins over an interrupt. */
+  cancelled?: boolean
+  /** Set by the run once it stopped for an interrupt: the worktree and session to continue. */
+  continueWith?: ResumeState
 }
 
 interface ResumeState {
@@ -479,6 +494,11 @@ interface ResumeState {
   prompt?: string
   /** Why the session is continued, when the owner asked for it (follow-up message, plan feedback or approval). */
   kind?: ContinuationKind
+  /**
+   * Set when an interrupted run continues: the time limit and the review rounds left over from it (a follow-up starts
+   * with full ones), and the owner messages in `prompt`, delivered once the agent is about to get them.
+   */
+  interrupted?: { deadline: number; maxRounds?: number; messageIds: string[] }
 }
 
 type ContinuationKind = 'follow_up' | 'replan' | 'plan_approved'
@@ -486,9 +506,18 @@ type ContinuationKind = 'follow_up' | 'replan' | 'plan_approved'
 /** Statuses from which the owner can continue a task with a message. */
 const CONTINUABLE_STATUSES = new Set<TaskStatus>(['done', 'review_ready', 'failed', 'cancelled'])
 /** Events that end one run of a task (for the duration in its usage). */
-const RUN_END_EVENTS = new Set(['result', 'error', 'task.paused', 'interrupted', 'quota.queued'])
+const RUN_END_EVENTS = new Set([
+  'result',
+  'error',
+  'task.paused',
+  'interrupted',
+  'quota.queued',
+  'run.interrupted',
+])
 const PLAN_EVENTS = new Set(['plan.awaiting_approval', 'plan.approved', 'plan.rejected'])
 const MAX_QUEUED_MESSAGES = 20
+/** Review-loop phases in which the implementer works (and an owner message may interrupt it). */
+const IMPLEMENTER_PHASES = new Set<string>(['planning', 'implementing', 'fixing'])
 const MAX_CHECK_OUTPUT_CHARS = 4_000
 
 function selectActiveRoles(
@@ -1306,6 +1335,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         usage: taskUsage(events, attempts, running.has(task.id)),
         pendingPlan: pendingPlan(task, events) ?? null,
         queuedMessages: queuedMessages.get(task.id) ?? [],
+        // Whether a message sent now would interrupt the agent (else it waits for the agent's next turn).
+        interruptible: canInterrupt(task),
       })
       return
     }
@@ -1417,9 +1448,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const messagesMatch = /^\/api\/tasks\/([^/]+)\/messages$/.exec(url.pathname)
     if (messagesMatch && method === 'POST') {
       assertJsonContentType(req)
-      const { text } = messageInputSchema.parse(await readJson(req))
+      const { text, interrupt } = messageInputSchema.parse(await readJson(req))
       const task = requireTask(decodePathSegment(messagesMatch[1] ?? ''))
-      json(res, 202, await exclusive(task.id, () => postTaskMessage(task, text)))
+      json(res, 202, await exclusive(task.id, () => postTaskMessage(task, text, interrupt ?? true)))
       return
     }
     const planMatch = /^\/api\/tasks\/([^/]+)\/plan\/(approve|reject)$/.exec(url.pathname)
@@ -1991,7 +2022,148 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     active.promise = runTask(task, controller, resume).finally(() => {
       clearTimeout(active.timeLimit)
       if (running.get(task.id) === active) running.delete(task.id)
-      if (!closed) void continueWithQueuedMessages(task.id)
+      if (closed) return
+      // The run stopped before its agent got the messages of the interrupt it continues (for example a provider the
+      // repo no longer allows): they were never delivered.
+      const undelivered = resume?.interrupted?.messageIds.splice(0) ?? []
+      if (undelivered.length)
+        publishTaskLevel(task.id, 'user.message.discarded', {
+          ids: undelivered,
+          reason: 'The task stopped before the agent got the message',
+        })
+      // An interrupt that did not happen (a limit or an approval pause stopped the run first): its messages wait in
+      // the queue like any other.
+      if (active.interrupted && !active.continueWith && !active.cancelled) {
+        const ids = (queuedMessages.get(task.id) ?? []).map((message) => message.id)
+        if (ids.length) publishTaskLevel(task.id, 'user.message.requeued', { ids })
+      }
+      // Synchronous from here to the next scheduleTask, so no other owner action can slip in between the two runs.
+      if (active.continueWith) {
+        if (!active.cancelled) {
+          continueAfterInterrupt(task.id, active.continueWith)
+          return
+        }
+        cancelInterruptedRun(task.id, active.continueWith.attempt.id)
+      }
+      void continueWithQueuedMessages(task.id)
+    })
+  }
+
+  /**
+   * The owner's message may stop the implementer's current turn: only for a single or review-loop task that is
+   * running (not waiting for an approval or a quota reset, not being stopped) and whose session Joy can resume.
+   */
+  function canInterrupt(task: StoredTask): boolean {
+    const active = running.get(task.id)
+    if (!active || active.cancelled || active.stoppedFor || active.pausedFor) return false
+    if (active.interrupted) return true
+    if (!active.implementerTurn || getTask(db, task.id)?.status !== 'running') return false
+    if (task.mode !== 'single' && task.mode !== 'review_loop') return false
+    const attempt = latestAttempt(db, task.id)
+    if (!attempt?.sessionId || !attempt.worktreePath || !attempt.branch || !attempt.baseCommit) return false
+    return providers[attempt.provider]?.capabilities.resume === true
+  }
+
+  function interruptRun(taskId: TaskId): void {
+    const active = running.get(taskId)
+    if (!active || active.interrupted) return
+    active.interrupted = true
+    active.controller.abort()
+  }
+
+  /** The run stopped because of an owner message, not because the owner cancelled it or a limit stopped it. */
+  function interruptPending(taskId: TaskId): boolean {
+    const active = running.get(taskId)
+    return !!active?.interrupted && !active.cancelled && !active.stoppedFor && !active.pausedFor
+  }
+
+  /** Marks the implementer turn of a run as in flight or over. */
+  function setImplementerTurn(taskId: TaskId, inFlight: boolean): void {
+    const active = running.get(taskId)
+    if (active) active.implementerTurn = inFlight
+  }
+
+  /**
+   * Called by a run that stopped for an interrupt: records where to continue and ends the run without a result (the
+   * task stays running). Returns false when there is no session to continue, so the caller finishes as cancelled.
+   */
+  function finishInterruptedRun(task: StoredTask, attemptId: AttemptId, maxRounds?: number): boolean {
+    const active = running.get(task.id)
+    const attempt = getAttempt(db, attemptId)
+    const repo = getRepo(db, task.repoId)
+    if (
+      !active ||
+      !attempt?.sessionId ||
+      !attempt.worktreePath ||
+      !attempt.branch ||
+      !attempt.baseCommit ||
+      !repo
+    )
+      return false
+    const workspace: Workspace = {
+      repo,
+      taskId: task.id,
+      attemptId: attempt.id,
+      path: attempt.worktreePath,
+      branch: attempt.branch,
+      baseCommit: attempt.baseCommit,
+    }
+    active.continueWith = {
+      attempt,
+      workspace,
+      sessionId: attempt.sessionId,
+      interrupted: {
+        deadline: active.deadline ?? Date.now(),
+        ...(maxRounds !== undefined ? { maxRounds } : {}),
+        messageIds: [],
+      },
+    }
+    publish(task.id, attempt.id, 'run.interrupted', { reason: 'owner_message' })
+    return true
+  }
+
+  /** Starts the next run of an interrupted task in the same worktree and session, with every queued message. */
+  function continueAfterInterrupt(taskId: TaskId, state: ResumeState): void {
+    const task = getTask(db, taskId)
+    if (!task) return
+    const planning = !planApproved(task)
+    const queued = queuedMessages.get(taskId) ?? []
+    queuedMessages.delete(taskId)
+    scheduleTask(task, {
+      ...state,
+      prompt: interruptedPrompt(
+        queued.map((message) => message.text),
+        planning,
+      ),
+      kind: planning ? 'replan' : 'follow_up',
+      ...(state.interrupted
+        ? { interrupted: { ...state.interrupted, messageIds: queued.map((message) => message.id) } }
+        : {}),
+    })
+  }
+
+  /** The continued run is about to hand its prompt to the agent: the interrupt's messages are delivered now. */
+  function deliverInterruptMessages(
+    taskId: TaskId,
+    resume: ResumeState | undefined,
+    signal: AbortSignal,
+  ): void {
+    // Stopped before the agent started: the run's end withdraws the messages instead.
+    if (signal.aborted) return
+    const ids = resume?.interrupted?.messageIds.splice(0) ?? []
+    if (ids.length) publishTaskLevel(taskId, 'user.message.delivered', { ids, via: 'interrupt' })
+  }
+
+  /** The owner cancelled while an interrupted run was ending: finish it as cancelled after all. */
+  function cancelInterruptedRun(taskId: TaskId, attemptId: AttemptId): void {
+    updateAttempt(db, attemptId, { status: 'cancelled' })
+    setTaskStatus(db, taskId, 'cancelled')
+    publish(taskId, attemptId, 'result', {
+      type: 'result',
+      status: 'cancelled',
+      approved: false,
+      rounds: 0,
+      reason: 'Cancelled',
     })
   }
 
@@ -2123,7 +2295,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
    * The owner writes in a task's thread. A busy task queues the message for its next agent turn; a finished one is
    * continued in the same worktree and session (a plan that is not approved yet is revised instead).
    */
-  async function postTaskMessage(task: StoredTask, text: string) {
+  async function postTaskMessage(task: StoredTask, text: string, interrupt = true) {
     if (task.mode === 'compete')
       throw new HttpError(409, 'Compete tasks cannot take messages; choose an attempt or start a new task')
     const id = randomUUID()
@@ -2136,8 +2308,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         )
       queue.push({ id, text })
       queuedMessages.set(task.id, queue)
-      publishTaskLevel(task.id, 'user.message', { id, text, provenance: 'user', delivery: 'queued' })
-      return { task: getTask(db, task.id), message: { id, delivery: 'queued' as const } }
+      // Interrupting stops the implementer's turn; the run then continues in the same session with every queued
+      // message. Anywhere else (review, checks, approvals, quota wait) the message waits for the next turn.
+      const delivery = interrupt && canInterrupt(task) ? 'interrupt' : 'queued'
+      publishTaskLevel(task.id, 'user.message', { id, text, provenance: 'user', delivery })
+      if (delivery === 'interrupt') interruptRun(task.id)
+      return { task: getTask(db, task.id), message: { id, delivery } }
     }
     if (!CONTINUABLE_STATUSES.has(task.status))
       throw new HttpError(409, `Task cannot take a message while it is ${task.status}`)
@@ -2464,13 +2640,16 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (active) {
         // Read with the rest of the run's config, so the limit follows the settings at start.
         const minutes = config.budget.per_task.max_minutes
+        // Interrupting does not reset the limit: the continued run only gets the time the interrupted one had left.
+        active.deadline =
+          resume?.interrupted?.deadline ?? Date.now() + (options.taskTimeLimitMs ?? minutes * 60_000)
         active.timeLimit = setTimeout(
           () =>
             stopTask(
               task.id,
               `Stopped: the task ran longer than ${minutes} minutes (budget.per_task.max_minutes).`,
             ),
-          options.taskTimeLimitMs ?? minutes * 60_000,
+          Math.max(0, active.deadline - Date.now()),
         )
         active.timeLimit.unref?.()
       }
@@ -2507,6 +2686,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         throw new Error(`Task mode ${task.mode} is not supported`)
       }
     } catch (error) {
+      // A provider may throw instead of ending its stream when it is stopped for an interrupt.
+      if (
+        attempt &&
+        controller.signal.aborted &&
+        interruptPending(task.id) &&
+        finishInterruptedRun(task, attempt.id)
+      )
+        return
       const message = error instanceof Error ? error.message : 'Task failed'
       const status = controller.signal.aborted ? 'cancelled' : 'failed'
       if (error instanceof ProviderAllowlistError) {
@@ -3042,6 +3229,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const brief = taskBrief(task)
     // Round numbers continue after the reviews this attempt already has (a follow-up starts a new round).
     const firstRound = Math.max(0, ...listReviews(db, attempt.id).map((review) => review.round)) + 1
+    // A follow-up gets the full number of rounds; a run continued after an interrupt only what the interrupted one
+    // had left (the interrupted round itself is done again and still counts once).
+    const maxRounds = resume?.interrupted?.maxRounds ?? task.maxRounds
+    let implementerRound = 0
     for await (const event of reviewLoop(
       {
         taskId: task.id,
@@ -3051,7 +3242,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         implementer,
         reviewer,
         planFirst: planning,
-        maxRounds: task.maxRounds,
+        maxRounds,
         signal: controller.signal,
         firstRound,
         takeMessages: () => takeQueuedMessages(task.id, 'next_turn'),
@@ -3062,9 +3253,37 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       },
       { providers, executor },
     )) {
+      // Only the implementer's turns can be interrupted; reviews, checks and setup let the message wait.
+      if (event.type === 'phase') {
+        const implementing = IMPLEMENTER_PHASES.has(event.phase) && event.role === 'implementer'
+        if (implementing) {
+          implementerRound = event.round
+          deliverInterruptMessages(task.id, resume, controller.signal)
+        }
+        setImplementerTurn(task.id, implementing)
+      }
+      if (event.type === 'agent' && event.role === 'implementer' && event.event.type === 'done')
+        setImplementerTurn(task.id, false)
+      if (
+        event.type === 'result' &&
+        event.status === 'cancelled' &&
+        interruptPending(task.id) &&
+        finishInterruptedRun(
+          task,
+          attempt.id,
+          // Planning (round 0) uses no review rounds.
+          implementerRound >= firstRound
+            ? Math.max(1, maxRounds - (implementerRound - firstRound))
+            : maxRounds,
+        )
+      ) {
+        finished = true
+        continue
+      }
       recordLoopEvent(attempt, implementer, reviewer, event)
       if (event.type === 'workspace') workspace = event.workspace
       if (event.type === 'result') {
+        setImplementerTurn(task.id, false)
         finished = true
         const taskStatus: TaskStatus =
           event.status === 'cancelled'
@@ -3501,8 +3720,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   function cancelTaskById(id: TaskId): StoredTask {
     const task = requireTask(id)
     const active = running.get(task.id)
-    if (active) active.controller.abort()
-    else if (task.status === 'queued' || task.status === 'awaiting_approval') {
+    if (active) {
+      active.cancelled = true
+      active.controller.abort()
+    } else if (task.status === 'queued' || task.status === 'awaiting_approval') {
       setTaskStatus(db, task.id, 'cancelled')
       discardQueuedMessages(task.id, 'The task was cancelled')
     } else if (task.status !== 'cancelled')
@@ -4550,6 +4771,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const runStartedAt = Date.now()
     const approvalKey = resolve(workspace.path)
     if (toolHub) codexApprovalHandlers.set(approvalKey, toolHub.codexApproval)
+    deliverInterruptMessages(task.id, resume, controller.signal)
+    setImplementerTurn(task.id, true)
     try {
       for await (const event of provider.run(options, model)) {
         persistUsageEvent(db, model.provider, event)
@@ -4561,11 +4784,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         publish(task.id, attempt.id, 'agent', { role: 'implementer', round: 1, event })
       }
     } finally {
+      setImplementerTurn(task.id, false)
       if (toolHub && codexApprovalHandlers.get(approvalKey) === toolHub.codexApproval) {
         codexApprovalHandlers.delete(approvalKey)
       }
       toolHub?.close()
     }
+    if (controller.signal.aborted && interruptPending(task.id) && finishInterruptedRun(task, attempt.id))
+      return
     const diff = await executor.diff(workspace)
     const limited = quotaState.get(model.provider)
     const runFailed = !done || done.isError || !!failure
@@ -4645,27 +4871,35 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     })
     let done: Extract<AgentEvent, { type: 'done' }> | undefined
     let failure: string | undefined
-    for await (const event of provider.run(
-      {
-        cwd: workspace.path,
-        prompt: withOwnerMessages(
-          resume?.prompt ?? planPrompt(task.prompt),
-          takeQueuedMessages(task.id, 'next_turn'),
-        ),
-        autonomy: 'read-only',
-        signal: controller.signal,
-        ...(resume ? { resumeSessionId: resume.sessionId } : {}),
-      },
-      model,
-    )) {
-      persistUsageEvent(db, model.provider, event)
-      if (event.type === 'quota') noteQuota(model.provider, event)
-      if (event.type === 'usage') chargeTask(task.id, model.provider, event)
-      if (event.type === 'session_started') updateAttempt(db, attempt.id, { sessionId: event.sessionId })
-      if (event.type === 'error' && !event.recoverable) failure = event.message
-      if (event.type === 'done') done = event
-      publish(task.id, attempt.id, 'agent', { role: 'implementer', round: 0, event })
+    deliverInterruptMessages(task.id, resume, controller.signal)
+    setImplementerTurn(task.id, true)
+    try {
+      for await (const event of provider.run(
+        {
+          cwd: workspace.path,
+          prompt: withOwnerMessages(
+            resume?.prompt ?? planPrompt(task.prompt),
+            takeQueuedMessages(task.id, 'next_turn'),
+          ),
+          autonomy: 'read-only',
+          signal: controller.signal,
+          ...(resume ? { resumeSessionId: resume.sessionId } : {}),
+        },
+        model,
+      )) {
+        persistUsageEvent(db, model.provider, event)
+        if (event.type === 'quota') noteQuota(model.provider, event)
+        if (event.type === 'usage') chargeTask(task.id, model.provider, event)
+        if (event.type === 'session_started') updateAttempt(db, attempt.id, { sessionId: event.sessionId })
+        if (event.type === 'error' && !event.recoverable) failure = event.message
+        if (event.type === 'done') done = event
+        publish(task.id, attempt.id, 'agent', { role: 'implementer', round: 0, event })
+      }
+    } finally {
+      setImplementerTurn(task.id, false)
     }
+    if (controller.signal.aborted && interruptPending(task.id) && finishInterruptedRun(task, attempt.id))
+      return
     const stoppedFor = running.get(task.id)?.stoppedFor
     if (controller.signal.aborted || !done || done.isError || failure) {
       const status = controller.signal.aborted && !stoppedFor ? 'cancelled' : 'failed'

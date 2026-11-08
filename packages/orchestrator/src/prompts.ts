@@ -128,6 +128,23 @@ export function followUpPrompt(messages: string[]): string {
   ].join('\n')
 }
 
+/**
+ * The owner interrupted the agent's turn with a message. The same session continues: the agent was stopped mid-step,
+ * so it is told to look at the files before it goes on. While planning it still must not change files.
+ */
+export function interruptedPrompt(messages: string[], planning = false): string {
+  return [
+    'The owner interrupted your previous step to send you a message. You were stopped in the middle of that step, so it may be half done.',
+    planning
+      ? 'You are still writing the plan: take the message into account and write the plan. Do not change any files yet.'
+      : 'Your earlier changes are still in this worktree; look at the files again before you continue.',
+    'The message takes priority over earlier instructions. If it is a question, answer it first; then carry on with the task unless it tells you to stop.',
+    '',
+    "The owner's message:",
+    ...messages,
+  ].join('\n')
+}
+
 /** The owner answered a plan with feedback instead of approving it. */
 export function revisePlanPrompt(messages: string[]): string {
   return [

@@ -66,6 +66,8 @@ export type TaskDetails = {
   usage?: TaskUsage
   pendingPlan?: PendingPlan | null
   queuedMessages?: QueuedMessage[]
+  /** A message sent now interrupts the agent's current step (missing from older servers). */
+  interruptible?: boolean
 }
 export type SecretStatus = { set: boolean; source?: 'env' | 'keychain' }
 export type DoctorStatus = 'ok' | 'missing' | 'untested'

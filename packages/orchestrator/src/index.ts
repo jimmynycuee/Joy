@@ -4,6 +4,7 @@ export {
   approvedPlanPrompt,
   followUpPrompt,
   formatFindings,
+  interruptedPrompt,
   planPrompt,
   revisePlanPrompt,
   withOwnerMessages,
