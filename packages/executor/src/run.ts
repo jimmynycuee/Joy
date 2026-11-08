@@ -65,7 +65,9 @@ export function runCommand(input: RunCommandInput): Promise<RunCommandResult> {
       const pid = child.pid
       if (pid === undefined) return
       if (windows) {
-        if (signal !== 'SIGKILL' && exited) return
+        // Windows reuses pids quickly, and once the child has exited `/T` can no longer find its orphans, so a
+        // taskkill now could only hit an unrelated process that took the same pid.
+        if (exited) return
         const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
           shell: false,
           windowsHide: true,
