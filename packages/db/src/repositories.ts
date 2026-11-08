@@ -19,12 +19,15 @@ export interface RepoRecord extends RepoRef {
   allowedProviders: ProviderKind[]
   /** Untrusted repository: agents run inside a container (T4.5). */
   container?: true
+  /** argv Joy runs in the worktree before each review, without a shell (e.g. ["pnpm", "check"]). */
+  checkCommand?: string[]
   createdAt: string
 }
 
 export interface NewRepo extends RepoRef {
   allowedProviders?: ProviderKind[]
   container?: boolean
+  checkCommand?: string[]
 }
 
 export interface StoredTask extends Task {
@@ -33,6 +36,8 @@ export interface StoredTask extends Task {
   originConversationId?: string
   /** The custom workflow the task was started with (T5.6); absent for the built-in modes. */
   workflow?: string
+  /** Hidden from the default task list. */
+  archived: boolean
 }
 
 export interface TaskEventRecord {
@@ -99,6 +104,7 @@ interface RepoRow {
   default_branch: string
   allowed_providers: string
   container: number
+  check_command: string | null
   created_at: string
 }
 
@@ -117,6 +123,7 @@ interface TaskRow {
   updated_at: string
   origin_conversation_id: string | null
   workflow: string | null
+  archived: number
 }
 
 interface ReviewRow {
@@ -158,7 +165,7 @@ interface AttemptRow {
 export function createRepo(db: Database, repo: NewRepo): RepoRecord {
   const allowedProviders = validateAllowedProviders(repo.allowedProviders ?? PROVIDER_KINDS)
   db.prepare(
-    'INSERT INTO repos (id, path, github_remote, default_branch, allowed_providers, container) VALUES (?, ?, ?, ?, ?, ?)',
+    'INSERT INTO repos (id, path, github_remote, default_branch, allowed_providers, container, check_command) VALUES (?, ?, ?, ?, ?, ?, ?)',
   ).run(
     repo.id,
     repo.path,
@@ -166,6 +173,7 @@ export function createRepo(db: Database, repo: NewRepo): RepoRecord {
     repo.defaultBranch,
     JSON.stringify(allowedProviders),
     repo.container ? 1 : 0,
+    repo.checkCommand ? JSON.stringify(validateCheckCommand(repo.checkCommand)) : null,
   )
   const stored = getRepo(db, repo.id)
   if (!stored) throw new Error(`Repository ${repo.id} was not found after insert`)
@@ -196,6 +204,19 @@ export function updateRepoAllowedProviders(
 /** Runs this repository's agents in a container (T4.5), or back on the host. */
 export function updateRepoContainer(db: Database, id: RepoId, container: boolean): RepoRecord | undefined {
   db.prepare('UPDATE repos SET container = ? WHERE id = ?').run(container ? 1 : 0, id)
+  return getRepo(db, id)
+}
+
+/** Sets or clears (null) the command Joy runs in the worktree before each review. */
+export function updateRepoCheckCommand(
+  db: Database,
+  id: RepoId,
+  checkCommand: string[] | null,
+): RepoRecord | undefined {
+  db.prepare('UPDATE repos SET check_command = ? WHERE id = ?').run(
+    checkCommand ? JSON.stringify(validateCheckCommand(checkCommand)) : null,
+    id,
+  )
   return getRepo(db, id)
 }
 
@@ -251,10 +272,36 @@ export function getTask(db: Database, id: TaskId): StoredTask | undefined {
   return row ? mapTask(row) : undefined
 }
 
-export function listTasks(db: Database): StoredTask[] {
-  return (db.prepare('SELECT * FROM tasks ORDER BY updated_at DESC, id').all() as unknown as TaskRow[]).map(
-    mapTask,
-  )
+/** Every task by default; `archived: false` leaves archived ones out. */
+export function listTasks(db: Database, filter: { archived?: boolean } = {}): StoredTask[] {
+  const where = filter.archived === undefined ? '' : ` WHERE archived = ${filter.archived ? 1 : 0}`
+  return (
+    db.prepare(`SELECT * FROM tasks${where} ORDER BY updated_at DESC, id`).all() as unknown as TaskRow[]
+  ).map(mapTask)
+}
+
+export interface TaskUpdate {
+  title?: string | undefined
+  archived?: boolean | undefined
+}
+
+/** Renames or (un)archives a task. Returns the updated task, or undefined when it does not exist. */
+export function updateTask(db: Database, id: TaskId, update: TaskUpdate): StoredTask | undefined {
+  const sets: string[] = []
+  const values: (string | number)[] = []
+  if (update.title !== undefined) {
+    sets.push('title = ?')
+    values.push(update.title)
+  }
+  if (update.archived !== undefined) {
+    sets.push('archived = ?')
+    values.push(update.archived ? 1 : 0)
+  }
+  if (sets.length) {
+    sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")
+    db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...values, id)
+  }
+  return getTask(db, id)
 }
 
 export function setTaskStatus(db: Database, id: TaskId, status: TaskStatus): void {
@@ -561,6 +608,7 @@ function mapRepo(row: RepoRow): RepoRecord {
     ...(row.github_remote ? { githubRemote: row.github_remote } : {}),
     allowedProviders: parseStoredAllowedProviders(row.allowed_providers),
     ...(row.container === 1 ? { container: true as const } : {}),
+    ...(row.check_command ? { checkCommand: validateCheckCommand(JSON.parse(row.check_command)) } : {}),
     createdAt: row.created_at,
   }
 }
@@ -573,6 +621,16 @@ function parseStoredAllowedProviders(value: string): ProviderKind[] {
     throw new Error('Invalid repository provider allowlist JSON', { cause: error })
   }
   return validateAllowedProviders(parsed)
+}
+
+function validateCheckCommand(value: unknown): string[] {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    !value.every((part) => typeof part === 'string' && part.length > 0 && !part.includes('\0'))
+  )
+    throw new Error('Invalid check command: expected a non-empty array of non-empty strings')
+  return value as string[]
 }
 
 function validateAllowedProviders(value: unknown): ProviderKind[] {
@@ -599,6 +657,7 @@ function mapTask(row: TaskRow): StoredTask {
     updatedAt: row.updated_at,
     ...(row.origin_conversation_id ? { originConversationId: row.origin_conversation_id } : {}),
     ...(row.workflow ? { workflow: row.workflow } : {}),
+    archived: row.archived === 1,
   }
 }
 

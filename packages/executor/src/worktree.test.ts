@@ -265,3 +265,134 @@ describe('git output parsers', () => {
     })
   })
 })
+
+describe('WorktreeExecutor checks and checkpoints', () => {
+  it('runs a command in the worktree without a shell and keeps the output tail', async () => {
+    const { repo, executor } = await setup()
+    const ws = await executor.prepare(repo, tid('t1'), aid('a1'))
+    const ok = await executor.run(ws, {
+      command: process.execPath,
+      args: ['-e', 'console.log("x".repeat(10)); console.error(process.cwd()); process.exit(3)'],
+    })
+    expect(ok.exitCode).toBe(3)
+    expect(ok.output).toContain('xxxxxxxxxx')
+    expect(ok.output).toContain(realpathSync(ws.path))
+    const literal = await executor.run(ws, {
+      command: process.execPath,
+      args: ['-e', 'console.log(process.argv[1])', '$(echo hi) && rm -rf x'],
+    })
+    expect(literal.output.trim()).toBe('$(echo hi) && rm -rf x')
+    const slow = await executor.run(ws, {
+      command: process.execPath,
+      args: ['-e', 'setTimeout(() => {}, 10000)'],
+      timeoutMs: 50,
+    })
+    expect(slow).toMatchObject({ timedOut: true })
+    const missing = await executor.run(ws, { command: 'joy-no-such-program', args: [] })
+    expect(missing.exitCode).toBeNull()
+    expect(missing.spawnError).toBe('ENOENT')
+  })
+
+  it('stops the whole process tree on timeout, even a SIGTERM-ignoring child with a grandchild holding the pipes', async () => {
+    const { repo, executor } = await setup()
+    const ws = await executor.prepare(repo, tid('t1'), aid('a1'))
+    // The grandchild inherits stdout/stderr and prints its pid; the child ignores SIGTERM.
+    const script = [
+      "const { spawn } = require('node:child_process')",
+      "process.on('SIGTERM', () => {})",
+      "spawn(process.execPath, ['-e', 'console.log(\"grandchild \" + process.pid); setTimeout(() => {}, 20000)'], { stdio: 'inherit' })",
+      'setTimeout(() => {}, 20000)',
+    ].join(';')
+    let stopped = 0
+    const started = Date.now()
+    const result = await executor.run(ws, {
+      command: process.execPath,
+      args: ['-e', script],
+      timeoutMs: 500,
+      onStop: () => stopped++,
+    })
+    const elapsed = Date.now() - started
+    expect(result.timedOut).toBe(true)
+    expect(stopped).toBe(1)
+    // 500 ms timeout + 2 s grace, with room for a slow runner; the scripts would run for 20 s.
+    expect(elapsed).toBeLessThan(6_000)
+    const pid = Number(/grandchild (\d+)/.exec(result.output)?.[1])
+    expect(pid).toBeGreaterThan(0)
+    if (process.platform !== 'win32') {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      expect(() => process.kill(pid, 0)).toThrow()
+    }
+  }, 15_000)
+
+  it('stops a running command when the signal aborts', async () => {
+    const { repo, executor } = await setup()
+    const ws = await executor.prepare(repo, tid('t1'), aid('a1'))
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), 200)
+    const started = Date.now()
+    const result = await executor.run(ws, {
+      command: process.execPath,
+      args: ['-e', 'setTimeout(() => {}, 20000)'],
+      signal: controller.signal,
+    })
+    expect(result.timedOut).toBe(false)
+    expect(Date.now() - started).toBeLessThan(5_000)
+  })
+
+  it('reports, instead of swallowing, a failure to delete checkpoint refs on cleanup', async () => {
+    const { repo, root } = await setup()
+    const warnings: string[] = []
+    const executor = new WorktreeExecutor({
+      worktreesDir: join(root, 'worktrees'),
+      onWarning: (message) => warnings.push(message),
+    })
+    const ws = await executor.prepare(repo, tid('t1'), aid('a1'))
+    await executor.cleanup({ ...ws, taskId: tid('bad..id') })
+    expect(warnings).toEqual([expect.stringContaining('checkpoint refs of task bad..id')])
+  })
+
+  it('checkpoints without moving the branch and restores files, refusing to drop later commits unconfirmed', async () => {
+    const { repo, executor } = await setup()
+    const ws = await executor.prepare(repo, tid('t1'), aid('a1'))
+    const branchHead = async () => (await git(ws.path, ['rev-parse', 'HEAD'])).trim()
+    const start = await branchHead()
+    writeFileSync(join(ws.path, 'a.txt'), 'checkpoint one\n')
+    writeFileSync(join(ws.path, 'new.txt'), 'untracked at checkpoint\n')
+    unlinkSync(join(ws.path, 'gone.txt'))
+    const first = await executor.checkpoint(ws, 'refs/joy/checkpoints/t1/1', 'Joy checkpoint 1')
+    expect(first.head).toBe(start)
+    expect(await branchHead()).toBe(start)
+    expect((await git(repo.path, ['status', '--porcelain'])).trim()).toBe('')
+
+    writeFileSync(join(ws.path, 'a.txt'), 'later\n')
+    writeFileSync(join(ws.path, 'later.txt'), 'created later\n')
+    writeFileSync(join(ws.path, 'gone.txt'), 'back again\n')
+    await git(ws.path, ['add', '--all'])
+    await git(ws.path, ['commit', '-qm', 'agent commit'])
+
+    await expect(executor.restoreCheckpoint(ws, 'refs/joy/checkpoints/t1/1')).rejects.toThrow(
+      'discard 1 commit',
+    )
+    const restored = await executor.restoreCheckpoint(ws, 'refs/joy/checkpoints/t1/1', {
+      confirmDiscardCommits: true,
+    })
+    expect(restored).toEqual({ commit: first.commit, discardedCommits: 1 })
+    expect(await branchHead()).toBe(start)
+    expect(readFileSync(join(ws.path, 'a.txt'), 'utf8')).toBe('checkpoint one\n')
+    expect(readFileSync(join(ws.path, 'new.txt'), 'utf8')).toBe('untracked at checkpoint\n')
+    expect(existsSync(join(ws.path, 'later.txt'))).toBe(false)
+    expect(existsSync(join(ws.path, 'gone.txt'))).toBe(false)
+    // The main checkout is untouched.
+    expect(readFileSync(join(repo.path, 'a.txt'), 'utf8')).toBe('one\ntwo\n')
+
+    await expect(executor.checkpoint(ws, 'refs/heads/main', 'nope')).rejects.toThrow(
+      'Not a Joy checkpoint ref',
+    )
+    await expect(
+      executor.restoreCheckpoint({ ...ws, path: repo.path }, 'refs/joy/checkpoints/t1/1'),
+    ).rejects.toThrow('main checkout')
+
+    await executor.cleanup(ws, { confirmedUnpushedCommits: true })
+    expect((await git(repo.path, ['for-each-ref', 'refs/joy/'])).trim()).toBe('')
+  })
+})

@@ -24,7 +24,9 @@ export {
   listUsage,
   setTaskStatus,
   updateAttempt,
+  updateTask,
   updateRepoAllowedProviders,
+  updateRepoCheckCommand,
   updateRepoContainer,
   updateRepoGithubRemote,
 } from './repositories.js'
@@ -39,6 +41,7 @@ export type {
   ReviewRecord,
   StoredTask,
   TaskEventRecord,
+  TaskUpdate,
   UsageIncrement,
   UsageRecord,
 } from './repositories.js'

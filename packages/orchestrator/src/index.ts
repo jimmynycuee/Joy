@@ -1,4 +1,14 @@
-export { MAX_DIFF_CHARS, REVIEW_SCHEMA, formatFindings } from './prompts.js'
+export {
+  MAX_DIFF_CHARS,
+  REVIEW_SCHEMA,
+  approvedPlanPrompt,
+  followUpPrompt,
+  formatFindings,
+  planPrompt,
+  revisePlanPrompt,
+  withOwnerMessages,
+} from './prompts.js'
+export type { ChecksResult } from './prompts.js'
 export { parseVerdict, reviewLoop } from './review-loop.js'
 export type { LoopEvent, Phase, ReviewLoopDeps, ReviewLoopInput } from './review-loop.js'
 export { JUDGE_SCHEMA, compete, judgePrompt, labelFor, mergePrompt, parseJudgement } from './compete.js'

@@ -32,6 +32,13 @@ describe('containerRunCommand', () => {
     expect(args.slice(-5)).toEqual(['claude', '-p', 'hello', '--output-format', 'stream-json'])
   })
 
+  it('adds an init process and a container name when asked, and refuses unsafe names', () => {
+    const { args } = containerRunCommand({ ...base, init: true, name: 'joy-check-abc' })
+    expect(args).toEqual(expect.arrayContaining(['--init', '--name', 'joy-check-abc']))
+    expect(args.indexOf('--init')).toBeLessThan(args.indexOf(base.image))
+    expect(() => containerRunCommand({ ...base, name: '--privileged' })).toThrow(/container name/)
+  })
+
   it('refuses paths and images that could inject Docker options', () => {
     expect(() => containerRunCommand({ ...base, cwd: 'relative/path' })).toThrow(/absolute/)
     expect(() => containerRunCommand({ ...base, mounts: [{ host: '/x,target=/etc' }] })).toThrow(

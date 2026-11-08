@@ -28,6 +28,10 @@ export interface ContainerRunInput {
   args: string[]
   /** `uid:gid` so files the agent writes keep the owner's ownership (POSIX hosts). */
   user?: string
+  /** Run an init process as PID 1 so signals reach the command and its children are reaped. */
+  init?: boolean
+  /** Container name, so it can be `docker kill`ed when the run is stopped. */
+  name?: string
 }
 
 export const CONTAINER_HOME = '/joy-home'
@@ -42,6 +46,8 @@ function assertPath(path: string, what: string): string {
 /** The `docker run` command for one CLI run. Same paths inside and out; nothing else from the host is visible. */
 export function containerRunCommand(input: ContainerRunInput): { command: string; args: string[] } {
   if (!/^[\w./:@-]+$/.test(input.image)) throw new Error(`Invalid container image name: ${input.image}`)
+  if (input.name !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(input.name))
+    throw new Error(`Invalid container name: ${input.name}`)
   const cwd = assertPath(input.cwd, 'The working directory')
   const seen = new Set<string>()
   const mounts: string[] = []
@@ -68,6 +74,8 @@ export function containerRunCommand(input: ContainerRunInput): { command: string
       '--security-opt',
       'no-new-privileges',
       ...(input.user ? ['--user', input.user] : []),
+      ...(input.init ? ['--init'] : []),
+      ...(input.name ? ['--name', input.name] : []),
       '--env',
       `HOME=${CONTAINER_HOME}`,
       ...mounts,
@@ -81,6 +89,13 @@ export function containerRunCommand(input: ContainerRunInput): { command: string
 }
 
 /** The repository's shared git directory, which a linked worktree's `.git` file points into. */
+/** Stops a named container (a stopped `docker run` client does not stop its container). Never throws. */
+export function stopContainer(name: string): Promise<void> {
+  return new Promise((resolve) => {
+    execFile('docker', ['kill', name], { shell: false, windowsHide: true, timeout: 30_000 }, () => resolve())
+  })
+}
+
 export function gitCommonDir(worktreePath: string): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     execFile(

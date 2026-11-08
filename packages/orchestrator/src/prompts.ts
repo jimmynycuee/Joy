@@ -57,7 +57,24 @@ export function implementPrompt(task: string, plan?: string, planReview?: Review
   return parts.join('\n\n')
 }
 
-export function reviewPrompt(task: string, patch: string): string {
+/** The project's own checks (the repository's check command) as run in the worktree. */
+export interface ChecksResult {
+  ok: boolean
+  exitCode: number | null
+  /** End of the combined output, already redacted and truncated by the caller. */
+  outputTail: string
+  durationMs?: number
+  timedOut?: boolean
+}
+
+function checksSection(checks: ChecksResult): string {
+  return [
+    `The project's checks ${checks.ok ? 'passed' : `FAILED (exit code ${checks.exitCode ?? 'none'}${checks.timedOut ? ', timed out' : ''})`}.`,
+    ...(checks.ok ? [] : ['End of the check output:', '```', checks.outputTail, '```']),
+  ].join('\n')
+}
+
+export function reviewPrompt(task: string, patch: string, checks?: ChecksResult): string {
   const cut = patch.length > MAX_DIFF_CHARS
   return [
     'You are reviewing a change written by another engineer (a different AI model). Be specific and skeptical:',
@@ -67,6 +84,7 @@ export function reviewPrompt(task: string, patch: string): string {
     '',
     `Task:\n${task}`,
     '',
+    ...(checks ? [checksSection(checks), ''] : []),
     `Diff${cut ? ` (first ${MAX_DIFF_CHARS} characters of ${patch.length})` : ''}:`,
     '```diff',
     cut ? patch.slice(0, MAX_DIFF_CHARS) : patch,
@@ -74,15 +92,64 @@ export function reviewPrompt(task: string, patch: string): string {
   ].join('\n')
 }
 
-export function fixPrompt(verdict: ReviewVerdict): string {
+export function fixPrompt(verdict: ReviewVerdict, checks?: ChecksResult): string {
   return [
-    'A reviewer (a different AI model) looked at your change and did not approve it.',
+    verdict.approve
+      ? 'A reviewer (a different AI model) approved your change, but the project checks failed.'
+      : 'A reviewer (a different AI model) looked at your change and did not approve it.',
     'Address every blocker and major finding. Fix minor ones when cheap. If you disagree with a finding,',
     'leave the code as is and explain why in your final message.',
     '',
     `Summary: ${verdict.summary}`,
     '',
     formatFindings(verdict),
+    ...(checks && !checks.ok ? ['', checksSection(checks), 'Make the checks pass.'] : []),
+  ].join('\n')
+}
+
+/** Instructions the owner sent while the agent was working, delivered with its next turn. */
+export function withOwnerMessages(prompt: string, messages: string[]): string {
+  if (!messages.length) return prompt
+  return [
+    prompt,
+    '',
+    'New instructions from the owner, sent while you were working (they take priority over earlier instructions):',
+    ...messages.map((text) => `- ${text}`),
+  ].join('\n')
+}
+
+/** The owner continues a finished task in the same session and worktree. */
+export function followUpPrompt(messages: string[]): string {
+  return [
+    'The owner has follow-up instructions for this task. Continue in the same worktree; your earlier changes are still there.',
+    'Run the tests that exist and summarize what you changed.',
+    '',
+    ...messages,
+  ].join('\n')
+}
+
+/** The owner answered a plan with feedback instead of approving it. */
+export function revisePlanPrompt(messages: string[]): string {
+  return [
+    'The owner has not approved your plan yet and sent feedback. Write a revised plan. Do not change any files yet.',
+    '',
+    ...messages,
+  ].join('\n')
+}
+
+/** The owner approved the plan: implement it in the same session. */
+export function approvedPlanPrompt(
+  note?: string,
+  planReview?: ReviewVerdict,
+  messages: string[] = [],
+): string {
+  return [
+    'The owner approved your plan. Implement it now in this repository and run the tests that exist.',
+    ...(planReview && planReview.findings.length
+      ? ['', `A reviewer commented on the plan:\n${formatFindings(planReview)}`]
+      : []),
+    ...(note ? ['', `The owner's note:\n${note}`] : []),
+    ...(messages.length ? ['', ...messages] : []),
   ].join('\n')
 }
 
