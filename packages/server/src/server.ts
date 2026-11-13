@@ -2572,6 +2572,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       try {
         await continuationState(task)
       } catch (error) {
+        // The owner may have started a new run meanwhile; its messages are not ours to withdraw.
+        if (!heldTasks.has(taskId) || running.has(taskId)) return
         forgetQueuedMessages(
           taskId,
           redactor.redact(error instanceof Error ? error.message : 'The task could not be continued'),
