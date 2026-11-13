@@ -1,20 +1,34 @@
-import { existsSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, lstatSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
 /** `missing`: nothing built yet. `stale`: a source file is newer than the build. `fresh`: the build is current. */
 export type UiBuildState = 'missing' | 'stale' | 'fresh'
 
-/** What the built UI is made from: a change to any of these makes the build in apps/web/dist out of date. */
-const UI_INPUTS = ['src', 'public', 'index.html', 'vite.config.ts', 'package.json']
+/**
+ * What the built UI is made from: a change to any of these makes the build in apps/web/dist out of date. The web app
+ * imports `@joy/core` and `@joy/config` at build time, so their sources count too.
+ */
+const UI_INPUTS = [
+  ['apps', 'web', 'src'],
+  ['apps', 'web', 'public'],
+  ['apps', 'web', 'index.html'],
+  ['apps', 'web', 'vite.config.ts'],
+  ['apps', 'web', 'package.json'],
+  ['packages', 'core', 'src'],
+  ['packages', 'core', 'package.json'],
+  ['packages', 'config', 'src'],
+  ['packages', 'config', 'package.json'],
+]
 
-/** Newest modification time (ms) of a file or of everything under a folder; 0 when it does not exist. */
+/** Newest modification time (ms) of a file or of everything under a folder; 0 when it does not exist. Symlinks are not followed. */
 function newestMtime(path: string): number {
   let stat
   try {
-    stat = statSync(path)
+    stat = lstatSync(path)
   } catch {
     return 0
   }
+  if (stat.isSymbolicLink()) return 0
   if (!stat.isDirectory()) return stat.mtimeMs
   let newest = stat.mtimeMs
   for (const entry of readdirSync(path)) newest = Math.max(newest, newestMtime(join(path, entry)))
@@ -30,6 +44,6 @@ export function uiBuildState(repoRoot: string): UiBuildState {
   const built = join(web, 'dist', 'index.html')
   if (!existsSync(built)) return 'missing'
   const builtAt = statSync(built).mtimeMs
-  const sourceAt = Math.max(0, ...UI_INPUTS.map((input) => newestMtime(join(web, input))))
+  const sourceAt = Math.max(0, ...UI_INPUTS.map((input) => newestMtime(join(repoRoot, ...input))))
   return sourceAt > builtAt ? 'stale' : 'fresh'
 }

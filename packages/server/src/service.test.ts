@@ -1,4 +1,13 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync, utimesSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -146,7 +155,7 @@ describe('planService on Linux', () => {
   const file = plan.files[0] as ServiceFile
 
   it('writes a systemd user unit and enables it', () => {
-    expect(file.path).toBe('/home/me/.config/systemd/user/joy.service')
+    expect(file.path).toBe('/home/me/.config/systemd/user/joy-local.service')
     expect(file.content).toContain('WorkingDirectory=/Users/me/Joy')
     expect(file.content).toContain(
       'ExecStart="/opt/homebrew/opt/node@22/bin/node" "--import" "tsx" "/Users/me/Joy/scripts/joy.ts" "start" "--port" "4317"',
@@ -156,11 +165,15 @@ describe('planService on Linux', () => {
     expect(file.content).toContain('StandardOutput=append:/home/me/.joy/logs/service.out.log')
     expect(plan.install.map((step) => [step.command, ...step.args].join(' '))).toEqual([
       'systemctl --user daemon-reload',
-      'systemctl --user enable joy.service',
-      'systemctl --user restart joy.service',
+      'systemctl --user enable joy-local.service',
+      'systemctl --user restart joy-local.service',
     ])
     expect(plan.uninstall).toEqual([
-      { command: 'systemctl', args: ['--user', 'disable', '--now', 'joy.service'], ignoreFailure: true },
+      {
+        command: 'systemctl',
+        args: ['--user', 'disable', '--now', 'joy-local.service'],
+        ignoreFailure: true,
+      },
     ])
   })
 
@@ -172,7 +185,7 @@ describe('planService on Linux', () => {
       repoRoot: '/srv/joy "x"/$HOME',
       env: { PATH: '/usr/bin', XDG_CONFIG_HOME: '/home/me/cfg' },
     }).files[0] as ServiceFile
-    expect(odd.path).toBe('/home/me/cfg/systemd/user/joy.service')
+    expect(odd.path).toBe('/home/me/cfg/systemd/user/joy-local.service')
     expect(odd.content).toContain('"/opt/My Node/50%%/bin/node"')
     expect(odd.content).toContain('"/srv/joy \\"x\\"/$$HOME/scripts/joy.ts"')
     expect(odd.content).toContain('WorkingDirectory=/srv/joy "x"/$HOME')
@@ -193,31 +206,98 @@ describe('planService on Windows', () => {
   const file = plan.files[0] as ServiceFile
 
   it('registers a logon task from a UTF-16 XML file, without the 72 hour limit', () => {
-    expect(file.path).toBe('C:\\Users\\me\\.joy\\service\\joy-task.xml')
+    expect(file.path).toBe('C:\\Users\\me\\.joy\\service\\joy-local-task.xml')
     expect(file.encoding).toBe('utf16le')
     expect(file.content).toContain('<LogonTrigger>')
     expect(file.content).toContain('<UserId>PC\\me</UserId>')
     expect(file.content).toContain('<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>')
-    expect(file.content).toContain('<Command>C:\\Program Files\\nodejs\\node.exe</Command>')
+    expect(file.content).toContain('<Command>conhost.exe</Command>')
     expect(file.content).toContain(
-      '<Arguments>--import tsx C:\\Users\\me\\Joy\\scripts\\joy.ts start --port 4317</Arguments>',
+      '<Arguments>--headless &quot;C:\\Program Files\\nodejs\\node.exe&quot; --import tsx C:\\Users\\me\\Joy\\scripts\\joy.ts start --port 4317</Arguments>',
     )
     expect(file.content).toContain('<WorkingDirectory>C:\\Users\\me\\Joy</WorkingDirectory>')
     expect(plan.install).toEqual([
-      { command: 'schtasks', args: ['/End', '/TN', 'joy'], ignoreFailure: true },
-      { command: 'schtasks', args: ['/Create', '/TN', 'joy', '/XML', file.path, '/F'] },
-      { command: 'schtasks', args: ['/Run', '/TN', 'joy'] },
+      { command: 'schtasks', args: ['/End', '/TN', 'joy-local'], ignoreFailure: true },
+      { command: 'schtasks', args: ['/Create', '/TN', 'joy-local', '/XML', file.path, '/F'] },
+      { command: 'schtasks', args: ['/Run', '/TN', 'joy-local'] },
     ])
     expect(plan.uninstall.map((step) => step.args.slice(0, 3))).toEqual([
-      ['/End', '/TN', 'joy'],
-      ['/Delete', '/TN', 'joy'],
+      ['/End', '/TN', 'joy-local'],
+      ['/Delete', '/TN', 'joy-local'],
     ])
-    expect(plan.status.args).toEqual(['/Query', '/TN', 'joy', '/FO', 'LIST', '/V'])
+    expect(plan.status.args).toEqual(['/Query', '/TN', 'joy-local', '/FO', 'LIST', '/V'])
   })
 
   it('quotes an argument that has spaces', () => {
     const spaced = planService({ ...input, repoRoot: 'C:\\My Files\\Joy' }).files[0] as ServiceFile
     expect(spaced.content).toContain('&quot;C:\\My Files\\Joy\\scripts\\joy.ts&quot;')
+  })
+})
+
+describe('service manager details', () => {
+  it('slows restarts down: launchd ThrottleInterval and systemd RestartSec are both 30 seconds', () => {
+    const mac = planService(posixInput).files[0] as ServiceFile
+    expect(mac.content).toMatch(/<key>ThrottleInterval<\/key>\s*<integer>30<\/integer>/)
+    const linux = planService({ ...posixInput, platform: 'linux' }).files[0] as ServiceFile
+    expect(linux.content).toContain('RestartSec=30')
+  })
+
+  it('does not escape $ in systemd Environment= (only ExecStart expands it), and refuses newlines in paths', () => {
+    const unit = planService({
+      ...posixInput,
+      platform: 'linux',
+      repoRoot: '/srv/$joy',
+      env: { PATH: '/opt/$bin:/usr/bin' },
+    }).files[0] as ServiceFile
+    expect(unit.content).toContain(':/opt/$bin:/usr/bin')
+    expect(unit.content).not.toContain('$$bin')
+    expect(unit.content).toContain('"/srv/$$joy/scripts/joy.ts"')
+    expect(() =>
+      planService({ ...posixInput, platform: 'linux', repoRoot: '/srv/a\nExecStart=/bin/evil' }),
+    ).toThrow('換行')
+    expect(() => planService({ ...posixInput, platform: 'linux', joyHome: '/h/a\rb' })).toThrow('換行')
+  })
+
+  it('uses names that will not replace an unrelated joy of the owner', () => {
+    expect((planService({ ...posixInput, platform: 'linux' }).files[0] as ServiceFile).path).toMatch(
+      /joy-local\.service$/,
+    )
+    const win = planService({
+      ...posixInput,
+      platform: 'win32',
+      nodePath: 'C:\\n\\node.exe',
+      repoRoot: 'C:\\Joy',
+      joyHome: 'C:\\h\\.joy',
+      userHome: 'C:\\h',
+    })
+    expect(JSON.stringify(win.install)).toContain('"joy-local"')
+    expect(JSON.stringify(win.install)).not.toContain('"joy"')
+  })
+
+  it('tells a Windows owner what the task cannot carry: PATH, JOY_HOME, and that the hidden window is unverified', () => {
+    const win = planService({
+      ...posixInput,
+      platform: 'win32',
+      nodePath: 'C:\\n\\node.exe',
+      repoRoot: 'C:\\Joy',
+      joyHome: 'C:\\h\\.joy',
+      userHome: 'C:\\h',
+      env: { JOY_HOME: 'D:\\joy-data' },
+    })
+    const notes = win.notes.join('\n')
+    expect(notes).toContain('PATH')
+    expect(notes).toContain('D:\\joy-data')
+    expect(notes).toContain('尚待實機驗證')
+    expect(
+      planService({
+        ...posixInput,
+        platform: 'win32',
+        nodePath: 'C:\\n\\node.exe',
+        repoRoot: 'C:\\Joy',
+        joyHome: 'C:\\h\\.joy',
+        userHome: 'C:\\h',
+      }).notes.join('\n'),
+    ).not.toContain('JOY_HOME')
   })
 })
 
@@ -235,6 +315,14 @@ describe('finding a Node 22 for the service', () => {
     expect(
       ['v22.12.9', 'v20.19.0', 'v23.0.0', 'v24.1.0', 'v25.9.0', 'nonsense'].some(isSupportedNodeVersion),
     ).toBe(false)
+  })
+
+  it('treats every pnpm dlx cache layout as temporary', () => {
+    expect(isTemporaryNodePath('/Users/me/Library/Caches/pnpm/dlx/abc123/node_modules/node/bin/node')).toBe(
+      true,
+    )
+    expect(isTemporaryNodePath('C:\\Users\\me\\AppData\\Local\\pnpm-cache\\dlx\\abc\\node.exe')).toBe(true)
+    expect(isTemporaryNodePath('/opt/dlxtools/bin/node')).toBe(false)
   })
 
   it('treats npx and pnpm dlx caches and the temp folder as temporary', () => {
@@ -395,8 +483,10 @@ describe('service install, uninstall and status', () => {
     const output = env.lines.join('\n')
     expect(output).toContain('/Users/me/Library/LaunchAgents/com.joy.local.plist')
     expect(output).toContain('launchctl bootstrap gui/501')
-    expect(output).toContain('--dry-run')
+    expect(output).toContain('--dry-run：沒有寫入設定檔，也沒有安裝、啟動或重新啟動服務。')
     expect(output).toContain('pnpm joy build-ui')
+    expect(output).toContain('http://127.0.0.1:4317 會是空的')
+    expect(output).not.toContain('${')
     expect(env.written).toEqual([])
     expect(env.calls).toEqual([])
     expect(env.folders).toEqual([])
@@ -448,10 +538,22 @@ describe('service install, uninstall and status', () => {
     expect(noModules.written).toEqual([])
   })
 
-  it('warns when a Joy already answers on the port', async () => {
-    const env = fakeDeps({ nodes: installedNode, healthy: true })
-    await runService('install', { ...serviceOptions, dryRun: true }, env.deps)
-    expect(env.lines.join('\n')).toContain('已經有 Joy 在回應')
+  it('warns when some other Joy answers on the port, but not when the installed service itself does', async () => {
+    const other = fakeDeps({ nodes: installedNode, healthy: true, results: () => ({ status: 113 }) })
+    await runService('install', { ...serviceOptions, dryRun: true }, other.deps)
+    expect(other.lines.join('\n')).toContain('已經有 Joy 在回應')
+    expect(other.lines.join('\n')).toContain('請先停掉那一個')
+    const own = fakeDeps({ nodes: installedNode, healthy: true })
+    await runService('install', { ...serviceOptions, dryRun: true }, own.deps)
+    const output = own.lines.join('\n')
+    expect(output).toContain('回應的是已安裝的服務')
+    expect(output).not.toContain('請先停掉')
+  })
+
+  it('--dry-run of uninstall says exactly what it did not do', async () => {
+    const env = fakeDeps({})
+    await runService('uninstall', { ...serviceOptions, dryRun: true }, env.deps)
+    expect(env.lines.join('\n')).toContain('--dry-run：沒有刪除設定檔，也沒有停止或移除服務。')
   })
 
   it('uninstall unloads the service and removes the file; a missing install is not an error', async () => {
@@ -470,14 +572,14 @@ describe('service install, uninstall and status', () => {
   })
 
   it('systemd uninstall also reloads the units after removing the file', async () => {
-    const env = fakeDeps({ files: { '/home/me/.config/systemd/user/joy.service': 'x' } })
+    const env = fakeDeps({ files: { '/home/me/.config/systemd/user/joy-local.service': 'x' } })
     await runService(
       'uninstall',
       { ...serviceOptions, platform: 'linux', userHome: '/home/me', joyHome: '/home/me/.joy' },
       env.deps,
     )
     expect(env.calls).toEqual([
-      'systemctl --user disable --now joy.service',
+      'systemctl --user disable --now joy-local.service',
       'systemctl --user daemon-reload',
     ])
   })
@@ -502,7 +604,7 @@ describe('service install, uninstall and status', () => {
 
   it('status understands systemd and Task Scheduler answers', async () => {
     const linux = fakeDeps({
-      files: { '/home/me/.config/systemd/user/joy.service': 'x' },
+      files: { '/home/me/.config/systemd/user/joy-local.service': 'x' },
       healthy: true,
       results: () => ({
         stdout: 'LoadState=loaded\nActiveState=active\nSubState=running\nUnitFileState=enabled\nMainPID=77\n',
@@ -512,7 +614,7 @@ describe('service install, uninstall and status', () => {
     expect(await runService('status', linuxOptions, linux.deps)).toBe(0)
     expect(linux.lines.join('\n')).toContain('active/running，開機設定 enabled，pid 77')
     const windows = fakeDeps({
-      files: { 'C:\\Users\\me\\.joy\\service\\joy-task.xml': 'x' },
+      files: { 'C:\\Users\\me\\.joy\\service\\joy-local-task.xml': 'x' },
       healthy: true,
     })
     expect(
@@ -567,7 +669,7 @@ describe('service install with the real file system and a fake runner', () => {
     expect(await runService('install', options, deps)).toBe(0)
     const target =
       platform === 'win32'
-        ? join(joyHome, 'service', 'joy-task.xml')
+        ? join(joyHome, 'service', 'joy-local-task.xml')
         : join(userHome, 'Library', 'LaunchAgents', 'com.joy.local.plist')
     expect(existsSync(target)).toBe(true)
     expect(existsSync(join(joyHome, 'logs'))).toBe(true)
@@ -601,5 +703,46 @@ describe('uiBuildState', () => {
     expect(uiBuildState(root)).toBe('fresh')
     utimesSync(join(web, 'src', 'main.tsx'), future, future)
     expect(uiBuildState(root)).toBe('stale')
+  })
+})
+
+describe('uiBuildState inputs', () => {
+  const sources = [
+    ['apps', 'web', 'src', 'main.tsx'],
+    ['packages', 'core', 'src', 'index.ts'],
+    ['packages', 'config', 'src', 'index.ts'],
+  ]
+  function builtRoot() {
+    const root = tempDir()
+    for (const parts of sources) mkdirSync(join(root, ...parts.slice(0, -1)), { recursive: true })
+    for (const parts of sources) writeFileSync(join(root, ...parts), 'x')
+    mkdirSync(join(root, 'apps', 'web', 'dist'))
+    writeFileSync(join(root, 'apps', 'web', 'dist', 'index.html'), 'built')
+    const past = new Date(Date.now() - 60_000)
+    for (const parts of sources) {
+      utimesSync(join(root, ...parts), past, past)
+      utimesSync(join(root, ...parts.slice(0, -1)), past, past)
+    }
+    return root
+  }
+
+  it('is stale when @joy/core or @joy/config changed, which the web app imports', () => {
+    const future = new Date(Date.now() + 60_000)
+    const root = builtRoot()
+    expect(uiBuildState(root)).toBe('fresh')
+    utimesSync(join(root, 'packages', 'core', 'src', 'index.ts'), future, future)
+    expect(uiBuildState(root)).toBe('stale')
+    const again = builtRoot()
+    utimesSync(join(again, 'packages', 'config', 'src', 'index.ts'), future, future)
+    expect(uiBuildState(again)).toBe('stale')
+  })
+
+  it.skipIf(process.platform === 'win32')('does not follow symlinks, so a loop cannot hang it', () => {
+    const root = builtRoot()
+    symlinkSync(join(root, 'apps', 'web', 'src'), join(root, 'apps', 'web', 'src', 'loop'))
+    // Adding the link touched the folder; put its time back so only the symlink handling is under test.
+    const past = new Date(Date.now() - 60_000)
+    utimesSync(join(root, 'apps', 'web', 'src'), past, past)
+    expect(uiBuildState(root)).toBe('fresh')
   })
 })

@@ -1537,6 +1537,63 @@ describe('messages queued when a limit stops the task', () => {
     expect(count(after, 'user.message.held')).toBe(0)
   })
 
+  it('withdraws held messages when the owner discards the worktree', async () => {
+    const { call, id, ids } = await stoppedWithQueuedMessages()
+    expect((await call('POST', `/api/tasks/${id}/discard`, {})).status).toBe(200)
+    const after = await until(call, id, (d) => count(d, 'user.message.discarded') === 1, 'discarded')
+    expect(after.events.find((e) => e.type === 'user.message.discarded')?.payload).toMatchObject({ ids })
+    expect(after.queuedMessages).toEqual([])
+    // Nothing is left to announce or send, and the task is not continuable any more.
+    expect(
+      (await call('POST', `/api/tasks/${id}/messages`, { text: 'too late' })).status,
+    ).toBeGreaterThanOrEqual(409)
+  })
+
+  it('withdraws them at once when the task cannot be continued (no saved session), instead of holding forever', async () => {
+    const { call, claude, db } = await setup({ taskTimeLimitMs: 300 })
+    claude.state.work = async (options, n) => {
+      if (n !== 1) return
+      db.prepare('UPDATE attempts SET session_id = NULL').run()
+      await untilAborted(options)
+    }
+    const id = await newTask(call, await newRepo(call))
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length === 1, 'running')
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'lost cause' })
+    const after = await until(call, id, (d) => count(d, 'user.message.discarded') === 1, 'discarded')
+    expect(after.task.status).toBe('failed')
+    expect(count(after, 'user.message.held')).toBe(0)
+    expect(after.events.find((e) => e.type === 'user.message.discarded')?.payload).toMatchObject({
+      ids: [messageId(sent)],
+      reason: expect.stringContaining('resume'),
+    })
+    expect(after.queuedMessages).toEqual([])
+  })
+
+  it("keeps one task's budget refusal away from a task running at the same time", async () => {
+    const reviewerApi = fakeProvider('openai-api')
+    const { call, claude, db } = await setup({ providers: { 'openai-api': reviewerApi.provider } })
+    addUsage(db, { provider: 'openai-api', costUsd: 100 })
+    const wait = gate()
+    claude.state.work = (_options, n) => (n <= 2 ? wait.promise : undefined)
+    const refused = await newTask(call, await newRepo(call, '/tmp/refused-repo'), {
+      mode: 'review_loop',
+      roleOverrides: { reviewer: { provider: 'openai-api', model: 'gpt-6-luna' } },
+    })
+    const fine = await newTask(call, await newRepo(call, '/tmp/fine-repo'), { mode: 'review_loop' })
+    await until(call, refused, (d) => d.task.status === 'running', 'running A')
+    await until(call, fine, (d) => d.task.status === 'running' && claude.calls.length === 2, 'running B')
+    const a = await call('POST', `/api/tasks/${refused}/messages`, { text: 'for the refused one' })
+    const b = await call('POST', `/api/tasks/${fine}/messages`, { text: 'for the fine one' })
+    wait.open()
+    const heldA = await until(call, refused, (d) => count(d, 'user.message.held') === 1, 'held A')
+    expect(heldA.events.find((e) => e.type === 'user.message.held')?.payload).toMatchObject({
+      ids: [messageId(a)],
+    })
+    // The other task was never refused: it is continued with its message as usual.
+    const doneB = await until(call, fine, (d) => deliveredIds(d).includes(messageId(b)), 'B follow-up')
+    expect(count(doneB, 'user.message.held')).toBe(0)
+  })
+
   it('holds them too when the monthly OpenAI API budget refused the run', async () => {
     const reviewerApi = fakeProvider('openai-api')
     const { call, claude, db } = await setup({ providers: { 'openai-api': reviewerApi.provider } })

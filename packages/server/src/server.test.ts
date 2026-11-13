@@ -3282,6 +3282,17 @@ describe('Joy local server', () => {
     expect((await rawRequest(remoteOrigin, '/api/repos', 'GET', { host }, '', TEST_API_TOKEN)).status).toBe(
       200,
     )
+    // The built UI's own origin is accepted on the local listener only, not on the remote one.
+    const ownOrigin = origin
+    const post = (to: string, hostHeader: string, originHeader: string) =>
+      rawRequest(
+        to,
+        '/api/repos',
+        'POST',
+        { host: hostHeader, origin: originHeader, 'content-type': 'application/json' },
+        JSON.stringify({ path: '/tmp/remote-origin-repo', defaultBranch: 'main' }),
+      )
+    expect((await post(remoteOrigin, host, ownOrigin)).status).toBe(403)
     // A host name nobody configured (DNS rebinding) is still refused.
     expect(
       (await rawRequest(origin, '/api/repos', 'GET', { host: '100.64.0.5:4317' }, '', TEST_API_TOKEN)).status,

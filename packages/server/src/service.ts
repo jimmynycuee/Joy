@@ -8,9 +8,13 @@ import type { UiBuildState } from './ui-build.js'
 // `pnpm joy service install|uninstall|status`: runs Joy at login without a terminal. The files and commands for each
 // operating system are planned by pure functions (`planService`), so tests check them without touching the system.
 
+/** Seconds before the manager starts Joy again after it exits (a busy port would otherwise retry in a tight loop). */
+const RESTART_DELAY_SECONDS = 30
+
 /** The launchd label and the name used for the systemd unit and the Windows scheduled task. */
 export const SERVICE_LABEL = 'com.joy.local'
-export const SERVICE_NAME = 'joy'
+/** systemd unit and Windows task name: specific enough not to replace an unrelated `joy` of the owner's. */
+export const SERVICE_NAME = 'joy-local'
 export const DEFAULT_SERVICE_PORT = 4317
 
 /** An error whose message is written for the owner (Chinese) and is printed as is. */
@@ -46,6 +50,8 @@ export interface ServicePlan {
   status: ServiceCommand
   /** Where the service writes what it prints (empty when the manager does not redirect it). */
   logs: string[]
+  /** Limits of this service manager the owner should know about, printed after an install. */
+  notes: string[]
 }
 
 export interface PlanInput {
@@ -116,14 +122,13 @@ function xmlEscape(text: string): string {
     .replaceAll("'", '&apos;')
 }
 
-/** systemd unit values: double quotes with `\`, `"`, `%` and `$` escaped (`%` and `$` are expanded otherwise). */
-function systemdQuote(text: string): string {
-  const escaped = text
-    .replaceAll('\\', '\\\\')
-    .replaceAll('"', '\\"')
-    .replaceAll('%', '%%')
-    .replaceAll('$', '$$$$')
-  return `"${escaped}"`
+/**
+ * A systemd unit value in double quotes with `\`, `"` and `%` escaped. `$` is expanded in ExecStart (command lines)
+ * but not in Environment=, so only ExecStart escapes it.
+ */
+function systemdQuote(text: string, expandsDollar = false): string {
+  const escaped = text.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%')
+  return `"${expandsDollar ? escaped.replaceAll('$', '$$$$') : escaped}"`
 }
 
 /** One argument of a Windows command line (the scheduled task's Arguments field). */
@@ -172,6 +177,8 @@ ${environment}
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>ThrottleInterval</key>
+  <integer>${RESTART_DELAY_SECONDS}</integer>
   <key>StandardOutPath</key>
   <string>${xmlEscape(outLog)}</string>
   <key>StandardErrorPath</key>
@@ -193,6 +200,7 @@ ${environment}
     afterUninstall: [],
     status: { command: 'launchctl', args: ['print', target] },
     logs: [outLog, errLog],
+    notes: [],
   }
 }
 
@@ -205,7 +213,9 @@ function systemdPlan(input: PlanInput): ServicePlan {
     ? input.env.XDG_CONFIG_HOME
     : p.join(input.userHome, '.config')
   const unitPath = p.join(configHome, 'systemd', 'user', `${SERVICE_NAME}.service`)
-  const exec = [input.nodePath, ...startArguments(input)].map(systemdQuote).join(' ')
+  for (const value of [input.nodePath, input.repoRoot, input.joyHome])
+    if (/[\r\n]/.test(value)) throw new ServiceError('路徑不能含換行，無法寫進 systemd 設定。')
+  const exec = [input.nodePath, ...startArguments(input)].map((part) => systemdQuote(part, true)).join(' ')
   const environment = environmentVariables(input)
     .map(([key, value]) => `Environment=${systemdQuote(`${key}=${value}`)}`)
     .join('\n')
@@ -219,7 +229,7 @@ WorkingDirectory=${input.repoRoot.replaceAll('%', '%%')}
 ExecStart=${exec}
 ${environment}
 Restart=on-failure
-RestartSec=5
+RestartSec=${RESTART_DELAY_SECONDS}
 StandardOutput=append:${outLog.replaceAll('%', '%%')}
 StandardError=append:${errLog.replaceAll('%', '%%')}
 
@@ -243,17 +253,20 @@ WantedBy=default.target
       args: ['--user', 'show', unit, '--property=LoadState,ActiveState,SubState,UnitFileState,MainPID'],
     },
     logs: [outLog, errLog],
+    notes: [],
   }
 }
 
 function windowsPlan(input: PlanInput): ServicePlan {
   const p = path.win32
-  const xmlPath = p.join(input.joyHome, 'service', 'joy-task.xml')
+  const xmlPath = p.join(input.joyHome, 'service', 'joy-local-task.xml')
   const args = startArguments(input).map(windowsArgument).join(' ')
   const user =
     input.env?.USERNAME && input.env.USERDOMAIN ? `${input.env.USERDOMAIN}\\${input.env.USERNAME}` : undefined
   // The XML (not /TR) is used because it can lift the 72-hour run limit Task Scheduler gives a new task, set the
-  // working folder and restart Joy when it exits.
+  // working folder and restart Joy when it exits. `conhost.exe --headless` runs node without a console window
+  // (Windows 10 1903 or later); the task has no way to carry environment variables, so it runs with the user's own
+  // environment from logon.
   const content = `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -284,8 +297,8 @@ function windowsPlan(input: PlanInput): ServicePlan {
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>${xmlEscape(input.nodePath)}</Command>
-      <Arguments>${xmlEscape(args)}</Arguments>
+      <Command>conhost.exe</Command>
+      <Arguments>${xmlEscape(`--headless ${windowsArgument(input.nodePath)} ${args}`)}</Arguments>
       <WorkingDirectory>${xmlEscape(input.repoRoot)}</WorkingDirectory>
     </Exec>
   </Actions>
@@ -308,6 +321,15 @@ function windowsPlan(input: PlanInput): ServicePlan {
     status: { command: 'schtasks', args: ['/Query', '/TN', SERVICE_NAME, '/FO', 'LIST', '/V'] },
     // Task Scheduler cannot redirect output without a shell; Joy's own log (~/.joy/logs) still has everything.
     logs: [],
+    notes: [
+      '這個工作在登入時用你的使用者環境執行：PATH 是 Windows 設定裡的使用者／系統 PATH，只在終端機臨時設定的 PATH 不會帶進來；`claude`、`codex`、`git`、`gh` 要在 Windows 的 PATH 裡。',
+      ...(input.env?.JOY_HOME
+        ? [
+            `注意：你目前的 JOY_HOME（${input.env.JOY_HOME}）不會帶進工作排程器；服務會用預設資料夾。要用這個資料夾，請先在 Windows「使用者環境變數」設定 JOY_HOME 再重跑 install。`,
+          ]
+        : []),
+      '隱藏視窗用 conhost.exe --headless（Windows 10 1903 以上）；這一點尚待實機驗證，若 Joy 沒有在登入後啟動，執行 pnpm joy service uninstall 後改用終端機 pnpm joy start。',
+    ],
   }
 }
 
@@ -338,7 +360,7 @@ export function isSupportedNodeVersion(version: string): boolean {
  */
 export function isTemporaryNodePath(nodePath: string, temporaryRoot = tmpdir()): boolean {
   const normalized = nodePath.replaceAll('\\', '/')
-  if (/\/(_npx|dlx-[^/]*)\//.test(`${normalized}/`)) return true
+  if (/\/(_npx|dlx|dlx-[^/]*)\//.test(`${normalized}/`)) return true
   const temporary = temporaryRoot.replaceAll('\\', '/').replace(/\/+$/, '')
   return temporary.length > 1 && normalized.startsWith(`${temporary}/`)
 }
@@ -586,21 +608,26 @@ async function install(options: ServiceOptions, deps: ServiceDeps): Promise<numb
   deps.out('將依序執行這些指令：')
   for (const step of plan.install) deps.out(`  ${describeCommand(step)}`)
   deps.out('')
-  const notes: string[] = []
-  if (await deps.health(options.port))
+  const notes: string[] = [...plan.notes]
+  if (await deps.health(options.port)) {
+    // Re-running install while the service itself answers is an update, not a clash.
+    const own = describeStatus(options.platform, await deps.run(plan.status.command, plan.status.args)).loaded
     notes.push(
-      `注意：127.0.0.1:${options.port} 已經有 Joy 在回應（可能是用終端機開的）。服務啟動時埠會被佔用而一直重試；請先停掉那一個，或用 --port 換一個埠。`,
+      own
+        ? `127.0.0.1:${options.port} 現在回應的是已安裝的服務；安裝會把它重新啟動，換成新的設定。`
+        : `注意：127.0.0.1:${options.port} 已經有 Joy 在回應（可能是用終端機開的）。服務啟動時埠會被佔用而一直重試（紀錄會越積越多）；請先停掉那一個，或用 --port 換一個埠。`,
     )
+  }
   const ui = deps.uiState(options.repoRoot)
   if (ui !== 'fresh')
     notes.push(
       ui === 'missing'
-        ? '注意：還沒建置網頁介面，直接開 http://127.0.0.1:${options.port} 會是空的；先執行 pnpm joy build-ui。'
+        ? `注意：還沒建置網頁介面，直接開 http://127.0.0.1:${options.port} 會是空的；先執行 pnpm joy build-ui。`
         : '注意：網頁介面比原始碼舊；執行 pnpm joy build-ui 更新。',
     )
   for (const note of notes) deps.out(note)
   if (options.dryRun) {
-    deps.out('--dry-run：沒有寫入任何檔案，也沒有執行任何指令。')
+    deps.out('--dry-run：沒有寫入設定檔，也沒有安裝、啟動或重新啟動服務。')
     return 0
   }
   await deps.mkdir(p.join(options.joyHome, 'logs'), 0o700)
@@ -630,7 +657,7 @@ async function uninstall(options: ServiceOptions, deps: ServiceDeps): Promise<nu
   for (const file of plan.files) deps.out(`  ${file.path}`)
   for (const step of plan.afterUninstall) deps.out(`  ${describeCommand(step)}`)
   if (options.dryRun) {
-    deps.out('--dry-run：沒有刪除任何檔案，也沒有執行任何指令。')
+    deps.out('--dry-run：沒有刪除設定檔，也沒有停止或移除服務。')
     return 0
   }
   const existed = plan.files.some((file) => deps.exists(file.path))

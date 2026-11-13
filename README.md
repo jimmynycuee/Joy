@@ -87,7 +87,9 @@ pnpm joy service install --dry-run
 pnpm joy service install
 ```
 
-它會自己找 Homebrew `node@22`、nvm、fnm 裡的 Node 22；找不到或想指定時用絕對路徑，例如 `pnpm joy service install --node /opt/homebrew/opt/node@22/bin/node`。服務只放 Node 路徑、安裝當下的 `PATH`（讓它找得到 `claude`、`codex`、`git`、`gh`）與工作資料夾，不放任何密鑰。之後才安裝或搬動了這些 CLI，重跑一次 `install` 更新。
+它會自己找 Homebrew `node@22`、nvm、fnm 裡的 Node 22；找不到或想指定時用絕對路徑，例如 `pnpm joy service install --node /opt/homebrew/opt/node@22/bin/node`。服務只放 Node 路徑、安裝當下的 `PATH`（讓它找得到 `claude`、`codex`、`git`、`gh`）與工作資料夾，不放任何密鑰。之後才安裝或搬動了這些 CLI，重跑一次 `install` 更新。服務的名稱是 `com.joy.local`（macOS launchd）、`joy-local`（Linux systemd 單元與 Windows 工作），不會蓋掉你原有的同名項目。
+
+Windows 的限制：工作排程器帶不了環境變數，服務用你登入時的使用者環境（Windows 設定裡的 PATH，`claude`、`codex`、`git`、`gh` 要在那裡）；終端機臨時設的 `JOY_HOME` 不會帶進去，要用就先設成 Windows 使用者環境變數。為了不跳出黑色視窗，工作用 `conhost.exe --headless` 啟動（Windows 10 1903 以上），這一點尚待實機驗證；若登入後 Joy 沒有起來，`pnpm joy service uninstall` 後改用終端機 `pnpm joy start`。
 
 4. 打開 <http://127.0.0.1:4317>。第一次會要求貼上存取權杖：它在 `~/.joy/api-token`（Mac：Finder 按 ⌘⇧G 輸入 `~/.joy`，用「文字編輯」開 `api-token`，全選複製）。權杖只存在這個瀏覽器；換瀏覽器或清除網站資料要再貼一次。
 5. **安裝成 App（PWA）**：用 Chrome 開 <http://127.0.0.1:4317>，按網址列右側的「安裝」圖示（或選單「投放、儲存及分享」→「安裝頁面為應用程式」），之後從 Launchpad／開始功能表開啟。
@@ -117,7 +119,7 @@ pnpm joy service uninstall
 
 只移除服務與它的設定檔，`~/.joy` 的資料不動。要 `restore` 備份時也先 `uninstall`（服務會自動重啟 Joy，`restore` 要求 Joy 沒有在跑），還原完再 `install`。
 
-注意：服務佔用 4317 埠；同時再用終端機 `pnpm joy start` 會因為埠被佔用而失敗，需要的話用 `--port` 換一個埠（`service` 的三個指令都吃 `--port`）。
+注意：服務佔用 4317 埠；同時再用終端機 `pnpm joy start` 會因為埠被佔用而失敗，需要的話用 `--port` 換一個埠（`service` 的三個指令都吃 `--port`）。如果埠已被別的程式佔用，服務會每 30 秒重試一次，`~/.joy/logs/service.err.log` 會越積越多；先停掉佔用的程式或 `uninstall`。重跑 `install` 若發現回應的就是已安裝的服務，會直接把它重新啟動。
 
 ## 第一次設定
 
