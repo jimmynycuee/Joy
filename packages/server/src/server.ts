@@ -1351,7 +1351,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         pendingPlan: pendingPlan(task, events) ?? null,
         queuedMessages: queuedMessages.get(task.id) ?? [],
         // Whether a message sent now reaches the running agent at once (else it waits for the agent's next turn).
-        steerable: canSteer(task),
+        // A message waiting in the queue keeps later ones behind it, so the box should not promise steering then.
+        steerable: !queuedMessages.get(task.id)?.length && canSteer(task),
         // Whether `interrupt: true` would stop the agent's current step now.
         interruptible: canInterrupt(task),
       })

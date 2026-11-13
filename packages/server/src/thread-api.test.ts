@@ -692,7 +692,7 @@ describe('steering a running agent with a message (default)', () => {
       const saved = { ...process.env }
       Object.assign(process.env, {
         FAKE_MODE: 'stream',
-        FAKE_STREAM_HOLD_MS: '1500',
+        FAKE_STREAM_HOLD_MS: '4000',
         FAKE_STDIN_OUT: stdinOut,
       })
       try {
