@@ -1,7 +1,7 @@
 import { EFFORTS } from '@joy/core'
 import type { RunOptions } from '@joy/core'
 import { describe, expect, it } from 'vitest'
-import { buildClaudeArgs, mcpConfigJson } from './args.js'
+import { buildClaudeArgs, claudeUserMessage, mcpConfigJson } from './args.js'
 
 const model = { provider: 'claude-cli', model: 'opus' } as const
 const base: RunOptions = {
@@ -91,5 +91,28 @@ describe('mcpConfigJson', () => {
         remote: { type: 'http', url: 'http://localhost:1/mcp' },
       },
     })
+  })
+})
+
+describe('claudeUserMessage', () => {
+  it('writes one JSONL line whatever the text holds', () => {
+    const text = 'line 1\nline 2\r\n"quoted" \\ back\u0000\u001b[31m tab\t \u2028 end'
+    const line = claudeUserMessage(text)
+    for (const breaking of ['\n', '\r', '\u0000', '\u001b', '\u2028', '\u2029'])
+      expect(line.includes(breaking)).toBe(false)
+    expect(JSON.parse(line)).toEqual({
+      type: 'user',
+      message: { role: 'user', content: text },
+      parent_tool_use_id: null,
+    })
+  })
+})
+
+describe('buildClaudeArgs with streaming input', () => {
+  it('reads the prompt from stdin instead of the command line', () => {
+    const args = buildClaudeArgs(base, model, undefined, true)
+    expect(args).toEqual(expect.arrayContaining(['--input-format', 'stream-json']))
+    expect(args).not.toContain('--')
+    expect(args).not.toContain('do it')
   })
 })

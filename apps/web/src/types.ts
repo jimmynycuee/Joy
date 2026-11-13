@@ -66,7 +66,9 @@ export type TaskDetails = {
   usage?: TaskUsage
   pendingPlan?: PendingPlan | null
   queuedMessages?: QueuedMessage[]
-  /** A message sent now interrupts the agent's current step (missing from older servers). */
+  /** A message sent now reaches the working agent at once, without stopping it (missing from older servers). */
+  steerable?: boolean
+  /** `interrupt: true` would stop the agent's current step now (missing from older servers). */
   interruptible?: boolean
 }
 export type SecretStatus = { set: boolean; source?: 'env' | 'keychain' }

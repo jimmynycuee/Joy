@@ -106,7 +106,15 @@ export interface RunOptions {
   /** Final answer must match this JSON Schema (used for structured review findings). */
   outputSchema?: object
   signal: AbortSignal
+  /**
+   * Owner steering: called with a function that hands extra input to this run while the agent keeps working, and
+   * with `undefined` once the run can no longer take any. Backends that cannot steer never call it.
+   */
+  onSteer?: (steer: Steer | undefined) => void
 }
+
+/** Gives the running agent more input without stopping it. Resolves false when the run could not take it. */
+export type Steer = (text: string) => Promise<boolean>
 
 export interface ProviderCapabilities {
   codeEdit: boolean

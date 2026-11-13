@@ -9,9 +9,9 @@ import { Composer } from './Composer.js'
 const MAX_MESSAGE_CHARS = 20_000
 
 /**
- * The message box at the bottom of a task thread. A message steers a running task (it interrupts the agent's current
- * step, or waits for its next turn during a review, checks or an approval), continues a finished one, or revises a plan
- * that waits for approval. The draft survives a failed send.
+ * The message box at the bottom of a task thread. A message steers a running task (the working agent gets it without
+ * stopping, or it waits for the agent's next turn during a review, checks or an approval), continues a finished one, or
+ * revises a plan that waits for approval. The draft survives a failed send.
  */
 export function ThreadComposer({
   details,
@@ -35,7 +35,7 @@ export function ThreadComposer({
     mode: task.mode,
     worktreeRemoved: worktreeRemoved(details.events),
     pendingPlan: Boolean(details.pendingPlan),
-    ...(details.interruptible !== undefined ? { interruptible: details.interruptible } : {}),
+    ...(details.steerable !== undefined ? { steerable: details.steerable } : {}),
   })
   const pendingNote = useMemo(
     () =>

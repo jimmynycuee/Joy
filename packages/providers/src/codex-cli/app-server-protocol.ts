@@ -49,6 +49,17 @@ export interface TurnStartParams {
   outputSchema?: object
 }
 
+/** Adds input to the turn in flight; fails when `expectedTurnId` is not the active turn any more. */
+export interface TurnSteerParams {
+  threadId: string
+  expectedTurnId: string
+  input: Array<{ type: 'text'; text: string; text_elements: [] }>
+}
+
+export interface TurnSteerResponse {
+  turnId: string
+}
+
 // These request payloads follow the generated CommandExecutionRequestApprovalParams and
 // FileChangeRequestApprovalParams definitions. Extra generated fields are kept as unknown JSON.
 export interface CommandExecutionApprovalParams {

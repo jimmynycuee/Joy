@@ -5,6 +5,7 @@ import type {
   ProviderCapabilities,
   ProviderHealth,
   RunOptions,
+  Steer,
 } from '@joy/core'
 import { effortCompatibilityError } from '@joy/model-effort'
 import { probeVersion } from '../cli-run.js'
@@ -16,6 +17,7 @@ import type {
   ThreadResumeParams,
   ThreadStartParams,
   TurnStartParams,
+  TurnSteerParams,
 } from './app-server-protocol.js'
 import { CodexAppServerParser } from './app-server-parse.js'
 
@@ -78,6 +80,7 @@ export class CodexAppServerProvider implements AgentProvider {
     })
     const parser = new CodexAppServerParser({ cwd: opts.cwd, structured: Boolean(opts.outputSchema) })
     let sessionId = ''
+    let steerable = false
 
     try {
       const initialize: InitializeParams = {
@@ -120,7 +123,27 @@ export class CodexAppServerProvider implements AgentProvider {
         ...(model.effort ? { effort: model.effort } : {}),
         ...(opts.outputSchema ? { outputSchema: opts.outputSchema } : {}),
       }
-      await client.request('turn/start', turn)
+      const started = await client.request('turn/start', turn)
+      const turnId = str(rec(rec(started)?.turn)?.id)
+      if (turnId && opts.onSteer) {
+        // Owner messages join the turn in flight (`turn/steer`); the turn id guards against steering a later one.
+        const threadId = sessionId
+        steerable = true
+        const steer: Steer = async (text) => {
+          if (!steerable || parser.finished || opts.signal.aborted) return false
+          try {
+            await client.request('turn/steer', {
+              threadId,
+              expectedTurnId: turnId,
+              input: [{ type: 'text', text, text_elements: [] }],
+            } satisfies TurnSteerParams)
+            return true
+          } catch {
+            return false
+          }
+        }
+        opts.onSteer(steer)
+      }
 
       for await (const incoming of client.incoming) {
         if (incoming.kind === 'raw') {
@@ -132,6 +155,7 @@ export class CodexAppServerProvider implements AgentProvider {
           continue
         }
         const events = parser.notification(incoming.method, incoming.params)
+        if (parser.finished) stopSteering()
         yield* events
         if (parser.finished) break
       }
@@ -144,7 +168,14 @@ export class CodexAppServerProvider implements AgentProvider {
         yield { type: 'done', sessionId, isError: true }
       }
     } finally {
+      stopSteering()
       await client.close()
+    }
+
+    function stopSteering(): void {
+      if (!steerable) return
+      steerable = false
+      opts.onSteer?.(undefined)
     }
   }
 

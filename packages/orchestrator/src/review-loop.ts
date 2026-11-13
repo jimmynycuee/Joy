@@ -75,6 +75,13 @@ export interface ReviewLoopInput {
   firstRound?: number
   /** Owner messages that arrived during the run; appended to the next implementer turn. */
   takeMessages?: () => string[]
+  /**
+   * The task as reviewers see it, read again before each review so owner messages the implementer got mid-run
+   * (steering) are in it. Default `prompt`.
+   */
+  reviewBrief?: () => string
+  /** Passed to the implementer's runs only, so the owner can steer the agent while it works (reviews are not). */
+  onSteer?: RunOptions['onSteer']
   /** The project's checks, run after each implementer turn and before each review. undefined = not run. */
   runChecks?: (ws: Workspace, round: number) => Promise<ChecksResult | undefined>
 }
@@ -128,6 +135,8 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
     // Optional plan, reviewed before any code is written. The run then stops: the owner approves the plan first.
     let session: string | undefined = input.resumeSessionId
     const take = () => input.takeMessages?.() ?? []
+    const reviewBrief = () => input.reviewBrief?.() ?? input.prompt
+    const steering: Partial<RunOptions> = input.onSteer ? { onSteer: input.onSteer } : {}
     if ((input.planFirst && !input.resumeSessionId) || input.replanPrompt) {
       yield { type: 'phase', phase: 'planning', round: 0, role: 'implementer', model: input.implementer }
       const planned = yield* runAgent(
@@ -138,6 +147,7 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
         base({
           prompt: withOwnerMessages(input.replanPrompt ?? planPrompt(input.prompt), take()),
           autonomy: 'read-only',
+          ...steering,
           ...(session ? { resumeSessionId: session } : presetSession(implementer)),
         }),
       )
@@ -148,7 +158,7 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
         input.reviewer,
         0,
         base({
-          prompt: planReviewPrompt(input.prompt, plan),
+          prompt: planReviewPrompt(reviewBrief(), plan),
           autonomy: 'read-only',
         }),
       )
@@ -184,6 +194,7 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
           session && input.resumePrompt ? input.resumePrompt : implementPrompt(input.prompt),
           take(),
         ),
+        ...steering,
         ...(session ? { resumeSessionId: session } : presetSession(implementer)),
       }),
     )
@@ -203,7 +214,7 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
         input.reviewer,
         rounds,
         base({
-          prompt: reviewPrompt(input.prompt, diff.patch, checks),
+          prompt: reviewPrompt(reviewBrief(), diff.patch, checks),
           autonomy: 'read-only',
         }),
       )
@@ -242,6 +253,7 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
         rounds + 1,
         base({
           prompt: withOwnerMessages(fixPrompt(verdict, checks), take()),
+          ...steering,
           ...(session && implementer.capabilities.resume ? { resumeSessionId: session } : {}),
         }),
       )

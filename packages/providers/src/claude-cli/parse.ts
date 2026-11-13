@@ -14,6 +14,13 @@ const DROPPED = new Set(['stream_event'])
 export interface ClaudeParserOptions {
   /** Worktree path; file paths inside it are reported relative to it. */
   cwd?: string
+  /**
+   * Streaming input (`--input-format stream-json`): the process may answer several user messages, each ending with a
+   * `result`. The first result is the task's own work and decides whether the run succeeded; a later one answers owner
+   * messages the CLI took as a turn of their own, and its failure is reported as recoverable. `usage` and `done` are
+   * held until the process exits (see `finish`).
+   */
+  multiTurn?: boolean
 }
 
 export class ClaudeStreamParser {
@@ -23,6 +30,11 @@ export class ClaudeStreamParser {
   /** Claude emits a few events before `system/init`; hold them so `session_started` is always first. */
   private beforeInit: AgentEvent[] = []
   private readonly pendingFileTools = new Map<string, { path: string; tool: string }>()
+  /** Multi-turn: the `done` the run ends with, emitted when the process exits. */
+  private lastDone: Extract<AgentEvent, { type: 'done' }> | undefined
+  /** Multi-turn: the latest result's usage, emitted once when the process exits. */
+  private lastUsage: Extract<AgentEvent, { type: 'usage' }> | undefined
+  private results = 0
 
   constructor(private readonly options: ClaudeParserOptions = {}) {}
 
@@ -77,12 +89,20 @@ export class ClaudeStreamParser {
     return [{ type: 'raw', source: 'claude-cli', payload: line }]
   }
 
-  /** Call when the process has exited. Emits a failing `done` if the CLI never sent `result`. */
-  finish(reason: string): AgentEvent[] {
+  /**
+   * Call when the process has exited. Emits a failing `done` if the CLI never sent `result`; in multi-turn mode a
+   * process that was not stopped ends with the last result's `done`.
+   */
+  finish(reason: string, exit: { stopped: boolean } = { stopped: true }): AgentEvent[] {
     if (this.done) return []
     this.done = true
+    // Not verified against a real multi-turn run whether `total_cost_usd` and `usage` are per turn or cumulative; the
+    // Agent SDK reports a query's total, so the last result is taken as the whole run (never summed).
+    const usage = this.lastUsage ? [this.lastUsage] : []
+    if (this.lastDone && !exit.stopped) return [...this.flushHeld(), ...usage, this.lastDone]
     return [
       ...this.flushHeld(),
+      ...usage,
       { type: 'error', message: reason, recoverable: false },
       { type: 'done', sessionId: this.sessionId ?? '', isError: true },
     ]
@@ -184,34 +204,52 @@ export class ClaudeStreamParser {
   }
 
   private result(line: Rec): AgentEvent[] {
-    this.done = true
-    const usage = rec(line.usage)
+    if (!this.options.multiTurn) this.done = true
+    const raw = rec(line.usage)
     const isError = line.is_error === true
     const final = str(line.result)
-    const events: AgentEvent[] = [
-      ...this.flushHeld(),
-      {
-        type: 'usage',
-        ...opt('inputTokens', num(usage?.input_tokens)),
-        ...opt('outputTokens', num(usage?.output_tokens)),
-        ...opt('cachedInputTokens', num(usage?.cache_read_input_tokens)),
-        ...opt('costUsd', num(line.total_cost_usd)),
-      },
-    ]
-    if (isError) {
-      events.push({
-        type: 'error',
-        message: final ?? `Claude Code ended with ${str(line.subtype) ?? 'an error'}`,
-        recoverable: false,
-      })
+    const usage: Extract<AgentEvent, { type: 'usage' }> = {
+      type: 'usage',
+      ...opt('inputTokens', num(raw?.input_tokens)),
+      ...opt('outputTokens', num(raw?.output_tokens)),
+      ...opt('cachedInputTokens', num(raw?.cache_read_input_tokens)),
+      ...opt('costUsd', num(line.total_cost_usd)),
     }
-    events.push({
+    const failure = final ?? `Claude Code ended with ${str(line.subtype) ?? 'an error'}`
+    const done: Extract<AgentEvent, { type: 'done' }> = {
       type: 'done',
       sessionId: str(line.session_id) ?? this.sessionId ?? '',
       isError,
       ...opt('finalMessage', final),
       ...opt('structured', line.structured_output ?? undefined),
-    })
+    }
+    if (!this.options.multiTurn) {
+      const events: AgentEvent[] = [...this.flushHeld(), usage]
+      if (isError) events.push({ type: 'error', message: failure, recoverable: false })
+      events.push(done)
+      return events
+    }
+
+    this.results++
+    this.lastUsage = usage
+    const events = this.flushHeld()
+    if (this.results === 1) {
+      // The task's own work: its outcome is the run's outcome.
+      if (isError) events.push({ type: 'error', message: failure, recoverable: false })
+      this.lastDone = done
+      return events
+    }
+    // A later turn answered owner messages. Its failure is shown but does not undo finished work; its success
+    // updates the final message only when the work itself succeeded. A usage limit still shows up as a `quota` event.
+    if (isError) {
+      events.push({
+        type: 'error',
+        message: `Claude Code could not finish the turn for the owner's added message: ${failure}`,
+        recoverable: true,
+      })
+    } else if (this.lastDone && !this.lastDone.isError) {
+      this.lastDone = { ...done, isError: false }
+    }
     return events
   }
 

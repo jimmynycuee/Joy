@@ -33,6 +33,7 @@ const EXTRAS_EVENTS = new Set([
   'user.message.discarded',
   'user.message.requeued',
   'run.interrupted',
+  'steer.available',
   'started',
   'phase',
   'checks',
@@ -54,6 +55,7 @@ export function withServerFields(current: TaskDetails, next: TaskDetails): TaskD
     ...(next.usage ? { usage: next.usage } : {}),
     pendingPlan: next.pendingPlan ?? null,
     queuedMessages: next.queuedMessages ?? [],
+    ...(next.steerable !== undefined ? { steerable: next.steerable } : {}),
     ...(next.interruptible !== undefined ? { interruptible: next.interruptible } : {}),
   }
 }
@@ -61,7 +63,7 @@ export function withServerFields(current: TaskDetails, next: TaskDetails): TaskD
 /** Whether an event changes what the server derives, so the details are worth fetching again. */
 export function changesServerFields(event: TaskEvent): boolean {
   if (EXTRAS_EVENTS.has(event.type)) return true
-  // The implementer's session starting or its turn ending changes whether a message would interrupt it.
+  // The implementer's session starting or its turn ending changes whether a message reaches it at once.
   if (event.type !== 'agent') return false
   const type = record(record(event.payload)?.event)?.type
   return type === 'session_started' || type === 'done'

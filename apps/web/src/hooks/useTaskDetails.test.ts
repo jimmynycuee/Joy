@@ -25,9 +25,11 @@ describe('withServerFields', () => {
       usage: { durationMs: 5, byProvider: [] },
       pendingPlan: { plan: '# plan' },
       queuedMessages: [{ id: 'm', text: 'hi' }],
+      steerable: true,
       interruptible: true,
     }
     const merged = withServerFields(current, next)
+    expect(merged.steerable).toBe(true)
     expect(merged.interruptible).toBe(true)
     expect(merged.task.status).toBe('review_ready')
     expect(merged.events).toEqual([event])
