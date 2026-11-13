@@ -113,6 +113,31 @@ describe('interrupting messages', () => {
     expect(later.get('a')).toBe('delivered')
   })
 
+  it('shows messages held by a limit as held until they are delivered or discarded', () => {
+    const events = [
+      message('a', 'queued'),
+      message('b', 'steer'),
+      message('c', 'queued'),
+      event('user.message.requeued', { ids: ['b'], reason: 'steer_failed' }),
+      event('user.message.held', { ids: ['a', 'b'], reason: 'Stopped: the task ran longer than 30 minutes' }),
+    ]
+    const states = messageDeliveryStates(events)
+    expect(states.get('a')).toBe('held')
+    expect(states.get('b')).toBe('held')
+    expect(states.get('c')).toBe('queued')
+    expect(deliveryTag('held')).toBe('已停下，等你繼續')
+    const later = messageDeliveryStates([
+      ...events,
+      event('user.message.delivered', { ids: ['a'], via: 'follow_up' }),
+      event('user.message.discarded', { ids: ['b'], reason: 'x' }),
+    ])
+    expect(later.get('a')).toBe('delivered')
+    expect(later.get('b')).toBe('discarded')
+    // After a restart the server no longer holds it.
+    expect(messageDeliveryStates(events, { queuedIds: new Set(), busy: false }).get('a')).toBe('lost')
+    expect(pendingMessagesNote(states)).toBe('任務因上限停下，按「繼續」或再送訊息才會帶給 agent')
+  })
+
   it('words the note above the composer after what is pending', () => {
     expect(pendingMessagesNote(new Map())).toBeUndefined()
     expect(pendingMessagesNote(new Map([['a', 'delivered']]))).toBeUndefined()

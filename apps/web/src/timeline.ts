@@ -152,6 +152,8 @@ export function eventTitle(event: TaskEvent): string {
     return payload?.reason === 'steer_failed'
       ? '沒能即時交給 agent，訊息改為等它下一次動手'
       : '沒有打斷成，訊息改為等 agent 下一次動手'
+  if (event.type === 'user.message.held')
+    return '任務因上限停下，訊息先排著；按「繼續」或再送訊息才會帶給 agent'
   if (event.type === 'steer.available')
     return payload?.available === true
       ? 'agent 可以邊做邊收你的訊息'

@@ -278,6 +278,17 @@ describe('buildTimeline: thread messages, plans, checks and checkpoints', () => 
     expect(late[2]).toMatchObject({ text: 'agent 稍晚才收到訊息，已從排隊中移除，不會再送一次' })
   })
 
+  it('explains a message held by a limit and keeps it pending in the thread', () => {
+    const entries = buildTimeline([
+      e('user.message', { id: 'm1', text: 'also docs', provenance: 'user', delivery: 'queued' }),
+      e('user.message.held', { ids: ['m1'], reason: 'Stopped: the task ran longer than 30 minutes' }),
+    ])
+    expect(entries[0]).toMatchObject({ kind: 'user', state: 'held' })
+    expect(entries[1]).toMatchObject({
+      text: '任務因上限停下，訊息先排著；按「繼續」或再送訊息才會帶給 agent',
+    })
+  })
+
   it('shows plan events, folding past plans but not the one with its own card', () => {
     const events = [
       e('plan.awaiting_approval', { plan: '# v1' }),

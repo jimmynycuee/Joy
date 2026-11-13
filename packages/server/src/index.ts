@@ -11,3 +11,7 @@ export type {
 } from './doctor.js'
 export { describeDisallowedRoleProvider, findDisallowedRoleProviders } from './provider-allowlist.js'
 export type { DisallowedRoleProvider } from './provider-allowlist.js'
+export { findServiceNode, planService, runService, SERVICE_LABEL } from './service.js'
+export type { ServiceAction, ServiceOptions } from './service.js'
+export { uiBuildState } from './ui-build.js'
+export type { UiBuildState } from './ui-build.js'

@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { AgentEvent, AgentProvider, ProviderKind, RunOptions, TaskId, Workspace } from '@joy/core'
 import { ConfigStore } from '@joy/config'
-import { openDatabase } from '@joy/db'
+import { addUsage, openDatabase } from '@joy/db'
 import type { Database } from '@joy/db'
 import { WorktreeExecutor } from '@joy/executor'
 import type { RunInWorktreeInput } from '@joy/executor'
@@ -144,6 +144,8 @@ async function setup(
     steerTimeoutMs?: number
     /** Use the server's own Claude provider (as in production) with this command instead of the fake. */
     claudeCommand?: string
+    /** Providers added to (or replacing) the fakes. */
+    providers?: JoyServerOptions['providers']
   } = {},
 ) {
   const home = tempDir('joy-thread-')
@@ -179,8 +181,8 @@ async function setup(
     memoryExtraction: false,
     conversationSummaries: false,
     providers: options.claudeCommand
-      ? { 'codex-cli': codex.provider }
-      : { 'claude-cli': claude.provider, 'codex-cli': codex.provider },
+      ? { 'codex-cli': codex.provider, ...options.providers }
+      : { 'claude-cli': claude.provider, 'codex-cli': codex.provider, ...options.providers },
     ...(options.steerTimeoutMs ? { steerTimeoutMs: options.steerTimeoutMs } : {}),
     ...(options.ghRunner ? { ghRunner: options.ghRunner } : {}),
     ...(options.taskTimeLimitMs ? { taskTimeLimitMs: options.taskTimeLimitMs } : {}),
@@ -982,7 +984,17 @@ describe('interrupting a running task with a message (interrupt: true)', () => {
       ids: [messageId],
     })
     expect(count(after, 'run.interrupted')).toBe(0)
-    // The stopped task is then continued with the message, as before interrupts existed.
+    // The limit stopped the task, so the message is held: nothing is sent until the owner continues.
+    const held = await until(call, id, (d) => count(d, 'user.message.held') === 1, 'held')
+    expect(held.events.find((e) => e.type === 'user.message.held')?.payload).toMatchObject({
+      ids: [messageId],
+      reason: expect.stringContaining('ran longer than'),
+    })
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(claude.calls).toHaveLength(1)
+    expect(deliveredIds(await details(call, id))).toEqual([])
+    // The owner's next message continues the task and takes the held one along.
+    await call('POST', `/api/tasks/${id}/messages`, { text: 'and this' })
     const continued = await until(call, id, (d) => deliveredIds(d).includes(messageId), 'follow-up')
     expect(continued.events.find((e) => e.type === 'user.message.delivered')?.payload).toMatchObject({
       via: 'follow_up',
@@ -1439,4 +1451,126 @@ describe('checkpoints', () => {
     expect((await call('POST', `/api/tasks/${id}/messages`, { text: 'go on' })).status).toBe(202)
     await until(call, id, (d) => d.task.status === 'done' && count(d, 'result') === 2, 'follow-up')
   }, 30_000)
+})
+
+describe('messages queued when a limit stops the task', () => {
+  /** A task that a 300 ms limit stops while two owner messages wait in its queue (the fake cannot steer). */
+  async function stoppedWithQueuedMessages(mode: 'single' | 'review_loop' = 'single') {
+    const env = await setup({ taskTimeLimitMs: 300 })
+    env.claude.state.work = (options, n) => (n === 1 ? untilAborted(options) : undefined)
+    const id = await newTask(env.call, await newRepo(env.call), { mode })
+    await until(env.call, id, (d) => d.task.status === 'running' && env.claude.calls.length === 1, 'running')
+    const first = await env.call('POST', `/api/tasks/${id}/messages`, { text: 'first thought' })
+    const second = await env.call('POST', `/api/tasks/${id}/messages`, { text: 'second thought' })
+    expect(first.body.message).toMatchObject({ delivery: 'queued' })
+    const ids = [messageId(first), messageId(second)]
+    const stopped = await until(env.call, id, (d) => count(d, 'user.message.held') >= 1, 'held')
+    return { ...env, id, ids, stopped }
+  }
+
+  it('keeps them queued and tells the owner instead of sending them on its own', async () => {
+    const { call, claude, id, ids, stopped } = await stoppedWithQueuedMessages()
+    expect(stopped.task.status).toBe('failed')
+    expect(stopped.events.filter((e) => e.type === 'user.message.held').map((e) => e.payload)).toEqual([
+      { ids, reason: expect.stringContaining('ran longer than') },
+    ])
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    const later = await details(call, id)
+    expect(claude.calls).toHaveLength(1)
+    expect(later.task.status).toBe('failed')
+    expect(later.queuedMessages).toEqual([
+      { id: ids[0], text: 'first thought' },
+      { id: ids[1], text: 'second thought' },
+    ])
+    expect(deliveredIds(later)).toEqual([])
+    expect(count(later, 'user.message.discarded')).toBe(0)
+    expect(count(later, 'user.message.held')).toBe(1)
+  })
+
+  it('sends them with the owner next message', async () => {
+    const { call, claude, id, ids } = await stoppedWithQueuedMessages()
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'go on' })
+    expect(sent.body.message).toMatchObject({ delivery: 'follow_up' })
+    const after = await until(call, id, (d) => count(d, 'result') === 2, 'follow-up')
+    expect(claude.calls).toHaveLength(2)
+    const prompt = claude.calls[1]?.prompt ?? ''
+    expect(prompt).toContain('first thought')
+    expect(prompt).toContain('second thought')
+    expect(prompt).toContain('go on')
+    expect(deliveredIds(after)).toEqual(expect.arrayContaining(ids))
+    expect(after.queuedMessages).toEqual([])
+  })
+
+  it('sends them when the owner presses Continue (resume)', async () => {
+    const { call, claude, id, ids } = await stoppedWithQueuedMessages()
+    expect((await call('POST', `/api/tasks/${id}/resume`)).status).toBe(202)
+    const after = await until(call, id, (d) => deliveredIds(d).length === 2, 'delivered')
+    expect(claude.calls).toHaveLength(2)
+    expect(claude.calls[1]?.prompt).toContain('first thought')
+    expect(claude.calls[1]?.prompt).toContain('second thought')
+    expect(deliveredIds(after)).toEqual(ids)
+    expect(after.queuedMessages).toEqual([])
+  })
+
+  it('does the same for a review loop that the limit stopped', async () => {
+    const { call, claude, id, ids, stopped } = await stoppedWithQueuedMessages('review_loop')
+    expect(['failed', 'cancelled']).toContain(stopped.task.status)
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(claude.calls).toHaveLength(1)
+    expect((await details(call, id)).queuedMessages).toHaveLength(2)
+    expect((await call('POST', `/api/tasks/${id}/resume`)).status).toBe(202)
+    const after = await until(call, id, (d) => deliveredIds(d).length === 2, 'delivered')
+    expect(deliveredIds(after)).toEqual(ids)
+    expect(claude.calls[1]?.prompt).toContain('first thought')
+  })
+
+  it('still discards queued messages when the owner cancels the task', async () => {
+    const { call, claude } = await setup()
+    const wait = gate()
+    claude.state.work = (options, n) => (n === 1 ? untilAborted(options, wait) : undefined)
+    const id = await newTask(call, await newRepo(call))
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length === 1, 'running')
+    await call('POST', `/api/tasks/${id}/messages`, { text: 'never mind' })
+    await call('POST', `/api/tasks/${id}/cancel`, {})
+    wait.open()
+    const after = await until(call, id, (d) => count(d, 'user.message.discarded') === 1, 'discarded')
+    expect(count(after, 'user.message.held')).toBe(0)
+  })
+
+  it('holds them too when the monthly OpenAI API budget refused the run', async () => {
+    const reviewerApi = fakeProvider('openai-api')
+    const { call, claude, db } = await setup({ providers: { 'openai-api': reviewerApi.provider } })
+    addUsage(db, { provider: 'openai-api', costUsd: 100 })
+    const wait = gate()
+    claude.state.work = (_options, n) => (n === 1 ? wait.promise : undefined)
+    const id = await newTask(call, await newRepo(call), {
+      mode: 'review_loop',
+      roleOverrides: { reviewer: { provider: 'openai-api', model: 'gpt-6-luna' } },
+    })
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length === 1, 'running')
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'after the review' })
+    wait.open()
+    const held = await until(call, id, (d) => count(d, 'user.message.held') === 1, 'held')
+    expect(held.task.status).toBe('failed')
+    expect(held.events.find((e) => e.type === 'user.message.held')?.payload).toMatchObject({
+      ids: [messageId(sent)],
+      reason: expect.stringContaining('budget for this month is used up'),
+    })
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(claude.calls).toHaveLength(1)
+    expect((await details(call, id)).queuedMessages).toHaveLength(1)
+  })
+
+  it('does not hold them when the run ends for another reason: they still follow up on their own', async () => {
+    const { call, claude } = await setup()
+    const wait = gate()
+    claude.state.work = (_options, n) => (n === 1 ? wait.promise : undefined)
+    const id = await newTask(call, await newRepo(call), { mode: 'single' })
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length === 1, 'running')
+    await call('POST', `/api/tasks/${id}/messages`, { text: 'late thought' })
+    wait.open()
+    const after = await until(call, id, (d) => count(d, 'result') === 2, 'follow-up')
+    expect(count(after, 'user.message.held')).toBe(0)
+    expect(claude.calls[1]?.prompt).toContain('late thought')
+  })
 })

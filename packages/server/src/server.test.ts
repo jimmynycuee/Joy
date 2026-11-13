@@ -971,6 +971,51 @@ describe('Joy local server', () => {
     expect(sameAuthorityUnapproved.messages).toEqual([])
   })
 
+  it('accepts the server own loopback address as an Origin, for the built UI it serves, and nothing next to it', async () => {
+    const { db, serverPromise } = fixture()
+    const { origin, websocket } = await start(serverPromise)
+    const { port } = new URL(origin)
+    const post = (originHeader: string, path: string) =>
+      new Promise<number>((resolve, reject) => {
+        const request = httpRequest(
+          {
+            host: '127.0.0.1',
+            port: Number(port),
+            path: '/api/repos',
+            method: 'POST',
+            headers: {
+              host: new URL(origin).host,
+              origin: originHeader,
+              authorization: `Bearer ${TEST_API_TOKEN}`,
+              'content-type': 'application/json',
+            },
+          },
+          (response) => {
+            response.resume()
+            response.on('end', () => resolve(response.statusCode ?? 0))
+          },
+        )
+        request.on('error', reject)
+        request.end(JSON.stringify({ path, defaultBranch: 'main' }))
+      })
+    expect(await post(`http://127.0.0.1:${port}`, '/tmp/own-ip-origin')).toBe(201)
+    expect(await post(`http://localhost:${port}`, '/tmp/own-name-origin')).toBe(201)
+    expect(await post(`http://127.0.0.1:${Number(port) + 1}`, '/tmp/other-port-origin')).toBe(403)
+    expect(await post(`https://127.0.0.1:${port}`, '/tmp/https-origin')).toBe(403)
+    expect(await post(`http://[::1]:${port}`, '/tmp/ipv6-origin')).toBe(403)
+    expect(db.prepare('SELECT COUNT(*) AS count FROM repos').get()).toMatchObject({ count: 2 })
+
+    const own = await tryWebSocket(`${websocket}/ws?taskId=missing`, `http://127.0.0.1:${port}`)
+    const named = await tryWebSocket(`${websocket}/ws?taskId=missing`, `http://localhost:${port}`, {
+      host: `localhost:${port}`,
+    })
+    const other = await tryWebSocket(`${websocket}/ws?taskId=missing`, `http://127.0.0.1:${Number(port) + 1}`)
+    // Past the Origin check, the unknown task is what answers.
+    expect(own.status).toBe(404)
+    expect(named.status).toBe(404)
+    expect(other.status).toBe(403)
+  })
+
   it('rejects untrusted Origin headers before processing API requests', async () => {
     const { serverPromise } = fixture()
     const { origin } = await start(serverPromise)
