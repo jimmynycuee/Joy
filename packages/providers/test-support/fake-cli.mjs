@@ -7,6 +7,8 @@
 //                     stdin (each appended to FAKE_STDIN_OUT), answers each turn after FAKE_STREAM_HOLD_MS (default 150)
 //                     with a `result`. A message that arrives mid-turn joins that turn, or with FAKE_STREAM_QUEUE=1
 //                     becomes the next turn. Exits once stdin is closed and every message is answered.
+//                     FAKE_STREAM_FAIL_TURNS: comma-separated turn numbers that end with an error result.
+//                     `total_cost_usd` is cumulative (0.01 per turn) and `usage` grows with each turn.
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 
@@ -24,6 +26,7 @@ if (process.env.FAKE_CAT_MCP) {
 function streamInput() {
   const hold = Number(process.env.FAKE_STREAM_HOLD_MS ?? 150)
   const queueMode = process.env.FAKE_STREAM_QUEUE === '1'
+  const failTurns = new Set((process.env.FAKE_STREAM_FAIL_TURNS ?? '').split(',').filter(Boolean).map(Number))
   const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`)
   const session = 'fake-stream-session'
   const pending = []
@@ -39,14 +42,15 @@ function streamInput() {
     say(`got: ${text}`)
     setTimeout(() => {
       inTurn = false
+      const failed = failTurns.has(turns)
       send({
         type: 'result',
-        subtype: 'success',
-        is_error: false,
+        subtype: failed ? 'error_during_execution' : 'success',
+        is_error: failed,
         session_id: session,
-        result: `turn ${turns} done`,
-        total_cost_usd: 0.01,
-        usage: { input_tokens: 10, output_tokens: 5 },
+        result: failed ? `turn ${turns} failed` : `turn ${turns} done`,
+        total_cost_usd: Number((0.01 * turns).toFixed(2)),
+        usage: { input_tokens: 10 * turns, output_tokens: 5 * turns },
       })
       const next = pending.shift()
       if (next !== undefined) startTurn(next)

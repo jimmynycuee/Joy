@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { AgentEvent, AgentProvider, ProviderKind, RunOptions, TaskId, Workspace } from '@joy/core'
 import { ConfigStore } from '@joy/config'
 import { openDatabase } from '@joy/db'
@@ -140,10 +141,24 @@ async function setup(
     publisher?: JoyServerOptions['publisher']
     config?: string
     taskTimeLimitMs?: number
+    steerTimeoutMs?: number
+    /** Use the server's own Claude provider (as in production) with this command instead of the fake. */
+    claudeCommand?: string
   } = {},
 ) {
   const home = tempDir('joy-thread-')
-  writeFileSync(join(home, 'config.yaml'), options.config ?? 'approvals:\n  on_timeout: deny\n')
+  writeFileSync(
+    join(home, 'config.yaml'),
+    options.config ??
+      [
+        'approvals:',
+        '  on_timeout: deny',
+        ...(options.claudeCommand
+          ? ['providers:', '  claude:', `    command: ${JSON.stringify(options.claudeCommand)}`]
+          : []),
+        '',
+      ].join('\n'),
+  )
   const db = openDatabase(':memory:')
   databases.push(db)
   const redactor = new Redactor()
@@ -163,7 +178,10 @@ async function setup(
     backups: false,
     memoryExtraction: false,
     conversationSummaries: false,
-    providers: { 'claude-cli': claude.provider, 'codex-cli': codex.provider },
+    providers: options.claudeCommand
+      ? { 'codex-cli': codex.provider }
+      : { 'claude-cli': claude.provider, 'codex-cli': codex.provider },
+    ...(options.steerTimeoutMs ? { steerTimeoutMs: options.steerTimeoutMs } : {}),
     ...(options.ghRunner ? { ghRunner: options.ghRunner } : {}),
     ...(options.taskTimeLimitMs ? { taskTimeLimitMs: options.taskTimeLimitMs } : {}),
     ...(options.publisher ? { publisher: options.publisher } : {}),
@@ -389,6 +407,9 @@ const untilAborted = (options: RunOptions, release?: Gate) =>
   )
 const deliveredIds = (d: Details) =>
   d.events.filter((e) => e.type === 'user.message.delivered').flatMap((e) => e.payload.ids as string[])
+const messageId = (sent: { body: Record<string, unknown> }) => (sent.body.message as { id: string }).id
+const requeuedIds = (d: Details) =>
+  d.events.filter((e) => e.type === 'user.message.requeued').flatMap((e) => e.payload.ids as string[])
 
 describe('steering a running agent with a message (default)', () => {
   it('hands the message to the working agent without stopping it', async () => {
@@ -401,6 +422,7 @@ describe('steering a running agent with a message (default)', () => {
     expect(working).toMatchObject({ interruptible: true })
     const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'Use BigInt instead' })
     expect(sent).toMatchObject({ status: 202, body: { message: { delivery: 'steer' } } })
+    await until(call, id, (d) => deliveredIds(d).includes(messageId(sent)), 'steered')
     expect(claude.steered).toHaveLength(1)
     expect(claude.steered[0]).toContain('Use BigInt instead')
     expect(claude.steered[0]).toContain('You were not stopped')
@@ -476,8 +498,8 @@ describe('steering a running agent with a message (default)', () => {
     const id = await newTask(call, await newRepo(call))
     await until(call, id, (d) => d.steerable === true, 'steerable')
     const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'Rename it' })
-    expect(sent.body.message).toMatchObject({ delivery: 'queued' })
-    const queued = await details(call, id)
+    expect(sent.body.message).toMatchObject({ delivery: 'steer' })
+    const queued = await until(call, id, (d) => requeuedIds(d).includes(messageId(sent)), 'requeued')
     expect(queued.queuedMessages).toEqual([
       { id: (sent.body.message as { id: string }).id, text: 'Rename it' },
     ])
@@ -508,7 +530,7 @@ describe('steering a running agent with a message (default)', () => {
     const id = await newTask(call, await newRepo(call))
     await until(call, id, (d) => d.steerable === true, 'steerable')
     const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'Too late for this turn' })
-    expect(sent.body.message).toMatchObject({ delivery: 'queued' })
+    expect(sent.body.message).toMatchObject({ delivery: 'steer' })
     await until(call, id, (d) => d.task.status === 'done' && count(d, 'result') === 2, 'follow-up')
     expect(claude.calls[1]?.prompt).toContain('Too late for this turn')
   })
@@ -525,18 +547,185 @@ describe('steering a running agent with a message (default)', () => {
     claude.state.work = (options) => untilAborted(options)
     const id = await newTask(call, await newRepo(call))
     await until(call, id, (d) => d.steerable === true, 'steerable')
-    const sending = call('POST', `/api/tasks/${id}/messages`, { text: 'never mind' })
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'never mind' })
+    expect(sent.body.message).toMatchObject({ delivery: 'steer' })
     await steering.promise
     expect((await call('POST', `/api/tasks/${id}/cancel`)).status).toBe(200)
     await until(call, id, settled('cancelled'), 'cancelled')
     answer.open()
-    const sent = await sending
-    expect(sent.body.message).toMatchObject({ delivery: 'queued' })
     const cancelled = await until(call, id, (d) => count(d, 'user.message.discarded') === 1, 'discard')
     expect(cancelled.task.status).toBe('cancelled')
     expect(claude.calls).toHaveLength(1)
     expect(count(cancelled, 'user.message.delivered')).toBe(0)
   })
+
+  it('takes a timed-out message back out of the queue when the agent got it after all', async () => {
+    const { call, claude } = await setup({ steerTimeoutMs: 100 })
+    const answer = gate()
+    claude.state.steer = async () => {
+      await answer.promise
+      return true
+    }
+    const wait = gate()
+    claude.state.work = (_options, n) => (n === 1 ? wait.promise : undefined)
+    const id = await newTask(call, await newRepo(call))
+    await until(call, id, (d) => d.steerable === true, 'steerable')
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'Slow backend' })
+    const queued = await until(call, id, (d) => requeuedIds(d).includes(messageId(sent)), 'timed out')
+    expect(queued.queuedMessages).toEqual([{ id: messageId(sent), text: 'Slow backend' }])
+    answer.open()
+    const late = await until(call, id, (d) => deliveredIds(d).includes(messageId(sent)), 'late delivery')
+    expect(late.queuedMessages).toEqual([])
+    expect(late.events.find((e) => e.type === 'user.message.delivered')?.payload).toMatchObject({
+      via: 'steer',
+      late: true,
+    })
+    wait.open()
+    const done = await until(call, id, settled('done'), 'done')
+    // Delivered once: no follow-up run sends it again.
+    expect(claude.calls).toHaveLength(1)
+    expect(deliveredIds(done)).toEqual([messageId(sent)])
+  })
+
+  it('delivers a timed-out message at the next turn when the agent never took it', async () => {
+    const { call, claude } = await setup({ steerTimeoutMs: 100 })
+    const never = gate()
+    claude.state.steer = async () => {
+      await never.promise
+      return false
+    }
+    const wait = gate()
+    claude.state.work = (_options, n) => (n === 1 ? wait.promise : undefined)
+    const id = await newTask(call, await newRepo(call))
+    await until(call, id, (d) => d.steerable === true, 'steerable')
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'Never answered' })
+    await until(call, id, (d) => requeuedIds(d).includes(messageId(sent)), 'timed out')
+    wait.open()
+    await until(call, id, (d) => d.task.status === 'done' && count(d, 'result') === 2, 'follow-up')
+    expect(claude.calls[1]?.prompt).toContain('Never answered')
+    never.open()
+  })
+
+  it('does not hold the task while a steer is slow: other owner actions go through', async () => {
+    const { call, claude } = await setup()
+    const answer = gate()
+    claude.state.steer = async () => {
+      await answer.promise
+      return true
+    }
+    const wait = gate()
+    claude.state.work = (_options, n) => (n === 1 ? wait.promise : undefined)
+    const id = await newTask(call, await newRepo(call))
+    await until(call, id, (d) => d.steerable === true, 'steerable')
+    const first = await call('POST', `/api/tasks/${id}/messages`, { text: 'first' })
+    const second = await call('POST', `/api/tasks/${id}/messages`, { text: 'second' })
+    expect([first.status, second.status]).toEqual([202, 202])
+    expect((await call('PATCH', `/api/tasks/${id}`, { title: 'Renamed' })).status).toBe(200)
+    answer.open()
+    await until(call, id, (d) => deliveredIds(d).length === 2, 'both steered')
+    // One at a time, in the order they were sent.
+    expect(claude.steered.map((text) => text.split('\n').at(-1))).toEqual(['first', 'second'])
+    wait.open()
+    await until(call, id, settled('done'), 'done')
+  })
+
+  it('keeps the order when an earlier steer fell back to the queue', async () => {
+    const { call, claude } = await setup({ steerTimeoutMs: 100 })
+    const never = gate()
+    let calls = 0
+    claude.state.steer = async () => {
+      calls++
+      if (calls === 1) await never.promise
+      return true
+    }
+    const wait = gate()
+    claude.state.work = (_options, n) => (n === 1 ? wait.promise : undefined)
+    const id = await newTask(call, await newRepo(call))
+    await until(call, id, (d) => d.steerable === true, 'steerable')
+    const first = await call('POST', `/api/tasks/${id}/messages`, { text: 'FIRST-NOTE' })
+    // Sent while the first is still in flight: it waits its turn, and goes to the queue behind the first.
+    const second = await call('POST', `/api/tasks/${id}/messages`, { text: 'SECOND-NOTE' })
+    expect(second.body.message).toMatchObject({ delivery: 'steer' })
+    await until(call, id, (d) => requeuedIds(d).length === 2, 'both queued')
+    // Once one is waiting, a new message is queued right away rather than overtaking it.
+    const third = await call('POST', `/api/tasks/${id}/messages`, { text: 'THIRD-NOTE' })
+    expect(third.body.message).toMatchObject({ delivery: 'queued' })
+    expect(calls).toBe(1)
+    wait.open()
+    await until(call, id, (d) => d.task.status === 'done' && count(d, 'result') === 2, 'follow-up')
+    const prompt = claude.calls[1]?.prompt ?? ''
+    expect(prompt.indexOf('FIRST-NOTE')).toBeLessThan(prompt.indexOf('SECOND-NOTE'))
+    expect(prompt.indexOf('SECOND-NOTE')).toBeLessThan(prompt.indexOf('THIRD-NOTE'))
+    expect(deliveredIds(await details(call, id)).sort()).toEqual([first, second, third].map(messageId).sort())
+    never.open()
+  })
+
+  it('tells the reviewer only what the implementer has seen', async () => {
+    const { call, claude, codex } = await setup()
+    const implementing = gate()
+    claude.state.work = (_options, n) => (n === 1 ? implementing.promise : undefined)
+    codex.verdicts.push({ approve: false, findings: [{ severity: 'major', message: 'handle NaN' }] })
+    const id = await newTask(call, await newRepo(call), { mode: 'review_loop' })
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length === 1, 'implementing')
+    // This backend cannot steer: the message waits for the fix round.
+    const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'QUEUED-INSTRUCTION' })
+    expect(sent.body.message).toMatchObject({ delivery: 'queued' })
+    implementing.open()
+    await until(call, id, settled('done'), 'done')
+    expect(codex.calls[0]?.prompt).not.toContain('QUEUED-INSTRUCTION')
+    expect(claude.calls[1]?.prompt).toContain('QUEUED-INSTRUCTION')
+    expect(codex.calls[1]?.prompt).toContain('QUEUED-INSTRUCTION')
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    "steers the server's own Claude provider for a repository that is not in a container",
+    async () => {
+      const bin = tempDir('joy-fake-claude-')
+      const claudeCommand = join(bin, 'claude')
+      const fakeCli = fileURLToPath(new URL('../../providers/test-support/fake-cli.mjs', import.meta.url))
+      writeFileSync(
+        claudeCommand,
+        `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeCli)} "$@"\n`,
+        { mode: 0o755 },
+      )
+      const stdinOut = join(bin, 'stdin.jsonl')
+      const saved = { ...process.env }
+      Object.assign(process.env, {
+        FAKE_MODE: 'stream',
+        FAKE_STREAM_HOLD_MS: '1500',
+        FAKE_STDIN_OUT: stdinOut,
+      })
+      try {
+        // The CLI really starts, so the worktree must exist.
+        const worktree = tempDir('joy-real-claude-worktree-')
+        class RealDirExecutor extends FakeExecutor {
+          override async prepare(...args: Parameters<FakeExecutor['prepare']>) {
+            return { ...(await super.prepare(...args)), path: worktree }
+          }
+        }
+        const { call } = await setup({ claudeCommand, executor: new RealDirExecutor() })
+        const id = await newTask(call, await newRepo(call), {
+          roleOverrides: { implementer: { provider: 'claude-cli', model: 'haiku', effort: 'low' } },
+        })
+        await until(call, id, (d) => d.steerable === true, 'steerable')
+        const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'REAL-PROVIDER-STEER' })
+        expect(sent.body.message).toMatchObject({ delivery: 'steer' })
+        await until(call, id, (d) => deliveredIds(d).includes(messageId(sent)), 'steered')
+        const done = await until(call, id, settled('done'), 'done')
+        expect(count(done, 'result')).toBe(1)
+        const lines = readFileSync(stdinOut, 'utf8').trim().split('\n')
+        expect(lines).toHaveLength(2)
+        expect(lines[1]).toContain('REAL-PROVIDER-STEER')
+      } finally {
+        for (const key of ['FAKE_MODE', 'FAKE_STREAM_HOLD_MS', 'FAKE_STDIN_OUT'] as const) {
+          const value = saved[key]
+          if (value === undefined) Reflect.deleteProperty(process.env, key)
+          else process.env[key] = value
+        }
+      }
+    },
+    20_000,
+  )
 
   it('steers the implementer in a review loop but lets messages wait during the review', async () => {
     const { call, claude, codex } = await setup()
@@ -555,6 +744,7 @@ describe('steering a running agent with a message (default)', () => {
     await until(call, id, (d) => d.steerable === true, 'steerable')
     const steered = await call('POST', `/api/tasks/${id}/messages`, { text: 'Keep it in one file' })
     expect(steered.body.message).toMatchObject({ delivery: 'steer' })
+    await until(call, id, (d) => deliveredIds(d).includes(messageId(steered)), 'steered')
     implementing.open()
     await reviewing.promise
     expect(await details(call, id)).toMatchObject({ steerable: false })

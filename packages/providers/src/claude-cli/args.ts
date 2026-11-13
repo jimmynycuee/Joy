@@ -54,11 +54,12 @@ export function buildClaudeArgs(
 
 /** One user message on stdin in `--input-format stream-json` (the Agent SDK's streaming input shape). */
 export function claudeUserMessage(text: string): string {
+  // JSON.stringify leaves U+2028/U+2029 raw, and some line readers split on them; escaped they are the same JSON.
   return JSON.stringify({
     type: 'user',
     message: { role: 'user', content: text },
     parent_tool_use_id: null,
-  })
+  }).replace(/[\u2028\u2029]/g, (char) => `\\u${char.charCodeAt(0).toString(16)}`)
 }
 
 /** Claude's `--mcp-config` file format. */

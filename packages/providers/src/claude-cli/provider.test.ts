@@ -189,11 +189,50 @@ describe('ClaudeCliProvider.run with steering', () => {
         void steer('and the changelog')
       }
     })
-    expect(events.filter((e) => e.type === 'usage')).toHaveLength(2)
+    // Usage is taken once, from the last result (the fake's cost is cumulative), never summed.
+    expect(events.filter((e) => e.type === 'usage')).toEqual([
+      { type: 'usage', inputTokens: 20, outputTokens: 10, costUsd: 0.02 },
+    ])
     expect(events.filter((e) => e.type === 'done')).toEqual([
       expect.objectContaining({ isError: false, finalMessage: 'turn 2 done' }),
     ])
     expect(events.some((e) => e.type === 'message' && e.text === 'got: and the changelog')).toBe(true)
+  })
+
+  async function twoTurns(failTurns: string) {
+    const { dir, provider } = steered({ FAKE_STREAM_QUEUE: '1', FAKE_STREAM_FAIL_TURNS: failTurns })
+    let sent = false
+    const { events } = await run(provider, dir, (event, steer) => {
+      if (event.type === 'message' && !sent && steer) {
+        sent = true
+        void steer('and the changelog')
+      }
+    })
+    return events
+  }
+
+  it('keeps finished work when the turn for an owner message fails, and shows that failure', async () => {
+    const events = await twoTurns('2')
+    expect(events.filter((e) => e.type === 'error')).toEqual([
+      {
+        type: 'error',
+        message: "Claude Code could not finish the turn for the owner's added message: turn 2 failed",
+        recoverable: true,
+      },
+    ])
+    expect(events.filter((e) => e.type === 'done')).toEqual([
+      expect.objectContaining({ isError: false, finalMessage: 'turn 1 done' }),
+    ])
+  })
+
+  it('stays failed when the work failed, even if the turn for an owner message succeeds', async () => {
+    const events = await twoTurns('1')
+    expect(events.filter((e) => e.type === 'error')).toEqual([
+      { type: 'error', message: 'turn 1 failed', recoverable: false },
+    ])
+    expect(events.filter((e) => e.type === 'done')).toEqual([
+      expect.objectContaining({ isError: true, finalMessage: 'turn 1 failed' }),
+    ])
   })
 
   it('ends without owner messages like a one-shot run', async () => {
@@ -219,6 +258,39 @@ describe('ClaudeCliProvider.run with steering', () => {
     expect(events.at(-1)).toMatchObject({ type: 'done', isError: true })
     expect(await steer?.('late')).toBe(false)
     await waitFor(() => !alive(received().pid))
+  })
+
+  it('steers through a wrapper that forwards stdin for this worktree', async () => {
+    const out = mkdtempSync(join(tmpdir(), 'joy-claude-stdin-'))
+    dirs.push(out)
+    const stdinOut = join(out, 'stdin.jsonl')
+    const dir = mkdtempSync(join(tmpdir(), 'joy-claude-test-'))
+    dirs.push(dir)
+    const forwarded: string[] = []
+    const provider = new ClaudeCliProvider({
+      command: process.execPath,
+      env: { ...process.env, FAKE_MODE: 'stream', FAKE_STDIN_OUT: stdinOut },
+      // Like the server's container wrapper for a repository that is not in a container: unchanged.
+      wrap: ({ command, args }) => Promise.resolve({ command, args: [fakeCli, ...args] }),
+      forwardsStdin: (cwd) => {
+        forwarded.push(cwd)
+        return true
+      },
+    })
+    const results: Array<Promise<boolean>> = []
+    await collect(
+      provider.run(
+        opts(dir, {
+          onSteer: (steer) => {
+            if (steer) results.push(steer('more'))
+          },
+        }),
+        model,
+      ),
+    )
+    expect(forwarded).toEqual([dir])
+    expect(await Promise.all(results)).toEqual([true])
+    expect(readFileSync(stdinOut, 'utf8').trim().split('\n')).toHaveLength(2)
   })
 
   it('keeps the one-shot command line when the run is wrapped (containers do not forward stdin)', async () => {

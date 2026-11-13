@@ -265,10 +265,17 @@ describe('buildTimeline: thread messages, plans, checks and checkpoints', () => 
     ])
     expect(entries.map((entry) => entry.kind)).toEqual(['noise', 'user', 'noise', 'user', 'noise', 'noise'])
     expect(entries[1]).toMatchObject({ kind: 'user', state: 'delivered' })
-    expect(entries[2]).toMatchObject({ text: '訊息已送給 agent，它會邊做邊參考' })
+    expect(entries[2]).toMatchObject({ text: '訊息已交給 agent，它會邊做邊參考' })
     expect(entries[3]).toMatchObject({ kind: 'user', state: 'queued' })
-    expect(entries[4]).toMatchObject({ text: '沒能即時送給 agent，訊息改為等它下一次動手' })
+    expect(entries[4]).toMatchObject({ text: '沒能即時交給 agent，訊息改為等它下一次動手' })
     expect(entries[0]).toMatchObject({ text: 'agent 可以邊做邊收你的訊息' })
+    const late = buildTimeline([
+      e('user.message', { id: 'm3', text: 'slow', provenance: 'user', delivery: 'steer' }),
+      e('user.message.requeued', { ids: ['m3'], reason: 'steer_failed' }),
+      e('user.message.delivered', { ids: ['m3'], via: 'steer', late: true }),
+    ])
+    expect(late[0]).toMatchObject({ kind: 'user', state: 'delivered' })
+    expect(late[2]).toMatchObject({ text: 'agent 稍晚才收到訊息，已從排隊中移除，不會再送一次' })
   })
 
   it('shows plan events, folding past plans but not the one with its own card', () => {

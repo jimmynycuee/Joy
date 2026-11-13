@@ -66,8 +66,8 @@ export function messageDeliveryStates(
 
 /** The small tag under a bubble; only the states the owner should notice have one. */
 export function deliveryTag(state: DeliveryState): string | undefined {
-  if (state === 'steering') return '正在送給 agent…'
-  if (state === 'delivered') return '已送給 agent'
+  if (state === 'steering') return '正在交給 agent…'
+  if (state === 'delivered') return '已交給 agent'
   if (state === 'interrupting') return '正在打斷 agent…'
   if (state === 'queued') return '排隊中'
   if (state === 'discarded') return '已撤回'

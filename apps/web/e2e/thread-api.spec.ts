@@ -160,7 +160,7 @@ test('a message to a running agent reaches it while it keeps working', async ({ 
   answer()
   await page.reload()
   const bubble = page.locator('.user-column', { hasText: 'Use the existing helper' })
-  await expect(bubble.getByTestId('message-tag')).toHaveText('已送給 agent')
+  await expect(bubble.getByTestId('message-tag')).toHaveText('已交給 agent')
   await expect(page.getByTestId('queued-messages')).toHaveCount(0)
   await expect(page.getByTestId('event-stream')).not.toContainText('已中斷目前這一步')
   // The stop button is still there for an empty box.
@@ -197,7 +197,7 @@ test('a message during a review is queued until the next turn', async ({ page })
   state.events.push(event('queue-task', 'user.message.delivered', { ids: ['q1'], via: 'next_turn' }, 0))
   await page.reload()
   const delivered = page.locator('.user-column', { hasText: 'Use the existing helper' })
-  await expect(delivered.getByTestId('message-tag')).toHaveText('已送給 agent')
+  await expect(delivered.getByTestId('message-tag')).toHaveText('已交給 agent')
   await expect(page.getByTestId('queued-messages')).toHaveCount(0)
 })
 

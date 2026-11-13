@@ -16,7 +16,9 @@ export interface ClaudeParserOptions {
   cwd?: string
   /**
    * Streaming input (`--input-format stream-json`): the process may answer several user messages, each ending with a
-   * `result`, so `done` is held until the process exits and then reflects the last result.
+   * `result`. The first result is the task's own work and decides whether the run succeeded; a later one answers owner
+   * messages the CLI took as a turn of their own, and its failure is reported as recoverable. `usage` and `done` are
+   * held until the process exits (see `finish`).
    */
   multiTurn?: boolean
 }
@@ -28,8 +30,11 @@ export class ClaudeStreamParser {
   /** Claude emits a few events before `system/init`; hold them so `session_started` is always first. */
   private beforeInit: AgentEvent[] = []
   private readonly pendingFileTools = new Map<string, { path: string; tool: string }>()
-  /** Multi-turn: the `done` of the latest result, emitted when the process exits. */
-  private lastDone: AgentEvent | undefined
+  /** Multi-turn: the `done` the run ends with, emitted when the process exits. */
+  private lastDone: Extract<AgentEvent, { type: 'done' }> | undefined
+  /** Multi-turn: the latest result's usage, emitted once when the process exits. */
+  private lastUsage: Extract<AgentEvent, { type: 'usage' }> | undefined
+  private results = 0
 
   constructor(private readonly options: ClaudeParserOptions = {}) {}
 
@@ -91,9 +96,13 @@ export class ClaudeStreamParser {
   finish(reason: string, exit: { stopped: boolean } = { stopped: true }): AgentEvent[] {
     if (this.done) return []
     this.done = true
-    if (this.lastDone && !exit.stopped) return [...this.flushHeld(), this.lastDone]
+    // Not verified against a real multi-turn run whether `total_cost_usd` and `usage` are per turn or cumulative; the
+    // Agent SDK reports a query's total, so the last result is taken as the whole run (never summed).
+    const usage = this.lastUsage ? [this.lastUsage] : []
+    if (this.lastDone && !exit.stopped) return [...this.flushHeld(), ...usage, this.lastDone]
     return [
       ...this.flushHeld(),
+      ...usage,
       { type: 'error', message: reason, recoverable: false },
       { type: 'done', sessionId: this.sessionId ?? '', isError: true },
     ]
@@ -196,35 +205,51 @@ export class ClaudeStreamParser {
 
   private result(line: Rec): AgentEvent[] {
     if (!this.options.multiTurn) this.done = true
-    const usage = rec(line.usage)
+    const raw = rec(line.usage)
     const isError = line.is_error === true
     const final = str(line.result)
-    const events: AgentEvent[] = [
-      ...this.flushHeld(),
-      {
-        type: 'usage',
-        ...opt('inputTokens', num(usage?.input_tokens)),
-        ...opt('outputTokens', num(usage?.output_tokens)),
-        ...opt('cachedInputTokens', num(usage?.cache_read_input_tokens)),
-        ...opt('costUsd', num(line.total_cost_usd)),
-      },
-    ]
-    if (isError) {
-      events.push({
-        type: 'error',
-        message: final ?? `Claude Code ended with ${str(line.subtype) ?? 'an error'}`,
-        recoverable: false,
-      })
+    const usage: Extract<AgentEvent, { type: 'usage' }> = {
+      type: 'usage',
+      ...opt('inputTokens', num(raw?.input_tokens)),
+      ...opt('outputTokens', num(raw?.output_tokens)),
+      ...opt('cachedInputTokens', num(raw?.cache_read_input_tokens)),
+      ...opt('costUsd', num(line.total_cost_usd)),
     }
-    const done: AgentEvent = {
+    const failure = final ?? `Claude Code ended with ${str(line.subtype) ?? 'an error'}`
+    const done: Extract<AgentEvent, { type: 'done' }> = {
       type: 'done',
       sessionId: str(line.session_id) ?? this.sessionId ?? '',
       isError,
       ...opt('finalMessage', final),
       ...opt('structured', line.structured_output ?? undefined),
     }
-    if (this.options.multiTurn) this.lastDone = done
-    else events.push(done)
+    if (!this.options.multiTurn) {
+      const events: AgentEvent[] = [...this.flushHeld(), usage]
+      if (isError) events.push({ type: 'error', message: failure, recoverable: false })
+      events.push(done)
+      return events
+    }
+
+    this.results++
+    this.lastUsage = usage
+    const events = this.flushHeld()
+    if (this.results === 1) {
+      // The task's own work: its outcome is the run's outcome.
+      if (isError) events.push({ type: 'error', message: failure, recoverable: false })
+      this.lastDone = done
+      return events
+    }
+    // A later turn answered owner messages. Its failure is shown but does not undo finished work; its success
+    // updates the final message only when the work itself succeeded. A usage limit still shows up as a `quota` event.
+    if (isError) {
+      events.push({
+        type: 'error',
+        message: `Claude Code could not finish the turn for the owner's added message: ${failure}`,
+        recoverable: true,
+      })
+    } else if (this.lastDone && !this.lastDone.isError) {
+      this.lastDone = { ...done, isError: false }
+    }
     return events
   }
 

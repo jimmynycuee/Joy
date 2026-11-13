@@ -143,12 +143,14 @@ export function eventTitle(event: TaskEvent): string {
   if (event.type === 'user.message' && typeof payload?.text === 'string') return payload.text
   if (event.type === 'user.message.delivered') {
     if (payload?.via === 'interrupt') return '已打斷 agent，訊息已交給它'
-    if (payload?.via === 'steer') return '訊息已送給 agent，它會邊做邊參考'
+    if (payload?.via === 'steer' && payload.late === true)
+      return 'agent 稍晚才收到訊息，已從排隊中移除，不會再送一次'
+    if (payload?.via === 'steer') return '訊息已交給 agent，它會邊做邊參考'
     return '訊息已交給 agent'
   }
   if (event.type === 'user.message.requeued')
     return payload?.reason === 'steer_failed'
-      ? '沒能即時送給 agent，訊息改為等它下一次動手'
+      ? '沒能即時交給 agent，訊息改為等它下一次動手'
       : '沒有打斷成，訊息改為等 agent 下一次動手'
   if (event.type === 'steer.available')
     return payload?.available === true

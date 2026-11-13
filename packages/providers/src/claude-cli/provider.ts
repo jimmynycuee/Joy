@@ -27,6 +27,12 @@ export interface ClaudeCliOptions {
   env?: NodeJS.ProcessEnv
   /** Runs the CLI another way, e.g. in a container for untrusted repositories (T4.5). */
   wrap?: CommandWrapper
+  /**
+   * Whether `wrap` still hands the CLI its stdin for a run in `cwd` (owner steering needs it). `docker run` without
+   * `-i` does not, so the server answers false for container repositories and true where `wrap` changes nothing.
+   * Without it, a provider that has `wrap` does not steer.
+   */
+  forwardsStdin?: (cwd: string) => boolean
 }
 
 export class ClaudeCliProvider implements AgentProvider {
@@ -46,6 +52,7 @@ export class ClaudeCliProvider implements AgentProvider {
   private readonly timeoutMs: number
   private readonly env: NodeJS.ProcessEnv | undefined
   private readonly wrap: CommandWrapper | undefined
+  private readonly forwardsStdin: ((cwd: string) => boolean) | undefined
 
   constructor(options: ClaudeCliOptions = {}) {
     this.command = options.command ?? 'claude'
@@ -53,12 +60,14 @@ export class ClaudeCliProvider implements AgentProvider {
     this.timeoutMs = options.timeoutMs ?? 60 * 60 * 1000
     this.env = options.env
     this.wrap = options.wrap
+    this.forwardsStdin = options.forwardsStdin
   }
 
   async *run(opts: RunOptions, model: ModelRef): AsyncGenerator<AgentEvent> {
     // Streaming input only when the caller can steer: the one-shot `-p <prompt>` path stays as recorded in the
-    // fixtures. A wrapped (container) run keeps it too, since `docker run` without `-i` does not forward stdin.
-    const steering = opts.onSteer && !this.wrap ? new ClaudeSteering(opts) : undefined
+    // fixtures. A run whose wrapper does not forward stdin (a container) keeps it too.
+    const stdinReaches = !this.wrap || (this.forwardsStdin?.(opts.cwd) ?? false)
+    const steering = opts.onSteer && stdinReaches ? new ClaudeSteering(opts) : undefined
     let tmp: string | undefined
     try {
       let mcpConfigPath: string | undefined

@@ -408,6 +408,8 @@ export interface JoyServerOptions {
   ownerApprovalChannel?: boolean
   /** Overrides `approvals.timeout_minutes` (tests). */
   approvalTimeoutMs?: number
+  /** How long a steer may take before its message falls back to the queue. Default 10 s (tests shorten it). */
+  steerTimeoutMs?: number
   /** Telegram Bot API overrides (tests point this at a fake API). */
   telegram?: { baseUrl?: string; fetch?: typeof fetch; pollTimeoutSeconds?: number }
   /** Wait this long after a provider's quota reset before resuming a queued task. Default 60 s. */
@@ -524,7 +526,9 @@ const RUN_END_EVENTS = new Set([
 const PLAN_EVENTS = new Set(['plan.awaiting_approval', 'plan.approved', 'plan.rejected'])
 const MAX_QUEUED_MESSAGES = 20
 /** How long a steer may take before the message falls back to the queue. */
-const STEER_TIMEOUT_MS = 15_000
+const STEER_TIMEOUT_MS = 10_000
+/** Message deliveries that wait for the agent; the others were handed over when they were sent. */
+const PENDING_DELIVERIES = new Set(['queued', 'steer', 'interrupt'])
 /** Review-loop phases in which the implementer works (and an owner message may interrupt it). */
 const IMPLEMENTER_PHASES = new Set<string>(['planning', 'implementing', 'fixing'])
 const MAX_CHECK_OUTPUT_CHARS = 4_000
@@ -585,6 +589,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     'claude-cli': new ClaudeCliProvider({
       ...(initialConfig.providers.claude.command ? { command: initialConfig.providers.claude.command } : {}),
       wrap: containerWrap,
+      // A container run gets no stdin (`docker run` without `-i`); anywhere else the wrapper changes nothing.
+      forwardsStdin: (cwd) => !containerRepoFor(cwd),
     }),
     'codex-cli':
       initialConfig.providers.codex.transport === 'exec'
@@ -1462,7 +1468,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       const { text, interrupt } = messageInputSchema.parse(await readJson(req))
       const task = requireTask(decodePathSegment(messagesMatch[1] ?? ''))
       json(res, 202, await exclusive(task.id, () => postTaskMessage(task, text, interrupt ?? false)))
-      // A steer that fell back to the queue after the run ended: nothing else will pick the message up.
+      // A message queued while the run was ending (the run's own check may have found the task busy with this one).
       void continueWithQueuedMessages(task.id)
       return
     }
@@ -2106,18 +2112,107 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
   }
 
-  async function steerWithTimeout(steer: Steer, text: string): Promise<boolean> {
+  /**
+   * Hands `text` to the run's steer. On a timeout the answer may still come: `late` resolves with it, so a message the
+   * agent took after all is not delivered a second time.
+   */
+  async function steerWithTimeout(
+    steer: Steer,
+    text: string,
+  ): Promise<{ status: 'delivered' | 'failed' } | { status: 'timeout'; late: Promise<boolean> }> {
+    const answer = steer(text).catch(() => false)
     let timer: NodeJS.Timeout | undefined
+    const timedOut = Symbol('timeout')
     try {
-      return await Promise.race([
-        steer(text).catch(() => false),
-        new Promise<boolean>((resolve) => {
-          timer = setTimeout(() => resolve(false), STEER_TIMEOUT_MS)
+      const outcome = await Promise.race([
+        answer,
+        new Promise<typeof timedOut>((resolve) => {
+          timer = setTimeout(() => resolve(timedOut), options.steerTimeoutMs ?? STEER_TIMEOUT_MS)
         }),
       ])
+      if (outcome === timedOut) return { status: 'timeout', late: answer }
+      return { status: outcome ? 'delivered' : 'failed' }
     } finally {
       clearTimeout(timer)
     }
+  }
+
+  /**
+   * Steers go out one at a time per task, in the order the owner sent them, outside `exclusive` (a slow backend must
+   * not block the owner's other actions). `pending` counts toward the queue limit.
+   */
+  const steerLanes = new Map<TaskId, { pending: number; tail: Promise<void> }>()
+
+  function enqueueSteer(taskId: TaskId, id: string, text: string): void {
+    const lane = steerLanes.get(taskId) ?? { pending: 0, tail: Promise.resolve() }
+    steerLanes.set(taskId, lane)
+    lane.pending++
+    lane.tail = lane.tail
+      .then(() => deliverSteer(taskId, id, text))
+      .catch((error: unknown) => {
+        log.error('owner message steer failed', {
+          taskId,
+          error: error instanceof Error ? error.message : String(error),
+        })
+        requeueMessage(taskId, id, text)
+      })
+      .finally(() => {
+        lane.pending--
+        if (lane.pending === 0 && steerLanes.get(taskId) === lane) steerLanes.delete(taskId)
+      })
+  }
+
+  async function deliverSteer(taskId: TaskId, id: string, text: string): Promise<void> {
+    const task = getTask(db, taskId)
+    // A message that fell back to the queue earlier stays ahead of this one: then this one waits too.
+    const steer =
+      task && !queuedMessages.get(taskId)?.length && canSteer(task) ? running.get(taskId)?.steer : undefined
+    if (steer) {
+      const outcome = await steerWithTimeout(steer, steerMessage(text))
+      if (outcome.status === 'delivered') {
+        publishTaskLevel(taskId, 'user.message.delivered', { ids: [id], via: 'steer' })
+        return
+      }
+      if (outcome.status === 'timeout')
+        void outcome.late.then((took) => {
+          if (took) lateSteerDelivered(taskId, id)
+        })
+    }
+    requeueMessage(taskId, id, text)
+  }
+
+  /** A steer that could not be handed over: the message waits for the agent's next turn like any other. */
+  function requeueMessage(taskId: TaskId, id: string, text: string): void {
+    if (closed) return
+    const queue = queuedMessages.get(taskId) ?? []
+    queue.push({ id, text })
+    queuedMessages.set(taskId, queue)
+    publishTaskLevel(taskId, 'user.message.requeued', { ids: [id], reason: 'steer_failed' })
+    // The run may have ended meanwhile, and nothing else would pick the message up.
+    followUpWhenFree(taskId)
+  }
+
+  /** The agent took a steer after its timeout: take the message out of the queue instead of sending it again. */
+  function lateSteerDelivered(taskId: TaskId, id: string): void {
+    const queue = queuedMessages.get(taskId)
+    const index = queue?.findIndex((message) => message.id === id) ?? -1
+    if (!queue || index < 0) {
+      log.warn('a timed-out steer reached the agent after its message was delivered another way', { taskId })
+      return
+    }
+    queue.splice(index, 1)
+    if (!queue.length) queuedMessages.delete(taskId)
+    publishTaskLevel(taskId, 'user.message.delivered', { ids: [id], via: 'steer', late: true })
+  }
+
+  /** `continueWithQueuedMessages` once no other owner action holds the task (it skips a busy task). */
+  function followUpWhenFree(taskId: TaskId, tries = 100): void {
+    if (closed) return
+    if (busyTasks.has(taskId) && tries > 0) {
+      setTimeout(() => followUpWhenFree(taskId, tries - 1), 100).unref()
+      return
+    }
+    void continueWithQueuedMessages(taskId)
   }
 
   function interruptRun(taskId: TaskId): void {
@@ -2225,23 +2320,33 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   /** The owner's messages on a task, oldest first, as recorded in its events. */
   function ownerMessages(events: TaskEventRecord[]): string[] {
-    const discarded = new Set(
-      events
-        .filter((event) => event.type === 'user.message.discarded')
-        .flatMap((event) => {
-          const ids = (event.payload as { ids?: unknown }).ids
-          return Array.isArray(ids) ? ids : []
-        }),
-    )
-    return events
-      .filter(
-        (event) => event.type === 'user.message' && !discarded.has((event.payload as { id?: unknown }).id),
+    const idsOf = (type: string) =>
+      new Set(
+        events
+          .filter((event) => event.type === type)
+          .flatMap((event) => {
+            const ids = (event.payload as { ids?: unknown }).ids
+            return Array.isArray(ids) ? ids : []
+          }),
       )
+    const discarded = idsOf('user.message.discarded')
+    const delivered = idsOf('user.message.delivered')
+    // Only what the implementer has seen: a reviewer must not hold it to a message still waiting in the queue.
+    return events
+      .filter((event) => {
+        if (event.type !== 'user.message') return false
+        const payload = event.payload as { id?: unknown; delivery?: unknown }
+        if (discarded.has(payload.id)) return false
+        return !PENDING_DELIVERIES.has(String(payload.delivery)) || delivered.has(payload.id)
+      })
       .map((event) => (event.payload as { text?: unknown }).text)
       .filter((text): text is string => typeof text === 'string' && text !== '')
   }
 
-  /** What the task is now: the original request plus every later instruction from the owner (for the reviewer). */
+  /**
+   * What the task is now: the original request plus every later instruction from the owner that reached the agent (for
+   * the reviewer).
+   */
   function taskBrief(task: StoredTask): string {
     const messages = ownerMessages(listTaskEvents(db, task.id))
     if (!messages.length) return task.prompt
@@ -2357,25 +2462,19 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const id = randomUUID()
     if (running.has(task.id) || ACTIVE_TASK_STATUSES.has(task.status)) {
       const queue = queuedMessages.get(task.id) ?? []
-      if (queue.length >= MAX_QUEUED_MESSAGES)
+      if (queue.length + (steerLanes.get(task.id)?.pending ?? 0) >= MAX_QUEUED_MESSAGES)
         throw new HttpError(
           429,
           'Too many messages are waiting for this task; wait for the agent to pick them up',
         )
-      const steer = !interrupt && canSteer(task) ? running.get(task.id)?.steer : undefined
-      if (steer) {
-        // Steering: the agent gets the message while it keeps working. If the run cannot take it after all (its turn
-        // just ended, it was cancelled), the message waits for the next turn like any other.
+      // Steering: the agent gets the message while it keeps working; the outcome follows as an event
+      // (`user.message.delivered`, or `user.message.requeued` when the run could not take it after all). A message
+      // already waiting in the queue stays ahead, so the new one waits behind it; while earlier steers are still going
+      // out, the new one follows them through the lane (and is queued there if the run cannot take it any more).
+      if (!interrupt && queue.length === 0 && (canSteer(task) || steerLanes.has(task.id))) {
         publishTaskLevel(task.id, 'user.message', { id, text, provenance: 'user', delivery: 'steer' })
-        if (await steerWithTimeout(steer, steerMessage(text))) {
-          publishTaskLevel(task.id, 'user.message.delivered', { ids: [id], via: 'steer' })
-          return { task: getTask(db, task.id), message: { id, delivery: 'steer' } }
-        }
-        const waiting = queuedMessages.get(task.id) ?? []
-        waiting.push({ id, text })
-        queuedMessages.set(task.id, waiting)
-        publishTaskLevel(task.id, 'user.message.requeued', { ids: [id], reason: 'steer_failed' })
-        return { task: getTask(db, task.id), message: { id, delivery: 'queued' } }
+        enqueueSteer(task.id, id, text)
+        return { task: getTask(db, task.id), message: { id, delivery: 'steer' } }
       }
       queue.push({ id, text })
       queuedMessages.set(task.id, queue)
