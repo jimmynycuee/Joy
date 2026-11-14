@@ -62,9 +62,10 @@ export interface ReviewLoopInput {
   maxRounds: number
   signal: AbortSignal
   /**
-   * Joy's Tool Hub and approval tool for the implementer's code-writing turns (implementing and fixing), made once
-   * the worktree exists. Without an approval tool a Claude Code run denies every permission prompt by itself, so
-   * Joy's policy never sees a command like `pnpm check`. Plans and reviews are read-only and do not get it.
+   * Joy's Tool Hub and approval tool for the implementer's code-writing turns (implementing and fixing), made once,
+   * right before the first of them (a run that only plans never asks). Without an approval tool a Claude Code run
+   * denies every permission prompt by itself, so Joy's policy never sees a command like `pnpm check`. Plans and
+   * reviews are read-only and do not get it.
    */
   implementerTools?: (ws: Workspace) => ImplementerTools
   /** Reuse a persisted worktree and resume the implementer's last CLI session after server restart. */
@@ -137,10 +138,17 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
       signal: input.signal,
       ...over,
     })
-    const tools = input.implementerTools?.(ws)
-    const implementerTools: Partial<RunOptions> = {
-      ...(tools?.mcpServers?.length ? { mcpServers: tools.mcpServers } : {}),
-      ...(tools?.approvalTool ? { approvalTool: tools.approvalTool } : {}),
+    // Made just before the first implementer turn, so a run that only plans never creates them.
+    let implementerTools: Partial<RunOptions> | undefined
+    const toolsForImplementer = (): Partial<RunOptions> => {
+      if (!implementerTools) {
+        const tools = input.implementerTools?.(ws)
+        implementerTools = {
+          ...(tools?.mcpServers?.length ? { mcpServers: tools.mcpServers } : {}),
+          ...(tools?.approvalTool ? { approvalTool: tools.approvalTool } : {}),
+        }
+      }
+      return implementerTools
     }
 
     // Optional plan, reviewed before any code is written. The run then stops: the owner approves the plan first.
@@ -205,7 +213,7 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
           session && input.resumePrompt ? input.resumePrompt : implementPrompt(input.prompt),
           take(),
         ),
-        ...implementerTools,
+        ...toolsForImplementer(),
         ...steering,
         ...(session ? { resumeSessionId: session } : presetSession(implementer)),
       }),
@@ -265,7 +273,7 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
         rounds + 1,
         base({
           prompt: withOwnerMessages(fixPrompt(verdict, checks), take()),
-          ...implementerTools,
+          ...toolsForImplementer(),
           ...steering,
           ...(session && implementer.capabilities.resume ? { resumeSessionId: session } : {}),
         }),

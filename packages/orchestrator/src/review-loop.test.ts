@@ -272,6 +272,8 @@ describe('reviewLoop', () => {
     expect(planner.calls[0]).toMatchObject({ autonomy: 'read-only' })
     expect(planner.calls[0]?.approvalTool).toBeUndefined()
     expect(planReviewer.calls[0]?.mcpServers).toBeUndefined()
+    // A run that only plans never asks for them (no hub is made for it).
+    expect(workspaces).toEqual(['/wt/t1-a1'])
   })
 
   it('reads the review brief again before each review', async () => {

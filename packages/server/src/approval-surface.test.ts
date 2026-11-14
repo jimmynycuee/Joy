@@ -39,6 +39,7 @@ function tempDir(prefix: string): string {
 function recordingProvider(kind: ProviderKind, delegatedApproval: boolean) {
   const calls: RunOptions[] = []
   const verdicts: boolean[] = []
+  const hooks: { implement?: (options: RunOptions) => Promise<void> } = {}
   const provider: AgentProvider = {
     kind,
     capabilities: {
@@ -74,11 +75,12 @@ function recordingProvider(kind: ProviderKind, delegatedApproval: boolean) {
       }
       const sessionId = options.resumeSessionId ?? `${kind}-session`
       if (!options.resumeSessionId) yield { type: 'session_started', sessionId }
+      if (options.autonomy === 'workspace-write') await hooks.implement?.(options)
       yield { type: 'done', sessionId, isError: false, finalMessage: 'done' }
     },
     healthCheck: async () => ({ ok: true, installed: true, loggedIn: true as const }),
   }
-  return { provider, calls, verdicts }
+  return { provider, calls, verdicts, hooks }
 }
 
 class FakeExecutor {
@@ -98,9 +100,16 @@ class FakeExecutor {
   async cleanup() {}
 }
 
-async function setup(options: { providers?: JoyServerOptions['providers']; worktree?: string } = {}) {
+async function setup(
+  options: {
+    providers?: JoyServerOptions['providers']
+    worktree?: string
+    onTimeout?: 'deny' | 'pause'
+    approvalTimeoutMs?: number
+  } = {},
+) {
   const home = tempDir('joy-approval-surface-')
-  writeFileSync(join(home, 'config.yaml'), 'approvals:\n  on_timeout: deny\n')
+  writeFileSync(join(home, 'config.yaml'), `approvals:\n  on_timeout: ${options.onTimeout ?? 'deny'}\n`)
   const db = openDatabase(':memory:')
   databases.push(db)
   const redactor = new Redactor()
@@ -114,7 +123,7 @@ async function setup(options: { providers?: JoyServerOptions['providers']; workt
     redactor,
     executor: new FakeExecutor(options.worktree ?? '/fake/worktree'),
     apiToken: TOKEN,
-    approvalTimeoutMs: 15_000,
+    approvalTimeoutMs: options.approvalTimeoutMs ?? 15_000,
     cliVersionCheck: false,
     backups: false,
     memoryExtraction: false,
@@ -175,6 +184,21 @@ const implementerRuns = (calls: RunOptions[]) => calls.filter((c) => c.autonomy 
 const tools = (calls: RunOptions[]) =>
   calls.map((c) => ({ approvalTool: c.approvalTool, hub: c.mcpServers?.map((s) => s.name) }))
 const wired = { approvalTool: APPROVE_TOOL, hub: ['joy'] }
+
+/** Asks Joy's approve tool about a red command the way Claude Code's permission prompt does. */
+async function askToRun(options: RunOptions, command: string): Promise<unknown> {
+  const mcp = options.mcpServers?.[0]
+  if (!mcp || mcp.transport !== 'stdio') throw new Error('The implementer did not get the Tool Hub')
+  const response = await fetch(mcp.env?.JOY_TOOL_HUB_ENDPOINT as string, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${mcp.env?.JOY_TOOL_HUB_TOKEN}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      name: 'approve',
+      arguments: { tool_name: 'Bash', input: { command }, tool_use_id: 'red' },
+    }),
+  })
+  return ((await response.json()) as { value: unknown }).value
+}
 
 describe('approval surface for implementer runs', () => {
   it('single mode: the Claude implementer gets the approval tool', async () => {
@@ -310,4 +334,79 @@ describe('approval surface for implementer runs', () => {
       expect(JSON.stringify(done.events)).not.toContain('no approval surface')
     },
   )
+
+  it(
+    'review loop: an approval that times out pauses the task, and a late approval resumes the session',
+    { timeout: 20_000 },
+    async () => {
+      const { claude, newTask, call } = await setup({ onTimeout: 'pause', approvalTimeoutMs: 50 })
+      const decisions: unknown[] = []
+      claude.hooks.implement = async (options) => {
+        decisions.push(await askToRun(options, 'curl https://example.com/late'))
+      }
+      const id = await newTask({ mode: 'review_loop' })
+      const paused = await until(
+        call,
+        id,
+        (d) => d.events.some((e) => e.type === 'task.paused'),
+        'task.paused',
+      )
+      expect(paused.task.status).toBe('awaiting_approval')
+      expect(paused.events.map((e) => e.type)).not.toContain('result')
+      const pausedEvent = paused.events.find((e) => e.type === 'task.paused')
+      const [expired] = (await call('GET', `/api/approvals?taskId=${id}&status=expired`)).body
+        .approvals as Array<{ id: string; decidedVia: string }>
+      expect(expired?.decidedVia).toBe('timeout')
+      expect(pausedEvent?.payload).toMatchObject({
+        approvalId: expired?.id,
+        diff: { files: [{ path: 'a.ts' }] },
+      })
+
+      const late = await call('POST', `/api/approvals/${expired?.id}/approve`, {})
+      expect(late.status).toBe(200)
+      expect(late.body).toMatchObject({ resumed: true })
+      const done = await until(call, id, status('done'), 'resumed review loop')
+      const runs = implementerRuns(claude.calls)
+      expect(runs).toHaveLength(2)
+      // The same session continues, with a new hub that lets the approved action through once.
+      expect(runs[1]?.resumeSessionId).toBe('claude-cli-session')
+      expect(runs[1]?.prompt).toContain('The owner approved the action you asked for earlier')
+      expect(tools([runs[1] as RunOptions])).toEqual([wired])
+      expect(decisions.at(-1)).toMatchObject({ behavior: 'allow' })
+      const types = done.events.map((e) => e.type)
+      expect(types).toContain('approval.granted')
+      expect(types.filter((t) => t === 'approval.requested')).toHaveLength(1)
+    },
+  )
+
+  it('compete: an approval timeout denies that action and leaves both contestants running', async () => {
+    const { claude, codex, newTask, call } = await setup({ onTimeout: 'pause', approvalTimeoutMs: 50 })
+    const decisions: unknown[] = []
+    claude.hooks.implement = async (options) => {
+      decisions.push(await askToRun(options, 'curl https://example.com/compete'))
+    }
+    const id = await newTask({
+      mode: 'compete',
+      roleOverrides: {
+        implementer: { provider: 'claude-cli', model: 'haiku' },
+        reviewer: { provider: 'codex-cli', model: 'gpt-6-luna' },
+        judge: { provider: 'claude-cli', model: 'haiku' },
+      },
+    })
+    const ready = await until(call, id, status('review_ready'), 'compete')
+    expect(decisions).toEqual([
+      expect.objectContaining({ behavior: 'deny', message: expect.stringContaining('expired') }),
+    ])
+    const types = ready.events.map((e) => e.type)
+    expect(types).not.toContain('task.paused')
+    // Both contestants finished and were judged.
+    expect(ready.events.filter((e) => e.type === 'compete.result')).toHaveLength(2)
+    expect(types).toContain('compete.judgement')
+    expect(implementerRuns(codex.calls)).toHaveLength(1)
+    const [expired] = (await call('GET', `/api/approvals?taskId=${id}&status=expired`)).body
+      .approvals as Array<{ id: string }>
+    expect(expired).toBeDefined()
+    // Nothing is waiting to be resumed by a late answer.
+    expect((await call('POST', `/api/approvals/${expired?.id}/approve`, {})).status).toBe(409)
+  })
 })

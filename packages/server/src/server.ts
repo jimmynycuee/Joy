@@ -3808,6 +3808,21 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           finished = true
           continue
         }
+        const pausedFor = event.type === 'result' ? running.get(task.id)?.pausedFor : undefined
+        if (pausedFor) {
+          // A red action timed out with approvals.on_timeout: pause. Same as single mode: the task waits for the
+          // owner, and a late approval resumes this session with that action allowed once.
+          setImplementerTurn(task.id, false)
+          finished = true
+          const diff = workspace ? await executor.diff(workspace) : undefined
+          updateAttempt(db, attempt.id, {
+            status: 'cancelled',
+            ...(diff ? { diffStats: summarizeDiff(diff) } : {}),
+          })
+          setTaskStatus(db, task.id, 'awaiting_approval')
+          publish(task.id, attempt.id, 'task.paused', { approvalId: pausedFor, ...(diff ? { diff } : {}) })
+          continue
+        }
         recordLoopEvent(attempt, implementer, reviewer, event)
         if (event.type === 'workspace') workspace = event.workspace
         if (event.type === 'result') {
@@ -3853,13 +3868,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   /**
    * Joy's Tool Hub for the implementer turns of a review loop, compete contestant or merge: one per attempt, made
-   * when its worktree exists, closed when the run ends. Without it a Claude Code implementer has no
+   * right before its first implementer turn (a run that only plans gets none), closed when the run ends. Without it a Claude Code implementer has no
    * `--permission-prompt-tool`, so the CLI denies every permission prompt by itself and Joy's policy is never asked
    * (even `pnpm check`). A Codex implementer's approval requests reach the policy only during its own implementing
    * and fixing turns: plans and reviews run in the same worktree and keep having every request declined.
    */
   function implementerToolHubs(task: StoredTask, repo: RepoRecord, config: JoyConfig, signal: AbortSignal) {
     const hubs = new Map<AttemptId, { hub: ReturnType<typeof createRunToolHub>; approvalKey: string }>()
+    let closed = false
     const turnEnded = (attemptId: AttemptId) => {
       const entry = hubs.get(attemptId)
       if (entry && codexApprovalHandlers.get(entry.approvalKey) === entry.hub.codexApproval)
@@ -3869,10 +3885,15 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       tools(attempt: AttemptRecord, model: ModelRef, workspace: Workspace): ImplementerTools {
         const provider = providers[model.provider]
         if (provider?.kind !== 'claude-cli' && provider?.kind !== 'codex-cli') return {}
+        // Never hand out a hub after the run's cleanup: the agent would run with no way to ask for approval.
+        if (closed) throw new Error('This run has ended; its Joy Tool Hub is closed')
         turnEnded(attempt.id)
         hubs.get(attempt.id)?.hub.close()
         const hub = createRunToolHub(task, repo, attempt, model, workspace, config, signal)
-        hubs.set(attempt.id, { hub, approvalKey: resolve(workspace.path) })
+        const approvalKey = resolve(workspace.path)
+        hubs.set(attempt.id, { hub, approvalKey })
+        // Asked for right before an implementer turn starts, after that turn's phase event.
+        codexApprovalHandlers.set(approvalKey, hub.codexApproval)
         return {
           mcpServers: [hub.server],
           ...(provider.capabilities.delegatedApproval ? { approvalTool: TOOL_HUB_APPROVAL_TOOL_NAME } : {}),
@@ -3887,6 +3908,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       },
       turnEnded,
       close() {
+        closed = true
         for (const [attemptId, entry] of hubs) {
           turnEnded(attemptId)
           entry.hub.close()
@@ -4033,6 +4055,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         if (
           status === 'expired' &&
           config.approvals.on_timeout === 'pause' &&
+          // Only these modes resume one session after a late approval; in compete, stopping would end every
+          // contestant's run, so a timeout there is a denial.
+          (task.mode === 'single' || task.mode === 'review_loop') &&
           getApproval(db, approvalId)?.decidedVia === 'timeout'
         ) {
           // Nobody answered: stop the run instead of letting the agent work around the refusal.

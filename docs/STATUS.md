@@ -22,6 +22,11 @@
   - `packages/server/src/approval-surface.test.ts`：single、review loop（實作＋修正＋follow-up 都帶 approval tool，審查者沒有）、compete 與合併版。另一個測試用真的 `ClaudeCliProvider`＋假 CLI（`fake-cli.mjs` 新增 `FAKE_MODE=permission`：照 `--mcp-config` 啟動 Joy 的 stdio MCP bridge，用 JSON-RPC 呼叫 `approve`，跟 CLI 一樣傳 `{tool_name,input,tool_use_id}`）跑 review loop：`pnpm check` 由 policy 自動放行、`curl …` 進核准中心後擁有者核准才放行、`rm -rf ../elsewhere` 擁有者拒絕。在舊的 `server.ts` 上這三個測試都失敗，假 CLI 也產生和擁有者一樣的「no approval surface」拒絕。
   - `server.test.ts`：review loop 的 Codex app-server 實作者，安全指令 accept、worktree 外寫入 decline（舊程式碼是兩個都 decline）。
   - orchestrator：只有實作回合拿到工具（計畫與審查沒有）；compete 每位參賽者拿到自己的。providers：stream-json 輸入時仍帶 `--permission-prompt-tool`。
+- **審查後修正（M1、N1、N2）**：
+  - M1：`approvals.on_timeout: pause`（預設）下，review loop 的紅色動作逾時後，任務原本直接變 `cancelled`，補核准回 409。現在比照 single：attempt 設 `cancelled`、任務設 `awaiting_approval`、發 `task.paused {approvalId, diff}`；補核准後用同一個 session 接續，新 hub 的 `approvalGrants` 放行那一次。compete 與合併版的逾時當作拒絕（不設 `pausedFor`），避免一位參賽者逾時就中止整個 compete；這時補核准回 409。
+  - N1：`implementerToolHubs` 關閉後再要 hub 會丟錯，不會在沒有核准管道的情況下繼續跑。
+  - N2：hub 延到第一次實作回合前才建立，只有計畫的 run（plan first）不建。Codex 處理器在建立時就掛上（這時已在實作回合）。
+  - 測試（`approval-surface.test.ts`）：pause 下 review loop 進 `awaiting_approval`＋`task.paused`，補核准 200 並在同一 session 接續、放行該動作；compete 逾時當拒絕、兩位參賽者都跑完並由裁判比較、沒有 `task.paused`。兩個測試在 341d700 的 `server.ts` 上都失敗。
 - **沒驗證到**：真的 Claude Code CLI 在 review loop 中的 permission prompt 往返（假 CLI 是依 spike 文件寫的合成行為，不是錄下來的）。擁有者下次用 haiku 跑 review_loop 任務、讓它執行 `pnpm check`，應該看到 `policy.action`（run_in_worktree、auto），不再出現「no approval surface」。
 
 ### 附件：輸入框附加檔案、貼上圖片（2026-11-14，分支 `attachments`）
