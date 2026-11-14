@@ -173,7 +173,13 @@ import {
 } from '@joy/executor'
 import type { RunCommandResult, RunInWorktreeInput } from '@joy/executor'
 import type { Executor, WorkspaceDiff } from '@joy/core'
-import type { ChecksResult, ContestantOutcome, Judgement, LoopEvent } from '@joy/orchestrator'
+import type {
+  ChecksResult,
+  ContestantOutcome,
+  ImplementerTools,
+  Judgement,
+  LoopEvent,
+} from '@joy/orchestrator'
 import type { Workflow } from '@joy/orchestrator'
 import {
   BUILT_IN_WORKFLOWS,
@@ -3446,59 +3452,76 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       [other.id, { attempt: other, implementer: second, reviewer: implementer }],
     ])
     let finished = false
-    for await (const event of compete(
-      {
-        taskId: task.id,
-        repo,
-        prompt: agentPrompt(task),
-        contestants: [...contestants.values()].map((c) => ({
-          attemptId: c.attempt.id,
-          implementer: c.implementer,
-          reviewer: c.reviewer,
-        })),
-        judge,
-        signal: controller.signal,
-      },
-      { providers, executor },
-    )) {
-      if (event.type === 'contestant') {
-        const contestant = contestants.get(event.attemptId)
-        if (!contestant) continue
-        recordLoopEvent(contestant.attempt, contestant.implementer, contestant.reviewer, event.event)
-        // A contestant's own result is not the task's result: the task waits for the judge and the owner.
-        const type = event.event.type === 'result' ? 'compete.result' : event.event.type
-        publish(task.id, event.attemptId, type, event.event)
-      } else if (event.type === 'judging') {
-        publishTaskLevel(task.id, 'compete.judging', { model: event.model })
-      } else if (event.type === 'judge_agent') {
-        persistUsageEvent(db, judge.provider, event.event)
-      } else if (event.type === 'judgement') {
-        publishTaskLevel(task.id, 'compete.judgement', {
-          judgement: event.judgement,
-          outcomes: event.outcomes.map(({ diff, ...outcome }) => ({
-            ...outcome,
-            ...(diff ? { files: diff.files } : {}),
+    const config = await configStore.get()
+    const hubs = implementerToolHubs(task, repo, config, controller.signal)
+    try {
+      for await (const event of compete(
+        {
+          taskId: task.id,
+          repo,
+          prompt: agentPrompt(task),
+          contestants: [...contestants.values()].map((c) => ({
+            attemptId: c.attempt.id,
+            implementer: c.implementer,
+            reviewer: c.reviewer,
           })),
-        })
-      } else if (event.type === 'result') {
-        finished = true
-        if (event.status === 'succeeded') {
-          finishCompetePhase(
-            task,
-            first,
-            'Compare the attempts and choose one, or ask the judge to merge them.',
+          judge,
+          signal: controller.signal,
+          implementerTools: (c, ws) => {
+            const contestant = contestants.get(c.attemptId)
+            return contestant ? hubs.tools(contestant.attempt, contestant.implementer, ws) : {}
+          },
+        },
+        { providers, executor },
+      )) {
+        if (event.type === 'contestant') {
+          const contestant = contestants.get(event.attemptId)
+          if (!contestant) continue
+          if (event.event.type === 'phase') hubs.phase(event.attemptId, event.event)
+          if (
+            event.event.type === 'agent' &&
+            event.event.role === 'implementer' &&
+            event.event.event.type === 'done'
           )
-        } else {
-          setTaskStatus(db, task.id, event.status)
-          publish(task.id, first.id, 'result', {
-            type: 'result',
-            status: event.status,
-            approved: false,
-            rounds: 1,
-            ...(event.reason ? { reason: event.reason } : {}),
+            hubs.turnEnded(event.attemptId)
+          recordLoopEvent(contestant.attempt, contestant.implementer, contestant.reviewer, event.event)
+          // A contestant's own result is not the task's result: the task waits for the judge and the owner.
+          const type = event.event.type === 'result' ? 'compete.result' : event.event.type
+          publish(task.id, event.attemptId, type, event.event)
+        } else if (event.type === 'judging') {
+          publishTaskLevel(task.id, 'compete.judging', { model: event.model })
+        } else if (event.type === 'judge_agent') {
+          persistUsageEvent(db, judge.provider, event.event)
+        } else if (event.type === 'judgement') {
+          publishTaskLevel(task.id, 'compete.judgement', {
+            judgement: event.judgement,
+            outcomes: event.outcomes.map(({ diff, ...outcome }) => ({
+              ...outcome,
+              ...(diff ? { files: diff.files } : {}),
+            })),
           })
+        } else if (event.type === 'result') {
+          finished = true
+          if (event.status === 'succeeded') {
+            finishCompetePhase(
+              task,
+              first,
+              'Compare the attempts and choose one, or ask the judge to merge them.',
+            )
+          } else {
+            setTaskStatus(db, task.id, event.status)
+            publish(task.id, first.id, 'result', {
+              type: 'result',
+              status: event.status,
+              approved: false,
+              rounds: 1,
+              ...(event.reason ? { reason: event.reason } : {}),
+            })
+          }
         }
       }
+    } finally {
+      hubs.close()
     }
     if (!finished) throw new Error('Compete stopped without a result')
   }
@@ -3623,23 +3646,33 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     controller: AbortController,
   ): Promise<void> {
     let result: Extract<LoopEvent, { type: 'result' }> | undefined
-    for await (const event of reviewLoop(
-      {
-        taskId: task.id,
-        attemptId: attempt.id,
-        repo,
-        prompt: mergePrompt(agentPrompt(task), outcomes, judgement),
-        implementer: judge,
-        reviewer,
-        planFirst: false,
-        maxRounds: 1,
-        signal: controller.signal,
-      },
-      { providers, executor },
-    )) {
-      recordLoopEvent(attempt, judge, reviewer, event)
-      if (event.type === 'result') result = event
-      publish(task.id, attempt.id, event.type === 'result' ? 'compete.result' : event.type, event)
+    const config = await configStore.get()
+    const hubs = implementerToolHubs(task, repo, config, controller.signal)
+    try {
+      for await (const event of reviewLoop(
+        {
+          taskId: task.id,
+          attemptId: attempt.id,
+          repo,
+          prompt: mergePrompt(agentPrompt(task), outcomes, judgement),
+          implementer: judge,
+          reviewer,
+          planFirst: false,
+          maxRounds: 1,
+          signal: controller.signal,
+          implementerTools: (ws) => hubs.tools(attempt, judge, ws),
+        },
+        { providers, executor },
+      )) {
+        if (event.type === 'phase') hubs.phase(attempt.id, event)
+        if (event.type === 'agent' && event.role === 'implementer' && event.event.type === 'done')
+          hubs.turnEnded(attempt.id)
+        recordLoopEvent(attempt, judge, reviewer, event)
+        if (event.type === 'result') result = event
+        publish(task.id, attempt.id, event.type === 'result' ? 'compete.result' : event.type, event)
+      }
+    } finally {
+      hubs.close()
     }
     publishTaskLevel(task.id, 'compete.merged', {
       attemptId: attempt.id,
@@ -3718,94 +3751,149 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     // had left (the interrupted round itself is done again and still counts once).
     const maxRounds = resume?.interrupted?.maxRounds ?? task.maxRounds
     let implementerRound = 0
-    for await (const event of reviewLoop(
-      {
-        taskId: task.id,
-        attemptId: attempt.id,
-        repo,
-        prompt: brief,
-        implementer,
-        reviewer,
-        planFirst: planning,
-        maxRounds,
-        signal: controller.signal,
-        firstRound,
-        takeMessages: () => takeQueuedMessages(task.id, 'next_turn'),
-        onSteer: steerHook(task.id),
-        // Re-read before each review: a message steered to the implementer during this run belongs in it.
-        reviewBrief: () => taskBrief(task),
-        runChecks: (ws, round) => runProjectChecks(task, repo, attempt, ws, round, controller.signal),
-        ...(resume ? { resumeWorkspace: resume.workspace, resumeSessionId: resume.sessionId } : {}),
-        ...(resume && planning ? { replanPrompt: resume.prompt ?? planPrompt(brief) } : {}),
-        ...(resume?.prompt && !planning ? { resumePrompt: resume.prompt } : {}),
-      },
-      { providers, executor },
-    )) {
-      // Only the implementer's turns can be interrupted; reviews, checks and setup let the message wait.
-      if (event.type === 'phase') {
-        const implementing = IMPLEMENTER_PHASES.has(event.phase) && event.role === 'implementer'
-        if (implementing) {
-          implementerRound = event.round
-          deliverInterruptMessages(task.id, resume, controller.signal)
+    const config = await configStore.get()
+    const hubs = implementerToolHubs(task, repo, config, controller.signal)
+    try {
+      for await (const event of reviewLoop(
+        {
+          taskId: task.id,
+          attemptId: attempt.id,
+          repo,
+          prompt: brief,
+          implementer,
+          reviewer,
+          planFirst: planning,
+          maxRounds,
+          signal: controller.signal,
+          firstRound,
+          takeMessages: () => takeQueuedMessages(task.id, 'next_turn'),
+          onSteer: steerHook(task.id),
+          // Re-read before each review: a message steered to the implementer during this run belongs in it.
+          reviewBrief: () => taskBrief(task),
+          implementerTools: (ws) => hubs.tools(attempt, implementer, ws),
+          runChecks: (ws, round) => runProjectChecks(task, repo, attempt, ws, round, controller.signal),
+          ...(resume ? { resumeWorkspace: resume.workspace, resumeSessionId: resume.sessionId } : {}),
+          ...(resume && planning ? { replanPrompt: resume.prompt ?? planPrompt(brief) } : {}),
+          ...(resume?.prompt && !planning ? { resumePrompt: resume.prompt } : {}),
+        },
+        { providers, executor },
+      )) {
+        // Only the implementer's turns can be interrupted; reviews, checks and setup let the message wait.
+        if (event.type === 'phase') {
+          const implementing = IMPLEMENTER_PHASES.has(event.phase) && event.role === 'implementer'
+          if (implementing) {
+            implementerRound = event.round
+            deliverInterruptMessages(task.id, resume, controller.signal)
+          }
+          setImplementerTurn(task.id, implementing)
+          hubs.phase(attempt.id, event)
         }
-        setImplementerTurn(task.id, implementing)
-      }
-      if (event.type === 'agent' && event.role === 'implementer' && event.event.type === 'done')
-        setImplementerTurn(task.id, false)
-      if (
-        event.type === 'result' &&
-        event.status === 'cancelled' &&
-        interruptPending(task.id) &&
-        finishInterruptedRun(
-          task,
-          attempt.id,
-          // Planning (round 0) uses no review rounds.
-          implementerRound >= firstRound
-            ? Math.max(1, maxRounds - (implementerRound - firstRound))
-            : maxRounds,
+        if (event.type === 'agent' && event.role === 'implementer' && event.event.type === 'done') {
+          setImplementerTurn(task.id, false)
+          hubs.turnEnded(attempt.id)
+        }
+        if (
+          event.type === 'result' &&
+          event.status === 'cancelled' &&
+          interruptPending(task.id) &&
+          finishInterruptedRun(
+            task,
+            attempt.id,
+            // Planning (round 0) uses no review rounds.
+            implementerRound >= firstRound
+              ? Math.max(1, maxRounds - (implementerRound - firstRound))
+              : maxRounds,
+          )
+        ) {
+          finished = true
+          continue
+        }
+        recordLoopEvent(attempt, implementer, reviewer, event)
+        if (event.type === 'workspace') workspace = event.workspace
+        if (event.type === 'result') {
+          setImplementerTurn(task.id, false)
+          finished = true
+          const taskStatus: TaskStatus =
+            event.status === 'cancelled'
+              ? 'cancelled'
+              : event.status === 'failed'
+                ? 'failed'
+                : event.approved
+                  ? 'done'
+                  : 'review_ready'
+          setTaskStatus(db, task.id, taskStatus)
+          if (event.awaitingPlanApproval)
+            publish(task.id, attempt.id, 'plan.awaiting_approval', {
+              plan: event.plan ?? '',
+              ...(event.planReview ? { review: event.planReview } : {}),
+            })
+        }
+        publish(task.id, attempt.id, event.type, event)
+        if (
+          workspace &&
+          event.type === 'agent' &&
+          event.role === 'implementer' &&
+          event.round >= 1 &&
+          event.event.type === 'done' &&
+          !event.event.isError
         )
-      ) {
-        finished = true
-        continue
+          await createCheckpoint(
+            task,
+            attempt,
+            workspace,
+            event.round,
+            `implementer turn, round ${event.round}`,
+          )
       }
-      recordLoopEvent(attempt, implementer, reviewer, event)
-      if (event.type === 'workspace') workspace = event.workspace
-      if (event.type === 'result') {
-        setImplementerTurn(task.id, false)
-        finished = true
-        const taskStatus: TaskStatus =
-          event.status === 'cancelled'
-            ? 'cancelled'
-            : event.status === 'failed'
-              ? 'failed'
-              : event.approved
-                ? 'done'
-                : 'review_ready'
-        setTaskStatus(db, task.id, taskStatus)
-        if (event.awaitingPlanApproval)
-          publish(task.id, attempt.id, 'plan.awaiting_approval', {
-            plan: event.plan ?? '',
-            ...(event.planReview ? { review: event.planReview } : {}),
-          })
-      }
-      publish(task.id, attempt.id, event.type, event)
-      if (
-        workspace &&
-        event.type === 'agent' &&
-        event.role === 'implementer' &&
-        event.round >= 1 &&
-        event.event.type === 'done' &&
-        !event.event.isError
-      )
-        await createCheckpoint(
-          task,
-          attempt,
-          workspace,
-          event.round,
-          `implementer turn, round ${event.round}`,
-        )
+    } finally {
+      hubs.close()
     }
     if (!finished) throw new Error('Review loop stopped without a result')
+  }
+
+  /**
+   * Joy's Tool Hub for the implementer turns of a review loop, compete contestant or merge: one per attempt, made
+   * when its worktree exists, closed when the run ends. Without it a Claude Code implementer has no
+   * `--permission-prompt-tool`, so the CLI denies every permission prompt by itself and Joy's policy is never asked
+   * (even `pnpm check`). A Codex implementer's approval requests reach the policy only during its own implementing
+   * and fixing turns: plans and reviews run in the same worktree and keep having every request declined.
+   */
+  function implementerToolHubs(task: StoredTask, repo: RepoRecord, config: JoyConfig, signal: AbortSignal) {
+    const hubs = new Map<AttemptId, { hub: ReturnType<typeof createRunToolHub>; approvalKey: string }>()
+    const turnEnded = (attemptId: AttemptId) => {
+      const entry = hubs.get(attemptId)
+      if (entry && codexApprovalHandlers.get(entry.approvalKey) === entry.hub.codexApproval)
+        codexApprovalHandlers.delete(entry.approvalKey)
+    }
+    return {
+      tools(attempt: AttemptRecord, model: ModelRef, workspace: Workspace): ImplementerTools {
+        const provider = providers[model.provider]
+        if (provider?.kind !== 'claude-cli' && provider?.kind !== 'codex-cli') return {}
+        turnEnded(attempt.id)
+        hubs.get(attempt.id)?.hub.close()
+        const hub = createRunToolHub(task, repo, attempt, model, workspace, config, signal)
+        hubs.set(attempt.id, { hub, approvalKey: resolve(workspace.path) })
+        return {
+          mcpServers: [hub.server],
+          ...(provider.capabilities.delegatedApproval ? { approvalTool: TOOL_HUB_APPROVAL_TOOL_NAME } : {}),
+        }
+      },
+      phase(attemptId: AttemptId, event: Extract<LoopEvent, { type: 'phase' }>) {
+        const entry = hubs.get(attemptId)
+        if (!entry) return
+        if (event.role === 'implementer' && (event.phase === 'implementing' || event.phase === 'fixing'))
+          codexApprovalHandlers.set(entry.approvalKey, entry.hub.codexApproval)
+        else turnEnded(attemptId)
+      },
+      turnEnded,
+      close() {
+        for (const [attemptId, entry] of hubs) {
+          turnEnded(attemptId)
+          entry.hub.close()
+        }
+        hubs.clear()
+      },
+    }
   }
 
   function createRunToolHub(

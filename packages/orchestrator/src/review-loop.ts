@@ -61,9 +61,12 @@ export interface ReviewLoopInput {
   planFirst: boolean
   maxRounds: number
   signal: AbortSignal
-  /** Joy's Tool Hub and approval tool, passed to every agent run. */
-  mcpServers?: McpServerConfig[]
-  approvalTool?: string
+  /**
+   * Joy's Tool Hub and approval tool for the implementer's code-writing turns (implementing and fixing), made once
+   * the worktree exists. Without an approval tool a Claude Code run denies every permission prompt by itself, so
+   * Joy's policy never sees a command like `pnpm check`. Plans and reviews are read-only and do not get it.
+   */
+  implementerTools?: (ws: Workspace) => ImplementerTools
   /** Reuse a persisted worktree and resume the implementer's last CLI session after server restart. */
   resumeWorkspace?: Workspace
   resumeSessionId?: string
@@ -84,6 +87,11 @@ export interface ReviewLoopInput {
   onSteer?: RunOptions['onSteer']
   /** The project's checks, run after each implementer turn and before each review. undefined = not run. */
   runChecks?: (ws: Workspace, round: number) => Promise<ChecksResult | undefined>
+}
+
+export interface ImplementerTools {
+  mcpServers?: McpServerConfig[]
+  approvalTool?: string
 }
 
 export interface ReviewLoopDeps {
@@ -127,10 +135,13 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
       prompt: '',
       autonomy: 'workspace-write',
       signal: input.signal,
-      ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
-      ...(input.approvalTool ? { approvalTool: input.approvalTool } : {}),
       ...over,
     })
+    const tools = input.implementerTools?.(ws)
+    const implementerTools: Partial<RunOptions> = {
+      ...(tools?.mcpServers?.length ? { mcpServers: tools.mcpServers } : {}),
+      ...(tools?.approvalTool ? { approvalTool: tools.approvalTool } : {}),
+    }
 
     // Optional plan, reviewed before any code is written. The run then stops: the owner approves the plan first.
     let session: string | undefined = input.resumeSessionId
@@ -194,6 +205,7 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
           session && input.resumePrompt ? input.resumePrompt : implementPrompt(input.prompt),
           take(),
         ),
+        ...implementerTools,
         ...steering,
         ...(session ? { resumeSessionId: session } : presetSession(implementer)),
       }),
@@ -253,6 +265,7 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
         rounds + 1,
         base({
           prompt: withOwnerMessages(fixPrompt(verdict, checks), take()),
+          ...implementerTools,
           ...steering,
           ...(session && implementer.capabilities.resume ? { resumeSessionId: session } : {}),
         }),

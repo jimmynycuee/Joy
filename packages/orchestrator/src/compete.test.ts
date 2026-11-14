@@ -94,7 +94,11 @@ const repo = { id: 'r' as RepoId, path: '/repo', defaultBranch: 'main' }
 const a = 'a1' as AttemptId
 const b = 'a2' as AttemptId
 
-async function run(deps: Parameters<typeof compete>[1], signal = new AbortController().signal) {
+async function run(
+  deps: Parameters<typeof compete>[1],
+  signal = new AbortController().signal,
+  extra: Partial<Parameters<typeof compete>[0]> = {},
+) {
   const events: CompeteEvent[] = []
   for await (const event of compete(
     {
@@ -107,6 +111,7 @@ async function run(deps: Parameters<typeof compete>[1], signal = new AbortContro
       ],
       judge,
       signal,
+      ...extra,
     },
     deps,
   ))
@@ -115,6 +120,40 @@ async function run(deps: Parameters<typeof compete>[1], signal = new AbortContro
 }
 
 describe('compete', () => {
+  it("gives each contestant's implementer turns its own approval tool, never the reviews or the judge", async () => {
+    const claudeProvider = new RoutingProvider('claude-cli', {})
+    const codexProvider = new RoutingProvider('codex-cli', {})
+    const judgeProvider = new RoutingProvider('openai-api', {
+      judge: { winner: 'A', reasons: 'r', attempts: [], merge_recommended: false },
+    })
+    const asked: string[] = []
+    await run(
+      {
+        providers: { 'claude-cli': claudeProvider, 'codex-cli': codexProvider, 'openai-api': judgeProvider },
+        executor: new PerAttemptExecutor({ [a]: change('+a'), [b]: change('+b') }),
+      },
+      new AbortController().signal,
+      {
+        implementerTools: (contestant, ws) => {
+          asked.push(`${contestant.attemptId}:${ws.path}`)
+          return { approvalTool: `approve-${contestant.attemptId}` }
+        },
+      },
+    )
+    expect(asked.sort()).toEqual([`${a}:/wt/${a}`, `${b}:/wt/${b}`])
+    const tools = (p: RoutingProvider) =>
+      p.calls.map((call) => [call.outputSchema ? 'schema' : call.autonomy, call.approvalTool])
+    expect(tools(claudeProvider).sort()).toEqual([
+      ['schema', undefined],
+      ['workspace-write', `approve-${a}`],
+    ])
+    expect(tools(codexProvider).sort()).toEqual([
+      ['schema', undefined],
+      ['workspace-write', `approve-${b}`],
+    ])
+    expect(judgeProvider.calls.every((call) => call.approvalTool === undefined)).toBe(true)
+  })
+
   it('runs both attempts in parallel with a cross review each, then the judge compares them', async () => {
     // Each implementer waits until both have started: run one after the other and this never finishes.
     let started = 0
