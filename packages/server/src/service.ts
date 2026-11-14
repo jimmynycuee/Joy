@@ -349,6 +349,17 @@ const NODE_MAJOR = 22
 const NODE_MIN_MINOR = 13
 
 /** Joy is built and tested on Node 22 (`.nvmrc`); 22.13 is the first with a usable node:sqlite. */
+/**
+ * Homebrew runs Node from a versioned Cellar folder (`/opt/homebrew/Cellar/node@22/22.23.5/bin/node`) that
+ * `brew upgrade` deletes; its `opt` link (`/opt/homebrew/opt/node@22/bin/node`) survives upgrades.
+ */
+export function stableHomebrewPath(nodePath: string, deps: Pick<NodeSearchDeps, 'exists'>): string {
+  const match = /^(.*)\/Cellar\/([^/]+)\/[^/]+\/bin\/node$/.exec(nodePath)
+  if (!match) return nodePath
+  const stable = `${match[1]}/opt/${match[2]}/bin/node`
+  return deps.exists(stable) ? stable : nodePath
+}
+
 export function isSupportedNodeVersion(version: string): boolean {
   const match = /^v?(\d+)\.(\d+)\./.exec(version.trim())
   return !!match && Number(match[1]) === NODE_MAJOR && Number(match[2]) >= NODE_MIN_MINOR
@@ -440,7 +451,11 @@ export async function findServiceNode(input: NodeSearchInput, deps: NodeSearchDe
     return { path: input.explicit, version: version.trim(), source: '--node 參數' }
   }
   if (!isTemporaryNodePath(input.execPath) && isSupportedNodeVersion(input.execVersion))
-    return { path: input.execPath, version: input.execVersion, source: '目前執行的 Node' }
+    return {
+      path: stableHomebrewPath(input.execPath, deps),
+      version: input.execVersion,
+      source: '目前執行的 Node',
+    }
 
   const candidates: Array<{ path: string; source: string }> = []
   const add = (candidate: string, source: string) => candidates.push({ path: candidate, source })
@@ -528,6 +543,12 @@ export interface ServiceDeps extends NodeSearchDeps {
   /** Whether a Joy already answers on this port. */
   health(port: number): Promise<boolean>
   uiState(repoRoot: string): UiBuildState
+  /**
+   * Loads Joy's native modules with the service's Node; returns why that failed, or undefined when it works. A
+   * `pnpm install` run under another Node (for example an x64 one from npx on an arm64 Mac) leaves only that
+   * architecture's binding, and the service would crash on every start.
+   */
+  nativeCheck(nodePath: string, repoRoot: string): Promise<string | undefined>
   out(line: string): void
 }
 
@@ -593,6 +614,20 @@ async function install(options: ServiceOptions, deps: ServiceDeps): Promise<numb
   )
   if (!deps.exists(p.join(options.repoRoot, 'node_modules', 'tsx')))
     throw new ServiceError(`在 ${options.repoRoot} 找不到 node_modules；先在 Joy 資料夾執行 pnpm install。`)
+  const nativeProblem = await deps.nativeCheck(node.path, options.repoRoot)
+  if (nativeProblem) {
+    const fix = [
+      `這個 Node（${node.path}）載入不了 Joy 的原生模組，服務會一啟動就失敗：`,
+      `  ${nativeProblem}`,
+      '通常是 pnpm install 用了別的 Node（例如架構不同）。請用這個 Node 在 Joy 資料夾重跑 pnpm install，再重新安裝服務：',
+      options.platform === 'win32'
+        ? `  在 PATH 最前面加上 ${p.dirname(node.path)}，再執行 npx -y pnpm@10.28.0 install`
+        : `  PATH=${p.dirname(node.path)}:$PATH npx -y pnpm@10.28.0 install`,
+    ].join('\n')
+    if (!options.dryRun) throw new ServiceError(fix)
+    deps.out(fix)
+    deps.out('')
+  }
   const plan = planService(planInput(options, node.path))
   deps.out(`Joy 背景服務：${plan.manager}`)
   deps.out(`Node：${node.path}（${node.version}，來源：${node.source}）`)
@@ -767,6 +802,18 @@ export function realServiceDeps(out: (line: string) => void, uiState: ServiceDep
       }
     },
     uiState,
+    nativeCheck: async (nodePath, repoRoot) => {
+      // Resolved from the package that depends on it, the way the server loads it.
+      const script =
+        "const m=require('node:module');const r=m.createRequire(process.argv[1]);r(r.resolve('@napi-rs/keyring'))"
+      const from = path.join(repoRoot, 'packages', 'secrets', 'package.json')
+      const result = await runWithoutShell(nodePath, ['-e', script, from])
+      if (result.status === 0) return undefined
+      const reason = (result.error?.message ?? result.stderr)
+        .split('\n')
+        .find((line) => /Cannot find|Error/.test(line))
+      return (reason ?? `結束碼 ${String(result.status)}`).trim()
+    },
     out,
   }
 }
