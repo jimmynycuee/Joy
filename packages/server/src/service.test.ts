@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   findServiceNode,
   isSupportedNodeVersion,
+  stableHomebrewPath,
   isTemporaryNodePath,
   planService,
   realServiceDeps,
@@ -428,6 +429,7 @@ function fakeDeps(
     results?: (command: string, args: string[], call: number) => Partial<RunResult>
     healthy?: boolean
     ui?: 'missing' | 'stale' | 'fresh'
+    native?: string
   } = {},
 ) {
   const files = new Map(Object.entries(options.files ?? {}))
@@ -453,6 +455,7 @@ function fakeDeps(
     sleep: async () => void sleeps++,
     health: async () => options.healthy ?? false,
     uiState: () => options.ui ?? 'fresh',
+    nativeCheck: async () => options.native,
     out: (line) => lines.push(line),
   }
   return { deps, files, calls, written, folders, lines, sleeps: () => sleeps }
@@ -476,6 +479,16 @@ const installedNode = {
   '/Users/me/Joy/node_modules/tsx': 'dir',
 }
 
+describe('stableHomebrewPath', () => {
+  it('prefers the opt link over the versioned Cellar folder when it exists', () => {
+    const cellar = '/opt/homebrew/Cellar/node@22/22.23.5/bin/node'
+    const stable = '/opt/homebrew/opt/node@22/bin/node'
+    expect(stableHomebrewPath(cellar, { exists: (target) => target === stable })).toBe(stable)
+    expect(stableHomebrewPath(cellar, { exists: () => false })).toBe(cellar)
+    expect(stableHomebrewPath('/usr/local/bin/node', { exists: () => true })).toBe('/usr/local/bin/node')
+  })
+})
+
 describe('service install, uninstall and status', () => {
   it('--dry-run prints the files and commands and changes nothing', async () => {
     const env = fakeDeps({ nodes: installedNode, ui: 'missing' })
@@ -490,6 +503,21 @@ describe('service install, uninstall and status', () => {
     expect(env.written).toEqual([])
     expect(env.calls).toEqual([])
     expect(env.folders).toEqual([])
+  })
+
+  it('stops when the service Node cannot load the native modules, and says how to fix it', async () => {
+    const problem = "Cannot find module '@napi-rs/keyring-darwin-arm64'"
+    const env = fakeDeps({ nodes: installedNode, native: problem })
+    expect(await runService('install', serviceOptions, env.deps)).toBe(1)
+    const output = env.lines.join('\n')
+    expect(output).toContain(problem)
+    expect(output).toContain('PATH=/opt/n22/bin:$PATH npx -y pnpm@10.28.0 install')
+    expect(env.written).toEqual([])
+    expect(env.calls).toEqual([])
+
+    const dry = fakeDeps({ nodes: installedNode, native: problem })
+    expect(await runService('install', { ...serviceOptions, dryRun: true }, dry.deps)).toBe(0)
+    expect(dry.lines.join('\n')).toContain(problem)
   })
 
   it('writes the file, then runs the commands in order', async () => {
@@ -652,6 +680,7 @@ describe('service install with the real file system and a fake runner', () => {
       },
       version: async () => 'v22.14.0',
       health: async () => false,
+      nativeCheck: async () => undefined,
     }
     const options: ServiceOptions = {
       platform,
