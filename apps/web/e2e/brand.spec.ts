@@ -78,11 +78,10 @@ test('the sidebar shows who is thinking, who waits for you, and which task is op
   const sidebar = page.getByRole('navigation', { name: '主選單' })
   const row = (title: string) => sidebar.locator('.task-row', { hasText: title })
 
-  // Running: the thinking character instead of a spinner; its ball circles.
-  const thinking = row('Running task').locator('svg.mascot')
-  await expect(thinking).toHaveAttribute('data-mood', 'thinking')
+  // Running: a small dot, not a spinner and not the thinking character.
+  await expect(row('Running task').locator('.task-flag')).toHaveAttribute('aria-label', '進行中')
   await expect(sidebar.locator('.task-spinner')).toHaveCount(0)
-  await expect(thinking.locator('.mascot-orbit')).toHaveCSS('animation-name', 'mascot-orbit')
+  await expect(sidebar.locator('svg.mascot')).toHaveCount(0)
 
   // Waiting for the owner: a teal dot on the right and the label under the title.
   await expect(row('Waiting task').locator('.task-flag')).toBeVisible()
@@ -91,21 +90,21 @@ test('the sidebar shows who is thinking, who waits for you, and which task is op
   await expect(row('Failed task').locator('.task-flag-failed')).toBeVisible()
   await expect(row('Done task').locator('.task-flag')).toHaveCount(0)
 
-  // The open task: a 2px teal line on the left, background stays grey (not teal).
+  // The open task is told by its text (weight 500), not by a teal line or a filled block.
   const open = sidebar.locator('.nav-row-wrap.selected')
   await expect(open).toHaveCount(1)
   await expect(open).toContainText('Waiting task')
-  await expect(open).toHaveCSS('box-shadow', /rgb\(14, 156, 145\) 2px 0px 0px 0px inset/)
-  const background = await open.evaluate((element) => getComputedStyle(element).backgroundColor)
-  expect(background).not.toBe(rgb('#0E9C91'))
+  await expect(open).toHaveCSS('box-shadow', 'none')
+  await expect(open).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+  await expect(open.locator('.task-title')).toHaveCSS('font-weight', '500')
 })
 
 test('reduced motion stops the thinking character from circling', async ({ browser }) => {
   const context = await browser.newContext({ reducedMotion: 'reduce' })
   const page = await context.newPage()
   await mock(page)
-  await page.goto('/')
-  const orbit = page.getByRole('navigation', { name: '主選單' }).locator('.mascot-orbit').first()
+  await page.goto('/?task=t-run')
+  const orbit = page.locator('.running-indicator .mascot-orbit').first()
   await expect(orbit).toHaveCSS('animation-name', 'none')
   await context.close()
 })
@@ -117,8 +116,6 @@ test('a task page shows the character for the state it is in', async ({ page }) 
 
   await page.goto('/?task=t-done')
   await expect(page.getByTestId('task-done').locator('svg.mascot')).toHaveAttribute('data-mood', 'happy')
-  // The dot beside the title is the project's colour (website picked 灰橘).
-  await expect(page.locator('.thread-title-line .project-dot')).toHaveCSS('background-color', rgb('#C39A74'))
 
   await page.goto('/?task=t-fail')
   await expect(page.getByLabel('任務失敗').locator('svg.mascot')).toHaveAttribute('data-mood', 'error')

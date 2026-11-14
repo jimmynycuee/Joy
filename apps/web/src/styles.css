@@ -74,6 +74,7 @@
   --amber-soft: #fff6db;
   --violet: #6b46c1;
   --violet-soft: #f1ecfb;
+  --row-hover: rgb(0 0 0 / 0.04);
   --scrim: rgb(20 20 19 / 0.4);
   --shadow: 0 8px 30px rgb(0 0 0 / 0.12);
   --menu-surface: #ffffff;
@@ -107,6 +108,7 @@
     --amber-soft: #352b16;
     --violet: #b9a2f0;
     --violet-soft: #2b2340;
+    --row-hover: rgb(255 255 255 / 0.05);
     --scrim: rgb(0 0 0 / 0.55);
     --shadow: 0 8px 30px rgb(0 0 0 / 0.5);
     --menu-surface: #2d2d2b;
@@ -140,6 +142,7 @@
   --amber-soft: #352b16;
   --violet: #b9a2f0;
   --violet-soft: #2b2340;
+  --row-hover: rgb(255 255 255 / 0.05);
   --scrim: rgb(0 0 0 / 0.55);
   --shadow: 0 8px 30px rgb(0 0 0 / 0.5);
   --menu-surface: #2d2d2b;
@@ -563,14 +566,15 @@ svg {
   border: 0;
   border-radius: var(--radius-md);
   background: transparent;
-  color: var(--text);
+  color: var(--muted);
   font-size: var(--fs-13);
 }
-.sidebar-action:hover,
-.sidebar-action.active {
-  background: var(--hover);
+.sidebar-action:hover {
+  background: var(--row-hover);
 }
+/* The page you are on is the brighter text and a heavier weight, not a filled block. */
 .sidebar-action.active {
+  color: var(--text);
   font-weight: var(--fw-medium);
 }
 .nav-item {
@@ -583,15 +587,15 @@ svg {
   border: 0;
   border-radius: var(--radius-md);
   background: transparent;
-  color: var(--text);
+  color: var(--muted);
   text-align: left;
   font-size: var(--fs-14);
 }
-.nav-item:hover,
-.nav-item.active {
-  background: var(--hover);
+.nav-item:hover {
+  background: var(--row-hover);
 }
 .nav-item.active {
+  color: var(--text);
   font-weight: var(--fw-medium);
 }
 .sidebar-scroll {
@@ -635,13 +639,8 @@ svg {
   position: relative;
   border-radius: var(--radius-md);
 }
-.nav-row-wrap:hover,
-.nav-row-wrap.selected {
-  background: var(--hover);
-}
-/* The open task or conversation: a thin teal line on the left, the grey background stays. */
-.nav-row-wrap.selected {
-  box-shadow: inset 2px 0 0 var(--accent);
+.nav-row-wrap:hover {
+  background: var(--row-hover);
 }
 .task-row {
   display: flex;
@@ -666,6 +665,15 @@ svg {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--muted);
+}
+/* The open task or conversation: brighter text and weight 500; hovering any row only tints it very lightly. */
+.nav-row-wrap.selected .task-title,
+.nav-row-wrap:hover .task-title {
+  color: var(--text);
+}
+.nav-row-wrap.selected .task-title {
+  font-weight: var(--fw-medium);
 }
 .task-meta {
   font-size: var(--fs-12);
@@ -748,8 +756,8 @@ svg {
   gap: 8px;
   padding: 8px 10px;
   margin-bottom: 4px;
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--amber-soft);
   color: var(--amber);
   font-size: var(--fs-12);
 }
@@ -772,8 +780,7 @@ svg {
   font-size: var(--fs-13);
 }
 .error-toast {
-  border-color: var(--red-border);
-  background: var(--red-soft);
+  background: var(--surface);
   color: var(--red);
 }
 .notice-toast {
@@ -828,8 +835,8 @@ svg {
 .notice-line {
   padding: 10px 14px;
   border-radius: var(--radius-md);
-  background: var(--amber-soft);
-  color: var(--amber);
+  background: var(--surface-muted);
+  color: var(--muted);
   font-size: var(--fs-13);
 }
 .env-managed {
@@ -924,8 +931,8 @@ svg {
   padding: 4px 14px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--amber-soft);
-  color: var(--amber);
+  background: var(--surface-muted);
+  color: var(--text);
   font-size: var(--fs-13);
 }
 .line-row {
@@ -981,9 +988,9 @@ svg {
   border-radius: var(--radius-xl);
   background: var(--surface);
 }
+/* Focus only darkens the outline, in the text colour: no accent, no glow. */
 .composer:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand-teal) 22%, transparent);
+  border-color: color-mix(in srgb, var(--text) 45%, transparent);
 }
 .composer textarea {
   display: block;
@@ -1044,43 +1051,10 @@ svg {
 }
 .thread-header {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-  padding: 12px 20px;
+  gap: 8px;
+  padding: 10px 20px;
   border-bottom: 1px solid var(--border);
-}
-.thread-heading {
-  flex: 1;
-  min-width: 200px;
-}
-.thread-heading h1 {
-  font-size: var(--fs-18);
-  overflow-wrap: anywhere;
-}
-.thread-sub {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 8px;
-  margin-top: 2px;
-  font-size: var(--fs-13);
-  color: var(--muted);
-}
-.meta-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 100%;
-  padding: 0 2px 0 8px;
-  border-radius: var(--radius-pill);
-  background: var(--surface-muted);
-  font-size: var(--fs-12);
-}
-.meta-chip code {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .thread-body {
   flex: 1;
@@ -1166,11 +1140,21 @@ svg {
 .timeline-phase {
   margin-top: 6px;
 }
-.phase-label {
-  padding: 2px 10px;
-  border-radius: var(--radius-pill);
-  background: var(--surface-muted);
+/* A hairline on both sides of the phase's name, in the faintest text colour. */
+.phase-divider {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 12px;
+  color: var(--faint);
   font-size: var(--fs-12);
+}
+.phase-divider::before,
+.phase-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
 }
 .agent-message .speaker {
   display: block;
@@ -1320,17 +1304,11 @@ svg {
   gap: 8px;
   margin-bottom: 4px;
 }
-.review-ok {
-  border-color: var(--green);
-}
-.review-ok .review-head {
-  color: var(--green);
-}
-.review-changes {
-  border-color: var(--violet);
-}
-.review-changes .review-head {
-  color: var(--violet);
+.review-result {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: var(--fw-medium);
 }
 .finding-list {
   display: flex;
@@ -1351,16 +1329,13 @@ svg {
   padding: 0 8px;
   border-radius: var(--radius-pill);
   background: var(--surface-muted);
+  color: var(--muted);
   font-size: var(--fs-12);
-  font-weight: var(--fw-medium);
 }
-.severity-blocker {
-  background: var(--red-soft);
-  color: var(--red);
-}
+.severity-blocker,
 .severity-major {
-  background: var(--amber-soft);
-  color: var(--amber);
+  color: var(--text);
+  font-weight: var(--fw-medium);
 }
 .finding-where {
   margin-left: 8px;
@@ -1383,12 +1358,55 @@ svg {
   align-self: flex-start;
   color: var(--muted);
 }
+/* The folded process of a finished task: one quiet line that opens on a click. */
+.process-fold {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.process-toggle {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 4px;
+  padding: 2px 6px 2px 2px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-13);
+}
+.process-toggle:hover {
+  color: var(--text);
+}
+.process-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+/* Files and lines changed, under a finished task; opens the changes pane. */
+.change-summary {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 8px;
+  padding: 4px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-13);
+}
+.change-summary:hover {
+  color: var(--text);
+}
 .approvals-card h2 {
   font-size: var(--fs-15);
 }
+/* Waiting on the owner: the same thin line as every card, with only a faint warm tint. */
 .approvals-card {
-  border-color: var(--amber-dot);
-  background: var(--amber-soft);
+  background: color-mix(in srgb, var(--amber-soft) 55%, var(--surface));
 }
 .approval-row {
   display: flex;
@@ -1417,13 +1435,8 @@ svg {
   align-items: center;
   gap: 12px;
 }
-.error-card {
-  border-color: var(--red-border);
-  background: var(--red-soft);
+.error-card strong {
   color: var(--red);
-}
-.error-card .btn-secondary {
-  color: var(--text);
 }
 .error-card-copy {
   flex: 1;
@@ -1474,7 +1487,7 @@ svg {
   min-width: 0;
 }
 .compare-column.chosen {
-  border-color: var(--green);
+  border-color: var(--text);
 }
 .compare-column header {
   display: flex;
@@ -2382,13 +2395,11 @@ summary.checks-head {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  border-color: var(--accent);
 }
 .plan-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: var(--accent-text);
 }
 .plan-card .button-row {
   margin-top: 0;
@@ -2452,43 +2463,37 @@ summary.checks-head {
   align-items: center;
 }
 
-.title-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+/* The title is one line; a long one ends in an ellipsis, the whole text is in its tooltip and in the rename box. */
+.title-text {
+  flex: 1;
   min-width: 0;
-}
-.title-row .title-edit {
-  opacity: 0;
-}
-.title-row:hover .title-edit,
-.title-row .title-edit:focus-visible {
-  opacity: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-15);
+  font-weight: var(--fw-medium);
 }
 .title-input {
-  font-size: var(--fs-18);
+  font-size: var(--fs-15);
   font-weight: var(--fw-medium);
 }
 
-.popover-root {
-  position: relative;
-}
-.popover-panel {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 30;
-  width: min(380px, calc(100vw - 28px));
-  max-height: 70vh;
-  overflow-y: auto;
+/* The content of a dialog opened from the ⋯ menu (用量, 檢查點). */
+.panel-content {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  box-shadow: var(--shadow);
   font-size: var(--fs-13);
 }
-.popover-title {
-  font-size: var(--fs-15);
+.menu-panel-wide {
+  width: min(380px, calc(100vw - 16px));
+}
+.menu-desc-path {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
 }
 .checkpoint-list,
 .usage-list {
@@ -2524,9 +2529,9 @@ summary.checks-head {
 .checkpoint-confirm {
   margin-top: 6px;
   padding: 10px 12px;
-  border: 1px solid var(--red-border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
-  background: var(--red-soft);
+  background: var(--surface-muted);
 }
 .checkpoint-confirm .button-row {
   margin-top: 8px;
@@ -2586,13 +2591,6 @@ summary.checks-head {
   .thread-composer {
     padding: 0 14px 14px;
   }
-  .popover-panel {
-    position: fixed;
-    top: 56px;
-    right: 14px;
-    left: 14px;
-    width: auto;
-  }
 }
 
 /* Composer toolbar: borderless ghost entries, the model entry beside the send button. */
@@ -2637,6 +2635,9 @@ summary.checks-head {
   background: var(--menu-surface);
   box-shadow: var(--menu-shadow);
   font-size: var(--fs-13);
+}
+.menu-panel:focus {
+  outline: none;
 }
 .menu-group-label {
   padding: 6px 8px 2px;
@@ -2894,14 +2895,18 @@ summary.checks-head {
 }
 .thread-title-line {
   display: flex;
+  flex: 1;
   align-items: center;
   gap: 10px;
   min-width: 0;
 }
-.thread-title-line .title-row,
 .thread-title-line .title-input {
   flex: 1;
   min-width: 0;
+}
+.thread-title-line .task-dot {
+  width: 9px;
+  height: 9px;
 }
 .repo-card-head .project-dot {
   margin-right: 8px;
@@ -2974,7 +2979,7 @@ summary.checks-head {
   border-radius: 50%;
 }
 .color-option.selected {
-  box-shadow: 0 0 0 2px var(--accent);
+  box-shadow: 0 0 0 2px var(--text);
 }
 .color-option:has(input:focus-visible) {
   outline: 2px solid var(--accent);
@@ -2983,8 +2988,8 @@ summary.checks-head {
 
 /* Attachments: the tray above the message box, files on sent messages, the enlarged image. */
 .composer-dragging {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--text) 45%, transparent);
+  background: var(--surface-muted);
 }
 .attachment-tray {
   display: flex;

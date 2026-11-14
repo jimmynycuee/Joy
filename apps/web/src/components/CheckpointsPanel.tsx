@@ -4,26 +4,25 @@ import { discardedCommitCount, mapCheckpoints } from '../checkpoints.js'
 import type { CheckpointView } from '../checkpoints.js'
 import { relativeTime } from '../dates.js'
 import { ownerActionError } from '../messages.js'
-import { Popover } from './Popover.js'
 import { Button } from './ui.js'
 
 /**
- * The task's checkpoints: a snapshot after each implementer turn. Restoring needs the task to be idle; when it would
- * drop commits made since, the owner confirms in the page (no browser dialog) and the restore is retried with confirm.
+ * The content of the checkpoints panel in the title bar's ⋯ menu (mounted while it is open): a snapshot after each
+ * implementer turn. Restoring needs the task to be idle; when it would drop commits made since, the owner confirms in
+ * the page (no browser dialog) and the restore is retried with confirm.
  */
-export function CheckpointsPopover({
+export function CheckpointsPanel({
   taskId,
   count,
   working,
   onChanged,
 }: {
   taskId: string
-  /** Number of checkpoint events seen so far; a change reloads the list while it is open. */
+  /** Number of checkpoint events seen so far; a change reloads the list. */
   count: number
   working: boolean
   onChanged: () => void
 }) {
-  const [open, setOpen] = useState(false)
   const [items, setItems] = useState<CheckpointView[] | null>(null)
   const [loadFailure, setLoadFailure] = useState('')
   const [busy, setBusy] = useState<number | null>(null)
@@ -40,8 +39,8 @@ export function CheckpointsPopover({
   }, [taskId])
 
   useEffect(() => {
-    if (open) void load()
-  }, [open, count, load])
+    void load()
+  }, [count, load])
 
   async function restore(n: number, confirm: boolean) {
     setBusy(n)
@@ -69,19 +68,7 @@ export function CheckpointsPopover({
   }
 
   return (
-    <Popover
-      icon="clock"
-      label="檢查點"
-      buttonLabel={`檢查點（${count}）`}
-      onOpenChange={(next) => {
-        setOpen(next)
-        if (!next) {
-          setConfirming(null)
-          setFailure('')
-        }
-      }}
-    >
-      <h2 className="popover-title">檢查點</h2>
+    <div className="panel-content">
       {working ? <p className="notice-line">任務進行中，先停止或等它結束才能還原。</p> : null}
       {loadFailure ? <p className="form-error">{loadFailure}</p> : null}
       {failure ? <p className="form-error">{failure}</p> : null}
@@ -128,6 +115,6 @@ export function CheckpointsPopover({
           </li>
         ))}
       </ul>
-    </Popover>
+    </div>
   )
 }

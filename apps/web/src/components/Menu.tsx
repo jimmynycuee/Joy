@@ -140,10 +140,12 @@ function Panel({
           items[0],
       )
     } else {
+      // A dialog with nothing to press (用量) takes focus itself, so Esc closes only it and not the menu under it.
       const target =
         panel.querySelector<HTMLElement>('[data-autofocus]') ??
-        panel.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)
-      target?.focus()
+        panel.querySelector<HTMLElement>(FOCUSABLE_SELECTOR) ??
+        panel
+      target.focus()
     }
   }, [placement, kind, ref])
 
@@ -211,6 +213,7 @@ function Panel({
         role={kind === 'menu' ? 'menu' : 'dialog'}
         aria-label={label}
         aria-orientation={kind === 'menu' ? 'vertical' : undefined}
+        tabIndex={kind === 'dialog' ? -1 : undefined}
         data-menu-root={root?.id}
         className={`menu-panel${kind === 'dialog' ? ' menu-panel-dialog' : ''}${className ? ` ${className}` : ''}`}
         style={{
@@ -463,6 +466,7 @@ export function SubMenu({
   kind = 'menu',
   disabled = false,
   disabledReason,
+  className,
   children,
 }: {
   label: string
@@ -470,6 +474,8 @@ export function SubMenu({
   value?: string | undefined
   description?: string | undefined
   kind?: 'menu' | 'dialog'
+  /** Extra class for the panel that opens (a wider dialog, say). */
+  className?: string | undefined
   disabled?: boolean
   disabledReason?: string | undefined
   children: ReactNode | ((api: SubMenuApi) => ReactNode)
@@ -540,6 +546,7 @@ export function SubMenu({
           label={label}
           kind={kind}
           nested
+          {...(className ? { className } : {})}
           onDismiss={close}
           onLeave={() => root?.close(true)}
         >

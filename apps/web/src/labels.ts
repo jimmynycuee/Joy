@@ -78,12 +78,57 @@ export function doctorStatusLabel(status: DoctorStatus): string {
   return status === 'ok' ? '正常' : status === 'missing' ? '缺少' : '未驗證'
 }
 
-/** The title the owner typed, else the prompt's first line, so a task needs only one box. */
+/** A sentence ends at a CJK stop or mark, or at a Latin one followed by a space (so `v1.2` and `a.ts` stay whole). */
+const SENTENCE_END = /[。！？!?]|\.(?=\s|$)/
+
+/** The first sentence of the prompt's first line, whitespace collapsed, without its closing full stop. */
+function firstSentence(prompt: string): string {
+  const firstLine = prompt.trim().split('\n')[0] ?? ''
+  const text = firstLine.replace(/\s+/g, ' ').trim()
+  const end = text.search(SENTENCE_END)
+  const sentence = end < 0 ? text : text.slice(0, end + 1)
+  return sentence.replace(/[。.]$/, '').trim()
+}
+
+/** The title the owner typed, else the prompt's first sentence, so a task needs only one box and gets a short title. */
 export function taskTitle(title: string, prompt: string): string {
   const typed = title.trim()
   if (typed) return typed
-  const firstLine = prompt.trim().split('\n')[0]?.trim() ?? ''
-  return firstLine.length > 80 ? `${firstLine.slice(0, 80)}…` : firstLine
+  const sentence = firstSentence(prompt)
+  return sentence.length > 80 ? `${sentence.slice(0, 80)}…` : sentence
+}
+
+/** A full-width character takes two columns, so 24 of them and 48 Latin letters fill the same room. */
+function columnWidth(codePoint: number): number {
+  return (codePoint >= 0x1100 && codePoint <= 0x115f) ||
+    (codePoint >= 0x2e80 && codePoint <= 0xa4cf) ||
+    (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+    (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+    (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+    (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+    (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+    (codePoint >= 0x1f300 && codePoint <= 0x1faff)
+    ? 2
+    : 1
+}
+
+export const SHORT_TITLE_COLUMNS = 48
+
+/**
+ * A title for one line: whitespace collapsed (a title that is a whole pasted prompt has newlines), cut at about 24
+ * full-width or 48 half-width characters and closed with "…". A title that fits comes back as it is.
+ */
+export function shortTitle(title: string, columns = SHORT_TITLE_COLUMNS): string {
+  const text = title.replace(/\s+/g, ' ').trim()
+  let used = 0
+  let kept = ''
+  for (const character of text) {
+    const width = columnWidth(character.codePointAt(0) ?? 0)
+    if (used + width > columns) return `${kept.trimEnd()}…`
+    used += width
+    kept += character
+  }
+  return text
 }
 
 /**

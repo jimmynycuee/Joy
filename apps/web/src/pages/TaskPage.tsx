@@ -1,47 +1,47 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage, request } from '../api.js'
 import { DiffBrowser, DiffStat } from '../components/DiffView.js'
-import { CheckpointsPopover } from '../components/CheckpointsPopover.js'
+import { CheckpointsPanel } from '../components/CheckpointsPanel.js'
 import { Mascot } from '../components/Mascot.js'
+import { Menu, MenuItem, MenuSeparator, SubMenu } from '../components/Menu.js'
 import { PlanCard } from '../components/PlanCard.js'
 import { PrStatusCard } from '../components/PrStatusCard.js'
 import { RunningIndicator, TimelineView, UserBubble } from '../components/Thread.js'
 import { ThreadComposer } from '../components/ThreadComposer.js'
 import { TitleEditor } from '../components/TitleEditor.js'
-import { UsagePopover } from '../components/UsagePopover.js'
+import { UsagePanel } from '../components/UsagePanel.js'
 import { ApprovalsPanel, ComparePanel, DiscardButton, PublishPanel } from '../components/task-panels.js'
-import { Button, CopyButton, Icon, IconButton, ProjectDot } from '../components/ui.js'
+import { Button, Icon, IconButton } from '../components/ui.js'
 import { diffTotals } from '../diff.js'
-import { modeLabel, repoName, statusLabel } from '../labels.js'
+import { modeLabel, statusLabel } from '../labels.js'
 import { followUpState } from '../messages.js'
-import { repoColor } from '../repo-colors.js'
 import { diffFrom, failureMessage, taskBranchInfo, worktreeRemoved } from '../task-info.js'
 import { buildTimeline } from '../timeline.js'
 import type { AttachmentControls } from '../components/Attachments.js'
-import type { Repo, TaskDetails } from '../types.js'
-import { parseUsage } from '../usage.js'
+import type { TaskDetails } from '../types.js'
+import { formatSpent, parseUsage } from '../usage.js'
 
 /** One task as a conversation: what you asked, what the agents did, and what is waiting for you. */
 export function TaskPage({
   details,
-  repos,
   changesOpen,
   onToggleChanges,
   onChanged,
   onError,
   onRename,
+  onArchive,
 }: {
   details: TaskDetails
-  /** Every project, so this one's colour follows its place in the list. */
-  repos: Repo[]
   changesOpen: boolean | null
   onToggleChanges: (open: boolean) => void
   onChanged: () => void
   onError: (message: string) => void
   onRename: (title: string) => Promise<boolean>
+  onArchive: () => void
 }) {
-  const { task, repo } = details
-  const [showDetails, setShowDetails] = useState(false)
+  const { task } = details
+  const [renaming, setRenaming] = useState(false)
+  const [copied, setCopied] = useState<'branch' | 'path' | null>(null)
   const [acting, setActing] = useState(false)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const stickToBottom = useRef(true)
@@ -83,17 +83,27 @@ export function TaskPage({
   const checkpointCount = details.events.filter((event) => event.type === 'checkpoint.created').length
   const published = details.events.some((event) => event.type === 'publish.done')
   const canAskAgent = !followUpState({
-    status: task.status,
     mode: task.mode,
     worktreeRemoved: worktreeRemoved(details.events),
-    pendingPlan: pendingPlan !== null,
   }).disabled
-  const hiddenCount = entries.filter((entry) => entry.kind === 'noise').length
   const diff = useMemo(() => diffFrom(details.events), [details.events])
   const totals = diffTotals(diff?.files ?? [])
   // Closed while there is nothing to see; opens by itself when a diff appears, until the owner decides otherwise.
   const hasDiff = Boolean(diff && diff.files.length > 0)
   const paneOpen = changesOpen ?? hasDiff
+
+  // A finished task reads from the top: what was asked, what the agent concluded, the last review. The process folds
+  // away. A plan waiting for a decision and a compete task (two attempts side by side) stay open.
+  const finished = task.status === 'done' || task.status === 'review_ready'
+  const collapse =
+    pendingPlan !== null || task.mode === 'compete'
+      ? undefined
+      : finished
+        ? 'done'
+        : task.status === 'failed' || task.status === 'cancelled'
+          ? 'failed'
+          : undefined
+  const ended = finished || task.status === 'failed' || task.status === 'cancelled'
 
   const canResume = (task.status === 'failed' || task.status === 'cancelled') && task.mode !== 'compete'
 
@@ -101,6 +111,16 @@ export function TaskPage({
     const element = scrollRef.current
     if (element && stickToBottom.current) element.scrollTop = element.scrollHeight
   }, [details.events.length, task.status])
+
+  function copy(kind: 'branch' | 'path', text: string) {
+    void navigator.clipboard
+      ?.writeText(text)
+      .then(() => {
+        setCopied(kind)
+        window.setTimeout(() => setCopied((current) => (current === kind ? null : current)), 1500)
+      })
+      .catch(() => undefined)
+  }
 
   async function act(path: 'cancel' | 'resume') {
     setActing(true)
@@ -117,43 +137,21 @@ export function TaskPage({
   return (
     <main className="thread" aria-label="任務進度">
       <header className="thread-header">
-        <div className="thread-heading">
-          <div className="thread-title-line">
-            <ProjectDot color={repoColor(task.repoId, repos)} className="project-dot-lg" />
-            <TitleEditor title={task.title} onRename={onRename} />
-          </div>
-          <div className="thread-sub">
-            <span>{repoName(repo?.path)}</span>
-            <span aria-hidden="true">·</span>
-            <span>{modeLabel(task.mode)}</span>
-            {branch.branch ? (
-              <span className="meta-chip" title="這個任務的分支">
-                <Icon name="branch" size={13} />
-                <code>{branch.branch}</code>
-                <CopyButton text={branch.branch} label="複製分支名稱" />
-              </span>
-            ) : null}
-            {branch.worktreePath ? (
-              <span className="meta-chip" title={branch.worktreePath}>
-                <Icon name="folder" size={13} />
-                <span>工作副本</span>
-                <CopyButton text={branch.worktreePath} label="複製工作副本路徑" />
-              </span>
-            ) : null}
-          </div>
-        </div>
-        <span className={`status-pill status-${task.status}`}>
-          {statusLabel(task.status, task.mode, pendingPlan !== null)}
-        </span>
-        {usage ? <UsagePopover usage={usage} /> : null}
-        {checkpointCount > 0 ? (
-          <CheckpointsPopover
-            taskId={task.id}
-            count={checkpointCount}
-            working={working || task.status === 'awaiting_approval'}
-            onChanged={onChanged}
+        <div className="thread-title-line">
+          <span
+            className={`task-dot status-${task.status}`}
+            role="img"
+            aria-label={statusLabel(task.status, task.mode, pendingPlan !== null)}
+            title={`${statusLabel(task.status, task.mode, pendingPlan !== null)} · ${modeLabel(task.mode)}`}
+            data-testid="task-status"
           />
-        ) : null}
+          <TitleEditor
+            title={task.title}
+            onRename={onRename}
+            editing={renaming}
+            onEditingChange={setRenaming}
+          />
+        </div>
         <Button
           icon="panel-right"
           aria-pressed={paneOpen}
@@ -163,6 +161,68 @@ export function TaskPage({
           變更
           <DiffStat {...totals} />
         </Button>
+        <Menu
+          label="任務選項"
+          triggerLabel="更多"
+          triggerTitle="更多"
+          triggerClassName="icon-btn"
+          trigger={<Icon name="more" size={18} />}
+          align="end"
+        >
+          {branch.branch ? (
+            <MenuItem
+              icon={copied === 'branch' ? 'check' : 'branch'}
+              keepOpen
+              description={<span className="menu-desc-path">{branch.branch}</span>}
+              onSelect={() => copy('branch', branch.branch ?? '')}
+            >
+              {copied === 'branch' ? '已複製' : '複製分支名稱'}
+            </MenuItem>
+          ) : null}
+          {branch.worktreePath ? (
+            <MenuItem
+              icon={copied === 'path' ? 'check' : 'folder'}
+              keepOpen
+              description={<span className="menu-desc-path">{branch.worktreePath}</span>}
+              onSelect={() => copy('path', branch.worktreePath ?? '')}
+            >
+              {copied === 'path' ? '已複製' : '複製工作副本路徑'}
+            </MenuItem>
+          ) : null}
+          {branch.branch || branch.worktreePath ? <MenuSeparator /> : null}
+          {usage ? (
+            <SubMenu
+              label="用量"
+              value={formatSpent(usage.durationMs)}
+              kind="dialog"
+              className="menu-panel-wide"
+            >
+              <UsagePanel usage={usage} />
+            </SubMenu>
+          ) : null}
+          {checkpointCount > 0 ? (
+            <SubMenu label="檢查點" value={String(checkpointCount)} kind="dialog" className="menu-panel-wide">
+              <CheckpointsPanel
+                taskId={task.id}
+                count={checkpointCount}
+                working={working || task.status === 'awaiting_approval'}
+                onChanged={onChanged}
+              />
+            </SubMenu>
+          ) : null}
+          {usage || checkpointCount > 0 ? <MenuSeparator /> : null}
+          <MenuItem icon="pencil" onSelect={() => setRenaming(true)}>
+            改名
+          </MenuItem>
+          <MenuItem
+            icon="archive"
+            disabled={working}
+            disabledReason="進行中的任務不能封存，請先停止它"
+            onSelect={onArchive}
+          >
+            封存
+          </MenuItem>
+        </Menu>
       </header>
       <div className="thread-body">
         <div className="thread-main">
@@ -180,20 +240,7 @@ export function TaskPage({
                 attachments={(details.attachments ?? []).filter((attachment) => !attachment.messageId)}
                 attachmentControls={attachmentControls}
               />
-              <TimelineView
-                entries={entries}
-                showDetails={showDetails}
-                attachmentControls={attachmentControls}
-              />
-              {hiddenCount > 0 ? (
-                <button
-                  type="button"
-                  className="btn btn-ghost details-toggle"
-                  onClick={() => setShowDetails((open) => !open)}
-                >
-                  {showDetails ? '隱藏細節' : `顯示細節（${hiddenCount} 筆）`}
-                </button>
-              ) : null}
+              <TimelineView entries={entries} collapse={collapse} attachmentControls={attachmentControls} />
               {pendingPlan && !working ? (
                 <PlanCard taskId={task.id} plan={pendingPlan} onChanged={onChanged} onError={onError} />
               ) : null}
@@ -246,6 +293,13 @@ export function TaskPage({
                   <Mascot mood="happy" size={40} decorative />
                   <span>任務完成了</span>
                 </section>
+              ) : null}
+              {ended && hasDiff ? (
+                <button type="button" className="change-summary" onClick={() => onToggleChanges(true)}>
+                  <Icon name="file" size={14} />
+                  <span>{diff?.files.length} 個檔案</span>
+                  <DiffStat {...totals} />
+                </button>
               ) : null}
               <div className="thread-actions">
                 <PublishPanel details={details} onChanged={onChanged} />

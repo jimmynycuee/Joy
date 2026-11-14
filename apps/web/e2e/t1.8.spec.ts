@@ -125,10 +125,10 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   await expect(page.getByTestId('event-stream')).toContainText(
     'Fake provider completed: claude-cli:claude-opus-4-6',
   )
-  await expect(page.getByTestId('event-stream')).toContainText('程式變更審查通過')
+  await expect(page.getByTestId('event-stream')).toContainText('通過')
   await expect(page.getByTestId('event-stream')).toContainText('Fake review approved')
   await expect(page.getByTestId('diff-patch')).toContainText('hello from fake')
-  await expect(page.locator('.thread-header .status-pill')).toHaveText('完成')
+  await expect(page.getByTestId('task-status')).toHaveAttribute('aria-label', '完成')
   await expect(page.locator('body')).not.toContainText(secret)
 
   const taskListResponse = await request.get('/api/tasks', {
