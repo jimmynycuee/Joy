@@ -2,7 +2,6 @@ import { PROVIDER_LABELS } from '../labels.js'
 import { costIsEstimate, formatCost, formatSpent, formatTokens } from '../usage.js'
 import type { ProviderKind } from '@joy/core'
 import type { ProviderUsage, TaskUsage } from '../types.js'
-import { Popover } from './Popover.js'
 
 function tokenText(usage: { inputTokens?: number; outputTokens?: number }): string {
   const parts = []
@@ -33,11 +32,10 @@ function ProviderRow({ entry }: { entry: ProviderUsage }) {
 }
 
 /** Time, tokens and cost of the task. The CLIs' cost is their own estimate, not what a subscription billed. */
-export function UsagePopover({ usage }: { usage: TaskUsage }) {
+export function UsagePanel({ usage }: { usage: TaskUsage }) {
   const tokens = tokenText(usage)
   return (
-    <Popover icon="chart" label="用量" buttonLabel={`用量 · ${formatSpent(usage.durationMs)}`}>
-      <h2 className="popover-title">這個任務的用量</h2>
+    <div className="panel-content">
       <dl className="usage-totals">
         <div>
           <dt>耗時</dt>
@@ -60,6 +58,6 @@ export function UsagePopover({ usage }: { usage: TaskUsage }) {
         </ul>
       ) : null}
       <p className="muted">花費依價目表估算，不是訂閱實際扣的錢；權限預審等額外呼叫不在內。</p>
-    </Popover>
+    </div>
   )
 }

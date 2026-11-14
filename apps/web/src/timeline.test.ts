@@ -7,7 +7,7 @@ import {
   tasksNeedingAttention,
   worktreeRemoved,
 } from './task-info.js'
-import { buildTimeline, planReviewView } from './timeline.js'
+import { buildTimeline, detailCount, hasDetails, looksLikeVerdict, planReviewView } from './timeline.js'
 import type { Task, TaskEvent } from './types.js'
 
 let seq = 0
@@ -385,5 +385,87 @@ describe('planReviewView', () => {
       }),
     ).toMatchObject({ target: 'plan', approve: true, summary: 'Looks fine', findings: [{ severity: 'nit' }] })
     expect(planReviewView(undefined)).toBeNull()
+  })
+})
+
+describe('the raw verdict a reviewer streams', () => {
+  const verdict = '{"approve":false,"summary":"Needs a test","findings":[]}'
+  const review = () =>
+    event('review', { round: 1, target: 'change', verdict: { approve: false, summary: 'Needs a test' } })
+
+  it('is not shown once its review event is there, however the stream cut it up', () => {
+    const entries = buildTimeline([
+      agent('implementer', { type: 'message', text: 'Done.' }),
+      agent('reviewer', { type: 'message', text: '{"approve":' }),
+      agent('reviewer', { type: 'message', text: 'false,"summary":"Needs a test"' }),
+      agent('reviewer', { type: 'message', text: ',"findings":[]}' }),
+      review(),
+    ])
+    expect(entries.map((entry) => entry.kind)).toEqual(['message', 'review'])
+  })
+
+  it('is hidden while it still looks like one, even before the review event', () => {
+    expect(looksLikeVerdict(verdict)).toBe(true)
+    expect(looksLikeVerdict('```json\n' + verdict + '\n```')).toBe(true)
+    expect(looksLikeVerdict('{"appr')).toBe(true)
+    expect(looksLikeVerdict('看起來沒問題')).toBe(false)
+    expect(looksLikeVerdict('The verdict is {"approve": true}')).toBe(false)
+    expect(buildTimeline([agent('reviewer', { type: 'message', text: verdict })])).toEqual([])
+  })
+
+  it('hides prose that a review event follows, and keeps prose when none does', () => {
+    const prose = agent('reviewer', { type: 'message', text: 'Looks good to me.' })
+    expect(buildTimeline([prose, review()]).map((entry) => entry.kind)).toEqual(['review'])
+    expect(buildTimeline([prose]).map((entry) => entry.kind)).toEqual(['message'])
+  })
+
+  it('leaves the implementer alone, and a reply that comes after the review', () => {
+    const entries = buildTimeline([
+      agent('reviewer', { type: 'message', text: verdict }),
+      review(),
+      agent('implementer', { type: 'message', text: '{"note": "an implementer may print JSON"}' }),
+      agent('reviewer', { type: 'message', text: 'second round prose' }),
+    ])
+    expect(entries.map((entry) => [entry.kind, 'role' in entry ? entry.role : undefined])).toEqual([
+      ['review', undefined],
+      ['message', '實作'],
+      ['message', '審查'],
+    ])
+  })
+})
+
+describe('what 顯示細節 counts', () => {
+  it('counts details, not the fragments a stream leaves behind', () => {
+    const entries = buildTimeline([
+      agent('implementer', { type: 'thinking', text: 'a' }),
+      agent('implementer', { type: 'tool_call', id: 'c1', name: 'Bash', input: { command: 'ls' } }),
+      agent('implementer', { type: 'thinking', text: 'b' }),
+      agent('implementer', { type: 'tool_result', id: 'lost', output: 'x', isError: false }),
+      agent('implementer', { type: 'done', isError: false }),
+    ])
+    expect(entries.filter((entry) => entry.kind === 'noise')).toHaveLength(4)
+    expect(detailCount(entries)).toBe(0)
+    // They are still there to open, so there is still a toggle.
+    expect(hasDetails(entries)).toBe(true)
+  })
+
+  it('counts policy and bookkeeping events', () => {
+    const entries = buildTimeline([
+      event('policy.action', { kind: 'read_file', tier: 'auto' }),
+      event('checkpoint.created', { n: 1 }),
+      agent('implementer', { type: 'thinking', text: 'a' }),
+    ])
+    expect(detailCount(entries)).toBe(2)
+  })
+
+  it('has nothing to toggle when there is no noise', () => {
+    expect(hasDetails(buildTimeline([event('started', {})]))).toBe(false)
+  })
+})
+
+describe('phase entries', () => {
+  it('say only the phase, for the divider', () => {
+    const [entry] = buildTimeline([event('phase', { phase: 'reviewing', role: 'reviewer' })])
+    expect(entry).toMatchObject({ kind: 'phase', text: '審查中' })
   })
 })

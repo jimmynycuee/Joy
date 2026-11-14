@@ -21,3 +21,9 @@ export async function openAdvanced(page: Page, composer: Locator): Promise<void>
   await composer.getByRole('button', { name: /^做法/ }).click()
   await page.getByRole('menuitem', { name: '進階' }).click()
 }
+
+/** Opens the task page's ⋯ menu, then one of its rows when given. */
+export async function openTaskMenu(page: Page, item?: string | RegExp): Promise<void> {
+  await page.getByRole('button', { name: '更多', exact: true }).click()
+  if (item) await page.getByRole('menuitem', { name: item }).click()
+}

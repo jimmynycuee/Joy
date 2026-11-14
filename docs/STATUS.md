@@ -3,6 +3,7 @@
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
 - 最後更新：2026-11-15（修正：review loop／compete 的 Claude 實作者沒有核准管道，`pnpm check` 被 CLI 自動拒絕）；2026-11-14（附件：輸入框附加檔案與貼上圖片；介面減量：側邊欄單一清單、設定返回鍵、移除說明文字；品牌角色、配色與專案色；2026-11-13：不用終端機：單一程式＋背景服務、上限停下後排隊訊息不自動接續；擁有者已審即時補充的 core 介面）
+- 最後更新：2026-11-15（任務頁整理：短標題、標題列只留點＋標題＋變更＋⋯、完成後過程預設收合、去掉色塊與光暈；2026-11-14：附件：輸入框附加檔案與貼上圖片；介面減量：側邊欄單一清單、設定返回鍵、移除說明文字；品牌角色、配色與專案色；2026-11-13：不用終端機：單一程式＋背景服務、上限停下後排隊訊息不自動接續；擁有者已審即時補充的 core 介面）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
@@ -28,6 +29,21 @@
   - N2：hub 延到第一次實作回合前才建立，只有計畫的 run（plan first）不建。Codex 處理器在建立時就掛上（這時已在實作回合）。
   - 測試（`approval-surface.test.ts`）：pause 下 review loop 進 `awaiting_approval`＋`task.paused`，補核准 200 並在同一 session 接續、放行該動作；compete 逾時當拒絕、兩位參賽者都跑完並由裁判比較、沒有 `task.paused`。兩個測試在 341d700 的 `server.ts` 上都失敗。
 - **沒驗證到**：真的 Claude Code CLI 在 review loop 中的 permission prompt 往返（假 CLI 是依 spike 文件寫的合成行為，不是錄下來的）。擁有者下次用 haiku 跑 review_loop 任務、讓它執行 `pnpm check`，應該看到 `policy.action`（run_in_worktree、auto），不再出現「no approval surface」。
+### 任務頁整理：短標題、單行標題列、完成後收合過程（2026-11-15，分支 `task-page-cleanup`）
+
+擁有者實測覺得任務頁很亂。只改 `apps/web`，沒有動後端、沒有新 API。
+
+- **短標題**（`labels.ts`）：建立任務沒給標題時，`taskTitle()` 取 prompt 第一行的第一句（句號、問號、驚嘆號，或後面接空白的 `.`，所以 `v1.2`、`a.ts` 不會被切開），去掉結尾句號與多餘空白，最多 80 字。顯示一律過 `shortTitle()`：空白合併、約 24 個全形或 48 個半形字元加「…」（全形算兩欄，CJK、全形符號、emoji 算寬），單行 ellipsis；伺服器若已把整段 prompt 存成標題，只在顯示時縮短，改名框裡仍是完整文字。側邊欄、指令面板、已封存清單、標頭都用它。標題仍可連點兩下改名，也可從「⋯ → 改名」。
+- **標題列**：只剩狀態點（顏色沿用 `.task-dot` 的狀態色，`aria-label` 是狀態文字、tooltip 帶模式）、標題、「變更」按鈕、「⋯」選單。移除狀態膠囊、專案名與模式、分支與工作副本標籤、鉛筆鈕。「⋯」用既有 `Menu`：複製分支名稱、複製工作副本路徑（點了標籤變「已複製」，選單不關；第二行小字是完整分支或路徑，單行 ellipsis）、用量（子面板）、檢查點（子面板）、改名、封存（進行中不可選）。`UsagePopover`／`CheckpointsPopover`／`Popover` 改成 `UsagePanel`／`CheckpointsPanel`（只有內容，開著才載入），`Popover.tsx` 刪除。`SubMenu` 多了 `className`；沒有可聚焦內容的 dialog（用量）會自己拿焦點，Esc 只關它、不關整個選單。**「用編輯器開工作副本」沒做**：repo 裡沒有這個功能（沒有對應的前端或 API），不是「搬進選單」而是新功能，需要時另開票。
+- **時間軸**（`timeline.ts`、新 `fold.ts`、`components/Thread.tsx`）：
+  - 審查者的 `message` 事件不再渲染：同一輪裡出現 `review` 事件就整輪隱藏（串流拆成幾段也一樣），或內容以 `{`（可帶 ```json 圍欄）開頭時隱藏，這樣串流到一半、review 事件還沒到時也不會閃出 JSON。審查者用白話回的訊息，沒有 review 事件跟著時照常顯示。
+  - 「顯示細節（N 筆）」只算真正的細節（權限、檢查點、送達狀態等）；thinking、對不上呼叫的 tool_result、`done` 等串流碎片標成 `fragment`，仍可在展開時看到但不計數；只有碎片時按鈕只寫「顯示細節」。
+  - 「階段：XXX」膠囊改為淡灰色小字的分隔線（`.phase-divider`，左右細線）；審查卡片去掉綠／紫外框與彩色標題，細線外框，結果是小圖示加字（通過 ✓／要求修改 ↺），嚴重度標籤全部中性（阻擋與重大只加深文字）；專案檢查卡同樣中性。工具列輸出只有空白時不畫輸出區塊。
+  - **任務結束後收合**（`foldTimeline`）：狀態為 `done`／`review_ready`（且不是等核准計畫、不是比賽任務）時，只留使用者訊息（含附件、插話）、agent 最後一則訊息（不是審查者的）、最後一個審查卡，其餘收進「▸ 過程（N 輪審查 · M 個步驟 · 耗時）」，預設收合，點開是原樣（含「顯示細節」按鈕）。N 是整個任務的審查數（含最後一個），M 是收進去的工具呼叫、步驟與檢查，耗時是第一個到最後一個事件。`failed`／`cancelled`：同樣收合，但所有錯誤和最後 3 個步驟（工具、步驟、檢查）留在外面。執行中、等核准計畫、比賽任務維持全部展開。展開狀態只在元件 state，不持久化。收合時顯示「N 個檔案 +x −y」，點了開變更面板；開 PR 與丟掉變更照舊在下面。
+- **色塊與光暈**：側邊欄選中的項目不再有灰底與左側 2px 青線，改為文字變 `--text` 加字重 500，其他項目 `--muted`，只有滑過才有很淡的底（新 token `--row-hover`，淺色 4% 黑、深色 5% 白）；頂部「新任務」「聊聊」「設定」同樣處理。側邊欄執行中的任務用小青點（`.task-flag`）取代思考中小角色。輸入框聚焦拿掉青色光暈，只把外框加深成文字色 45%。全站掃過：等你核准卡改為一般細線外框加淡琥珀底（55% 混合）、失敗卡改為一般卡片只有標題紅色、計畫卡與比賽選定欄改中性外框、拖放中的輸入框、檢查點還原確認、`.notice-line`、設定提示橫幅、側邊欄用量警示、錯誤 toast、專案色選擇的選取圈都去掉彩色底或外框。仍保留顏色的：diff 增刪行、狀態點與狀態文字、危險按鈕、小型標籤（PR 狀態、設定的狀態膠囊）。
+- **文字**：任務輸入框 placeholder 一律「傳訊息給 Joy」（`THREAD_PLACEHOLDER`；`followUpState` 不再依狀態給 placeholder，也不再吃 `status`／`pendingPlan`／`steerable`）；送出後的小狀態（排隊中、已交給 agent、上方的排隊說明）保留。新任務頁沿用上一輪的決定，輸入框沒有 placeholder。
+- **測試**：vitest 新增 `labels.test.ts`（第一句、版本號不被切、全形與半形與 emoji 寬度、換行）、`fold.test.ts`（兩輪審查的收合、統計與摘要、插話順序、審查者回覆不當成總結、沒東西可收、失敗保留錯誤與最後 3 步）、`components/Thread.test.tsx`（空輸出、分隔線、收合標記、審查卡）、`timeline.test.ts` 增加原始審查 JSON、細節計數與階段文字；`messages.test.ts` 改為固定 placeholder。e2e 新增 `task-page-cleanup.spec.ts`（12 個：標題列與選單、改名、複製與子面板與封存、執行中不可封存、完成收合與展開、失敗保留錯誤與 3 步、計畫等待不收合、原始 JSON 與細節計數與分隔線與空輸出、審查卡中性、側邊欄選中與滑過與執行中點、輸入框聚焦、核准卡）；`thread`、`thread-api`、`t1.8`、`reconnect` 依新位置與文字更新（`helpers.ts` 新增 `openTaskMenu`）。
+- 驗證：`pnpm check` 通過（格式、lint、typecheck；vitest 965 passed、4 skipped）。5173 / 4317 被擁有者佔用，e2e 用不提交的暫時 harness（Vite 4173＋fake runtime 4398，proxy 都指向 4398，跑完已刪除）跑全部 94 個全過；`origin-proxy.spec.ts` 固定連 5173，沒跑。淺色、深色、手機寬度（390px）用截圖看過執行中、完成（收合與展開）、失敗、「⋯」選單與用量；最後仍以 CI 的 web E2E 為準。
 
 ### 附件：輸入框附加檔案、貼上圖片（2026-11-14，分支 `attachments`）
 
@@ -338,6 +354,7 @@
 ## 已確認決策
 
 - 2026-11-15 實作者的核准管道（agent 決定）：所有會寫程式的實作者 run（single、review loop、compete、合併版）都接 Tool Hub 與 approval tool；計畫與審查（唯讀）不接。Codex app-server 的核准處理器只在實作者回合掛上。orchestrator 的 `ReviewLoopInput.mcpServers／approvalTool`（未使用、且會連審查者一起給）改為 `implementerTools(ws)`。
+- 2026-11-15 任務頁整理（擁有者原則，實作細節為 agent 決定）：任務完成（`done`／`review_ready`）或失敗／取消後，時間軸預設只留使用者訊息、agent 最後一則訊息、最後一個審查卡與錯誤，其餘收進「過程」；執行中、等核准計畫與比賽任務維持展開。標題列只有狀態點、單行標題、「變更」與「⋯」；任務標題顯示一律用 `shortTitle()`（約 24 全形或 48 半形字元）。選中、聚焦、卡片一律中性（不用 accent 色塊、外框或光暈）。
 - 2026-11-14 擁有者決定：通過本機 listener 接受自身 Origin（#134）、附件的 core 介面 `RunOptions.images`／`ImageInput`／`Steer` 第二參數（#138）、文字附件定位為參考資料而非擁有者指示，以及附件上限（圖片 3.75 MiB、文字 256 KB、每則 10 個、每任務 40 個／100 MB、每次 run 最多 8 張圖與 256 KB 文字）。
 
 - 2026-11-14 附件（agent 決定，待擁有者確認；第二輪依審查修正）：(1) 只收圖片（PNG／JPEG／GIF／WebP，原始 ≤ 3.75 MiB＝base64 後 ≤ 5 MiB）與文字／程式碼檔（UTF-8，≤ 256 KB，內容放進 prompt），PDF 與其他二進位不收；每則 ≤ 10 個、≤ 20 MB；每任務 ≤ 40 個、≤ 100 MB；(2) 檔案存 `<JOY_HOME>/attachments/<uuid>.<ext>`，從不進 worktree，所以不會被 commit 或進 PR；(3) 只有 server 組的擁有者段落放帶行程 nonce 的標記，provider 外層 `withAttachments` 只展開這種標記、只展開同任務的附件、每個檔案引用一次；(4) 審查者也看得到附件，每次 run 最多最新 8 張圖、256 KB 文字，較舊的只給名稱；(5) 文字附件是 reference data，不放進指令清單（擁有者待審）；(6) 容器模式加 Claude 角色時送圖、容器模式文字累計超過 64 KB 時，送出時就回 422；(7) 缺檔改成「[attachment missing]」並發警示事件、run 照常；擁有者可移除已送出的附件，之後只給名稱；(8) prompt 超過 16 KB 時，Claude 與 `codex exec` 改走 stdin；(9) 草稿只保存已上傳附件的 id；未送出的上傳 7 天後刪；備份與匯出不含附件檔案；(10) 助理對話暫不支援附件；(11) 改 `packages/core` 的 `RunOptions`（可選 `images`）與 `Steer`（可選第二個參數 `images`），列入擁有者待審。

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { openTaskMenu } from './helpers.js'
 import type { Page, Route } from '@playwright/test'
 
 // The task thread's conversation features (messages, plans, PR status, checkpoints, checks, usage), against route mocks
@@ -110,7 +111,7 @@ test('a follow-up on a finished task is sent from the thread and shows as a bubb
 
   await page.goto('/?task=follow-task')
   const composer = page.getByLabel('傳訊息給任務')
-  await expect(composer).toHaveAttribute('placeholder', '接著交代…')
+  await expect(composer).toHaveAttribute('placeholder', '傳訊息給 Joy')
   await composer.fill('Also cover the Escape key')
   await composer.press('Enter')
 
@@ -122,7 +123,7 @@ test('a follow-up on a finished task is sent from the thread and shows as a bubb
   // Sent straight to the agent, so there is no 排隊中 tag, and the draft is gone.
   await expect(page.getByTestId('message-tag')).toHaveCount(0)
   await expect(composer).toHaveValue('')
-  await expect(composer).toHaveAttribute('placeholder', '訊息會在 agent 下一次動手時送達')
+  await expect(composer).toHaveAttribute('placeholder', '傳訊息給 Joy')
 })
 
 test('a message to a running agent reaches it while it keeps working', async ({ page }) => {
@@ -149,7 +150,7 @@ test('a message to a running agent reaches it while it keeps working', async ({ 
 
   await page.goto('/?task=steer-task')
   const composer = page.getByLabel('傳訊息給任務')
-  await expect(composer).toHaveAttribute('placeholder', '補充指示或提問，agent 會邊做邊參考')
+  await expect(composer).toHaveAttribute('placeholder', '傳訊息給 Joy')
   await composer.fill('Use the existing helper; why did you add a new one?')
   await composer.press('Enter')
 
@@ -186,7 +187,7 @@ test('a message during a review is queued until the next turn', async ({ page })
 
   await page.goto('/?task=queue-task')
   const composer = page.getByLabel('傳訊息給任務')
-  await expect(composer).toHaveAttribute('placeholder', '訊息會在 agent 下一次動手時送達')
+  await expect(composer).toHaveAttribute('placeholder', '傳訊息給 Joy')
   await composer.fill('Use the existing helper')
   await composer.press('Enter')
 
@@ -272,11 +273,11 @@ test('a plan waits at the end of the thread and is approved from its card', asyn
   await mockThread(page, state, calls)
 
   await page.goto(`/?task=${id}`)
-  await expect(page.locator('.thread-header .status-pill')).toHaveText('等你核准計畫')
+  await expect(page.getByTestId('task-status')).toHaveAttribute('aria-label', '等你核准計畫')
   const card = page.getByTestId('plan-card')
   await expect(card).toContainText('修改 login.ts')
   await expect(card).toContainText('The plan is small and safe')
-  await expect(page.getByLabel('傳訊息給任務')).toHaveAttribute('placeholder', '說明要怎麼改計畫')
+  await expect(page.getByLabel('傳訊息給任務')).toHaveAttribute('placeholder', '傳訊息給 Joy')
   // The plan is in the card, not repeated in the timeline.
   await expect(page.getByTestId('event-stream')).toContainText('計畫寫好了，等你核准')
   await expect(page.getByTestId('event-stream').locator('details')).toHaveCount(0)
@@ -285,7 +286,7 @@ test('a plan waits at the end of the thread and is approved from its card', asyn
   await expect.poll(() => calls.map((call) => call.path)).toEqual([`/api/tasks/${id}/plan/approve`])
   await expect(page.getByTestId('plan-card')).toHaveCount(0)
   await expect(page.getByTestId('event-stream')).toContainText('你核准了計畫，開始實作')
-  await expect(page.locator('.thread-header .status-pill')).toHaveText('進行中')
+  await expect(page.getByTestId('task-status')).toHaveAttribute('aria-label', '進行中')
 })
 
 test('a plan can be rejected, which cancels the task', async ({ page }) => {
@@ -309,7 +310,7 @@ test('a plan can be rejected, which cancels the task', async ({ page }) => {
   await page.getByTestId('plan-card').getByRole('button', { name: '取消任務' }).click()
   await expect.poll(() => calls.map((call) => call.path)).toEqual([`/api/tasks/${id}/plan/reject`])
   await expect(page.getByTestId('plan-card')).toHaveCount(0)
-  await expect(page.locator('.thread-header .status-pill')).toHaveText('已取消')
+  await expect(page.getByTestId('task-status')).toHaveAttribute('aria-label', '已取消')
   await expect(page.getByTestId('event-stream')).toContainText('你取消了計畫')
 })
 
@@ -427,7 +428,7 @@ test('restoring a checkpoint asks in the page before dropping commits, then retr
   })
 
   await page.goto(`/?task=${id}`)
-  await page.getByRole('button', { name: /^檢查點/ }).click()
+  await openTaskMenu(page, /^檢查點/)
   const panel = page.getByRole('dialog', { name: '檢查點' })
   await expect(panel.getByRole('listitem')).toHaveCount(2)
   // Newest first, labels in Chinese.
@@ -445,6 +446,7 @@ test('restoring a checkpoint asks in the page before dropping commits, then retr
     `/api/tasks/${id}/checkpoints/1/restore`,
     `/api/tasks/${id}/checkpoints/1/restore`,
   ])
+  await page.locator('.process-toggle').click()
   await expect(page.getByTestId('event-stream').getByText('已還原到檢查點 1，丟掉 2 個 commit')).toBeVisible()
 })
 
@@ -469,7 +471,7 @@ test('checkpoint restore is off while the task is running', async ({ page }) => 
   }
   await mockThread(page, state, [])
   await page.goto(`/?task=${id}`)
-  await page.getByRole('button', { name: /^檢查點/ }).click()
+  await openTaskMenu(page, /^檢查點/)
   await expect(page.getByRole('button', { name: '還原到檢查點 1' })).toBeDisabled()
 })
 
@@ -504,6 +506,8 @@ test('checks show as a step card with collapsible output, and skipped checks as 
   }
   await mockThread(page, state, [])
   await page.goto(`/?task=${id}`)
+  // A finished task keeps its process folded.
+  await page.locator('.process-toggle').click()
   const cards = page.getByTestId('checks-card')
   await expect(cards).toHaveCount(2)
   await expect(cards.first()).toContainText('專案檢查失敗')
@@ -540,7 +544,7 @@ test('usage shows time, tokens and an estimated cost per model', async ({ page }
   }
   await mockThread(page, state, [])
   await page.goto(`/?task=${id}`)
-  await page.getByRole('button', { name: /^用量/ }).click()
+  await openTaskMenu(page, /^用量/)
   const panel = page.getByRole('dialog', { name: '用量' })
   await expect(panel).toContainText('3 分 12 秒')
   await expect(panel).toContainText('輸入 48k / 輸出 3.4k')

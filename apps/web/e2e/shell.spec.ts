@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
-import { openAdvanced, openSettings } from './helpers.js'
+import { openAdvanced, openSettings, openTaskMenu } from './helpers.js'
 
 const repo = { id: 'shell-repo', path: '/tmp/shell-project', defaultBranch: 'main' }
 const config = {
@@ -197,7 +197,7 @@ test('a thread title can be renamed in place', async ({ page }) => {
   expect(patches).toEqual([{ path: '/api/tasks/waiting', body: { title: 'Renamed task' } }])
 
   // Escape cancels without a request.
-  await page.getByRole('button', { name: '重新命名' }).click()
+  await openTaskMenu(page, '改名')
   await page.getByLabel('任務標題').fill('Never saved')
   await page.getByLabel('任務標題').press('Escape')
   await expect(page.getByRole('heading', { name: 'Renamed task' })).toBeVisible()
