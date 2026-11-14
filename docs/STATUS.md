@@ -29,6 +29,7 @@
   - N2：hub 延到第一次實作回合前才建立，只有計畫的 run（plan first）不建。Codex 處理器在建立時就掛上（這時已在實作回合）。
   - 測試（`approval-surface.test.ts`）：pause 下 review loop 進 `awaiting_approval`＋`task.paused`，補核准 200 並在同一 session 接續、放行該動作；compete 逾時當拒絕、兩位參賽者都跑完並由裁判比較、沒有 `task.paused`。兩個測試在 341d700 的 `server.ts` 上都失敗。
 - **沒驗證到**：真的 Claude Code CLI 在 review loop 中的 permission prompt 往返（假 CLI 是依 spike 文件寫的合成行為，不是錄下來的）。擁有者下次用 haiku 跑 review_loop 任務、讓它執行 `pnpm check`，應該看到 `policy.action`（run_in_worktree、auto），不再出現「no approval surface」。
+
 ### 任務頁整理：短標題、單行標題列、完成後收合過程（2026-11-15，分支 `task-page-cleanup`）
 
 擁有者實測覺得任務頁很亂。只改 `apps/web`，沒有動後端、沒有新 API。
