@@ -68,17 +68,51 @@ function ChipPreview({ item }: { item: PendingAttachment }) {
   )
 }
 
+/** Removing a sent file: which ones are removed already, and how to remove one. */
+export interface AttachmentControls {
+  removed: ReadonlySet<string>
+  onRemove: (attachment: AttachmentInfo) => void | Promise<void>
+}
+
 /** Files on a sent message: image thumbnails that open large, other files by name (click to save). */
-export function MessageAttachments({ attachments }: { attachments: readonly AttachmentInfo[] }) {
+export function MessageAttachments({
+  attachments,
+  controls,
+}: {
+  attachments: readonly AttachmentInfo[]
+  controls?: AttachmentControls | undefined
+}) {
   const [open, setOpen] = useState<AttachmentInfo | undefined>()
   if (!attachments.length) return null
   return (
     <div className="message-attachments" data-testid="message-attachments">
       {attachments.map((attachment) =>
-        isImageType(attachment.mediaType) ? (
-          <ImageThumb key={attachment.id} attachment={attachment} onOpen={() => setOpen(attachment)} />
+        attachment.disabled || controls?.removed.has(attachment.id) ? (
+          <span
+            key={attachment.id}
+            className="message-file attachment-removed"
+            data-testid="removed-attachment"
+            title={attachment.name}
+          >
+            <Icon name="file" size={14} />
+            <span className="attachment-name">{attachment.name}</span>
+          </span>
         ) : (
-          <FileChip key={attachment.id} attachment={attachment} />
+          <span key={attachment.id} className="message-attachment">
+            {isImageType(attachment.mediaType) ? (
+              <ImageThumb attachment={attachment} onOpen={() => setOpen(attachment)} />
+            ) : (
+              <FileChip attachment={attachment} />
+            )}
+            {controls ? (
+              <IconButton
+                icon="x"
+                label={`移除 ${attachment.name}`}
+                className="attachment-remove"
+                onClick={() => void controls.onRemove(attachment)}
+              />
+            ) : null}
+          </span>
         ),
       )}
       {open ? <Lightbox attachment={open} onClose={() => setOpen(undefined)} /> : null}

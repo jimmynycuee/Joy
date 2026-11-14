@@ -341,6 +341,30 @@ describe('ClaudeCliProvider.run with steering', () => {
     })
   })
 
+  it('sends a long prompt (attached text files) on stdin, not as one argument', async () => {
+    const { dir, provider, received, stdin } = steered()
+    const big = `review this\n${'y'.repeat(200 * 1024)}`
+    await collect(provider.run(opts(dir, { prompt: big, outputSchema: { type: 'object' } }), model))
+    expect(received().args).toEqual(expect.arrayContaining(['--input-format', 'stream-json']))
+    expect(received().args.join(' ').length).toBeLessThan(10_000)
+    expect(stdin()).toEqual([
+      { type: 'user', message: { role: 'user', content: big }, parent_tool_use_id: null },
+    ])
+  })
+
+  it('refuses a prompt too long for the command line in a container run', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'joy-claude-test-'))
+    dirs.push(dir)
+    const provider = new ClaudeCliProvider({
+      command: process.execPath,
+      wrap: ({ command, args }) => Promise.resolve({ command, args: [fakeCli, ...args] }),
+      forwardsStdin: () => false,
+    })
+    await expect(collect(provider.run(opts(dir, { prompt: 'z'.repeat(101 * 1024) }), model))).rejects.toThrow(
+      /too long for the command line in container mode/,
+    )
+  })
+
   it('refuses images in a container run instead of dropping them', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'joy-claude-test-'))
     dirs.push(dir)

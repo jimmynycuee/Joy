@@ -38,8 +38,9 @@ claude -p <prompt>
 - 來源：官方 Agent SDK 文件 code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode（完整讀過）：streaming input 支援「Image uploads」，範例的 user message `content` 是 `[{type:'text',text}, {type:'image', source:{type:'base64', media_type:'image/png', data}}]`；single message 模式明寫**不支援**直接附圖。`source` 缺漏時 CLI 不報錯，只送一段「Image could not be processed」文字給模型。
 - 本機 `claude --help`（2.1.319）：沒有 `--image` 之類的旗標；`--file file_id:path` 是下載雲端檔案，不適用。
 - Joy 做法：有圖片的 run 一律用 `--input-format stream-json`（即使沒有 steer），第一則 stdin 訊息帶 image block，第一個 `result` 關 stdin；steer 也可帶圖。圖片檔在 `<JOY_HOME>/attachments`，Joy 自己讀成 base64，不要求 agent 用 Read 讀 worktree 外的路徑（那會觸發權限詢問，也要 `--add-dir`，而 `--add-dir` 同時放行寫入）。
-- 容器模式沒有 stdin → 收到圖片時 provider 丟出錯誤（不改用路徑、不默默丟掉）。
-- 文字檔不用 CLI 能力：Joy 把內容直接引用進 prompt。
+- 容器模式沒有 stdin：server 在送出時就以 422 拒收（容器專案加任一 Claude 角色加圖片）；provider 收到圖片時仍會丟出錯誤，作為最後一道防線（不改用路徑、不默默丟掉）。
+- 文字檔不用 CLI 能力：Joy 把內容直接引用進 prompt。prompt 超過 16 KB 時改用 stdin（stream-json），避開單一命令列參數的 OS 上限（Linux 128 KiB、Windows 整行約 32K 字元）；沒有 stdin 的容器 run 超過 100 KB 時報錯。
+- 圖片大小上限：platform.claude.com/docs/en/build-with-claude/vision 的「Request limits」寫每張 10 MB（Claude API）、5 MB（Bedrock），**兩者都以 base64-encoded 後的大小計算**；單一請求超過 20 張圖時，每張都要套更嚴的尺寸限制；每張圖尺寸上限 8000×8000 px。Joy 收原始 ≤ 3.75 MiB（base64 後 ≤ 5 MiB），每次 run 最多送最新 8 張。
 - **未驗證**：真實 CLI 是否接受這個形狀、大圖（> 5 MB 或高解析度）會不會自己縮小；要錄一份帶小 PNG 的 fixture。
 
 ## 事件格式（stdout JSONL）

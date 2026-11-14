@@ -8,6 +8,7 @@ import type { ReviewView, TimelineEntry } from '../timeline.js'
 import { formatSpent } from '../usage.js'
 import type { TaskEvent } from '../types.js'
 import type { AttachmentInfo } from '../attachments.js'
+import type { AttachmentControls } from './Attachments.js'
 import { MessageAttachments } from './Attachments.js'
 import { Markdown } from './Markdown.js'
 import { Mascot } from './Mascot.js'
@@ -20,16 +21,20 @@ export function UserBubble({
   text,
   state,
   attachments = [],
+  attachmentControls,
 }: {
   text: string
   state?: DeliveryState
   attachments?: readonly AttachmentInfo[]
+  attachmentControls?: AttachmentControls | undefined
 }) {
   const tag = state ? deliveryTag(state) : undefined
   return (
     <div className="msg-row msg-row-user">
       <div className="user-column">
-        {attachments.length ? <MessageAttachments attachments={attachments} /> : null}
+        {attachments.length ? (
+          <MessageAttachments attachments={attachments} controls={attachmentControls} />
+        ) : null}
         {text ? (
           <div
             className={`user-bubble${state === 'discarded' || state === 'lost' ? ' user-bubble-off' : ''}`}
@@ -173,7 +178,15 @@ function ChecksCard({ entry }: { entry: Extract<TimelineEntry, { kind: 'checks' 
 }
 
 /** The event log as a conversation: prose, collapsible tool calls, phase markers and review cards. */
-export function TimelineView({ entries, showDetails }: { entries: TimelineEntry[]; showDetails: boolean }) {
+export function TimelineView({
+  entries,
+  showDetails,
+  attachmentControls,
+}: {
+  entries: TimelineEntry[]
+  showDetails: boolean
+  attachmentControls?: AttachmentControls
+}) {
   return (
     <div className="timeline" aria-label="任務紀錄" data-testid="event-stream">
       {entries.map((entry) => (
@@ -194,7 +207,12 @@ export function TimelineView({ entries, showDetails }: { entries: TimelineEntry[
           ) : entry.kind === 'review' ? (
             <ReviewCard entry={entry} />
           ) : entry.kind === 'user' ? (
-            <UserBubble text={entry.text} state={entry.state} attachments={entry.attachments} />
+            <UserBubble
+              text={entry.text}
+              state={entry.state}
+              attachments={entry.attachments}
+              attachmentControls={attachmentControls}
+            />
           ) : entry.kind === 'checks' ? (
             <ChecksCard entry={entry} />
           ) : entry.kind === 'phase' ? (

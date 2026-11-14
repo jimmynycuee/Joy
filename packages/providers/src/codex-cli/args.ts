@@ -25,7 +25,13 @@ export function mcpOverrides(servers: McpServerConfig[]): string[] {
 }
 
 /** Builds the `codex` argument list. `outputSchemaPath` is the file written from `opts.outputSchema`. */
-export function buildCodexArgs(opts: RunOptions, model: ModelRef, outputSchemaPath?: string): string[] {
+/** `promptOnStdin`: the prompt argument is `-` and the caller writes the prompt to stdin. */
+export function buildCodexArgs(
+  opts: RunOptions,
+  model: ModelRef,
+  outputSchemaPath?: string,
+  promptOnStdin = false,
+): string[] {
   const args = opts.resumeSessionId ? ['exec', 'resume', '--json'] : ['exec', '--json']
   args.push('--model', model.model)
   if (model.effort) args.push('-c', `model_reasoning_effort=${q(model.effort)}`)
@@ -52,6 +58,6 @@ export function buildCodexArgs(opts: RunOptions, model: ModelRef, outputSchemaPa
   // so opts.sessionId is ignored (capabilities.presetSessionId is false).
   args.push('--')
   if (opts.resumeSessionId) args.push(opts.resumeSessionId)
-  args.push(opts.prompt)
+  args.push(promptOnStdin ? '-' : opts.prompt)
   return args
 }

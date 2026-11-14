@@ -3091,6 +3091,8 @@ summary.checks-head {
 }
 .message-image img {
   display: block;
+  min-width: 56px;
+  min-height: 56px;
   max-width: 220px;
   max-height: 160px;
   object-fit: cover;
@@ -3135,4 +3137,22 @@ summary.checks-head {
   top: 16px;
   right: 16px;
   background: var(--surface);
+}
+.message-attachment {
+  position: relative;
+  display: inline-flex;
+}
+.message-attachment .attachment-remove {
+  opacity: 0;
+}
+.message-attachment:hover .attachment-remove,
+.message-attachment .attachment-remove:focus-visible {
+  opacity: 1;
+}
+.attachment-removed {
+  color: var(--muted);
+  opacity: 0.7;
+}
+.attachment-removed .attachment-name {
+  text-decoration: line-through;
 }

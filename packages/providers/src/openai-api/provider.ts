@@ -391,7 +391,7 @@ async function userContent(opts: RunOptions): Promise<unknown> {
         return { type: 'input_image', image_url: `data:${image.mediaType};base64,${data}` }
       } catch (error) {
         throw new Error(
-          `An attached image could not be read (${error instanceof Error ? error.message : String(error)}).`,
+          `An attached image could not be read (${error instanceof Error ? error.message : String(error)}). Remove it from the message (✕ on it in the thread) and attach it again.`,
           { cause: error },
         )
       }

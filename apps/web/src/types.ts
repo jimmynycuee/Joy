@@ -70,7 +70,14 @@ export type TaskDetails = {
   pendingPlan?: PendingPlan | null
   queuedMessages?: QueuedMessage[]
   /** Files the owner attached: the first prompt's have no messageId (missing from older servers). */
-  attachments?: Array<{ id: string; name: string; mediaType: string; size: number; messageId?: string }>
+  attachments?: Array<{
+    id: string
+    name: string
+    mediaType: string
+    size: number
+    messageId?: string
+    disabled?: boolean
+  }>
   /** A message sent now reaches the working agent at once, without stopping it (missing from older servers). */
   steerable?: boolean
   /** `interrupt: true` would stop the agent's current step now (missing from older servers). */

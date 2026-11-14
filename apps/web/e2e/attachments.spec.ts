@@ -30,7 +30,7 @@ interface Calls {
 
 async function mockApi(
   page: Page,
-  options: { failNames?: string[]; details?: Record<string, unknown> } = {},
+  options: { failNames?: string[]; details?: Record<string, unknown>; uploadDelayMs?: number } = {},
 ): Promise<Calls> {
   const calls: Calls = { uploads: [], deletes: [], taskBodies: [], messageBodies: [] }
   let next = 0
@@ -45,6 +45,7 @@ async function mockApi(
       const name = decodeURIComponent(request.headers()['x-joy-filename'] ?? '')
       const size = request.postDataBuffer()?.byteLength ?? 0
       calls.uploads.push({ name, size })
+      if (options.uploadDelayMs) await new Promise((resolve) => setTimeout(resolve, options.uploadDelayMs))
       if (options.failNames?.includes(name)) {
         await route.fulfill({ status: 415, json: { error: 'Only images and text files can be attached' } })
         return
@@ -55,8 +56,13 @@ async function mockApi(
         json: { attachment: { id: `att-${++next}`, name: name || 'image.png', mediaType, size } },
       })
     } else if (path.startsWith('/api/attachments/') && method === 'DELETE') {
-      calls.deletes.push(path.slice('/api/attachments/'.length))
-      await route.fulfill({ json: { ok: true } })
+      const id = path.slice('/api/attachments/'.length)
+      calls.deletes.push(id)
+      // A sent file stays listed, marked removed.
+      const listed =
+        (options.details?.attachments as Array<{ id: string; disabled?: boolean }> | undefined) ?? []
+      for (const attachment of listed) if (attachment.id === id) attachment.disabled = true
+      await route.fulfill({ json: { attachment: { id, disabled: true } } })
     } else if (path.startsWith('/api/attachments/')) {
       await route.fulfill({ status: 200, contentType: 'image/png', body: PNG })
     } else if (path === '/api/tasks' && method === 'POST') {
@@ -225,7 +231,7 @@ test('the thread shows files on messages, enlarges images, and sends an image-on
 
   const files = page.getByTestId('message-attachments')
   await expect(files).toHaveCount(2)
-  await expect(files.nth(1).getByRole('button', { name: /error\.log/ })).toContainText('2.0 KB')
+  await expect(files.nth(1).getByRole('button', { name: /^error\.log/ })).toContainText('2.0 KB')
 
   await files.first().getByRole('button', { name: '放大 before.png' }).click()
   const lightbox = page.getByRole('dialog', { name: 'before.png' })
@@ -241,4 +247,38 @@ test('the thread shows files on messages, enlarges images, and sends an image-on
   await expect.poll(() => calls.messageBodies.length).toBe(1)
   expect(calls.messageBodies[0]).toEqual({ text: '', attachments: ['att-1'] })
   await expect(page.getByTestId('attachment-tray')).toHaveCount(0)
+})
+
+test('a file removed while it is still uploading is freed once the upload lands', async ({ page }) => {
+  const calls = await mockApi(page, { uploadDelayMs: 600 })
+  await page.goto('/')
+  await page
+    .getByTestId('attachment-input')
+    .setInputFiles([{ name: 'slow.png', mimeType: 'image/png', buffer: PNG }])
+  const chip = page.getByTestId('attachment-tray').locator('li')
+  await expect(chip).toHaveAttribute('data-status', 'uploading')
+  await chip.getByRole('button', { name: '移除 slow.png' }).click()
+  await expect(page.getByTestId('attachment-tray')).toHaveCount(0)
+  await expect.poll(() => calls.deletes).toEqual(['att-1'])
+})
+
+test('a sent file can be removed from its message and then shows as removed', async ({ page }) => {
+  const task = taskOf('done')
+  const details = {
+    task,
+    repo,
+    attempts: [],
+    reviews: [],
+    attachments: [{ id: 'first-shot', name: 'broken.png', mediaType: 'image/png', size: PNG.byteLength }],
+    events: [],
+  }
+  const calls = await mockApi(page, { details })
+  page.on('dialog', (dialog) => void dialog.accept())
+  await page.goto(`/?task=${task.id}`)
+  const files = page.getByTestId('message-attachments')
+  await files.locator('.message-attachment').first().hover()
+  await files.getByRole('button', { name: '移除 broken.png' }).click()
+  await expect.poll(() => calls.deletes).toEqual(['first-shot'])
+  await expect(files.getByTestId('removed-attachment')).toContainText('broken.png')
+  await expect(files.getByRole('button', { name: '放大 broken.png' })).toHaveCount(0)
 })

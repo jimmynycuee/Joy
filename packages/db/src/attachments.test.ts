@@ -3,6 +3,7 @@ import type { RepoId, TaskId } from '@joy/core'
 import {
   createAttachment,
   deleteUnusedAttachments,
+  disableAttachment,
   getAttachment,
   linkAttachments,
   listAttachmentIds,
@@ -72,6 +73,18 @@ describe('attachments', () => {
     linkAttachments(db, [B], task)
     expect(deleteUnusedAttachments(db, '2000-01-01T00:00:00.000Z')).toEqual([])
     expect(deleteUnusedAttachments(db, '2999-01-01T00:00:00.000Z').map((a) => a.id)).toEqual([A])
+    expect([...listAttachmentIds(db)]).toEqual([B])
+  })
+
+  it('marks only sent attachments as removed, and stops keeping their bytes', () => {
+    const task = seed()
+    createAttachment(db, { id: A, name: 'a.png', mediaType: 'image/png', size: 1 })
+    createAttachment(db, { id: B, name: 'b.png', mediaType: 'image/png', size: 1 })
+    linkAttachments(db, [A], task)
+    expect(getAttachment(db, A)?.disabled).toBe(false)
+    expect(disableAttachment(db, B)).toBe(false)
+    expect(disableAttachment(db, A)).toBe(true)
+    expect(getAttachment(db, A)?.disabled).toBe(true)
     expect([...listAttachmentIds(db)]).toEqual([B])
   })
 

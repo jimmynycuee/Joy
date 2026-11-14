@@ -9,6 +9,8 @@ export interface AttachmentInfo {
   name: string
   mediaType: string
   size: number
+  /** The owner removed it after sending; agents only get its name now. */
+  disabled?: boolean
 }
 
 export type AttachmentStatus = 'uploading' | 'ready' | 'error'
@@ -26,7 +28,8 @@ export interface PendingAttachment {
 }
 
 export const MAX_ATTACHMENTS = 10
-export const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+/** Raw bytes whose base64 form stays within 5 MiB (the server's limit; see packages/server/src/attachments.ts). */
+export const MAX_IMAGE_BYTES = ((5 * 1024 * 1024) / 4) * 3
 export const MAX_TEXT_BYTES = 256 * 1024
 
 export function isImageType(mediaType: string | undefined): boolean {

@@ -19,6 +19,8 @@ export interface AttachmentRecord {
   taskId?: TaskId
   /** The user.message the file came with; absent for the task's first prompt (or while not used yet). */
   messageId?: string
+  /** The owner removed it after sending; its bytes are gone and agents only get its name. */
+  disabled: boolean
   createdAt: string
 }
 
@@ -29,6 +31,7 @@ interface Row {
   size: number
   task_id: string | null
   message_id: string | null
+  disabled: number
   created_at: string
 }
 
@@ -40,6 +43,7 @@ function toRecord(row: Row): AttachmentRecord {
     size: row.size,
     ...(row.task_id ? { taskId: row.task_id as TaskId } : {}),
     ...(row.message_id ? { messageId: row.message_id } : {}),
+    disabled: row.disabled === 1,
     createdAt: row.created_at,
   }
 }
@@ -117,9 +121,20 @@ export function deleteUnusedAttachment(db: Database, id: string): boolean {
   return Number(db.prepare('DELETE FROM attachments WHERE id = ? AND task_id IS NULL').run(id).changes) === 1
 }
 
-/** Every attachment id Joy knows, for removing files no row points to any more. */
+/** Marks a sent attachment as removed by the owner. False when it is unknown or not sent. */
+export function disableAttachment(db: Database, id: string): boolean {
+  return (
+    Number(
+      db.prepare('UPDATE attachments SET disabled = 1 WHERE id = ? AND task_id IS NOT NULL').run(id).changes,
+    ) === 1
+  )
+}
+
+/** Ids whose bytes Joy keeps, for removing files no row needs any more (removed attachments included). */
 export function listAttachmentIds(db: Database): Set<string> {
   return new Set(
-    (db.prepare('SELECT id FROM attachments').all() as Array<{ id: string }>).map((row) => row.id),
+    (db.prepare('SELECT id FROM attachments WHERE disabled = 0').all() as Array<{ id: string }>).map(
+      (row) => row.id,
+    ),
   )
 }

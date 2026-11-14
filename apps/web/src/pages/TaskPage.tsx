@@ -17,6 +17,7 @@ import { followUpState } from '../messages.js'
 import { repoColor } from '../repo-colors.js'
 import { diffFrom, failureMessage, taskBranchInfo, worktreeRemoved } from '../task-info.js'
 import { buildTimeline } from '../timeline.js'
+import type { AttachmentControls } from '../components/Attachments.js'
 import type { Repo, TaskDetails } from '../types.js'
 import { parseUsage } from '../usage.js'
 
@@ -51,6 +52,23 @@ export function TaskPage({
   const queuedIds = useMemo(
     () => (details.queuedMessages ? new Set(details.queuedMessages.map((message) => message.id)) : undefined),
     [details.queuedMessages],
+  )
+  // A sent file can be taken back: agents get only its name from then on (and a file a backend refuses no longer
+  // breaks the task).
+  const attachmentControls: AttachmentControls = useMemo(
+    () => ({
+      removed: new Set((details.attachments ?? []).filter((a) => a.disabled).map((a) => a.id)),
+      onRemove: async (attachment) => {
+        if (!window.confirm(`移除「${attachment.name}」？之後 agent 只會看到檔名，無法復原。`)) return
+        try {
+          await request(`/api/attachments/${encodeURIComponent(attachment.id)}`, { method: 'DELETE' })
+          onChanged()
+        } catch (error) {
+          onError(errorMessage(error, '無法移除附件'))
+        }
+      },
+    }),
+    [details.attachments, onChanged, onError],
   )
   const entries = useMemo(
     () =>
@@ -160,8 +178,13 @@ export function TaskPage({
               <UserBubble
                 text={task.prompt}
                 attachments={(details.attachments ?? []).filter((attachment) => !attachment.messageId)}
+                attachmentControls={attachmentControls}
               />
-              <TimelineView entries={entries} showDetails={showDetails} />
+              <TimelineView
+                entries={entries}
+                showDetails={showDetails}
+                attachmentControls={attachmentControls}
+              />
               {hiddenCount > 0 ? (
                 <button
                   type="button"

@@ -28,7 +28,7 @@ describe('attachments', () => {
   it('refuses files the server would refuse anyway, before uploading', () => {
     expect(precheck({ size: 10, type: 'image/png' }, 0)).toBeUndefined()
     expect(precheck({ size: 0, type: 'text/plain' }, 0)).toBe('檔案是空的')
-    expect(precheck({ size: 6 * 1024 * 1024, type: 'image/png' }, 0)).toBe('圖片上限 5.0 MB')
+    expect(precheck({ size: 6 * 1024 * 1024, type: 'image/png' }, 0)).toBe('圖片上限 3.8 MB')
     expect(precheck({ size: 300 * 1024, type: '' }, 0)).toBe('文字檔上限 256 KB')
     expect(precheck({ size: 1, type: 'image/png' }, MAX_ATTACHMENTS)).toBe('最多 10 個檔案')
   })

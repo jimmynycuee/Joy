@@ -10,7 +10,7 @@ import type {
   RunOptions,
 } from '@joy/core'
 import type { CommandWrapper } from '../cli-run.js'
-import { probeVersion, runCli } from '../cli-run.js'
+import { probeVersion, PROMPT_ARG_HARD_LIMIT, PROMPT_ARG_LIMIT, promptBytes, runCli } from '../cli-run.js'
 import { buildCodexArgs } from './args.js'
 import { CodexAppServerProvider, type CodexAppServerOptions } from './app-server.js'
 import { CodexStreamParser } from './parse.js'
@@ -22,6 +22,11 @@ export interface CodexCliOptions extends CodexAppServerOptions {
   fallbackToExec?: boolean
   /** Runs `codex exec` another way, e.g. in a container for untrusted repositories (T4.5). Exec mode only. */
   wrap?: CommandWrapper
+  /**
+   * Whether `wrap` still hands the CLI its stdin for a run in `cwd` (a long prompt goes there). `docker run` without
+   * `-i` does not. Without it, a provider that has `wrap` keeps every prompt on the command line.
+   */
+  forwardsStdin?: (cwd: string) => boolean
 }
 
 /** Compatibility provider for the legacy one-turn `codex exec --json` protocol. */
@@ -42,6 +47,7 @@ export class CodexExecProvider implements AgentProvider {
   private readonly timeoutMs: number
   private readonly env: NodeJS.ProcessEnv | undefined
   private readonly wrap: CommandWrapper | undefined
+  private readonly forwardsStdin: ((cwd: string) => boolean) | undefined
 
   constructor(options: CodexCliOptions = {}) {
     this.command = options.command ?? 'codex'
@@ -49,9 +55,19 @@ export class CodexExecProvider implements AgentProvider {
     this.timeoutMs = options.timeoutMs ?? 60 * 60 * 1000
     this.env = options.env
     this.wrap = options.wrap
+    this.forwardsStdin = options.forwardsStdin
   }
 
   async *run(opts: RunOptions, model: ModelRef): AsyncGenerator<AgentEvent> {
+    const stdinReaches = !this.wrap || (this.forwardsStdin?.(opts.cwd) ?? false)
+    const size = promptBytes(opts.prompt)
+    if (!stdinReaches && size > PROMPT_ARG_HARD_LIMIT)
+      throw new Error(
+        `The prompt is too long for the command line in container mode (${Math.ceil(size / 1024)} KB). Remove large attached files from the thread (✕ on them), or turn off container mode for this project.`,
+      )
+    // `codex exec [resume <id>] -` reads the prompt from stdin (`codex exec --help`, codex-cli 0.166.0); one
+    // command-line argument has an OS limit.
+    const promptOnStdin = stdinReaches && size > PROMPT_ARG_LIMIT
     let tmp: string | undefined
     try {
       let schemaPath: string | undefined
@@ -64,13 +80,22 @@ export class CodexExecProvider implements AgentProvider {
         source: 'codex-cli',
         label: 'Codex',
         ...(await this.commandLine(
-          [...this.argsPrefix, ...buildCodexArgs(opts, model, schemaPath)],
+          [...this.argsPrefix, ...buildCodexArgs(opts, model, schemaPath, promptOnStdin)],
           opts.cwd,
+          opts.images?.map((image) => image.path) ?? [],
         )),
         cwd: opts.cwd,
         signal: opts.signal,
         timeoutMs: this.timeoutMs,
         parser: new CodexStreamParser({ cwd: opts.cwd, structured: Boolean(opts.outputSchema) }),
+        ...(promptOnStdin
+          ? {
+              onInput: (input) => {
+                input.writeLine(opts.prompt)
+                input.end()
+              },
+            }
+          : {}),
         ...(this.env ? { env: this.env } : {}),
       })
     } finally {
@@ -78,9 +103,19 @@ export class CodexExecProvider implements AgentProvider {
     }
   }
 
-  private async commandLine(args: string[], cwd: string): Promise<{ command: string; args: string[] }> {
+  private async commandLine(
+    args: string[],
+    cwd: string,
+    readFiles: string[],
+  ): Promise<{ command: string; args: string[] }> {
     return this.wrap
-      ? this.wrap({ cli: 'codex', command: this.command, args, cwd })
+      ? this.wrap({
+          cli: 'codex',
+          command: this.command,
+          args,
+          cwd,
+          ...(readFiles.length ? { readFiles } : {}),
+        })
       : { command: this.command, args }
   }
 

@@ -119,8 +119,7 @@ export interface RunOptions {
 }
 
 /** Image types every backend accepts. */
-export const IMAGE_MEDIA_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const
-export type ImageMediaType = (typeof IMAGE_MEDIA_TYPES)[number]
+export type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
 
 /** An image file on this computer, outside the worktree (it is never committed). */
 export interface ImageInput {

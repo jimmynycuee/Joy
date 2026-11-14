@@ -5,6 +5,10 @@ import { isImageType, precheck, readDraftAttachments, writeDraftAttachments } fr
 
 let nextKey = 0
 
+function discard(id: string): Promise<unknown> {
+  return request(`/api/attachments/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => undefined)
+}
+
 async function upload(file: File): Promise<AttachmentInfo> {
   const { attachment } = await request<{ attachment: AttachmentInfo }>('/api/attachments', {
     method: 'POST',
@@ -21,6 +25,8 @@ async function upload(file: File): Promise<AttachmentInfo> {
 export function useAttachments(context: string) {
   const [items, setItems] = useState<PendingAttachment[]>(() => readDraftAttachments(context))
   const contextRef = useRef(context)
+  // Removed while still uploading: once the upload lands, it is freed on the server too.
+  const removedKeys = useRef(new Set<string>())
   const itemsRef = useRef(items)
   itemsRef.current = items
 
@@ -61,6 +67,10 @@ export function useAttachments(context: string) {
         const origin = contextRef.current
         upload(file)
           .then((info) => {
+            if (removedKeys.current.delete(key)) {
+              void discard(info.id)
+              return
+            }
             if (contextRef.current !== origin) return
             update((current) =>
               current.map((item) =>
@@ -78,6 +88,7 @@ export function useAttachments(context: string) {
             )
           })
           .catch((cause: unknown) => {
+            removedKeys.current.delete(key)
             if (contextRef.current !== origin) return
             const message = errorMessage(cause, '上傳失敗')
             update((current) =>
@@ -94,10 +105,8 @@ export function useAttachments(context: string) {
       const item = itemsRef.current.find((candidate) => candidate.key === key)
       if (item?.localUrl) URL.revokeObjectURL(item.localUrl)
       // Not sent yet, so nothing needs it: free it on the server too (best effort, cleanup catches the rest).
-      if (item?.status === 'ready' && item.id)
-        void request(`/api/attachments/${encodeURIComponent(item.id)}`, { method: 'DELETE' }).catch(
-          () => undefined,
-        )
+      if (item?.status === 'ready' && item.id) void discard(item.id)
+      if (item?.status === 'uploading') removedKeys.current.add(key)
       update((current) => current.filter((candidate) => candidate.key !== key))
     },
     [update],

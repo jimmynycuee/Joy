@@ -12,7 +12,7 @@ import type {
   Steer,
 } from '@joy/core'
 import type { CommandWrapper, StreamParser } from '../cli-run.js'
-import { probeVersion, runCli } from '../cli-run.js'
+import { probeVersion, PROMPT_ARG_HARD_LIMIT, PROMPT_ARG_LIMIT, promptBytes, runCli } from '../cli-run.js'
 import { isRecord } from '../guards.js'
 import type { ProcessInput } from '../process.js'
 import type { ClaudeImage } from './args.js'
@@ -72,11 +72,17 @@ export class ClaudeCliProvider implements AgentProvider {
     // Images only travel as content blocks on stdin; `-p <prompt>` has no way to carry them.
     if (opts.images?.length && !stdinReaches)
       throw new Error(
-        'Claude Code cannot see attached images in container mode (the container gets no input stream). Remove the images, or run this project without container mode.',
+        'Claude Code cannot see attached images in container mode (the container gets no input stream). Remove the image from the message (✕ on it in the thread), or turn off container mode for this project.',
+      )
+    const size = promptBytes(opts.prompt)
+    if (!stdinReaches && size > PROMPT_ARG_HARD_LIMIT)
+      throw new Error(
+        `The prompt is too long for the command line in container mode (${Math.ceil(size / 1024)} KB). Remove large attached files from the thread (✕ on them), or turn off container mode for this project.`,
       )
     const images = opts.images?.length ? await readImages(opts.images) : []
-    const steering =
-      (opts.onSteer || images.length) && stdinReaches ? new ClaudeSteering(opts, images) : undefined
+    // A long prompt (attached text files) goes on stdin too: one command-line argument has an OS limit.
+    const streaming = stdinReaches && Boolean(opts.onSteer || images.length || size > PROMPT_ARG_LIMIT)
+    const steering = streaming ? new ClaudeSteering(opts, images) : undefined
     let tmp: string | undefined
     try {
       let mcpConfigPath: string | undefined
@@ -187,7 +193,7 @@ async function readImages(images: readonly ImageInput[]): Promise<ClaudeImage[]>
         return { mediaType: image.mediaType, base64: (await readFile(image.path)).toString('base64') }
       } catch (error) {
         throw new Error(
-          `An attached image could not be read (${error instanceof Error ? error.message : String(error)}).`,
+          `An attached image could not be read (${error instanceof Error ? error.message : String(error)}). Remove it from the message (✕ on it in the thread) and attach it again.`,
           { cause: error },
         )
       }

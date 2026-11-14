@@ -182,6 +182,12 @@ export function eventTitle(event: TaskEvent): string {
     return `已還原到檢查點 ${String(payload?.n ?? '')}${dropped > 0 ? `，丟掉 ${dropped} 個 commit` : ''}`
   }
   if (event.type === 'task.updated') return '任務已更新'
+  if (event.type === 'attachment.missing') {
+    const names = parseAttachments(payload?.attachments).map((file) => file.name)
+    return `這台電腦上找不到附件：${names.join('、')}（agent 只收到檔名）`
+  }
+  if (event.type === 'attachment.removed')
+    return `已移除附件${typeof payload?.name === 'string' ? `：${payload.name}` : ''}`
   return event.type.replaceAll('_', ' ')
 }
 
@@ -205,6 +211,7 @@ const QUIET_EVENTS = new Set([
   'user.message.requeued',
   'steer.available',
   'checkpoint.created',
+  'attachment.removed',
   'task.updated',
 ])
 
@@ -214,6 +221,7 @@ const STEP_TONES: Record<string, string> = {
   'checkpoint.restored': 'ok',
   'checks.skipped': 'muted',
   'run.interrupted': 'muted',
+  'attachment.missing': 'bad',
 }
 
 export function buildTimeline(

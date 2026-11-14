@@ -120,6 +120,7 @@ export {
   createAttachment,
   deleteUnusedAttachment,
   deleteUnusedAttachments,
+  disableAttachment,
   getAttachment,
   linkAttachments,
   listAttachmentIds,
