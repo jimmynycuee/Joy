@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage, request } from '../api.js'
 import { DiffBrowser, DiffStat } from '../components/DiffView.js'
 import { CheckpointsPopover } from '../components/CheckpointsPopover.js'
+import { Mascot } from '../components/Mascot.js'
 import { PlanCard } from '../components/PlanCard.js'
 import { PrStatusCard } from '../components/PrStatusCard.js'
 import { RunningIndicator, TimelineView, UserBubble } from '../components/Thread.js'
@@ -9,18 +10,20 @@ import { ThreadComposer } from '../components/ThreadComposer.js'
 import { TitleEditor } from '../components/TitleEditor.js'
 import { UsagePopover } from '../components/UsagePopover.js'
 import { ApprovalsPanel, ComparePanel, DiscardButton, PublishPanel } from '../components/task-panels.js'
-import { Button, CopyButton, Icon, IconButton } from '../components/ui.js'
+import { Button, CopyButton, Icon, IconButton, ProjectDot } from '../components/ui.js'
 import { diffTotals } from '../diff.js'
 import { modeLabel, repoName, statusLabel } from '../labels.js'
 import { followUpState } from '../messages.js'
+import { repoColor } from '../repo-colors.js'
 import { diffFrom, failureMessage, taskBranchInfo, worktreeRemoved } from '../task-info.js'
 import { buildTimeline } from '../timeline.js'
-import type { TaskDetails } from '../types.js'
+import type { Repo, TaskDetails } from '../types.js'
 import { parseUsage } from '../usage.js'
 
 /** One task as a conversation: what you asked, what the agents did, and what is waiting for you. */
 export function TaskPage({
   details,
+  repos,
   changesOpen,
   onToggleChanges,
   onChanged,
@@ -28,6 +31,8 @@ export function TaskPage({
   onRename,
 }: {
   details: TaskDetails
+  /** Every project, so this one's colour follows its place in the list. */
+  repos: Repo[]
   changesOpen: boolean | null
   onToggleChanges: (open: boolean) => void
   onChanged: () => void
@@ -95,7 +100,10 @@ export function TaskPage({
     <main className="thread" aria-label="任務進度">
       <header className="thread-header">
         <div className="thread-heading">
-          <TitleEditor title={task.title} onRename={onRename} />
+          <div className="thread-title-line">
+            <ProjectDot color={repoColor(task.repoId, repos)} className="project-dot-lg" />
+            <TitleEditor title={task.title} onRename={onRename} />
+          </div>
           <div className="thread-sub">
             <span>{repoName(repo?.path)}</span>
             <span aria-hidden="true">·</span>
@@ -170,7 +178,7 @@ export function TaskPage({
               />
               {task.status === 'failed' ? (
                 <section className="card error-card" aria-label="任務失敗">
-                  <Icon name="alert" size={18} />
+                  <Mascot mood="error" size={40} decorative />
                   <div className="error-card-copy">
                     <strong>任務失敗</strong>
                     <p>{failureMessage(details.events) ?? '沒有收到更詳細的錯誤訊息。'}</p>
@@ -208,6 +216,12 @@ export function TaskPage({
                   onError={onError}
                 />
               ) : null}
+              {task.status === 'done' ? (
+                <section className="done-row" aria-label="任務完成" data-testid="task-done">
+                  <Mascot mood="happy" size={40} decorative />
+                  <span>任務完成了</span>
+                </section>
+              ) : null}
               <div className="thread-actions">
                 <PublishPanel details={details} onChanged={onChanged} />
                 <DiscardButton details={details} onChanged={onChanged} />
@@ -231,6 +245,7 @@ export function TaskPage({
               <DiffBrowser diff={diff} />
             ) : (
               <div className="empty-state">
+                <Mascot mood="sleeping" size={56} decorative />
                 <h3>還沒有變更</h3>
                 <p>任務完成後，改了哪些地方會顯示在這裡。</p>
               </div>

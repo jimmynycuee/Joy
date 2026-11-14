@@ -22,9 +22,11 @@ import {
   listTaskEvents,
   listTasks,
   listUsage,
+  REPO_COLORS,
   setTaskStatus,
   updateAttempt,
   updateRepoCheckCommand,
+  updateRepoColor,
   updateTask,
 } from './repositories.js'
 
@@ -304,5 +306,44 @@ describe('repository check command', () => {
     expect(updateRepoCheckCommand(db, repo.id, null)?.checkCommand).toBeUndefined()
     expect(() => updateRepoCheckCommand(db, repo.id, [])).toThrow('Invalid check command')
     expect(() => db.prepare('UPDATE repos SET check_command = \'"pnpm check"\'').run()).toThrow()
+  })
+})
+
+describe('repository colour', () => {
+  it('starts automatic, stores one of the six ids, and clears back to automatic', () => {
+    const db = fresh()
+    const { repo } = seed(db)
+    expect(repo.color).toBeUndefined()
+    // The table's CHECK and the exported list say the same six ids.
+    for (const id of REPO_COLORS) {
+      expect(updateRepoColor(db, repo.id, id)?.color).toBe(id)
+      db.prepare('UPDATE repos SET color = ? WHERE id = ?').run(id, repo.id)
+    }
+    expect(REPO_COLORS).toHaveLength(6)
+    expect(updateRepoColor(db, repo.id, 'purple')?.color).toBe('purple')
+    expect(getRepo(db, repo.id)?.color).toBe('purple')
+    expect(updateRepoColor(db, repo.id, null)?.color).toBeUndefined()
+  })
+
+  it('refuses anything else, in code and in the table', () => {
+    const db = fresh()
+    const { repo } = seed(db)
+    // @ts-expect-error not one of the six ids
+    expect(() => updateRepoColor(db, repo.id, 'red')).toThrow('Invalid project colour')
+    expect(() => db.prepare("UPDATE repos SET color = '#7C93B5'").run()).toThrow()
+    expect(() => db.prepare("UPDATE repos SET color = ''").run()).toThrow()
+    expect(getRepo(db, repo.id)?.color).toBeUndefined()
+  })
+
+  it('keeps repos in the order they were added, which is what the automatic colour follows', () => {
+    const db = fresh()
+    for (const [id, path] of [
+      ['b', '/tmp/b'],
+      ['a', '/tmp/a'],
+    ] as const)
+      db.prepare(
+        "INSERT INTO repos (id, path, default_branch, allowed_providers, created_at) VALUES (?, ?, 'main', '[\"claude-cli\"]', '2025-01-01T00:00:00.000Z')",
+      ).run(id, path)
+    expect(listRepos(db).map((r) => r.id)).toEqual(['a', 'b'])
   })
 })

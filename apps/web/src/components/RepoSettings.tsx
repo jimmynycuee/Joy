@@ -5,23 +5,37 @@ import type { ProviderKind } from '@joy/core'
 import { errorMessage, request } from '../api.js'
 import { formatCheckCommand, shellCharactersIn } from '../check-command.js'
 import { PROVIDER_LABELS, repoName } from '../labels.js'
+import { REPO_COLORS, repoColor } from '../repo-colors.js'
+import type { RepoColorId } from '../repo-colors.js'
 import { repoPatch } from '../repo-patch.js'
 import type { Repo } from '../types.js'
-import { Button } from './ui.js'
+import { Button, ProjectDot } from './ui.js'
 
 /** One project's settings: where its PRs go, which services may work on it, and the check run before each review. */
-export function RepoSettingsCard({ repo, onSaved }: { repo: Repo; onSaved: (repo: Repo) => void }) {
+export function RepoSettingsCard({
+  repo,
+  repos,
+  onSaved,
+}: {
+  repo: Repo
+  /** Every project: the automatic colour depends on this one's place in the list. */
+  repos: Repo[]
+  onSaved: (repo: Repo) => void
+}) {
   const [githubRemote, setGithubRemote] = useState(repo.githubRemote ?? '')
   const [providers, setProviders] = useState<ProviderKind[]>(repo.allowedProviders ?? [...PROVIDER_KINDS])
   const [checkCommand, setCheckCommand] = useState(formatCheckCommand(repo.checkCommand))
+  const [color, setColor] = useState<RepoColorId | null>(repo.color ?? null)
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState('')
   const [saved, setSaved] = useState(false)
 
-  const patch = repoPatch(repo, { githubRemote, providers, checkCommand })
+  const patch = repoPatch(repo, { githubRemote, providers, checkCommand, color })
   const changed = Object.keys(patch).length > 0
   const shellCharacter = shellCharactersIn(checkCommand)
   const name = repoName(repo.path)
+  // What the dot shows in the card head right now, saved or not.
+  const shown = REPO_COLORS.find((item) => item.id === color) ?? repoColor(repo.id, repos)
 
   function toggleProvider(kind: ProviderKind, on: boolean) {
     setSaved(false)
@@ -59,6 +73,7 @@ export function RepoSettingsCard({ repo, onSaved }: { repo: Repo; onSaved: (repo
       onSubmit={(event) => void save(event)}
     >
       <div className="repo-card-head">
+        <ProjectDot color={shown} className="project-dot-lg" />
         <strong>{name}</strong>
         <span className="muted"> · 預設分支 {repo.defaultBranch}</span>
         <code className="block-path">{repo.path}</code>
@@ -77,6 +92,44 @@ export function RepoSettingsCard({ repo, onSaved }: { repo: Repo; onSaved: (repo
             }}
           />
         </label>
+        <fieldset className="color-fieldset">
+          <legend>代表色</legend>
+          <div className="color-options" role="radiogroup" aria-label={`${name} 的代表色`}>
+            <label className={`color-option color-option-auto${color === null ? ' selected' : ''}`}>
+              <input
+                type="radio"
+                name={`color-${repo.id}`}
+                aria-label={`${name} 的代表色：自動`}
+                checked={color === null}
+                onChange={() => {
+                  setSaved(false)
+                  setColor(null)
+                }}
+              />
+              自動
+            </label>
+            {REPO_COLORS.map((item) => (
+              <label
+                key={item.id}
+                className={`color-option${color === item.id ? ' selected' : ''}`}
+                title={item.label}
+              >
+                <input
+                  type="radio"
+                  name={`color-${repo.id}`}
+                  aria-label={`${name} 的代表色：${item.label}`}
+                  checked={color === item.id}
+                  onChange={() => {
+                    setSaved(false)
+                    setColor(item.id)
+                  }}
+                />
+                <span className="color-swatch" style={{ background: item.hex }} aria-hidden="true" />
+              </label>
+            ))}
+          </div>
+          <p className="muted">任務和專案前面的小圓點用這個顏色；選「自動」就依專案加入的順序輪流配色。</p>
+        </fieldset>
         <fieldset className="provider-fieldset">
           <legend>允許使用的服務</legend>
           <div className="provider-options">

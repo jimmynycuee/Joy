@@ -10,8 +10,9 @@ import {
 } from '../components/assistant-panels.js'
 import type { MemoryItem } from '../components/assistant-panels.js'
 import { Composer } from '../components/Composer.js'
+import { Mascot, MascotMark } from '../components/Mascot.js'
 import { AgentProse, UserBubble } from '../components/Thread.js'
-import { Button, Icon, IconButton, Spinner } from '../components/ui.js'
+import { Button, Icon, IconButton } from '../components/ui.js'
 import { useDraft } from '../storage.js'
 import type { ConversationSummary } from '../types.js'
 
@@ -147,6 +148,7 @@ export function AssistantPage({
             <ProjectNotesPanel onError={report} />
             {messages.length === 0 ? (
               <div className="empty-state">
+                <Mascot mood="sleeping" size={72} decorative />
                 <h2>跟 Joy 聊聊</h2>
                 <p>可以問專案和任務的狀況、請它開任務或設提醒。助理用哪個模型可以在設定裡改。</p>
               </div>
@@ -156,6 +158,7 @@ export function AssistantPage({
                   <UserBubble key={message.id} text={message.content} />
                 ) : message.role === 'assistant' ? (
                   <div key={message.id} className="chat-assistant">
+                    <MascotMark size={20} className="chat-avatar" />
                     <AgentProse text={message.content} />
                     {message.memoryIds?.length ? (
                       <div className="memory-chips" aria-label="用到的記憶">
@@ -193,7 +196,7 @@ export function AssistantPage({
             )}
             {sending ? (
               <div className="running-indicator" role="status">
-                <Spinner />
+                <Mascot mood="thinking" size={36} decorative />
                 <span>Joy 正在想…</span>
               </div>
             ) : null}

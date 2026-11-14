@@ -1,4 +1,5 @@
 import type { ProviderKind, RoleConfig } from '@joy/core'
+import type { RepoColorId } from './repo-colors.js'
 
 export type Repo = {
   id: string
@@ -8,6 +9,8 @@ export type Repo = {
   allowedProviders?: ProviderKind[]
   /** argv run without a shell before review, e.g. ['pnpm', 'check']. */
   checkCommand?: string[]
+  /** The colour the owner picked; missing means Joy hands one out by order (see repo-colors.ts). */
+  color?: RepoColorId
 }
 export type Task = {
   id: string

@@ -19,10 +19,11 @@ import { effortLabel, supportedEfforts } from '../effort.js'
 import { MODE_HINTS, modeLabel, repoName } from '../labels.js'
 import { IMPLEMENTER_MODELS, MODEL_CATALOG, modelLabel, sameModelName } from '../models.js'
 import { MODEL_PRESETS } from '../presets.js'
+import { repoColor } from '../repo-colors.js'
 import type { Repo } from '../types.js'
 import { EffortPanel } from './EffortPanel.js'
 import { Menu, MenuGroup, MenuItem, MenuSeparator, SubMenu } from './Menu.js'
-import { Icon } from './ui.js'
+import { Icon, ProjectDot } from './ui.js'
 
 /** Updates the remembered choice from the previous one, so quick successive changes (a drag) never use stale state. */
 type ChoiceUpdate = (change: (choice: ComposerChoice) => ComposerChoice) => void
@@ -49,7 +50,7 @@ export function ProjectMenu({
       triggerLabel={`專案：${text}`}
       trigger={
         <>
-          <Icon name="folder" size={14} />
+          {active ? <ProjectDot color={repoColor(active.id, repos)} /> : <Icon name="folder" size={14} />}
           <span className="trigger-text">{text}</span>
           <Icon name="chevron-down" size={12} />
         </>
@@ -65,7 +66,10 @@ export function ProjectMenu({
             description={repo.path}
             onSelect={() => onSelect(repo.id)}
           >
-            {repoName(repo.path)} · {repo.defaultBranch}
+            <span className="menu-item-project">
+              <ProjectDot color={repoColor(repo.id, repos)} />
+              {repoName(repo.path)} · {repo.defaultBranch}
+            </span>
           </MenuItem>
         ))}
       </MenuGroup>

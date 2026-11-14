@@ -8,7 +8,8 @@ import type { ReviewView, TimelineEntry } from '../timeline.js'
 import { formatSpent } from '../usage.js'
 import type { TaskEvent } from '../types.js'
 import { Markdown } from './Markdown.js'
-import { Icon, Spinner } from './ui.js'
+import { Mascot } from './Mascot.js'
+import { Icon } from './ui.js'
 
 // The message presentation shared by the task thread and the assistant chat:
 // the owner's words are a right-aligned bubble, the agent's words are plain prose.
@@ -222,7 +223,7 @@ export function RunningIndicator({ events, createdAt }: { events: TaskEvent[]; c
   const phase = progress.phase ? (PHASE_LABELS[progress.phase] ?? progress.phase) : '準備中'
   return (
     <div className="running-indicator" role="status">
-      <Spinner />
+      <Mascot mood="thinking" size={36} decorative />
       <span>{phase}</span>
       {progress.role ? <span className="chip">{progress.role}</span> : null}
       {progress.round > 0 ? <span className="muted">第 {progress.round} 輪</span> : null}

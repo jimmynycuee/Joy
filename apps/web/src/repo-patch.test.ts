@@ -14,6 +14,7 @@ const same = {
   githubRemote: 'https://github.com/o/app.git',
   providers: ['codex-cli', 'claude-cli'] as const,
   checkCommand: 'pnpm check',
+  color: null,
 }
 
 describe('repoPatch', () => {
@@ -38,7 +39,12 @@ describe('repoPatch', () => {
 
   it('clears a field with null when the text is emptied', () => {
     expect(
-      repoPatch(repo, { githubRemote: ' ', providers: ['claude-cli', 'codex-cli'], checkCommand: '' }),
+      repoPatch(repo, {
+        ...same,
+        githubRemote: ' ',
+        providers: ['claude-cli', 'codex-cli'],
+        checkCommand: '',
+      }),
     ).toEqual({
       githubRemote: null,
       checkCommand: null,
@@ -52,7 +58,17 @@ describe('repoPatch', () => {
         githubRemote: '',
         providers: ['openai-api', 'claude-cli', 'codex-cli'],
         checkCommand: '',
+        color: null,
       }),
     ).toEqual({})
+  })
+
+  it('sends the colour only when it changes, and null to go back to automatic', () => {
+    const picked: Repo = { ...repo, color: 'purple' }
+    expect(repoPatch(picked, { ...same, color: 'purple' })).toEqual({})
+    expect(repoPatch(picked, { ...same, color: 'teal' })).toEqual({ color: 'teal' })
+    expect(repoPatch(picked, { ...same, color: null })).toEqual({ color: null })
+    expect(repoPatch(repo, { ...same, color: 'blue' })).toEqual({ color: 'blue' })
+    expect(repoPatch(repo, { ...same, color: null })).toEqual({})
   })
 })

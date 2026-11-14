@@ -463,6 +463,16 @@ export const MIGRATIONS: readonly Migration[] = [
         CHECK (check_command IS NULL OR (json_valid(check_command) AND json_type(check_command) = 'array'));
     `,
   },
+  {
+    version: 20,
+    name: 'project colour per repository',
+    sql: /* sql */ `
+      -- The colour the owner picked for a project's dot. NULL means Joy hands one out by order.
+      -- Keep the ids equal to REPO_COLORS in repositories.ts and apps/web/src/repo-colors.ts.
+      ALTER TABLE repos ADD COLUMN color TEXT
+        CHECK (color IS NULL OR color IN ('blue', 'green', 'purple', 'orange', 'pink', 'teal'));
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

@@ -4,6 +4,7 @@ import type { ModelRef, ProviderKind, Role } from '@joy/core'
 import type { JoyConfig } from '@joy/config'
 import { ApproachMenu, ModelMenu, ProjectMenu } from '../components/ComposerMenus.js'
 import { Composer } from '../components/Composer.js'
+import { Mascot } from '../components/Mascot.js'
 import { Button, Icon } from '../components/ui.js'
 import {
   COMPOSER_STORAGE_KEY,
@@ -182,6 +183,7 @@ export function NewTaskPage({
 
         {repos.length === 0 ? (
           <div className="home-empty">
+            <Mascot mood="normal" size={96} decorative />
             <h1>先加入一個專案</h1>
             <p>選一個電腦裡的 Git 專案資料夾，Joy 會在獨立的工作副本裡幫你改程式。</p>
             <Button variant="primary" large onClick={onAddRepo}>
@@ -190,6 +192,7 @@ export function NewTaskPage({
           </div>
         ) : (
           <>
+            <Mascot mood="normal" size={96} decorative className="home-mascot" />
             <h1 className="home-title">要讓 Joy 做什麼？</h1>
             <Composer
               className="composer-home"

@@ -5,6 +5,7 @@ import type { RoleConfig } from '@joy/core'
 import type { JoyConfig } from '@joy/config'
 import { ApiError, errorMessage, request } from './api.js'
 import { CommandPalette } from './components/CommandPalette.js'
+import { Mascot } from './components/Mascot.js'
 import type { PaletteItem } from './components/CommandPalette.js'
 import { Sidebar } from './components/Sidebar.js'
 import { Button, IconButton, Spinner } from './components/ui.js'
@@ -542,7 +543,8 @@ export function Workspace() {
         repos={repos}
         onAddRepo={() => setShowRepoForm(true)}
         onRepoSaved={(saved) =>
-          setRepos((current) => current.map((repo) => (repo.id === saved.id ? { ...repo, ...saved } : repo)))
+          // The reply is the whole repo, so a cleared field (null) must disappear instead of lingering.
+          setRepos((current) => current.map((repo) => (repo.id === saved.id ? saved : repo)))
         }
         theme={theme}
         onTheme={changeTheme}
@@ -576,6 +578,7 @@ export function Workspace() {
       <TaskPage
         key={details.task.id}
         details={details}
+        repos={repos}
         changesOpen={changesOpen}
         onToggleChanges={setChangesOpen}
         onChanged={() => void refreshSelectedTask().catch(() => undefined)}
@@ -624,6 +627,7 @@ export function Workspace() {
         </div>
         {error && (
           <div className="toast error-toast" role="alert">
+            <Mascot mood="error" size={28} decorative />
             <span>{error}</span>
             <IconButton icon="x" label="關閉訊息" className="icon-btn-sm" onClick={() => setError('')} />
           </div>

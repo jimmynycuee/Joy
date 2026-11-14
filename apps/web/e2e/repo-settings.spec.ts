@@ -69,3 +69,53 @@ test('a project’s GitHub remote, allowed services and check command are edited
   await expect(form).toContainText('至少要允許一個服務')
   expect(patches).toHaveLength(2)
 })
+
+test('a project’s colour is picked in settings, sent as an id, and null goes back to automatic', async ({
+  page,
+}) => {
+  const patches: unknown[] = []
+  let repo: Record<string, unknown> = { id: 'color-repo', path: '/work/app', defaultBranch: 'main' }
+  await page.route('**/api/**', async (route) => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (request.method() === 'PATCH' && path === '/api/repos/color-repo') {
+      const body = request.postDataJSON() as Record<string, unknown>
+      patches.push(body)
+      repo = Object.fromEntries(Object.entries({ ...repo, ...body }).filter(([, value]) => value !== null))
+      await route.fulfill({ json: { repo } })
+    } else if (path === '/api/repos') {
+      await route.fulfill({ json: { repos: [repo] } })
+    } else if (path === '/api/tasks') {
+      await route.fulfill({ json: { tasks: [] } })
+    } else if (path === '/api/config') {
+      await route.fulfill({ json: { config: { autonomy_mode: 'normal', roles: {} } } })
+    } else {
+      await route.fulfill({ json: {} })
+    }
+  })
+
+  await page.goto('/')
+  await openSettings(page, '專案')
+  const form = page.getByRole('form', { name: 'app 的專案設定' })
+  const save = form.getByRole('button', { name: '儲存專案設定' })
+  const headDot = form.locator('.repo-card-head .project-dot')
+  // Nothing picked: 自動 is on, and the first project shows the first colour (灰藍).
+  await expect(form.getByLabel('app 的代表色：自動')).toBeChecked()
+  await expect(headDot).toHaveCSS('background-color', 'rgb(124, 147, 181)')
+  await expect(save).toBeDisabled()
+
+  await form.getByLabel('app 的代表色：灰紫').check()
+  await expect(headDot).toHaveCSS('background-color', 'rgb(154, 139, 184)')
+  await save.click()
+  await expect(form.getByRole('status').filter({ hasText: '已儲存' })).toBeVisible()
+  expect(patches).toEqual([{ color: 'purple' }])
+  await expect(save).toBeDisabled()
+
+  await form.getByLabel('app 的代表色：自動').check()
+  await save.click()
+  await expect.poll(() => patches.length).toBe(2)
+  expect(patches[1]).toEqual({ color: null })
+  // The reply has no colour field, and the card follows it (it does not keep the old pick).
+  await expect(form.getByLabel('app 的代表色：自動')).toBeChecked()
+  await expect(save).toBeDisabled()
+})

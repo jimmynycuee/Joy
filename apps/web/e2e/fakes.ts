@@ -104,7 +104,11 @@ export interface FakeJoyRuntime {
   close(): Promise<void>
 }
 
-export async function startFakeJoyRuntime(port = 4317): Promise<FakeJoyRuntime> {
+/** `allowPlaywrightOrigin` lets a Vite preview on port 4173 talk to it, so a run never needs 5173 or 4317. */
+export async function startFakeJoyRuntime(
+  port = 4317,
+  options: { allowPlaywrightOrigin?: boolean } = {},
+): Promise<FakeJoyRuntime> {
   fakeRuns = 0
   const home = mkdtempSync(join(tmpdir(), 'joy-t1.8-e2e-'))
   const database = openDatabase(':memory:')
@@ -116,6 +120,7 @@ export async function startFakeJoyRuntime(port = 4317): Promise<FakeJoyRuntime> 
   const server = await createJoyServer({
     home,
     apiToken: E2E_API_TOKEN,
+    ...(options.allowPlaywrightOrigin ? { allowPlaywrightOrigin: true } : {}),
     database,
     configStore: new ConfigStore(join(home, 'config.yaml')),
     secretStore,

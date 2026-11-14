@@ -1120,6 +1120,36 @@ describe('owner messages that were not delivered', () => {
   })
 })
 
+describe('project colour', () => {
+  it('sets one of the six colours, goes back to automatic with null, and refuses anything else', async () => {
+    const { call } = await setup()
+    const repoId = await newRepo(call)
+    const listed = async () =>
+      ((await call('GET', '/api/repos')).body.repos as Array<Record<string, unknown>>).find(
+        (repo) => repo.id === repoId,
+      )
+    expect(await listed()).not.toHaveProperty('color')
+    const set = await call('PATCH', `/api/repos/${repoId}`, { color: 'purple' })
+    expect(set.status).toBe(200)
+    expect(set.body.repo).toMatchObject({ color: 'purple' })
+    expect(await listed()).toMatchObject({ color: 'purple' })
+    for (const bad of ['red', '#7C93B5', '', 3, ['blue']])
+      expect((await call('PATCH', `/api/repos/${repoId}`, { color: bad })).status).toBe(400)
+    expect(await listed()).toMatchObject({ color: 'purple' })
+    const cleared = await call('PATCH', `/api/repos/${repoId}`, { color: null })
+    expect(cleared.status).toBe(200)
+    expect(cleared.body.repo as Record<string, unknown>).not.toHaveProperty('color')
+    expect((await call('PATCH', '/api/repos/missing', { color: 'blue' })).status).toBe(404)
+  })
+
+  it('changes the colour without touching the other settings', async () => {
+    const { call } = await setup()
+    const repoId = await newRepo(call, '/tmp/thread-repo', { checkCommand: ['pnpm', 'check'] })
+    const set = await call('PATCH', `/api/repos/${repoId}`, { color: 'teal' })
+    expect(set.body.repo).toMatchObject({ color: 'teal', checkCommand: ['pnpm', 'check'] })
+  })
+})
+
 describe('project checks', () => {
   it('validates, sets and clears the repository check command', async () => {
     const { call } = await setup()

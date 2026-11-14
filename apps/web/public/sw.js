@@ -10,7 +10,8 @@ self.addEventListener('push', (event) => {
   event.waitUntil(
     self.registration.showNotification(message.title, {
       body: message.body,
-      icon: '/icon.svg',
+      // Notifications do not reliably draw SVG, so this is the PNG.
+      icon: '/icon-192.png',
       data: { url: message.url },
     }),
   )
