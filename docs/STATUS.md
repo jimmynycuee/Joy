@@ -23,6 +23,9 @@
   - 專案是容器模式，而這個任務任一個會用到的角色（實作者、審查者、裁判；訊息時還包含最近一次 attempt 的 provider）是 `claude-cli`，送圖片時建立任務或送訊息直接回 **422**。容器裡的 Claude 沒有 stdin，收不到圖片。
   - 容器模式下 prompt 只能放命令列，所以每個任務的附加文字累計超過 64 KB 也回 422。
   - provider 層仍保留最後一道錯誤，以防設定在這之後被改。
+  - 額度用完時換手（`pickHandoffModel`）：容器專案的任務若還有沒移除的圖片附件，不會換手給 `claude-cli`；沒有其他可用的 provider 時就照舊排隊等額度恢復。
+  - 容器模式下 prompt 太長時，錯誤訊息會說明長 diff、長訊息、檢查輸出和附加文字都算在內，不會只叫人移除附件。
+  - 重複 DELETE 已移除的附件回 200，但不會再發一次 `attachment.removed`；`attachment.missing` 每個任務、每個附件只發一次。
 - **紀錄**：`user.message` 事件多 `attachments: [{id,name,mediaType,size}]`；`GET /api/tasks/:id` 多 `attachments`（第一個 prompt 的沒有 `messageId`；已移除的帶 `disabled: true`）。檔案內容不進 SQLite、事件、log、memory。Codex app-server 回送的 `userMessage` item 是 Joy 自己輸入的回聲，可能含文字檔內容，現在不再記成 `raw` 事件。
 - **交給 agent（S3）**：
   - 標記是 `[[joy-attachment:<nonce>:<id>]]`。nonce 每個伺服器行程隨機產生、從不顯示，也從不交給 agent。

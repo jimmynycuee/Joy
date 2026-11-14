@@ -77,7 +77,7 @@ export class ClaudeCliProvider implements AgentProvider {
     const size = promptBytes(opts.prompt)
     if (!stdinReaches && size > PROMPT_ARG_HARD_LIMIT)
       throw new Error(
-        `The prompt is too long for the command line in container mode (${Math.ceil(size / 1024)} KB). Remove large attached files from the thread (✕ on them), or turn off container mode for this project.`,
+        `The prompt is too long for the command line in container mode (${Math.ceil(size / 1024)} KB; long diffs, long messages, check output and attached text all count). Send shorter messages, remove large attached files from the thread if there are any (✕ on them), or turn off container mode for this project.`,
       )
     const images = opts.images?.length ? await readImages(opts.images) : []
     // A long prompt (attached text files) goes on stdin too: one command-line argument has an OS limit.

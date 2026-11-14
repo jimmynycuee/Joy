@@ -361,7 +361,7 @@ describe('ClaudeCliProvider.run with steering', () => {
       forwardsStdin: () => false,
     })
     await expect(collect(provider.run(opts(dir, { prompt: 'z'.repeat(101 * 1024) }), model))).rejects.toThrow(
-      /too long for the command line in container mode/,
+      /too long for the command line in container mode.*long diffs, long messages, check output/,
     )
   })
 

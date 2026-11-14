@@ -63,7 +63,7 @@ export class CodexExecProvider implements AgentProvider {
     const size = promptBytes(opts.prompt)
     if (!stdinReaches && size > PROMPT_ARG_HARD_LIMIT)
       throw new Error(
-        `The prompt is too long for the command line in container mode (${Math.ceil(size / 1024)} KB). Remove large attached files from the thread (✕ on them), or turn off container mode for this project.`,
+        `The prompt is too long for the command line in container mode (${Math.ceil(size / 1024)} KB; long diffs, long messages, check output and attached text all count). Send shorter messages, remove large attached files from the thread if there are any (✕ on them), or turn off container mode for this project.`,
       )
     // `codex exec [resume <id>] -` reads the prompt from stdin (`codex exec --help`, codex-cli 0.166.0); one
     // command-line argument has an OS limit.

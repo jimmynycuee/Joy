@@ -711,8 +711,15 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         () => runningTaskId.getStore(),
         // A sent file gone from disk (for example a backup restored on another computer) is named as missing; the
         // run goes on and the owner sees why.
-        (taskId, records) =>
-          publishTaskLevel(taskId, 'attachment.missing', { attachments: records.map(attachmentInfo) }),
+        (taskId, records) => {
+          // Once per task and file: every later run would report the same file again.
+          const reported = listTaskEvents(db, taskId)
+            .filter((event) => event.type === 'attachment.missing')
+            .flatMap((event) => payloadAttachments(event.payload).map((file) => file.id))
+          const fresh = records.filter((record) => !reported.includes(record.id))
+          if (fresh.length)
+            publishTaskLevel(taskId, 'attachment.missing', { attachments: fresh.map(attachmentInfo) })
+        },
       )
   }
   const executor =
@@ -1435,8 +1442,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       const record = attachmentStore.get(decodePathSegment(attachmentMatch[1] ?? ''))
       if (!record) throw new HttpError(404, 'Attachment was not found')
       if (method === 'DELETE') {
-        const removed = await attachmentStore.remove(record.id)
-        if (removed?.taskId) publishTaskLevel(removed.taskId, 'attachment.removed', attachmentInfo(removed))
+        // Removing twice is fine, but it is announced once.
+        const removed = record.disabled ? record : await attachmentStore.remove(record.id)
+        if (removed?.taskId && !record.disabled)
+          publishTaskLevel(removed.taskId, 'attachment.removed', attachmentInfo(removed))
         json(res, 200, {
           attachment: removed ? { ...attachmentInfo(removed), disabled: removed.disabled } : null,
         })
@@ -2551,6 +2560,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         422,
         `A project in container mode takes at most ${CONTAINER_MAX_TEXT_BYTES / 1024} KB of attached text per task; send smaller files or remove earlier ones from the thread`,
       )
+  }
+
+  function hasActiveImages(taskId: TaskId): boolean {
+    return listTaskAttachments(db, taskId).some((record) => !record.disabled && isImage(record))
   }
 
   /** The task's first prompt as agents get it: the owner's request, then a marker per file attached to it. */
@@ -5086,9 +5099,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   ): ModelRef | undefined {
     const roles = config.roles as RoleConfig
     const preferred: Role[] = ['implementer', 'reviewer', 'orchestrator', 'judge']
+    // Claude Code in a container gets no stdin, so it could not see the task's images (M1 refuses them up front).
+    const noClaude = repo.container && hasActiveImages(task.id)
     for (const role of preferred) {
       const candidate = resolveRole(role, roles, task.roleOverrides)
       if (candidate.provider === from) continue
+      if (noClaude && candidate.provider === 'claude-cli') continue
       if (!repo.allowedProviders.includes(candidate.provider)) continue
       if (!providers[candidate.provider]?.capabilities.codeEdit) continue
       if (isLimitedNow(candidate.provider)) continue

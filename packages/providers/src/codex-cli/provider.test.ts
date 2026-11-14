@@ -77,7 +77,7 @@ describe('CodexCliProvider: long prompts', () => {
       },
     })
     await expect(collect(provider.run(opts(dir, { prompt: 'x'.repeat(101 * 1024) }), model))).rejects.toThrow(
-      /too long for the command line in container mode/,
+      /too long for the command line in container mode.*long diffs, long messages, check output/,
     )
     // A short prompt still runs, and the wrapper is told which files to mount.
     await collect(

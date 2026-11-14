@@ -461,13 +461,24 @@ describe('attachments on tasks and messages', () => {
     const { call, uploaded, claude, home } = await setup()
     const png = await uploaded(PNG, 'gone.png')
     rmSync(join(home, 'attachments', `${png.id}.png`))
-    const id = await newTask(call, await newRepo(call), { attachments: [png.id] })
+    // The implementer and the reviewer both meet the missing file; the owner is told once.
+    const id = await newTask(call, await newRepo(call), {
+      mode: 'review_loop',
+      roleOverrides: {
+        implementer: { provider: 'claude-cli', model: 'haiku' },
+        reviewer: { provider: 'claude-cli', model: 'haiku' },
+      },
+      attachments: [png.id],
+    })
     const done = await until(call, id, settled('done'), 'done')
     expect(claude.calls[0]?.prompt).toContain('[attachment missing: "gone.png"]')
     expect(claude.calls[0]?.images).toBeUndefined()
-    expect(done.events.find((event) => event.type === 'attachment.missing')?.payload).toEqual({
-      attachments: [{ id: png.id, name: 'gone.png', mediaType: 'image/png', size: PNG.byteLength }],
-    })
+    const review = claude.calls.find((options) => options.outputSchema === REVIEW_SCHEMA)
+    expect(review?.prompt).toContain('[attachment missing: "gone.png"]')
+    const warnings = done.events.filter((event) => event.type === 'attachment.missing')
+    expect(warnings.map((event) => event.payload)).toEqual([
+      { attachments: [{ id: png.id, name: 'gone.png', mediaType: 'image/png', size: PNG.byteLength }] },
+    ])
   })
 
   it('lets the owner remove a sent file, so later runs only get its name', async () => {
@@ -484,6 +495,11 @@ describe('attachments on tasks and messages', () => {
     await until(call, id, settled('done'), 'first run')
     const removed = await call('DELETE', `/api/attachments/${png.id}`)
     expect(removed).toMatchObject({ status: 200, body: { attachment: { id: png.id, disabled: true } } })
+    // Removing it again changes nothing and is not announced again.
+    expect(await call('DELETE', `/api/attachments/${png.id}`)).toMatchObject({
+      status: 200,
+      body: { attachment: { id: png.id, disabled: true } },
+    })
     expect(existsSync(join(home, 'attachments', `${png.id}.png`))).toBe(false)
     const get = await fetch(`${origin}/api/attachments/${png.id}`, {
       headers: { authorization: `Bearer ${TOKEN}` },
@@ -498,7 +514,7 @@ describe('attachments on tasks and messages', () => {
       'second review',
     )
     expect(done.attachments).toEqual([expect.objectContaining({ id: png.id, disabled: true })])
-    expect(done.events.some((event) => event.type === 'attachment.removed')).toBe(true)
+    expect(done.events.filter((event) => event.type === 'attachment.removed')).toHaveLength(1)
     const second = codex.calls.filter((o) => o.outputSchema === REVIEW_SCHEMA)[1]
     expect(second?.prompt).toContain('[attachment removed: "bad.png"]')
     expect(second?.images).toBeUndefined()
