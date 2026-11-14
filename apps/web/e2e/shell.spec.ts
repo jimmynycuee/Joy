@@ -77,14 +77,13 @@ async function mockApi(page: Page, created: unknown[] = [], patches: Patch[] = [
   })
 }
 
-test('the home page lists what needs you and keeps an unsent draft', async ({ page }) => {
+test('the home page is just Joy and the message box, and keeps an unsent draft', async ({ page }) => {
   await mockApi(page)
   await page.goto('/')
 
-  const attention = page.getByLabel('需要你處理')
-  await expect(attention).toContainText('Waiting for you')
-  await expect(attention).toContainText('等你同意')
-  await expect(page.getByLabel('最近的任務')).toContainText('Last week chore')
+  // What needs you and recent tasks live in the sidebar, not on the home page.
+  await expect(page.getByLabel('需要你處理')).toHaveCount(0)
+  await expect(page.getByLabel('最近的任務')).toHaveCount(0)
 
   // There are tasks already, so no quick-start chips.
   await expect(page.getByRole('group', { name: '快速開始' })).toHaveCount(0)

@@ -928,12 +928,6 @@ svg {
   color: var(--amber);
   font-size: var(--fs-13);
 }
-.attention-card h2,
-.recent-section h2 {
-  margin-bottom: 6px;
-  font-size: var(--fs-13);
-  color: var(--muted);
-}
 .line-row {
   display: flex;
   align-items: center;
@@ -977,9 +971,6 @@ svg {
 }
 .starter-chip:hover {
   background: var(--hover);
-}
-.recent-section {
-  margin-top: 8px;
 }
 
 /* The one composer. */

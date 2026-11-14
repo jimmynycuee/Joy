@@ -584,14 +584,12 @@ export function Workspace() {
     content = (
       <NewTaskPage
         repos={repos}
-        tasks={activeTasks}
         hasAnyTask={tasks.length > 0}
         config={config}
         customWorkflows={customWorkflows}
         setupProblems={setupProblems}
         onOpenSetup={() => openSettings('advanced')}
         onAddRepo={() => setShowRepoForm(true)}
-        onOpenTask={openTask}
         onCreate={createTask}
       />
     )

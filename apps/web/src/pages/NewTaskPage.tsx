@@ -18,7 +18,6 @@ import {
   validMode,
 } from '../composer-choice.js'
 import type { ComposerChoice, RoleDefaults, TaskModels } from '../composer-choice.js'
-import { relativeTime } from '../dates.js'
 import {
   EFFORT_LABELS,
   MODEL_SUGGESTIONS,
@@ -26,13 +25,11 @@ import {
   ROLE_LABELS,
   providersForRole,
   roleModel,
-  statusLabel,
   taskTitle,
 } from '../labels.js'
 import { readStorage, useDraft, writeStorage } from '../storage.js'
 import { visibleStarters } from '../starters.js'
-import { tasksNeedingAttention } from '../task-info.js'
-import type { Repo, Task } from '../types.js'
+import type { Repo } from '../types.js'
 
 export interface NewTaskInput {
   repoId: string
@@ -48,33 +45,18 @@ export interface NewTaskInput {
 
 const ROLE_KEYS: Array<Extract<Role, 'implementer' | 'reviewer'>> = ['implementer', 'reviewer']
 
-function TaskLine({ task, onOpen }: { task: Task; onOpen: (id: string) => void }) {
-  return (
-    <button type="button" className="line-row" onClick={() => onOpen(task.id)}>
-      <span className={`task-dot status-${task.status}`} aria-hidden="true" />
-      <span className="line-title">{task.title}</span>
-      <span className={`line-meta status-text-${task.status}`}>{statusLabel(task.status, task.mode)}</span>
-      <span className="line-meta">{relativeTime(task.createdAt)}</span>
-    </button>
-  )
-}
-
-/** The home page: one big message box, a few ways to start, and what needs you. */
+/** The home page: Joy and one big message box (and a few ways to start before the first task). */
 export function NewTaskPage({
   repos,
-  tasks,
   hasAnyTask,
   config,
   customWorkflows,
   setupProblems,
   onOpenSetup,
   onAddRepo,
-  onOpenTask,
   onCreate,
 }: {
   repos: Repo[]
-  /** The tasks that are not archived. */
-  tasks: Task[]
   /** Any task at all, archived ones too: the quick-start chips are for a brand-new Joy only. */
   hasAnyTask: boolean
   config: JoyConfig | null
@@ -82,7 +64,6 @@ export function NewTaskPage({
   setupProblems: number
   onOpenSetup: () => void
   onAddRepo: () => void
-  onOpenTask: (id: string) => void
   onCreate: (input: NewTaskInput) => Promise<boolean>
 }) {
   const [prompt, setPrompt, clearPrompt] = useDraft('new-task')
@@ -117,16 +98,6 @@ export function NewTaskPage({
   }, [effective, defaults])
   const planFirstOn = choice.planFirst && !planFirstDisabledReason(mode)
   const starters = visibleStarters(hasAnyTask, activeRepo?.githubRemote)
-
-  const attention = useMemo(() => tasksNeedingAttention(tasks), [tasks])
-  const recent = useMemo(
-    () =>
-      [...tasks]
-        .filter((task) => !attention.some((item) => item.id === task.id))
-        .sort((a, b) => Date.parse(b.createdAt || '') - Date.parse(a.createdAt || '') || 0)
-        .slice(0, 3),
-    [tasks, attention],
-  )
 
   function setModel(role: 'implementer' | 'reviewer', next: ModelRef) {
     setChoice((current) => setRoleModel(current, role, next, defaults))
@@ -167,15 +138,6 @@ export function NewTaskPage({
           <button type="button" className="setup-banner" onClick={onOpenSetup}>
             <Icon name="alert" size={14} />有 {setupProblems} 項環境設定需要處理
           </button>
-        ) : null}
-
-        {attention.length > 0 ? (
-          <section className="card attention-card" aria-label="需要你處理">
-            <h2>需要你處理</h2>
-            {attention.map((task) => (
-              <TaskLine key={task.id} task={task} onOpen={onOpenTask} />
-            ))}
-          </section>
         ) : null}
 
         {repos.length === 0 ? (
@@ -317,15 +279,6 @@ export function NewTaskPage({
                   </button>
                 ))}
               </div>
-            ) : null}
-
-            {recent.length > 0 ? (
-              <section className="recent-section" aria-label="最近的任務">
-                <h2>最近的任務</h2>
-                {recent.map((task) => (
-                  <TaskLine key={task.id} task={task} onOpen={onOpenTask} />
-                ))}
-              </section>
             ) : null}
           </>
         )}
