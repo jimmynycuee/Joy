@@ -32,6 +32,7 @@ const EXTRAS_EVENTS = new Set([
   'user.message.delivered',
   'user.message.discarded',
   'user.message.requeued',
+  'user.message.held',
   'run.interrupted',
   'steer.available',
   'started',

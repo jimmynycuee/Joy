@@ -14,6 +14,18 @@ function TokenGate() {
       <p className="muted">
         貼上執行 Joy 那台電腦裡 <code>~/.joy/api-token</code> 的內容。權杖只會存在這台裝置。
       </p>
+      <ul className="muted token-gate-steps">
+        <li>
+          Mac：開啟 Finder，按 ⌘⇧G，輸入 <code>~/.joy</code>，用「文字編輯」打開 api-token，全選複製。
+        </li>
+        <li>
+          Windows：在檔案總管網址列輸入 <code>%USERPROFILE%\.joy</code>，用記事本打開 api-token。
+        </li>
+        <li>
+          Linux 或終端機：<code>cat ~/.joy/api-token</code>。
+        </li>
+      </ul>
+      <p className="muted">第一次打開、換瀏覽器或清除網站資料之後，都需要再貼一次。</p>
       <form
         className="field-stack"
         onSubmit={(event) => {

@@ -57,6 +57,70 @@ pnpm web
 
 然後打開 <http://localhost:5173>。`Ctrl+C` 停止。Joy 只聽 `127.0.0.1`，其他裝置連不到。
 
+不想開終端機的話，看下面的[不用終端機](#不用終端機)。
+
+## 不用終端機
+
+想像一般 App 一樣用 Joy：登入後自動在背景執行，用瀏覽器（或安裝成 App）開 <http://127.0.0.1:4317>，不用再開兩個終端機。
+
+**先決條件**：一個長期安裝的 **Node 22**（22.13 以上，不能是 23 以後）。背景服務會一直用同一個 Node，所以不能用 `npx` 暫存的 Node。macOS：
+
+```bash
+brew install node@22
+```
+
+1. 建好網頁介面（`pnpm joy start` 與背景服務直接提供它，不需要 `pnpm web`）：
+
+```bash
+pnpm joy build-ui
+```
+
+2. 先預覽會寫入哪些檔案、執行哪些指令（什麼都不會改）：
+
+```bash
+pnpm joy service install --dry-run
+```
+
+3. 安裝並啟動背景服務（macOS 用 launchd、Linux 用 systemd 使用者服務、Windows 用工作排程器，登入時自動啟動，結束後自動重啟）：
+
+```bash
+pnpm joy service install
+```
+
+它會自己找 Homebrew `node@22`、nvm、fnm 裡的 Node 22；找不到或想指定時用絕對路徑，例如 `pnpm joy service install --node /opt/homebrew/opt/node@22/bin/node`。服務只放 Node 路徑、安裝當下的 `PATH`（讓它找得到 `claude`、`codex`、`git`、`gh`）與工作資料夾，不放任何密鑰。之後才安裝或搬動了這些 CLI，重跑一次 `install` 更新。服務的名稱是 `com.joy.local`（macOS launchd）、`joy-local`（Linux systemd 單元與 Windows 工作），不會蓋掉你原有的同名項目。
+
+Windows 的限制：工作排程器帶不了環境變數，服務用你登入時的使用者環境（Windows 設定裡的 PATH，`claude`、`codex`、`git`、`gh` 要在那裡）；終端機臨時設的 `JOY_HOME` 不會帶進去，要用就先設成 Windows 使用者環境變數。為了不跳出黑色視窗，工作用 `conhost.exe --headless` 啟動（Windows 10 1903 以上），這一點尚待實機驗證；若登入後 Joy 沒有起來，`pnpm joy service uninstall` 後改用終端機 `pnpm joy start`。
+
+4. 打開 <http://127.0.0.1:4317>。第一次會要求貼上存取權杖：它在 `~/.joy/api-token`（Mac：Finder 按 ⌘⇧G 輸入 `~/.joy`，用「文字編輯」開 `api-token`，全選複製）。權杖只存在這個瀏覽器；換瀏覽器或清除網站資料要再貼一次。
+5. **安裝成 App（PWA）**：用 Chrome 開 <http://127.0.0.1:4317>，按網址列右側的「安裝」圖示（或選單「投放、儲存及分享」→「安裝頁面為應用程式」），之後從 Launchpad／開始功能表開啟。
+6. 查看狀態：`pnpm joy service status`（顯示設定檔、服務管理員、Joy 是否回應）；紀錄在 `~/.joy/logs`（`service.out.log`、`service.err.log`）。
+
+**更新**（`git pull` 之後）：
+
+```bash
+pnpm install
+```
+
+```bash
+pnpm joy build-ui
+```
+
+```bash
+pnpm joy service install
+```
+
+最後一步會重新啟動服務，用上新的程式碼與介面。`pnpm joy start` 啟動時也會提醒介面缺少或過期。
+
+**移除**：
+
+```bash
+pnpm joy service uninstall
+```
+
+只移除服務與它的設定檔，`~/.joy` 的資料不動。要 `restore` 備份時也先 `uninstall`（服務會自動重啟 Joy，`restore` 要求 Joy 沒有在跑），還原完再 `install`。
+
+注意：服務佔用 4317 埠；同時再用終端機 `pnpm joy start` 會因為埠被佔用而失敗，需要的話用 `--port` 換一個埠（`service` 的三個指令都吃 `--port`）。如果埠已被別的程式佔用，服務會每 30 秒重試一次，`~/.joy/logs/service.err.log` 會越積越多；先停掉佔用的程式或 `uninstall`。重跑 `install` 若發現回應的就是已安裝的服務，會直接把它重新啟動。
+
 ## 第一次設定
 
 1. **Settings**：確認各角色用哪個模型。預設實作者 Claude Code、審查者 Codex；只裝了一家就兩個都設成那一家（會提示不是跨模型審查）。測試時用最便宜的模型（Claude `haiku`、Codex `gpt-6-luna`）、effort 選 low。
@@ -137,7 +201,7 @@ mcp_servers:
 Joy 預設只聽 `127.0.0.1`。要從手機或另一台電腦用：
 
 1. 兩台裝置都裝 [Tailscale](https://tailscale.com) 並登入同一個帳號；在跑 Joy 的電腦上用 `tailscale ip -4` 查到它的 IP（`100.x.y.z`）。
-2. 建好網頁：`pnpm --filter @joy/web build`（Joy 會直接提供這份網頁）。
+2. 建好網頁：`pnpm joy build-ui`（Joy 會直接提供這份網頁）。
 3. 在 `~/.joy/config.yaml` 加上，然後重啟 Joy：
 
 ```yaml

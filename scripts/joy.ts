@@ -1,17 +1,30 @@
 import { spawnSync } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { ConfigStore, joyHome } from '../packages/config/src/index.js'
 import { NO_ACTION_NEEDED, runDoctor } from '../packages/server/src/doctor.js'
 import { backupNow, restoreFromBackup } from '../packages/server/src/restore.js'
 import { createJoyServer } from '../packages/server/src/server.js'
+import {
+  DEFAULT_SERVICE_PORT,
+  realServiceDeps,
+  runService,
+  type ServiceAction,
+} from '../packages/server/src/service.js'
+import { uiBuildState } from '../packages/server/src/ui-build.js'
 
 const [command, ...args] = process.argv.slice(2)
+const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
 
 const USAGE = [
   'Usage:',
-  '  pnpm joy start [--port N]   start Joy on 127.0.0.1 (default port 4317); then run `pnpm web`',
+  '  pnpm joy start [--port N]   start Joy on 127.0.0.1 (default port 4317); open it at that address after `build-ui`, or run `pnpm web`',
+  '  pnpm joy build-ui           build the web app that `start` serves (run again after `git pull`)',
+  '  pnpm joy service <install|uninstall|status> [--node <path>] [--port N] [--dry-run]',
+  '                              run Joy in the background at login, without a terminal (needs a Node 22)',
   '  pnpm joy doctor             check the CLIs, keychain and data folder',
   '  pnpm joy container-build    build the agent image for untrusted repositories',
   '  pnpm joy container-login <claude|codex>  log a CLI in inside the agent container (once)',
@@ -31,9 +44,14 @@ if (command === '--help' || args.includes('--help')) {
     const server = await createJoyServer()
     const address = await server.listen(port)
     console.log(`Joy is running on http://127.0.0.1:${address.port} (data in ${joyHome()}).`)
-    console.log(
-      'Open the app with `pnpm web` in another terminal, then go to http://localhost:5173. Ctrl+C stops Joy.',
-    )
+    const ui = uiBuildState(repoRoot)
+    if (ui === 'fresh')
+      console.log(`Open http://127.0.0.1:${address.port} in your browser. Ctrl+C stops Joy.`)
+    else
+      console.log(
+        `The web app is ${ui === 'missing' ? 'not built yet' : 'older than its source'}: run \`pnpm joy build-ui\`, then open http://127.0.0.1:${address.port}. ` +
+          'For development, run `pnpm web` in another terminal and open http://localhost:5173. Ctrl+C stops Joy.',
+      )
     let stopping = false
     const stop = () => {
       if (stopping) return
@@ -43,6 +61,70 @@ if (command === '--help' || args.includes('--help')) {
     }
     process.on('SIGINT', stop)
     process.on('SIGTERM', stop)
+  }
+} else if (command === 'build-ui') {
+  // Run Vite with this Node directly: `pnpm` is a .cmd shim on Windows and Joy never spawns through a shell.
+  const web = join(repoRoot, 'apps', 'web')
+  let viteBin: string
+  try {
+    viteBin = join(
+      dirname(createRequire(join(web, 'package.json')).resolve('vite/package.json')),
+      'bin',
+      'vite.js',
+    )
+  } catch {
+    console.error('Cannot find Vite. Run `pnpm install` in the Joy folder first.')
+    process.exit(1)
+  }
+  const result = spawnSync(process.execPath, [viteBin, 'build'], { cwd: web, stdio: 'inherit', shell: false })
+  if (result.error) console.error(`Could not run the build: ${result.error.message}`)
+  else if (result.status === 0)
+    console.log(
+      'Built. `pnpm joy start` (or the background service) now serves it; restart Joy if it is running.',
+    )
+  process.exitCode = result.status ?? 1
+} else if (command === 'service') {
+  const action = args[0]
+  const flags = args.slice(1)
+  const valueOf = (flag: string): string | undefined => {
+    const index = flags.indexOf(flag)
+    return index >= 0 ? flags[index + 1] : undefined
+  }
+  const known = new Set(['--port', '--node', '--dry-run'])
+  const unknown = flags.filter(
+    (flag, index) =>
+      flag.startsWith('-') && !known.has(flag) && !(index > 0 && flags[index - 1] === '--node'),
+  )
+  const port = valueOf('--port') === undefined ? DEFAULT_SERVICE_PORT : Number(valueOf('--port'))
+  if (
+    (action !== 'install' && action !== 'uninstall' && action !== 'status') ||
+    unknown.length > 0 ||
+    (flags.includes('--node') && !valueOf('--node')) ||
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65535
+  ) {
+    console.error(USAGE)
+    process.exitCode = 2
+  } else {
+    const node = valueOf('--node')
+    process.exitCode = await runService(
+      action as ServiceAction,
+      {
+        platform: process.platform,
+        userHome: homedir(),
+        joyHome: joyHome(),
+        repoRoot,
+        port,
+        dryRun: flags.includes('--dry-run'),
+        ...(node ? { node } : {}),
+        ...(typeof process.getuid === 'function' ? { uid: process.getuid() } : {}),
+        execPath: process.execPath,
+        execVersion: process.version,
+        env: process.env,
+      },
+      realServiceDeps((line) => console.log(line), uiBuildState),
+    )
   }
 } else if (command === 'container-build' || command === 'container-login') {
   const home = joyHome()

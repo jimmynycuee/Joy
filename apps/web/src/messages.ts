@@ -9,13 +9,17 @@ import type { TaskEvent } from './types.js'
  * which keeps going and takes it into account. `interrupting`: the owner asked to stop the agent's current step; the
  * message is handed to it as soon as the step has stopped. `queued`: the agent could not take it now (a review, checks,
  * an approval, a quota wait, a backend that cannot take input mid-run) and it waits for the agent's next turn.
- * `delivered` and `discarded` end a pending message's life.
+ * `held`: queued, but the task stopped at a time or cost limit, so nothing goes to the agent until the owner presses
+ * Continue or sends another message. `delivered` and `discarded` end a pending message's life.
  * `lost`: still unresolved although the server no longer holds it (Joy restarted; the queue is in memory only).
  */
 export type DeliveryState =
-  'sent' | 'steering' | 'interrupting' | 'queued' | 'delivered' | 'discarded' | 'lost'
+  'sent' | 'steering' | 'interrupting' | 'queued' | 'held' | 'delivered' | 'discarded' | 'lost'
 
-const PENDING_STATES = new Set<DeliveryState>(['steering', 'interrupting', 'queued'])
+const PENDING_STATES = new Set<DeliveryState>(['steering', 'interrupting', 'queued', 'held'])
+
+/** What the owner does to get held messages to the agent; also the line under the composer. */
+export const HELD_MESSAGES_NOTE = '任務因上限停下，按「繼續」或再送訊息才會帶給 agent'
 
 function ids(payload: Record<string, unknown> | null): string[] {
   return Array.isArray(payload?.ids) ? payload.ids.filter((id): id is string => typeof id === 'string') : []
@@ -32,7 +36,9 @@ export function messageDeliveryStates(
   const delivered = new Set<string>()
   const discarded = new Set<string>()
   const requeued = new Set<string>()
+  const held = new Set<string>()
   for (const event of events) {
+    if (event.type === 'user.message.held') for (const id of ids(record(event.payload))) held.add(id)
     if (event.type === 'user.message.delivered')
       for (const id of ids(record(event.payload))) delivered.add(id)
     if (event.type === 'user.message.discarded')
@@ -54,6 +60,7 @@ export function messageDeliveryStates(
             ? 'steering'
             : 'sent'
     if ((state === 'interrupting' || state === 'steering') && requeued.has(payload.id)) state = 'queued'
+    if (state === 'queued' && held.has(payload.id)) state = 'held'
     if (PENDING_STATES.has(state)) {
       if (discarded.has(payload.id)) state = 'discarded'
       else if (delivered.has(payload.id)) state = 'delivered'
@@ -70,6 +77,7 @@ export function deliveryTag(state: DeliveryState): string | undefined {
   if (state === 'delivered') return '已交給 agent'
   if (state === 'interrupting') return '正在打斷 agent…'
   if (state === 'queued') return '排隊中'
+  if (state === 'held') return '已停下，等你繼續'
   if (state === 'discarded') return '已撤回'
   if (state === 'lost') return '未送達'
   return undefined
@@ -80,6 +88,7 @@ export function pendingMessagesNote(states: ReadonlyMap<string, DeliveryState>):
   const values = [...states.values()]
   const interrupting = values.filter((state) => state === 'interrupting').length
   const queued = values.filter((state) => state === 'queued').length
+  if (values.includes('held')) return HELD_MESSAGES_NOTE
   if (interrupting > 0) return '正在打斷 agent 目前這一步，停下來後會帶著你的訊息繼續'
   if (values.includes('steering')) return '正在把訊息交給 agent，它不會停下來'
   if (queued > 0)

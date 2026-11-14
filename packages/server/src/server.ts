@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { existsSync as existsSyncFs, constants as fsConstants, realpathSync } from 'node:fs'
 import { createServer as createHttpServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
@@ -480,6 +481,8 @@ interface ActiveTask {
   pausedFor?: string
   /** Set when the task was stopped by a cost or time limit. */
   stoppedFor?: string
+  /** Set when a run of this task was refused by the monthly OpenAI API budget (that fails without `stoppedFor`). */
+  budgetStop?: string
   timeLimit?: NodeJS.Timeout
   /** When the time limit stops the task (epoch ms); an interrupted run continues with what is left of it. */
   deadline?: number
@@ -568,6 +571,19 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     remoteHosts.add(`${name}:443`.toLowerCase())
     allowedOrigins.add(`https://${name}`.toLowerCase())
   }
+  /**
+   * The built UI is served from, and calls back to, this server's own loopback listener. Its own origin is accepted
+   * only on a connection to that listener: the port is known once it listens, and the remote listener (T4.1), another
+   * port or address never qualifies.
+   */
+  let localPort: number | undefined
+  const originAllowed = (req: IncomingMessage, allowMissing: boolean) =>
+    isAllowedOrigin(req, allowedOrigins, allowMissing) ||
+    (localPort !== undefined &&
+      req.socket.localPort === localPort &&
+      isLoopbackAddress(req.socket.localAddress) &&
+      (req.headers.origin === `http://127.0.0.1:${localPort}` ||
+        req.headers.origin === `http://localhost:${localPort}`))
   const isAllowedHost = (host: string | undefined) =>
     isLoopbackHost(host) || (host !== undefined && remoteHosts.has(host.toLowerCase()))
   await mkdir(home, { recursive: true, mode: 0o700 })
@@ -624,10 +640,15 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const assertMonthlyBudget = async () => {
     const cap = (await configStore.get()).budget.openai_api_usd_monthly_cap
     const spent = monthlyApiSpend()
-    if (spent >= cap)
-      throw new Error(
-        `The OpenAI API budget for this month is used up ($${spent.toFixed(2)} of $${cap.toFixed(2)}, budget.openai_api_usd_monthly_cap).`,
-      )
+    if (spent >= cap) {
+      const message = `The OpenAI API budget for this month is used up ($${spent.toFixed(2)} of $${cap.toFixed(2)}, budget.openai_api_usd_monthly_cap).`
+      // The orchestrator turns the thrown error into a plain failure; remember which task it stopped, so the owner's
+      // queued messages are held instead of being sent into a budget that is still used up.
+      const taskId = runningTaskId.getStore()
+      const active = taskId ? running.get(taskId) : undefined
+      if (active) active.budgetStop ??= message
+      throw new Error(message)
+    }
   }
   const apiProvider = providers['openai-api']
   if (apiProvider) providers['openai-api'] = withMonthlyBudget(apiProvider, assertMonthlyBudget)
@@ -644,6 +665,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   const running = new Map<TaskId, ActiveTask>()
   /** Owner messages sent while a task was busy, delivered with its next agent turn or right after the run. */
   const queuedMessages = new Map<TaskId, Array<{ id: string; text: string }>>()
+  /**
+   * Tasks whose last run stopped at a time, cost or monthly budget limit: their queued messages are not sent on their
+   * own (that would spend what the limit just refused). `announced` are the messages the owner was already told about.
+   * The entry goes when the task runs again (resume or a follow-up), which takes the queued messages along.
+   */
+  const heldTasks = new Map<TaskId, { reason: string; announced: Set<string> }>()
+  /** The task a run belongs to, for code a provider calls without knowing it (the monthly API budget check). */
+  const runningTaskId = new AsyncLocalStorage<TaskId>()
   /**
    * Tasks with an owner action in progress (message, plan decision, resume, checkpoint restore, discard). They change
    * the worktree or start a run, so two of them on one task must not interleave.
@@ -1124,7 +1153,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (
         !isAllowedHost(req.headers.host) ||
         req.headers['sec-fetch-site']?.toLowerCase() === 'cross-site' ||
-        !isAllowedOrigin(req, allowedOrigins, false)
+        !originAllowed(req, false)
       ) {
         socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
         socket.destroy()
@@ -1260,7 +1289,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     if (
       req.headers['sec-fetch-site']?.toLowerCase() === 'cross-site' ||
-      !isAllowedOrigin(req, allowedOrigins, method === 'GET' || method === 'HEAD')
+      !originAllowed(req, method === 'GET' || method === 'HEAD')
     )
       throw new HttpError(403, 'Origin is not allowed')
     const isPublicHealth = url.pathname === '/api/health' && method === 'GET'
@@ -1637,6 +1666,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (!attempt) throw new HttpError(404, 'Attempt not found')
       const removed = await removeWorktrees([{ task, attempt }], input.confirmUnpushedCommits ?? false)
       publishTaskLevel(task.id, 'worktree.removed', { attemptIds: removed })
+      if (removed.length) forgetQueuedMessages(task.id, 'The worktree was removed')
       json(res, 200, { removed })
       return
     }
@@ -1654,6 +1684,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         ),
       )
       publishTaskLevel(task.id, 'worktree.removed', { attemptIds: removed, discarded: true })
+      if (removed.length) forgetQueuedMessages(task.id, 'The worktree was discarded')
       json(res, 200, { removed })
       return
     }
@@ -2039,34 +2070,56 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const controller = new AbortController()
     const active: ActiveTask = { controller, promise: Promise.resolve() }
     running.set(task.id, active)
-    active.promise = runTask(task, controller, resume).finally(() => {
-      clearTimeout(active.timeLimit)
-      if (running.get(task.id) === active) running.delete(task.id)
-      if (closed) return
-      // The run stopped before its agent got the messages of the interrupt it continues (for example a provider the
-      // repo no longer allows): they were never delivered.
-      const undelivered = resume?.interrupted?.messageIds.splice(0) ?? []
-      if (undelivered.length)
-        publishTaskLevel(task.id, 'user.message.discarded', {
-          ids: undelivered,
-          reason: 'The task stopped before the agent got the message',
-        })
-      // An interrupt that did not happen (a limit or an approval pause stopped the run first): its messages wait in
-      // the queue like any other.
-      if (active.interrupted && !active.continueWith && !active.cancelled) {
-        const ids = (queuedMessages.get(task.id) ?? []).map((message) => message.id)
-        if (ids.length) publishTaskLevel(task.id, 'user.message.requeued', { ids })
-      }
-      // Synchronous from here to the next scheduleTask, so no other owner action can slip in between the two runs.
-      if (active.continueWith) {
-        if (!active.cancelled) {
-          continueAfterInterrupt(task.id, active.continueWith)
-          return
+    heldTasks.delete(task.id)
+    active.promise = runningTaskId
+      .run(task.id, () => runTask(task, controller, resume))
+      .finally(() => {
+        clearTimeout(active.timeLimit)
+        if (running.get(task.id) === active) running.delete(task.id)
+        if (closed) return
+        // The run stopped before its agent got the messages of the interrupt it continues (for example a provider the
+        // repo no longer allows): they were never delivered.
+        const undelivered = resume?.interrupted?.messageIds.splice(0) ?? []
+        if (undelivered.length)
+          publishTaskLevel(task.id, 'user.message.discarded', {
+            ids: undelivered,
+            reason: 'The task stopped before the agent got the message',
+          })
+        // An interrupt that did not happen (a limit or an approval pause stopped the run first): its messages wait in
+        // the queue like any other.
+        if (active.interrupted && !active.continueWith && !active.cancelled) {
+          const ids = (queuedMessages.get(task.id) ?? []).map((message) => message.id)
+          if (ids.length) publishTaskLevel(task.id, 'user.message.requeued', { ids })
         }
-        cancelInterruptedRun(task.id, active.continueWith.attempt.id)
-      }
-      void continueWithQueuedMessages(task.id)
-    })
+        // Synchronous from here to the next scheduleTask, so no other owner action can slip in between the two runs.
+        if (active.continueWith) {
+          if (!active.cancelled) {
+            continueAfterInterrupt(task.id, active.continueWith)
+            return
+          }
+          cancelInterruptedRun(task.id, active.continueWith.attempt.id)
+        }
+        // A limit stopped the run: the queued messages stay queued until the owner continues the task.
+        // A refused budget check only counts when the run really ended in failure (another provider may have finished it).
+        const limit =
+          active.stoppedFor ?? (getTask(db, task.id)?.status === 'failed' ? active.budgetStop : undefined)
+        if (limit && !active.cancelled) heldTasks.set(task.id, { reason: limit, announced: new Set() })
+        void continueWithQueuedMessages(task.id)
+      })
+  }
+
+  /**
+   * Tells the owner which queued messages wait because a limit stopped the task (once per message). They go out with
+   * the next run the owner starts: Continue (resume) or another message.
+   */
+  function announceHeldMessages(taskId: TaskId): void {
+    const held = heldTasks.get(taskId)
+    const ids = (queuedMessages.get(taskId) ?? [])
+      .map((message) => message.id)
+      .filter((id) => !held?.announced.has(id))
+    if (!held || !ids.length) return
+    for (const id of ids) held.announced.add(id)
+    publishTaskLevel(taskId, 'user.message.held', { ids, reason: held.reason })
   }
 
   /**
@@ -2389,6 +2442,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     return queued.map((m) => m.text)
   }
 
+  /** The task's worktree is gone: its queued and held messages can never be delivered. */
+  function forgetQueuedMessages(taskId: TaskId, reason: string): void {
+    heldTasks.delete(taskId)
+    discardQueuedMessages(taskId, reason)
+  }
+
   function discardQueuedMessages(taskId: TaskId, reason: string): void {
     const queued = queuedMessages.get(taskId)
     if (!queued?.length) return
@@ -2507,6 +2566,23 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (!queuedMessages.get(taskId)?.length || running.has(taskId) || busyTasks.has(taskId)) return
     const task = getTask(db, taskId)
     if (!task) return
+    if (heldTasks.has(taskId)) {
+      // Held messages wait for the owner to continue, which needs a worktree and session; without them nothing would
+      // ever send them (a cancelled task from a limit can still be continued).
+      try {
+        await continuationState(task)
+      } catch (error) {
+        // The owner may have started a new run meanwhile; its messages are not ours to withdraw.
+        if (!heldTasks.has(taskId) || running.has(taskId)) return
+        forgetQueuedMessages(
+          taskId,
+          redactor.redact(error instanceof Error ? error.message : 'The task could not be continued'),
+        )
+        return
+      }
+      announceHeldMessages(taskId)
+      return
+    }
     // Queued (quota wait) and paused tasks pick the messages up when they resume.
     if (ACTIVE_TASK_STATUSES.has(task.status)) return
     if (task.status === 'cancelled') {
@@ -2921,12 +2997,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         log.warn(redactor.redact(`[joy] could not remove worktree after the PR closed: ${String(error)}`))
         return false
       })
-      if (cleaned)
+      if (cleaned) {
         publishTaskLevel(task.id, 'worktree.removed', {
           attemptIds: [attempt.id],
           published: true,
           pullRequestState: state.toLowerCase(),
         })
+        forgetQueuedMessages(task.id, 'The worktree was removed')
+      }
     }).catch((error: unknown) => {
       // Busy with something else: the next status check tries again.
       log.warn(redactor.redact(`[joy] skipped worktree cleanup after the PR closed: ${String(error)}`))
@@ -5144,6 +5222,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         httpServer.once('error', onError)
         httpServer.listen(port, '127.0.0.1', () => {
           httpServer.off('error', onError)
+          // The built UI this server hands out (serveUi) calls back to its own address (see `originAllowed`).
+          localPort = (httpServer.address() as AddressInfo).port
           telegram?.start()
           scheduler.start()
           if (options.cliVersionCheck ?? true) {

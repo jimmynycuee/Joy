@@ -1987,6 +1987,11 @@ kbd {
   font-size: var(--fs-22);
   font-weight: var(--fw-strong);
 }
+.token-gate-steps {
+  margin: 0;
+  padding-left: 1.2em;
+  line-height: 1.6;
+}
 
 /* Dialogs and the command palette. */
 .modal-backdrop {
@@ -2224,7 +2229,8 @@ kbd {
   font-size: var(--fs-12);
   color: var(--muted);
 }
-.bubble-tag-queued {
+.bubble-tag-queued,
+.bubble-tag-held {
   color: var(--accent);
 }
 .bubble-tag-discarded,
