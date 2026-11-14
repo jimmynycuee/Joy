@@ -158,6 +158,8 @@ test('a message to a running agent reaches it while it keeps working', async ({ 
     .poll(() => calls.map((call) => call.body))
     .toEqual([{ text: 'Use the existing helper; why did you add a new one?' }])
   answer()
+  // The draft is cleared once the request is answered; reloading earlier would bring it back.
+  await expect(composer).toHaveValue('')
   await page.reload()
   const bubble = page.locator('.user-column', { hasText: 'Use the existing helper' })
   await expect(bubble.getByTestId('message-tag')).toHaveText('已交給 agent')

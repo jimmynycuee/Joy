@@ -680,7 +680,8 @@ describe('service install with the real file system and a fake runner', () => {
     } else {
       expect(bytes.toString('utf8')).toContain(nodePath)
     }
-    expect(calls).toHaveLength(2)
+    // macOS: bootout + bootstrap; Windows: /End + /Create + /Run.
+    expect(calls).toHaveLength(platform === 'win32' ? 3 : 2)
     expect(await runService('uninstall', options, deps)).toBe(0)
     expect(existsSync(target)).toBe(false)
   })
