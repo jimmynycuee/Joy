@@ -373,6 +373,7 @@ export function Workspace() {
           repoId: input.repoId,
           title: input.title,
           prompt: input.prompt,
+          ...(input.attachments?.length ? { attachments: input.attachments } : {}),
           // A custom workflow (T5.6) brings its own models and options; the built-in ones use the models chosen here.
           ...(input.mode.startsWith('workflow:')
             ? { workflow: input.mode.slice('workflow:'.length) }

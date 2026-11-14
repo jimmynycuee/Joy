@@ -1,4 +1,7 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { AgentEvent, RunOptions } from '@joy/core'
@@ -99,6 +102,28 @@ describe('OpenAiApiProvider', () => {
       stream: true,
       reasoning: { effort: 'low' },
     })
+  })
+
+  it('sends attached images as input_image data URLs with the prompt', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'joy-openai-image-'))
+    try {
+      const image = join(dir, 'a.png')
+      writeFileSync(image, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+      const api = await fakeOpenAi([(_b, res) => sse(res, [completed('resp_1')])])
+      const provider = new OpenAiApiProvider({ apiKey: async () => 'sk-test', baseUrl: api.baseUrl })
+      await collect(provider.run(opts({ images: [{ path: image, mediaType: 'image/png' }] }), model))
+      expect(api.requests[0]?.body.input).toEqual([
+        {
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'hello' },
+            { type: 'input_image', image_url: 'data:image/png;base64,iVBORw==' },
+          ],
+        },
+      ])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('runs tools and continues the same response chain', async () => {

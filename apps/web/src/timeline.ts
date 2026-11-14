@@ -1,3 +1,5 @@
+import { parseAttachments } from './attachments.js'
+import type { AttachmentInfo } from './attachments.js'
 import { PHASE_LABELS, ROLE_SPEAKERS } from './labels.js'
 import { messageDeliveryStates } from './messages.js'
 import type { DeliveryState } from './messages.js'
@@ -51,7 +53,13 @@ export type TimelineEntry =
       findings: ReviewFindingView[]
     })
   | (EntryBase & { kind: 'error'; text: string })
-  | (EntryBase & { kind: 'user'; id: string; text: string; state: DeliveryState })
+  | (EntryBase & {
+      kind: 'user'
+      id: string
+      text: string
+      state: DeliveryState
+      attachments: AttachmentInfo[]
+    })
   | (EntryBase & {
       kind: 'checks'
       round: number
@@ -306,7 +314,14 @@ export function buildTimeline(
     }
     if (event.type === 'user.message' && typeof payload?.text === 'string') {
       const id = typeof payload.id === 'string' ? payload.id : base.key
-      entries.push({ ...base, kind: 'user', id, text: payload.text, state: deliveries.get(id) ?? 'sent' })
+      entries.push({
+        ...base,
+        kind: 'user',
+        id,
+        text: payload.text,
+        state: deliveries.get(id) ?? 'sent',
+        attachments: parseAttachments(payload.attachments),
+      })
       return
     }
     if (event.type === 'checks') {

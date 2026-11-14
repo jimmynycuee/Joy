@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentEvent, RunOptions, Steer } from '@joy/core'
@@ -291,6 +291,78 @@ describe('ClaudeCliProvider.run with steering', () => {
     expect(forwarded).toEqual([dir])
     expect(await Promise.all(results)).toEqual([true])
     expect(readFileSync(stdinOut, 'utf8').trim().split('\n')).toHaveLength(2)
+  })
+
+  it('sends attached images as base64 image blocks on stdin, also without steering', async () => {
+    const { dir, provider, received, stdin } = steered()
+    const image = join(dir, 'shot.png')
+    writeFileSync(image, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+    const events = await collect(
+      provider.run(opts(dir, { images: [{ path: image, mediaType: 'image/png' }] }), model),
+    )
+    expect(received().args).toEqual(expect.arrayContaining(['--input-format', 'stream-json']))
+    expect(received().args).not.toContain('fix it')
+    expect(stdin()).toEqual([
+      {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'fix it' },
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw==' } },
+          ],
+        },
+        parent_tool_use_id: null,
+      },
+    ])
+    expect(events.filter((e) => e.type === 'done')).toEqual([expect.objectContaining({ isError: false })])
+  })
+
+  it('steers with images', async () => {
+    const { dir, provider, stdin } = steered()
+    const image = join(dir, 'later.gif')
+    writeFileSync(image, 'GIF89a')
+    const results: Array<Promise<boolean>> = []
+    await run(provider, dir, (event, steer) => {
+      if (event.type === 'session_started' && steer)
+        results.push(steer('look', [{ path: image, mediaType: 'image/gif' }]))
+    })
+    expect(await Promise.all(results)).toEqual([true])
+    expect(stdin()[1]).toMatchObject({
+      message: {
+        content: [
+          { type: 'text', text: 'look' },
+          {
+            type: 'image',
+            source: { media_type: 'image/gif', data: Buffer.from('GIF89a').toString('base64') },
+          },
+        ],
+      },
+    })
+  })
+
+  it('refuses images in a container run instead of dropping them', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'joy-claude-test-'))
+    dirs.push(dir)
+    const provider = new ClaudeCliProvider({
+      command: process.execPath,
+      wrap: ({ command, args }) => Promise.resolve({ command, args: [fakeCli, ...args] }),
+      forwardsStdin: () => false,
+    })
+    await expect(
+      collect(
+        provider.run(opts(dir, { images: [{ path: join(dir, 'x.png'), mediaType: 'image/png' }] }), model),
+      ),
+    ).rejects.toThrow(/container mode/)
+  })
+
+  it('fails clearly when an attached image is missing', async () => {
+    const { dir, provider } = steered()
+    await expect(
+      collect(
+        provider.run(opts(dir, { images: [{ path: join(dir, 'gone.png'), mediaType: 'image/png' }] }), model),
+      ),
+    ).rejects.toThrow(/attached image could not be read/)
   })
 
   it('keeps the one-shot command line when the run is wrapped (containers do not forward stdin)', async () => {

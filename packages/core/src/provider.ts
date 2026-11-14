@@ -111,10 +111,29 @@ export interface RunOptions {
    * with `undefined` once the run can no longer take any. Backends that cannot steer never call it.
    */
   onSteer?: (steer: Steer | undefined) => void
+  /**
+   * Images the owner attached, shown to the model with `prompt`. A backend that cannot show them for this run throws
+   * an actionable error instead of dropping them.
+   */
+  images?: readonly ImageInput[]
 }
 
-/** Gives the running agent more input without stopping it. Resolves false when the run could not take it. */
-export type Steer = (text: string) => Promise<boolean>
+/** Image types every backend accepts. */
+export const IMAGE_MEDIA_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const
+export type ImageMediaType = (typeof IMAGE_MEDIA_TYPES)[number]
+
+/** An image file on this computer, outside the worktree (it is never committed). */
+export interface ImageInput {
+  /** Absolute path; the file is only read, never changed. */
+  path: string
+  mediaType: ImageMediaType
+}
+
+/**
+ * Gives the running agent more input without stopping it. Resolves false when the run could not take it.
+ * `images` follow the same rule as `RunOptions.images`.
+ */
+export type Steer = (text: string, images?: readonly ImageInput[]) => Promise<boolean>
 
 export interface ProviderCapabilities {
   codeEdit: boolean

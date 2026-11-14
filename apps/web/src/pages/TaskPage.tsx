@@ -157,7 +157,10 @@ export function TaskPage({
             }}
           >
             <div className="thread-column">
-              <UserBubble text={task.prompt} />
+              <UserBubble
+                text={task.prompt}
+                attachments={(details.attachments ?? []).filter((attachment) => !attachment.messageId)}
+              />
               <TimelineView entries={entries} showDetails={showDetails} />
               {hiddenCount > 0 ? (
                 <button

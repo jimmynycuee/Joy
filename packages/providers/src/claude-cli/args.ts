@@ -1,4 +1,4 @@
-import type { ModelRef, RunOptions } from '@joy/core'
+import type { ImageMediaType, ModelRef, RunOptions } from '@joy/core'
 import { effortCompatibilityError } from '@joy/model-effort'
 
 /**
@@ -52,12 +52,30 @@ export function buildClaudeArgs(
   return args
 }
 
-/** One user message on stdin in `--input-format stream-json` (the Agent SDK's streaming input shape). */
-export function claudeUserMessage(text: string): string {
+/** An image already read from disk, as the Messages API takes it. */
+export interface ClaudeImage {
+  mediaType: ImageMediaType
+  base64: string
+}
+
+/**
+ * One user message on stdin in `--input-format stream-json` (the Agent SDK's streaming input shape). With images the
+ * content is a list of blocks, as in the SDK's streaming input example (code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode).
+ */
+export function claudeUserMessage(text: string, images: readonly ClaudeImage[] = []): string {
+  const content = images.length
+    ? [
+        { type: 'text', text },
+        ...images.map((image) => ({
+          type: 'image',
+          source: { type: 'base64', media_type: image.mediaType, data: image.base64 },
+        })),
+      ]
+    : text
   // JSON.stringify leaves U+2028/U+2029 raw, and some line readers split on them; escaped they are the same JSON.
   return JSON.stringify({
     type: 'user',
-    message: { role: 'user', content: text },
+    message: { role: 'user', content },
     parent_tool_use_id: null,
   }).replace(/[\u2028\u2029]/g, (char) => `\\u${char.charCodeAt(0).toString(16)}`)
 }

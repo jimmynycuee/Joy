@@ -235,6 +235,24 @@ describe('buildTimeline: thread messages, plans, checks and checkpoints', () => 
     ).toEqual(['delivered', 'queued', 'sent'])
   })
 
+  it('keeps the files of an owner message, dropping malformed ones', () => {
+    const entries = buildTimeline([
+      e('user.message', {
+        id: 'm1',
+        text: '',
+        delivery: 'follow_up',
+        attachments: [{ id: 'a1', name: 'shot.png', mediaType: 'image/png', size: 10 }, { name: 'no id' }, 3],
+      }),
+      e('user.message', { id: 'm2', text: 'plain', delivery: 'follow_up' }),
+    ])
+    expect(entries[0]).toMatchObject({
+      kind: 'user',
+      text: '',
+      attachments: [{ id: 'a1', name: 'shot.png', mediaType: 'image/png', size: 10 }],
+    })
+    expect(entries[1]).toMatchObject({ kind: 'user', attachments: [] })
+  })
+
   it('shows an interrupted step and the message it carried', () => {
     const entries = buildTimeline([
       e('user.message', { id: 'm1', text: 'use BigInt', provenance: 'user', delivery: 'interrupt' }),

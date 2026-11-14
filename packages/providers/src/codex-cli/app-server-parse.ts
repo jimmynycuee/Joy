@@ -177,6 +177,9 @@ export class CodexAppServerParser {
         const text = str(item.text)
         return text ? [{ type: 'status', text }] : []
       }
+      case 'userMessage':
+        // The echo of Joy's own input: it can carry attached files the owner's message already records by name only.
+        return []
       default:
         return [{ type: 'raw', source: 'codex-cli', payload: item }]
     }

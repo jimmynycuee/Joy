@@ -33,6 +33,15 @@ claude -p <prompt>
   - 容器 repo 不用 streaming input（`docker run` 沒有 `-i`）；由 server 傳給 provider 的 `forwardsStdin(cwd)` 判斷。
   - 要錄的 fixture：一個 turn 進行中送第二則訊息、以及第一個 result 後才關 stdin 的完整輸出。
 
+## 附件：圖片（2026-11-14）
+
+- 來源：官方 Agent SDK 文件 code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode（完整讀過）：streaming input 支援「Image uploads」，範例的 user message `content` 是 `[{type:'text',text}, {type:'image', source:{type:'base64', media_type:'image/png', data}}]`；single message 模式明寫**不支援**直接附圖。`source` 缺漏時 CLI 不報錯，只送一段「Image could not be processed」文字給模型。
+- 本機 `claude --help`（2.1.319）：沒有 `--image` 之類的旗標；`--file file_id:path` 是下載雲端檔案，不適用。
+- Joy 做法：有圖片的 run 一律用 `--input-format stream-json`（即使沒有 steer），第一則 stdin 訊息帶 image block，第一個 `result` 關 stdin；steer 也可帶圖。圖片檔在 `<JOY_HOME>/attachments`，Joy 自己讀成 base64，不要求 agent 用 Read 讀 worktree 外的路徑（那會觸發權限詢問，也要 `--add-dir`，而 `--add-dir` 同時放行寫入）。
+- 容器模式沒有 stdin → 收到圖片時 provider 丟出錯誤（不改用路徑、不默默丟掉）。
+- 文字檔不用 CLI 能力：Joy 把內容直接引用進 prompt。
+- **未驗證**：真實 CLI 是否接受這個形狀、大圖（> 5 MB 或高解析度）會不會自己縮小；要錄一份帶小 PNG 的 fixture。
+
 ## 事件格式（stdout JSONL）
 
 | `type` / `subtype`                                                                                          | 意義                                                                                                                           | 對應 `AgentEvent`                                           |

@@ -27,6 +27,8 @@ import {
   roleModel,
   taskTitle,
 } from '../labels.js'
+import { sendableAttachments } from '../attachments.js'
+import { useAttachments } from '../hooks/useAttachments.js'
 import { readStorage, useDraft, writeStorage } from '../storage.js'
 import { visibleStarters } from '../starters.js'
 import type { Repo } from '../types.js'
@@ -41,6 +43,8 @@ export interface NewTaskInput {
   roleOverrides?: TaskModels
   /** The agent writes a plan first and waits for the owner's approval before changing code. */
   planFirst: boolean
+  /** Ids of files uploaded with `POST /api/attachments`. */
+  attachments?: string[]
 }
 
 const ROLE_KEYS: Array<Extract<Role, 'implementer' | 'reviewer'>> = ['implementer', 'reviewer']
@@ -67,6 +71,7 @@ export function NewTaskPage({
   onCreate: (input: NewTaskInput) => Promise<boolean>
 }) {
   const [prompt, setPrompt, clearPrompt] = useDraft('new-task')
+  const files = useAttachments('new-task')
   const [repoId, setRepoId] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -111,11 +116,15 @@ export function NewTaskPage({
         repoId: activeRepoId,
         title: taskTitle(String(form.get('title') ?? ''), prompt),
         prompt: prompt.trim(),
+        ...(files.items.length ? { attachments: sendableAttachments(files.items).ids } : {}),
         mode,
         ...(roleOverrides ? { roleOverrides } : {}),
         planFirst: planFirstOn,
       })
-      if (ok) clearPrompt()
+      if (ok) {
+        clearPrompt()
+        files.clear()
+      }
     } finally {
       setBusy(false)
     }
@@ -163,6 +172,7 @@ export function NewTaskPage({
               busy={busy}
               autoFocus
               rows={3}
+              attachments={{ items: files.items, onAdd: files.add, onRemove: files.remove }}
               bar={
                 <>
                   <ProjectMenu
