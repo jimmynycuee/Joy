@@ -1,4 +1,5 @@
 import { relativeTime } from '../dates.js'
+import { shortTitle } from '../labels.js'
 import { sortTasksByActivity } from '../recent.js'
 import { repoColor } from '../repo-colors.js'
 import type { Repo, Task } from '../types.js'
@@ -27,14 +28,18 @@ export function ArchivedPanel({
           {archived.map((task) => (
             <li key={task.id} className="archived-row">
               <ProjectDot color={repoColor(task.repoId, repos)} />
-              <span className="archived-title">{task.title}</span>
+              <span className="archived-title">{shortTitle(task.title)}</span>
               <span className="muted archived-time">{relativeTime(task.updatedAt || task.createdAt)}</span>
-              <Button variant="ghost" aria-label={`打開：${task.title}`} onClick={() => onOpen(task.id)}>
+              <Button
+                variant="ghost"
+                aria-label={`打開：${shortTitle(task.title)}`}
+                onClick={() => onOpen(task.id)}
+              >
                 打開
               </Button>
               <Button
                 variant="secondary"
-                aria-label={`取消封存：${task.title}`}
+                aria-label={`取消封存：${shortTitle(task.title)}`}
                 onClick={() => onRestore(task.id)}
               >
                 取消封存

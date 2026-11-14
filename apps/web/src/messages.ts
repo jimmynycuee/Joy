@@ -100,40 +100,24 @@ export interface FollowUpState {
   disabled: boolean
   /** Why the composer is off; shown instead of the box. */
   reason?: string
-  placeholder: string
 }
 
-const WORKING_STATUSES = new Set(['queued', 'running', 'awaiting_approval'])
+/** What the box says in every state: how a message gets delivered shows on the message itself, not here. */
+export const THREAD_PLACEHOLDER = '傳訊息給 Joy'
 
-/** The thread composer for a task: disabled for compete and removed worktrees, else wording for the task's state. */
-export function followUpState(input: {
-  status: string
-  mode: string
-  worktreeRemoved: boolean
-  pendingPlan: boolean
-  /** From the server: a message now reaches the working agent at once. Unknown means do not promise it. */
-  steerable?: boolean
-}): FollowUpState {
+/** The thread composer for a task: off for compete tasks and removed worktrees, on otherwise. */
+export function followUpState(input: { mode: string; worktreeRemoved: boolean }): FollowUpState {
   if (input.mode === 'compete')
     return {
       disabled: true,
       reason: '比賽任務不能接續交代；請從兩個方案裡挑一個，或開一個新任務。',
-      placeholder: '',
     }
   if (input.worktreeRemoved)
     return {
       disabled: true,
       reason: '這個任務的工作副本已經移除（開 PR 或丟掉變更後會移除），不能再接續；請開一個新任務。',
-      placeholder: '',
     }
-  if (input.pendingPlan) return { disabled: false, placeholder: '說明要怎麼改計畫' }
-  // Only the implementer's own turn takes messages at once, and only on a backend that can; the rest waits.
-  if (input.status === 'running' && input.steerable === true)
-    return { disabled: false, placeholder: '補充指示或提問，agent 會邊做邊參考' }
-  if (input.status === 'running') return { disabled: false, placeholder: '訊息會在 agent 下一次動手時送達' }
-  if (WORKING_STATUSES.has(input.status))
-    return { disabled: false, placeholder: '補充指示，下一輪會帶給 agent' }
-  return { disabled: false, placeholder: '接著交代…' }
+  return { disabled: false }
 }
 
 /** Chinese text for a failed owner action on a task: a message, a plan decision, a checkpoint restore. */

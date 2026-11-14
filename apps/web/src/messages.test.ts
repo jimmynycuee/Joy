@@ -5,6 +5,7 @@ import {
   messageDeliveryStates,
   ownerActionError,
   pendingMessagesNote,
+  THREAD_PLACEHOLDER,
 } from './messages.js'
 import type { TaskEvent } from './types.js'
 
@@ -174,26 +175,11 @@ describe('deliveryTag', () => {
 })
 
 describe('followUpState', () => {
-  const base = { status: 'done', mode: 'review_loop', worktreeRemoved: false, pendingPlan: false }
+  const base = { mode: 'review_loop', worktreeRemoved: false }
 
-  it('words the placeholder after what the message will do', () => {
-    expect(followUpState({ ...base, status: 'running', steerable: true }).placeholder).toBe(
-      '補充指示或提問，agent 會邊做邊參考',
-    )
-    // A review, checks or setup, a backend that cannot steer, or a server that does not say: no promise.
-    expect(followUpState({ ...base, status: 'running', steerable: false }).placeholder).toBe(
-      '訊息會在 agent 下一次動手時送達',
-    )
-    expect(followUpState({ ...base, status: 'running' }).placeholder).toBe('訊息會在 agent 下一次動手時送達')
-    expect(followUpState({ ...base, status: 'queued' }).placeholder).toBe('補充指示，下一輪會帶給 agent')
-    expect(followUpState({ ...base, status: 'awaiting_approval' }).placeholder).toBe(
-      '補充指示，下一輪會帶給 agent',
-    )
-    expect(followUpState(base).placeholder).toBe('接著交代…')
-    expect(followUpState({ ...base, status: 'failed' }).placeholder).toBe('接著交代…')
-    expect(followUpState({ ...base, status: 'review_ready', pendingPlan: true }).placeholder).toBe(
-      '說明要怎麼改計畫',
-    )
+  it('says the same short line in every state', () => {
+    expect(THREAD_PLACEHOLDER).toBe('傳訊息給 Joy')
+    expect(followUpState(base)).toEqual({ disabled: false })
   })
 
   it('is disabled with a reason for compete tasks and removed worktrees', () => {
