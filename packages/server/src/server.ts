@@ -879,8 +879,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const late = getApproval(db, id)
     if (!late || late.status !== 'expired' || late.decidedVia !== 'timeout') return undefined
     const task = getTask(db, late.taskId)
+    // Compete tasks never pause for an approval (a timeout is a denial there), and resuming one would rerun the
+    // whole contest with the wrong roles.
     if (
       !task ||
+      task.mode === 'compete' ||
       running.has(task.id) ||
       busyTasks.has(task.id) ||
       (task.status !== 'awaiting_approval' && task.status !== 'failed')

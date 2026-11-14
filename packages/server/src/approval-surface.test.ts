@@ -409,4 +409,31 @@ describe('approval surface for implementer runs', () => {
     // Nothing is waiting to be resumed by a late answer.
     expect((await call('POST', `/api/approvals/${expired?.id}/approve`, {})).status).toBe(409)
   })
+
+  it('compete: a late approval after the contest failed does not rerun it', async () => {
+    const { claude, codex, newTask, call } = await setup({ onTimeout: 'pause', approvalTimeoutMs: 50 })
+    claude.hooks.implement = async (options) => {
+      await askToRun(options, 'curl https://example.com/compete')
+      throw new Error('contestant A broke')
+    }
+    codex.hooks.implement = async () => {
+      throw new Error('contestant B broke')
+    }
+    const id = await newTask({
+      mode: 'compete',
+      roleOverrides: {
+        implementer: { provider: 'claude-cli', model: 'haiku' },
+        reviewer: { provider: 'codex-cli', model: 'gpt-6-luna' },
+        judge: { provider: 'claude-cli', model: 'haiku' },
+      },
+    })
+    const failed = await until(call, id, status('failed'), 'compete failure')
+    const started = failed.events.filter((e) => e.type === 'started').length
+    const [expired] = (await call('GET', `/api/approvals?taskId=${id}&status=expired`)).body
+      .approvals as Array<{ id: string }>
+    expect(expired).toBeDefined()
+    expect((await call('POST', `/api/approvals/${expired?.id}/approve`, {})).status).toBe(409)
+    const after = (await call('GET', `/api/tasks/${id}`)).body as { events: Array<{ type: string }> }
+    expect(after.events.filter((e) => e.type === 'started')).toHaveLength(started)
+  })
 })
