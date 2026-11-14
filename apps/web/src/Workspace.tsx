@@ -10,7 +10,7 @@ import type { PaletteItem } from './components/CommandPalette.js'
 import { Sidebar } from './components/Sidebar.js'
 import { Button, IconButton, Spinner } from './components/ui.js'
 import { useTaskDetails } from './hooks/useTaskDetails.js'
-import { roleModel } from './labels.js'
+import { roleModel, shortTitle } from './labels.js'
 import { AssistantPage } from './pages/AssistantPage.js'
 import { NewTaskPage } from './pages/NewTaskPage.js'
 import type { NewTaskInput } from './pages/NewTaskPage.js'
@@ -476,7 +476,7 @@ export function Workspace() {
     view === 'new-task'
       ? '新任務'
       : view === 'task'
-        ? (details?.task.title ?? '任務')
+        ? shortTitle(details?.task.title ?? '任務')
         : view === 'assistant'
           ? '聊聊'
           : '設定'
@@ -515,7 +515,7 @@ export function Workspace() {
       : []),
     ...activeTasks.map((task) => ({
       id: `task:${task.id}`,
-      label: task.title,
+      label: shortTitle(task.title),
       hint: '任務',
       icon: 'bolt' as const,
       run: () => openTask(task.id),
@@ -599,12 +599,12 @@ export function Workspace() {
       <TaskPage
         key={details.task.id}
         details={details}
-        repos={repos}
         changesOpen={changesOpen}
         onToggleChanges={setChangesOpen}
         onChanged={() => void refreshSelectedTask().catch(() => undefined)}
         onError={setError}
         onRename={(next) => patchTask(details.task.id, { title: next })}
+        onArchive={() => void archiveTask(details.task.id)}
       />
     )
   }

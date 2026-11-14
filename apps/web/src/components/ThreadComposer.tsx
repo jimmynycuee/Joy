@@ -1,5 +1,11 @@
 import { ApiError, errorMessage, request } from '../api.js'
-import { followUpState, messageDeliveryStates, ownerActionError, pendingMessagesNote } from '../messages.js'
+import {
+  THREAD_PLACEHOLDER,
+  followUpState,
+  messageDeliveryStates,
+  ownerActionError,
+  pendingMessagesNote,
+} from '../messages.js'
 import { sendableAttachments } from '../attachments.js'
 import { useAttachments } from '../hooks/useAttachments.js'
 import { useDraft } from '../storage.js'
@@ -33,13 +39,7 @@ export function ThreadComposer({
   const [draft, setDraft, clearDraft] = useDraft(`task-${task.id}`)
   const files = useAttachments(`task-${task.id}`)
   const [busy, setBusy] = useState(false)
-  const state = followUpState({
-    status: task.status,
-    mode: task.mode,
-    worktreeRemoved: worktreeRemoved(details.events),
-    pendingPlan: Boolean(details.pendingPlan),
-    ...(details.steerable !== undefined ? { steerable: details.steerable } : {}),
-  })
+  const state = followUpState({ mode: task.mode, worktreeRemoved: worktreeRemoved(details.events) })
   const pendingNote = useMemo(
     () =>
       pendingMessagesNote(
@@ -95,7 +95,7 @@ export function ThreadComposer({
         value={draft}
         onChange={setDraft}
         onSubmit={send}
-        placeholder={state.disabled ? '' : state.placeholder}
+        placeholder={state.disabled ? '' : THREAD_PLACEHOLDER}
         textareaLabel="傳訊息給任務"
         sendLabel="送出"
         busy={busy}

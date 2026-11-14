@@ -1,9 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
 import { formatElapsed, parseTimestamp } from '../dates.js'
+import { foldSummary, foldTimeline } from '../fold.js'
+import type { FoldedItem } from '../fold.js'
 import { PHASE_LABELS } from '../labels.js'
 import { deliveryTag } from '../messages.js'
 import type { DeliveryState } from '../messages.js'
 import { runProgress } from '../task-info.js'
+import { detailCount, hasDetails } from '../timeline.js'
 import type { ReviewView, TimelineEntry } from '../timeline.js'
 import { formatSpent } from '../usage.js'
 import type { TaskEvent } from '../types.js'
@@ -90,7 +94,8 @@ function ToolRow({ entry }: { entry: Extract<TimelineEntry, { kind: 'tool' }> })
       ) : null}
     </>
   )
-  if (!entry.output?.text) return <div className="tool-row tool-row-plain">{header}</div>
+  // An output that is only whitespace has nothing to open.
+  if (!entry.output?.text.trim()) return <div className="tool-row tool-row-plain">{header}</div>
   return (
     <details className="tool-row">
       <summary>{header}</summary>
@@ -99,24 +104,21 @@ function ToolRow({ entry }: { entry: Extract<TimelineEntry, { kind: 'tool' }> })
   )
 }
 
-/** A reviewer's verdict: pass or changes requested, the summary and the findings. */
+/** A reviewer's verdict: a small mark and word for pass or changes requested, then the summary and the findings. */
 export function ReviewCard({ entry }: { entry: ReviewView }) {
   const subject = entry.target === 'plan' ? '計畫' : '程式變更'
-  const verdict =
-    entry.approve === undefined
-      ? `${subject}審查`
-      : entry.approve
-        ? `${subject}審查通過`
-        : `${subject}要求修改`
   return (
-    <section
-      className={`card review-card ${entry.approve === false ? 'review-changes' : entry.approve ? 'review-ok' : ''}`}
-      aria-label="審查結果"
-    >
+    <section className="card review-card" aria-label="審查結果">
       <header className="review-head">
-        <Icon name={entry.approve === false ? 'alert' : 'check'} size={16} />
-        <strong>{verdict}</strong>
-        {entry.round > 0 ? <span className="muted">第 {entry.round} 輪</span> : null}
+        {entry.approve === undefined ? null : (
+          <strong className="review-result">
+            <Icon name={entry.approve ? 'check' : 'retry'} size={14} />
+            {entry.approve ? '通過' : '要求修改'}
+          </strong>
+        )}
+        <span className="muted">
+          {subject}審查{entry.round > 0 ? ` · 第 ${entry.round} 輪` : ''}
+        </span>
       </header>
       {entry.summary ? <p>{entry.summary}</p> : null}
       {entry.findings.length > 0 ? (
@@ -160,12 +162,8 @@ function ChecksCard({ entry }: { entry: Extract<TimelineEntry, { kind: 'checks' 
     </>
   )
   return (
-    <section
-      className={`card checks-card ${entry.ok ? 'review-ok' : 'review-changes'}`}
-      aria-label="專案檢查"
-      data-testid="checks-card"
-    >
-      {entry.outputTail ? (
+    <section className="card checks-card" aria-label="專案檢查" data-testid="checks-card">
+      {entry.outputTail.trim() ? (
         <details>
           <summary className="checks-head">{header}</summary>
           <pre className="tool-output checks-output">{entry.outputTail}</pre>
@@ -177,63 +175,168 @@ function ChecksCard({ entry }: { entry: Extract<TimelineEntry, { kind: 'checks' 
   )
 }
 
-/** The event log as a conversation: prose, collapsible tool calls, phase markers and review cards. */
-export function TimelineView({
-  entries,
+function TimelineItem({
+  entry,
   showDetails,
   attachmentControls,
 }: {
-  entries: TimelineEntry[]
+  entry: TimelineEntry
   showDetails: boolean
-  attachmentControls?: AttachmentControls
+  attachmentControls: AttachmentControls | undefined
 }) {
   return (
-    <div className="timeline" aria-label="任務紀錄" data-testid="event-stream">
-      {entries.map((entry) => (
-        <div
-          hidden={entry.kind === 'noise' && !showDetails}
-          className={`timeline-item timeline-${entry.kind}${entry.kind === 'step' && entry.tone ? ` tone-${entry.tone}` : ''}`}
-          data-event-seq={entry.seq}
-          title={timestampTitle(entry.ts)}
-          key={entry.key}
-        >
-          {entry.kind === 'message' ? (
-            <AgentProse
-              text={entry.text}
-              {...(entry.role && entry.role !== '實作' ? { speaker: entry.role } : {})}
-            />
-          ) : entry.kind === 'tool' ? (
-            <ToolRow entry={entry} />
-          ) : entry.kind === 'review' ? (
-            <ReviewCard entry={entry} />
-          ) : entry.kind === 'user' ? (
-            <UserBubble
-              text={entry.text}
-              state={entry.state}
-              attachments={entry.attachments}
+    <div
+      hidden={entry.kind === 'noise' && !showDetails}
+      className={`timeline-item timeline-${entry.kind}${entry.kind === 'step' && entry.tone ? ` tone-${entry.tone}` : ''}`}
+      data-event-seq={entry.seq}
+      title={timestampTitle(entry.ts)}
+    >
+      {entry.kind === 'message' ? (
+        <AgentProse
+          text={entry.text}
+          {...(entry.role && entry.role !== '實作' ? { speaker: entry.role } : {})}
+        />
+      ) : entry.kind === 'tool' ? (
+        <ToolRow entry={entry} />
+      ) : entry.kind === 'review' ? (
+        <ReviewCard entry={entry} />
+      ) : entry.kind === 'user' ? (
+        <UserBubble
+          text={entry.text}
+          state={entry.state}
+          attachments={entry.attachments}
+          attachmentControls={attachmentControls}
+        />
+      ) : entry.kind === 'checks' ? (
+        <ChecksCard entry={entry} />
+      ) : entry.kind === 'phase' ? (
+        // A hairline with the phase in the middle, not a pill.
+        <span className="phase-divider">{entry.text}</span>
+      ) : entry.kind === 'step' && entry.detail ? (
+        <details className="step-detail">
+          <summary>
+            <span className="timeline-mark" aria-hidden="true" />
+            <span className="timeline-text">{entry.text}</span>
+          </summary>
+          <Markdown text={entry.detail} />
+        </details>
+      ) : (
+        <>
+          <span className="timeline-mark" aria-hidden="true" />
+          <span className="timeline-text">{entry.text}</span>
+        </>
+      )}
+    </div>
+  )
+}
+
+/** The closed-by-default 過程 of a finished task. Whether it is open is this component's own state, not saved. */
+function ProcessFold({
+  fold,
+  showDetails,
+  attachmentControls,
+  detailsToggle,
+}: {
+  fold: Extract<FoldedItem, { kind: 'fold' }>
+  showDetails: boolean
+  attachmentControls: AttachmentControls | undefined
+  detailsToggle: ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+  const summary = foldSummary(fold.stats)
+  return (
+    <div className="process-fold" data-testid="process-fold">
+      <button type="button" className="process-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <Icon name={open ? 'chevron-down' : 'chevron-right'} size={14} />
+        <span>過程{summary ? `（${summary}）` : ''}</span>
+      </button>
+      {open ? (
+        <div className="process-body">
+          {fold.entries.map((entry) => (
+            <TimelineItem
+              key={entry.key}
+              entry={entry}
+              showDetails={showDetails}
               attachmentControls={attachmentControls}
             />
-          ) : entry.kind === 'checks' ? (
-            <ChecksCard entry={entry} />
-          ) : entry.kind === 'phase' ? (
-            <span className="phase-label">{entry.text}</span>
-          ) : entry.kind === 'step' && entry.detail ? (
-            <details className="step-detail">
-              <summary>
-                <span className="timeline-mark" aria-hidden="true" />
-                <span className="timeline-text">{entry.text}</span>
-              </summary>
-              <Markdown text={entry.detail} />
-            </details>
-          ) : (
-            <>
-              <span className="timeline-mark" aria-hidden="true" />
-              <span className="timeline-text">{entry.text}</span>
-            </>
-          )}
+          ))}
+          {detailsToggle}
         </div>
-      ))}
+      ) : null}
     </div>
+  )
+}
+
+/**
+ * The event log as a conversation: prose, collapsible tool calls, phase dividers and review cards. While the task
+ * works everything is open; once it is finished (`collapse`) the process folds into one line and what is left is
+ * what the owner asked, what the agent concluded and the last review.
+ */
+export function TimelineView({
+  entries,
+  collapse,
+  attachmentControls,
+}: {
+  entries: TimelineEntry[]
+  /** Fold the process because the task is over: `done` for a result, `failed` for a failure or a cancel. */
+  collapse?: 'done' | 'failed' | undefined
+  attachmentControls?: AttachmentControls
+}) {
+  const [showDetails, setShowDetails] = useState(false)
+  const items = useMemo(() => (collapse ? foldTimeline(entries, collapse) : null), [entries, collapse])
+
+  function detailsToggle(shown: readonly TimelineEntry[]) {
+    if (!hasDetails(shown)) return null
+    const count = detailCount(shown)
+    return (
+      <button
+        type="button"
+        className="btn btn-ghost details-toggle"
+        onClick={() => setShowDetails((open) => !open)}
+      >
+        {showDetails ? '隱藏細節' : count > 0 ? `顯示細節（${count} 筆）` : '顯示細節'}
+      </button>
+    )
+  }
+
+  if (items) {
+    return (
+      <div className="timeline" aria-label="任務紀錄" data-testid="event-stream">
+        {items.map((item) =>
+          item.kind === 'fold' ? (
+            <ProcessFold
+              key="process-fold"
+              fold={item}
+              showDetails={showDetails}
+              attachmentControls={attachmentControls}
+              detailsToggle={detailsToggle(item.entries)}
+            />
+          ) : (
+            <TimelineItem
+              key={item.entry.key}
+              entry={item.entry}
+              showDetails={showDetails}
+              attachmentControls={attachmentControls}
+            />
+          ),
+        )}
+      </div>
+    )
+  }
+  return (
+    <>
+      <div className="timeline" aria-label="任務紀錄" data-testid="event-stream">
+        {entries.map((entry) => (
+          <TimelineItem
+            key={entry.key}
+            entry={entry}
+            showDetails={showDetails}
+            attachmentControls={attachmentControls}
+          />
+        ))}
+      </div>
+      {detailsToggle(entries)}
+    </>
   )
 }
 

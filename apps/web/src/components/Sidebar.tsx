@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { request } from '../api.js'
 import { relativeTime } from '../dates.js'
-import { modeLabel, statusLabel } from '../labels.js'
+import { modeLabel, shortTitle, statusLabel } from '../labels.js'
 import { NEW_CONVERSATION_TITLE, recentItems } from '../recent.js'
 import { repoColor } from '../repo-colors.js'
 import { modLabel } from '../shortcuts.js'
 import type { ConversationSummary, Repo, Task } from '../types.js'
-import { Mascot, MascotMark } from './Mascot.js'
+import { MascotMark } from './Mascot.js'
 import { Icon, IconButton, ProjectDot } from './ui.js'
 
 interface QuotaReport {
@@ -108,6 +108,7 @@ export function Sidebar(props: SidebarProps) {
     const waiting = task.status === 'awaiting_approval' || task.status === 'review_ready'
     const working = task.status === 'running' || task.status === 'queued'
     const label = statusLabel(task.status, task.mode, props.pendingPlanTaskId === task.id)
+    const title = shortTitle(task.title)
     return (
       <div className={`nav-row-wrap${selected ? ' selected' : ''}`} key={`task:${task.id}`}>
         <button
@@ -121,11 +122,11 @@ export function Sidebar(props: SidebarProps) {
             <ProjectDot color={repoColor(task.repoId, props.repos)} />
           </span>
           <span className="task-row-copy">
-            <span className="task-title">{task.title}</span>
+            <span className="task-title">{title}</span>
             {waiting ? <span className={`task-meta status-text-${task.status}`}>{label}</span> : null}
           </span>
           {working ? (
-            <Mascot mood="thinking" size={20} label={label} />
+            <span className="task-flag" role="img" aria-label={label} />
           ) : waiting ? (
             <span className="task-flag" aria-hidden="true" />
           ) : task.status === 'failed' ? (
@@ -135,7 +136,7 @@ export function Sidebar(props: SidebarProps) {
         </button>
         <IconButton
           icon="archive"
-          label={`封存：${task.title}`}
+          label={`封存：${title}`}
           className="row-action"
           onClick={() => props.onArchive(task.id)}
         />

@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
+import { openTaskMenu } from './helpers.js'
 
 const repo = { id: 'thread-repo', path: '/tmp/thread-project', defaultBranch: 'main' }
 const config = { autonomy_mode: 'normal', roles: {} }
@@ -129,27 +130,32 @@ test('a failed task shows commands, safe Markdown, the review, its branch and ca
 
   // Structured review.
   const review = page.getByLabel('審查結果')
-  await expect(review).toContainText('程式變更要求修改')
+  await expect(review).toContainText('要求修改')
   await expect(review).toContainText('No test covers Enter')
   await expect(review).toContainText('src/login.ts:12')
 
-  // Routine policy actions are noise until 顯示細節.
+  // Routine policy actions are noise until 顯示細節, which sits in the folded process of a failed task.
+  await expect(stream.getByText('權限：讀取檔案')).toHaveCount(0)
+  await page.getByTestId('process-fold').getByRole('button', { name: /^過程/ }).click()
   await expect(stream.getByText('權限：讀取檔案')).toBeHidden()
   await page.getByRole('button', { name: /顯示細節/ }).click()
   await expect(stream.getByText('權限：讀取檔案')).toBeVisible()
 
-  // The task's own branch, not the repository default.
+  // The task's own branch, not the repository default: in the ⋯ menu, never in the title bar.
   const header = page.locator('.thread-header')
-  await expect(header).toContainText('joy/fix-login')
-  await expect(header).not.toContainText('main')
-  await expect(page.getByRole('button', { name: '複製分支名稱' })).toBeVisible()
+  await expect(header).not.toContainText('joy/fix-login')
+  await openTaskMenu(page)
+  const branchItem = page.getByRole('menuitem', { name: /複製分支名稱/ })
+  await expect(branchItem).toContainText('joy/fix-login')
+  await expect(branchItem).not.toContainText('main')
+  await page.keyboard.press('Escape')
 
   // Failure card, with retry.
   const failure = page.getByLabel('任務失敗')
   await expect(failure).toContainText('Reviewer process exited unexpectedly')
   await failure.getByRole('button', { name: '重試' }).click()
   await expect.poll(() => posts).toEqual([`/api/tasks/${task.id}/resume`])
-  await expect(header.locator('.status-pill')).toHaveText('失敗')
+  await expect(page.getByTestId('task-status')).toHaveAttribute('aria-label', '失敗')
 })
 
 test('a running task shows progress, can be stopped, and keeps the changes pane closed until there is a diff', async ({

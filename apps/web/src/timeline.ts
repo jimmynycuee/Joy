@@ -71,7 +71,11 @@ export type TimelineEntry =
     })
   /** `detail` is Markdown that the step folds away (a past version of the plan). */
   | (EntryBase & { kind: 'step'; text: string; tone?: string; detail?: string })
-  | (EntryBase & { kind: 'noise'; text: string })
+  /**
+   * `fragment` marks what the stream leaves behind (thinking, a result with no call, bookkeeping events): it shows with
+   * the details but is not one of them, so it is not counted.
+   */
+  | (EntryBase & { kind: 'noise'; text: string; fragment?: true })
 
 const SEVERITIES = new Set(['blocker', 'major', 'minor', 'nit'])
 
@@ -237,6 +241,10 @@ export function buildTimeline(
   })
   const lastPlanIndex = events.findLastIndex((event) => event.type === 'plan.awaiting_approval')
   let lastThinking: Extract<TimelineEntry, { kind: 'noise' }> | undefined
+  // The reviewer answers with its verdict as JSON, streamed in pieces; the review card says it better, so once the
+  // review event arrives the raw reply is not shown.
+  let reviewerReplies: TimelineEntry[] = []
+  const hidden = new Set<TimelineEntry>()
 
   events.forEach((event, index) => {
     const base = { key: `${event.seq}-${index}`, seq: event.seq, ts: event.ts }
@@ -254,13 +262,15 @@ export function buildTimeline(
           last.text += agentEvent.text
           return
         }
-        entries.push({
+        const message: TimelineEntry = {
           ...base,
           kind: 'message',
           text,
           ...(role ? { role } : {}),
           ...(event.attemptId ? { attemptId: event.attemptId } : {}),
-        })
+        }
+        entries.push(message)
+        if (role === ROLE_SPEAKERS.reviewer) reviewerReplies.push(message)
       } else if (type === 'tool_call' && typeof agentEvent?.name === 'string') {
         const summary = summarizeToolCall(agentEvent.name, agentEvent.input, worktreePath)
         const entry: Extract<TimelineEntry, { kind: 'tool' }> = {
@@ -279,7 +289,7 @@ export function buildTimeline(
           call.output = toolOutputText(agentEvent?.output)
           call.isError = agentEvent?.isError === true
         } else {
-          entries.push({ ...base, kind: 'noise', text: 'Agent 事件：tool_result' })
+          entries.push({ ...base, kind: 'noise', text: 'Agent 事件：tool_result', fragment: true })
         }
       } else if (type === 'error') {
         entries.push({ ...base, kind: 'error', text })
@@ -290,19 +300,27 @@ export function buildTimeline(
           lastThinking.text += agentEvent.text
           return
         }
-        const entry: Extract<TimelineEntry, { kind: 'noise' }> = { ...base, kind: 'noise', text }
+        const entry: Extract<TimelineEntry, { kind: 'noise' }> = {
+          ...base,
+          kind: 'noise',
+          text,
+          fragment: true,
+        }
         entries.push(entry)
         lastThinking = entry
       } else {
-        entries.push({ ...base, kind: 'noise', text })
+        entries.push({ ...base, kind: 'noise', text, fragment: true })
       }
       return
     }
     if (event.type === 'phase') {
-      entries.push({ ...base, kind: 'phase', text })
+      const phase = typeof payload?.phase === 'string' ? payload.phase : ''
+      entries.push({ ...base, kind: 'phase', text: PHASE_LABELS[phase] ?? (phase || text) })
       return
     }
     if (event.type === 'review') {
+      for (const reply of reviewerReplies) hidden.add(reply)
+      reviewerReplies = []
       const verdict = record(payload?.verdict)
       entries.push({
         ...base,
@@ -362,5 +380,27 @@ export function buildTimeline(
     const tone = STEP_TONES[event.type] ?? policyEventKind(event.type, payload)
     entries.push({ ...base, kind: 'step', text, ...(tone ? { tone } : {}) })
   })
-  return entries
+  return entries.filter(
+    (entry) =>
+      !hidden.has(entry) &&
+      !(entry.kind === 'message' && entry.role === ROLE_SPEAKERS.reviewer && looksLikeVerdict(entry.text)),
+  )
+}
+
+/**
+ * A reviewer reply that is JSON (bare or in a code fence): a verdict, or one still streaming in. Reviewers that
+ * answer in prose are left alone.
+ */
+export function looksLikeVerdict(text: string): boolean {
+  return /^(?:```(?:json)?\s*)?\{/i.test(text.trim())
+}
+
+/** What 顯示細節 counts: the real details, not the stream's fragments. */
+export function detailCount(entries: readonly TimelineEntry[]): number {
+  return entries.filter((entry) => entry.kind === 'noise' && !entry.fragment).length
+}
+
+/** Whether there is anything for 顯示細節 to show. */
+export function hasDetails(entries: readonly TimelineEntry[]): boolean {
+  return entries.some((entry) => entry.kind === 'noise')
 }
