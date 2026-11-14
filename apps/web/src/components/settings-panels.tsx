@@ -4,6 +4,7 @@ import type { JoyConfig } from '@joy/config'
 import { downloadFile, errorMessage, removeWithConfirmation, request, saveApiToken } from '../api.js'
 import { NO_ACTION_REPAIR, doctorStatusLabel, formatBytes } from '../labels.js'
 import type { DoctorReport, SecretStatus } from '../types.js'
+import { Mascot } from './Mascot.js'
 import { Button } from './ui.js'
 
 /** Telegram settings: owner chat id (config) and bot token (OS keychain). Applies after Joy restarts. */
@@ -422,7 +423,10 @@ export function DoctorChecks({
   return (
     <section className="card settings-card" aria-labelledby="doctor-heading" data-testid="doctor-checks">
       <div className="section-heading">
-        <h2 id="doctor-heading">環境檢查</h2>
+        <h2 id="doctor-heading" className="with-mascot">
+          <Mascot mood="normal" size={36} decorative />
+          環境檢查
+        </h2>
         <Button aria-label="重新檢查環境" disabled={loading} onClick={onRetry}>
           重新檢查
         </Button>

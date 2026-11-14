@@ -2,11 +2,23 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-13（不用終端機：單一程式＋背景服務、上限停下後排隊訊息不自動接續；擁有者已審即時補充的 core 介面）
+- 最後更新：2026-11-14（品牌角色、配色與專案色；2026-11-13：不用終端機：單一程式＋背景服務、上限停下後排隊訊息不自動接續；擁有者已審即時補充的 core 介面）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
 ## 驗證結果
+
+### 品牌：角色、配色、專案色（2026-11-14，分支 `brand-mascot`）
+
+- **角色元件**：`apps/web/src/components/Mascot.tsx`。`Mascot`（`mood`：normal／thinking／happy／waiting／error／sleeping、`size`、`label`、`decorative`）照擁有者核准的設計稿 SVG（viewBox 200）重現，漸層 id 用 `useId` 每個實例唯一；thinking 時小球繞行，用 CSS `.mascot-orbit`（3.2 秒一圈）而不是 SMIL，才能被 `@media (prefers-reduced-motion: reduce)` 關掉（已在 Chromium 實測：reduce 時 `animation-name: none` 且 transform 不變，一般時會變）。裝飾用途（旁邊已有文字）傳 `decorative` 變 `aria-hidden`，否則 `role="img"` + 中文 `aria-label`（Joy 思考中／完成了／等你／出錯了／休息中）。`MascotMark` 是小尺寸平塗版（沒有漸層、光暈與後半圈環），青色跟著主題（`--mascot-teal`：淺色 `#14C9B9`、深色 `#2EE6D6`）。
+- **套用位置**：側邊欄 brand（`MascotMark` 26px）；新任務頁標題上方 normal 96px；`RunningIndicator`、助理「正在想」、側邊欄執行中／排隊中的任務 → thinking（取代轉圈，輸入框送出鍵忙碌時的小轉圈沒動）；等你核准的動作卡、計畫卡 → waiting，側邊欄這類任務（等你同意、審查有意見、等你核准計畫）右側是深青小點加原本的文字；任務完成 → 結果區一列 happy「任務完成了」；任務失敗卡、連不到伺服器的錯誤提示 → error；側邊欄與助理頁的空狀態、變更面板「還沒有變更」→ sleeping；存取權杖頁、設定「進階」的環境檢查 → normal；助理頁助理訊息頭像 → `MascotMark` 20px。時間軸裡 agent 的回覆沒有角色，仍標模型名。側邊欄失敗任務右側是紅點（完成的不標，照設計稿）。目前開著的任務／對話：左側 2px accent inset 細線，背景維持灰。
+- **配色**：介面維持黑白，品牌色只用在角色與需要注意處。`--accent` 淺色 `#0E9C91`、深色 `#2EE6D6`；新增 `--brand-yellow #FCE9A6`、`--brand-yellow-deep #F5C94A`、`--brand-teal #2EE6D6`。**`#0E9C91` 在白底只有 3.4:1，不到 4.5:1**，所以文字改用新增的 `--accent-text`（淺色 `#07726A`，在 `#FBFBFA`／`#F3F3F1`／hover `#E9E8E4` 上 5.6／5.2／4.7:1；深色同 `--accent`，約 9–11:1）；`--accent` 只用在線條、圓點、焦點外框、填色這類非文字處（需 3:1）。`--accent-soft` 淺色 `#E6F4F3`、深色 `#1A3834`（上面的 accent-text 約 5:1／8:1）。送出鍵維持黑底白字（深色白底黑字）；輸入框有焦點時外框 accent 加 3px 青色淡暈；紅綠狀態色不變。「等你同意」「審查有意見」的狀態點、狀態藥丸、計畫卡改成 accent（原本是琥珀與紫色）；等你同意的動作卡仍是琥珀底。
+- **專案色**：6 色 `#7C93B5 #7FA58E #9A8BB8 #C39A74 #BE8E9E #6FA6A8`（灰藍 灰綠 灰紫 灰橘 灰粉 灰青），id 是 `blue green purple orange pink teal`。預設依專案在清單裡的順序輪流（伺服器依建立時間排序、專案不會被刪，所以一個專案的顏色不會變；後面加專案也不影響前面的）。可在「設定 → 專案」的「代表色」改，選「自動」回到輪流配色。db migration 20：`repos.color TEXT NULL`，`CHECK` 限 6 個 id；`updateRepoColor`；`PATCH /api/repos/:id` 接受 `color`（6 個 id 之一，`null` 回自動，其他一律 400）。只用在小圓點：側邊欄任務前、新任務頁「專案 · 分支」入口與選單、任務頁標題旁、設定頁專案卡片，不當文字色。web 與 db 各有一份 6 個 id，`repo-colors.test.ts` 比對兩者相同。
+- **圖示**：`apps/web/public/icon.svg`（平塗小圖示、透明底，青色在深色模式自動換 `#2EE6D6`，當 favicon 與 manifest 的 `any`）；`app-icon-maskable.svg`（滿版 `#FFF7DC` 底，角色約 80% 在安全區內）；`app-icon.svg`（同一圖加圓角，給不裁切的地方）。PNG 由 `scripts/render-icons.mjs` 用 Playwright 已裝的 Chromium 產生（不加相依套件）：`icon-192/512.png`（any）、`icon-maskable-192/512.png`（maskable）、`apple-touch-icon.png`（180，滿版，因為 iOS 自己裁切、透明處會變黑）；通知圖示也改用 `icon-192.png`。manifest 的 `any` 與 `maskable` 分開宣告。改了 SVG 之後重跑：`pnpm exec node scripts/render-icons.mjs`。
+- **圖示來源與日後替換**：所有角色與圖示都是 agent 依擁有者提供的參考圖（設計稿 `Mascot.dc.html`、`Icons.dc.html`）用 SVG 重繪，不是設計師的原始向量檔。日後要整組換掉：改 `Mascot.tsx`（六種表情與小圖）、`public/*.svg` 後重跑 `render-icons.mjs`、`styles.css` 的 token 與 `repo-colors.ts` 即可，沒有別的地方寫死顏色。
+- **順手修正**：設定頁儲存專案後，前端原本把回傳的 repo「合併」進舊的，清掉欄位（`null`）後舊值會留著（例如清掉檢查指令後表單仍認為有變更）；改成直接用回傳的整份 repo 取代。
+- **e2e 基礎設施**：`startFakeJoyRuntime(port, { allowPlaywrightOrigin })` 多一個選項，讓 e2e 可用 4390（API）＋4173（Vite）暫時埠跑，不碰擁有者的 4317 與 5173；預設行為不變。
+- **驗證**：db、server、web 單元測試（Mascot 各表情、reduced motion、專案色分配與 db 對照、PATCH 驗證）、`brand.spec.ts` 與 `repo-settings.spec.ts` e2e、全部 e2e（暫時埠，`origin-proxy.spec.ts` 因為寫死 5173 沒跑）、淺色／深色／手機寬度截圖。
 
 ### 不用終端機：單一程式＋背景服務（2026-11-13）
 
@@ -211,6 +223,7 @@
 
 ## 已確認決策
 
+- 2026-11-14 品牌與專案色（擁有者核准設計；實作細節為 agent 決定）：(1) 品牌色只用在角色與需要注意處（等你、進行中），其餘介面維持黑白，送出鍵維持黑白；(2) 文字用的青色是 `--accent-text`（淺色 `#07726A`），`--accent`（`#0E9C91`）只做線條、圓點、焦點，因為前者在白底不到 4.5:1；(3) 專案色是 6 個固定灰階色，預設依專案順序自動輪流，可在設定改，只當小圓點、不當文字色，儲存 id（`blue green purple orange pink teal`）不是色碼，沒選就是 NULL；(4) 角色與圖示是 agent 依擁有者提供的參考圖用 SVG 重繪，日後可整組替換（見上方「品牌」一節）；(5) 角色轉圈用 CSS 動畫，`prefers-reduced-motion` 時不轉。
 - 2026-11-13 擁有者決定：(1) 審過並確認 `packages/core` 的 `RunOptions.onSteer`／`Steer`（#133）；(2) 確認即時補充的細節（下一條 2026-11-09）：只 steer 實作者、容器模式不 steer、10 秒逾時退回排隊、每次審查前重讀任務說明；(3) 因時間上限、花費上限或月預算停下後，排隊訊息**不自動接續**，保持排隊並提示，按「繼續」或再送訊息才一併送出；(4) T4.3 Tauri 繼續延後、P5 其餘繼續暫緩、Telegram 真實 bot 測試維持暫緩；(5) 優先順序：不用終端機（單一程式＋背景服務）→ 輸入框附檔與貼圖 → 新任務選起始分支 → 變更檢視行內留言；(6) 擁有者會先錄 Claude 真實 fixture，並先做 T1.13 與 T1.9 驗收。
 - 2026-11-09 執行中插話改為即時補充（擁有者要求不打斷；細節為 agent 決定，**擁有者 2026-11-13 已確認**）：(1) `POST /messages` 預設 `interrupt: false`，可即時補充就 steer，不行就排隊，#132 打斷只在 `interrupt: true`；(2) 只 steer 實作者，審查／檢查／核准／額度排隊時照舊排隊；(3) Claude 只有實作者的 run 用 `--input-format stream-json`，第一個 `result` 就關 stdin，之後的訊息退回排隊；容器 repo 不用（依 `forwardsStdin`）；第一個 `result` 決定成敗，之後輪次失敗只是 recoverable；(4) steer 在 `exclusive` 外依序送，失敗或 10 秒逾時就退回排隊，逾時後晚到的成功會從排隊移除（已被下一輪拿走時仍可能送達兩次）；有排隊中的訊息時新訊息也排隊，維持順序；(7) 審查者只看已交給實作者的訊息；(8) 介面用「已交給 agent」；(5) 改 `packages/core` 的 `RunOptions`（可選 `onSteer`、新型別 `Steer`），列入擁有者待審；(6) 每次審查重讀任務說明，讓審查者看到同一 run 中補充的指示。
 - 2026-11-08 執行中插話（agent 決定，待擁有者確認）：(1) 預設打斷實作者目前這一輪、同一 session 帶著訊息接續，`interrupt: false` 保留排隊；(2) 審查、送審前檢查、等待核准、額度排隊、建立 worktree 時不打斷，照舊排隊；(3) 取消優先於打斷，訊息撤回；(4) 打斷後接續沿用原本的截止時間與剩下的審查輪數（reviewer 審查後改定，取代「從頭算」）；(5) 不改 `packages/core`：新事件 `run.interrupted` 與 `delivery: 'interrupt'`／`via: 'interrupt'` 只是事件 payload。

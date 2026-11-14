@@ -56,8 +56,14 @@
   --text: #1f1f1e;
   --muted: #64635e;
   --faint: #7d7c77;
-  --accent: #2f6feb;
-  --accent-soft: #eef3fd;
+  /* Brand teal: lines, dots, focus and fills. Text uses --accent-text, a shade deeper so it reaches 4.5:1. */
+  --accent: #0e9c91;
+  --accent-text: #07726a;
+  --accent-soft: #e6f4f3;
+  --brand-yellow: #fce9a6;
+  --brand-yellow-deep: #f5c94a;
+  --brand-teal: #2ee6d6;
+  --mascot-teal: #14c9b9;
   --green: #2e7d32;
   --green-soft: #edf7ef;
   --red: #b3261e;
@@ -87,8 +93,10 @@
     --text: #ececea;
     --muted: #a8a7a1;
     --faint: #8f8e88;
-    --accent: #7aa5f8;
-    --accent-soft: #1f2a3d;
+    --accent: #2ee6d6;
+    --accent-text: #2ee6d6;
+    --accent-soft: #1a3834;
+    --mascot-teal: #2ee6d6;
     --green: #7cc38a;
     --green-soft: #1d2b20;
     --red: #f2a19b;
@@ -118,8 +126,10 @@
   --text: #ececea;
   --muted: #a8a7a1;
   --faint: #8f8e88;
-  --accent: #7aa5f8;
-  --accent-soft: #1f2a3d;
+  --accent: #2ee6d6;
+  --accent-text: #2ee6d6;
+  --accent-soft: #1a3834;
+  --mascot-teal: #2ee6d6;
   --green: #7cc38a;
   --green-soft: #1d2b20;
   --red: #f2a19b;
@@ -179,7 +189,7 @@ select:disabled {
   opacity: 0.5;
 }
 a {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 p {
   margin: 0;
@@ -379,7 +389,7 @@ fieldset {
 }
 .chip-accent {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .chip-muted {
   font-style: italic;
@@ -485,17 +495,6 @@ svg {
   font-weight: var(--fw-strong);
   font-size: var(--fs-15);
 }
-.brand-mark {
-  display: inline-grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: var(--radius-sm);
-  background: var(--text);
-  color: var(--bg);
-  font-size: var(--fs-12);
-  font-weight: var(--fw-strong);
-}
 .search-field {
   display: flex;
   align-items: center;
@@ -571,6 +570,9 @@ svg {
   color: var(--muted);
 }
 .empty-list {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 4px 10px;
   font-size: var(--fs-13);
   color: var(--muted);
@@ -604,6 +606,11 @@ svg {
 .nav-row:hover,
 .nav-row.selected {
   background: var(--hover);
+}
+/* The open task or conversation: a thin teal line on the left, the grey background stays. */
+.nav-row-wrap.selected,
+.nav-row.selected {
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 .task-row,
 .nav-row {
@@ -674,27 +681,34 @@ svg {
 .task-dot.status-done {
   background: var(--green);
 }
-.task-dot.status-awaiting_approval {
-  background: var(--amber-dot);
-}
+.task-dot.status-awaiting_approval,
 .task-dot.status-review_ready {
-  background: var(--violet);
+  background: var(--accent);
 }
 .task-dot.status-failed {
   background: var(--red);
 }
-.status-text-awaiting_approval {
-  color: var(--amber);
-}
+.status-text-awaiting_approval,
 .status-text-review_ready {
-  color: var(--violet);
+  color: var(--accent-text);
+}
+/* Right of a sidebar task: something waits for the owner (teal) or the task failed (red). */
+.task-flag {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.task-flag-failed {
+  background: var(--red);
 }
 .status-text-failed {
   color: var(--red);
 }
 .status-text-running,
 .status-text-queued {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .sidebar-footer {
   display: flex;
@@ -806,9 +820,15 @@ svg {
   font-size: var(--fs-13);
 }
 .empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   padding: 24px 8px;
   text-align: center;
   color: var(--muted);
+}
+.empty-state .mascot {
+  margin-bottom: 8px;
 }
 .empty-state h2,
 .empty-state h3 {
@@ -834,15 +854,12 @@ svg {
 .status-pill.status-running,
 .status-pill.status-queued {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
 }
-.status-pill.status-awaiting_approval {
-  background: var(--amber-soft);
-  color: var(--amber);
-}
+.status-pill.status-awaiting_approval,
 .status-pill.status-review_ready {
-  background: var(--violet-soft);
-  color: var(--violet);
+  background: var(--accent-soft);
+  color: var(--accent-text);
 }
 .status-pill.status-failed {
   background: var(--red-soft);
@@ -955,7 +972,8 @@ svg {
   background: var(--surface);
 }
 .composer:focus-within {
-  border-color: var(--faint);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand-teal) 22%, transparent);
 }
 .composer textarea {
   display: block;
@@ -1566,7 +1584,7 @@ svg {
   color: var(--red);
 }
 .diff-line.hunk {
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--accent-soft);
 }
 .diff-line.meta {
@@ -1983,6 +2001,9 @@ kbd {
   margin: 15vh auto 0;
   padding: 0 20px;
 }
+.token-gate .mascot {
+  align-self: flex-start;
+}
 .token-gate h1 {
   font-size: var(--fs-22);
   font-weight: var(--fw-strong);
@@ -2208,7 +2229,7 @@ kbd {
 }
 .queued-note {
   margin: 0 4px 6px;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .user-column {
   display: flex;
@@ -2231,7 +2252,7 @@ kbd {
 }
 .bubble-tag-queued,
 .bubble-tag-held {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .bubble-tag-discarded,
 .bubble-tag-lost {
@@ -2291,13 +2312,13 @@ summary.checks-head {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  border-color: var(--violet);
+  border-color: var(--accent);
 }
 .plan-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: var(--violet);
+  color: var(--accent-text);
 }
 .plan-hint {
   font-size: var(--fs-13);
@@ -2750,4 +2771,140 @@ summary.checks-head {
   .hide-narrow {
     display: none;
   }
+}
+
+/* Brand: the character, project dots, colour picker. */
+.mascot,
+.mascot-mark {
+  display: block;
+  flex: none;
+}
+.mascot-mark-teal {
+  stroke: var(--mascot-teal);
+}
+.mascot-mark-teal-fill {
+  fill: var(--mascot-teal);
+}
+/* While thinking, the small ball circles the body (the reference's 3.2 s turn). */
+.mascot-orbit {
+  transform-origin: 100px 112px;
+  animation: mascot-orbit 3.2s linear infinite;
+}
+@keyframes mascot-orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mascot-orbit {
+    animation: none;
+  }
+}
+.home-mascot {
+  align-self: center;
+}
+.project-dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.project-dot-lg {
+  width: 10px;
+  height: 10px;
+}
+.menu-item-project {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.thread-title-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.thread-title-line .title-row,
+.thread-title-line .title-input {
+  flex: 1;
+  min-width: 0;
+}
+.repo-card-head .project-dot {
+  margin-right: 8px;
+  vertical-align: 1px;
+}
+.approvals-title,
+.with-mascot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.done-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: var(--fs-14);
+  color: var(--muted);
+}
+.chat-assistant {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  column-gap: 10px;
+}
+.chat-assistant > :not(.chat-avatar) {
+  grid-column: 2;
+}
+.chat-avatar {
+  grid-column: 1;
+  grid-row: 1;
+  margin-top: 2px;
+}
+.color-fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+}
+.color-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.color-option {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 4px;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-13);
+  cursor: pointer;
+}
+.color-option-auto {
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+}
+.color-option input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.color-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+}
+.color-option.selected {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.color-option:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }

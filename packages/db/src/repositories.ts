@@ -15,12 +15,22 @@ import type {
 import { isProviderKind, PROVIDER_KINDS } from '@joy/core'
 import type { Database } from './database.js'
 
+/** The ids of the six project colours; the web UI owns the hex values. */
+export const REPO_COLORS = ['blue', 'green', 'purple', 'orange', 'pink', 'teal'] as const
+export type RepoColor = (typeof REPO_COLORS)[number]
+
+export function isRepoColor(value: unknown): value is RepoColor {
+  return typeof value === 'string' && (REPO_COLORS as readonly string[]).includes(value)
+}
+
 export interface RepoRecord extends RepoRef {
   allowedProviders: ProviderKind[]
   /** Untrusted repository: agents run inside a container (T4.5). */
   container?: true
   /** argv Joy runs in the worktree before each review, without a shell (e.g. ["pnpm", "check"]). */
   checkCommand?: string[]
+  /** Picked by the owner; absent means the UI assigns one by the project's order. */
+  color?: RepoColor
   createdAt: string
 }
 
@@ -105,6 +115,7 @@ interface RepoRow {
   allowed_providers: string
   container: number
   check_command: string | null
+  color: string | null
   created_at: string
 }
 
@@ -217,6 +228,13 @@ export function updateRepoCheckCommand(
     checkCommand ? JSON.stringify(validateCheckCommand(checkCommand)) : null,
     id,
   )
+  return getRepo(db, id)
+}
+
+/** Sets the project's colour, or clears it (null) so the UI assigns one by order again. */
+export function updateRepoColor(db: Database, id: RepoId, color: RepoColor | null): RepoRecord | undefined {
+  if (color !== null && !isRepoColor(color)) throw new Error(`Invalid project colour: ${String(color)}`)
+  db.prepare('UPDATE repos SET color = ? WHERE id = ?').run(color, id)
   return getRepo(db, id)
 }
 
@@ -609,6 +627,7 @@ function mapRepo(row: RepoRow): RepoRecord {
     allowedProviders: parseStoredAllowedProviders(row.allowed_providers),
     ...(row.container === 1 ? { container: true as const } : {}),
     ...(row.check_command ? { checkCommand: validateCheckCommand(JSON.parse(row.check_command)) } : {}),
+    ...(isRepoColor(row.color) ? { color: row.color } : {}),
     createdAt: row.created_at,
   }
 }

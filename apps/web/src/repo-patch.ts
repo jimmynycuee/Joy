@@ -1,12 +1,19 @@
 import { PROVIDER_KINDS } from '@joy/core'
 import type { ProviderKind } from '@joy/core'
 import { formatCheckCommand, parseCheckCommand } from './check-command.js'
+import type { RepoColorId } from './repo-colors.js'
 import type { Repo } from './types.js'
 
 /** What changed in the form, in the shape `PATCH /api/repos/:id` takes (null clears a field). */
 export function repoPatch(
   repo: Repo,
-  form: { githubRemote: string; providers: readonly ProviderKind[]; checkCommand: string },
+  form: {
+    githubRemote: string
+    providers: readonly ProviderKind[]
+    checkCommand: string
+    /** null is "automatic". */
+    color: RepoColorId | null
+  },
 ): Record<string, unknown> {
   const patch: Record<string, unknown> = {}
   const remote = form.githubRemote.trim()
@@ -17,5 +24,6 @@ export function repoPatch(
     patch.allowedProviders = chosen
   const argv = parseCheckCommand(form.checkCommand)
   if ((argv?.join(' ') ?? '') !== formatCheckCommand(repo.checkCommand)) patch.checkCommand = argv
+  if (form.color !== (repo.color ?? null)) patch.color = form.color
   return patch
 }

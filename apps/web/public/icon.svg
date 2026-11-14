@@ -1,1 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#111216"/><circle cx="196" cy="256" r="92" fill="none" stroke="#b19aff" stroke-width="40"/><circle cx="316" cy="256" r="92" fill="none" stroke="#68d7a1" stroke-width="40"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <style>
+    .t { stroke: #14c9b9; }
+    .f { fill: #14c9b9; }
+    @media (prefers-color-scheme: dark) {
+      .t { stroke: #2ee6d6; }
+      .f { fill: #2ee6d6; }
+    }
+  </style>
+  <circle cx="31" cy="35" r="22" fill="#f8dd7a"/>
+  <ellipse cx="25" cy="34" rx="3.2" ry="4.6" fill="#3a3a37"/>
+  <ellipse cx="38" cy="31" rx="3.2" ry="4.6" fill="#3a3a37"/>
+  <path class="t" d="M4 40 C14 50 46 44 60 28" fill="none" stroke-width="5" stroke-linecap="round"/>
+  <circle class="f" cx="55" cy="14" r="5"/>
+</svg>

@@ -88,6 +88,7 @@ import {
   listTaskEvents,
   listTasks,
   listUsage,
+  REPO_COLORS,
   modelStats,
   markMemoriesUsed,
   updateMemoryContent,
@@ -99,6 +100,7 @@ import {
   updateConversationSession,
   updateRepoAllowedProviders,
   updateRepoCheckCommand,
+  updateRepoColor,
   updateRepoContainer,
   updateRepoGithubRemote,
 } from '@joy/db'
@@ -257,14 +259,17 @@ const repoAllowlistInputSchema = z
     container: z.boolean().optional(),
     /** null clears it. */
     checkCommand: checkCommandSchema.nullable().optional(),
+    /** One of the six project colours; null goes back to the automatic one. */
+    color: z.enum(REPO_COLORS).nullable().optional(),
   })
   .refine(
     (input) =>
       input.allowedProviders !== undefined ||
       input.githubRemote !== undefined ||
       input.container !== undefined ||
-      input.checkCommand !== undefined,
-    { message: 'Send allowedProviders, githubRemote, container or checkCommand' },
+      input.checkCommand !== undefined ||
+      input.color !== undefined,
+    { message: 'Send allowedProviders, githubRemote, container, checkCommand or color' },
   )
 const publishInputSchema = z.strictObject({
   title: z.string().trim().min(1).max(256).optional(),
@@ -1346,6 +1351,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (input.githubRemote !== undefined) updateRepoGithubRemote(db, repoId, input.githubRemote)
       if (input.container !== undefined) updateRepoContainer(db, repoId, input.container)
       if (input.checkCommand !== undefined) updateRepoCheckCommand(db, repoId, input.checkCommand)
+      if (input.color !== undefined) updateRepoColor(db, repoId, input.color)
       const repo = getRepo(db, repoId)
       if (!repo) throw new HttpError(404, `Repository ${repoId} was not found`)
       json(res, 200, { repo })

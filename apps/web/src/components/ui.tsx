@@ -63,6 +63,18 @@ export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
   )
 }
 
+/** The small dot in a project's colour; the project's name is always next to it, so it is hidden from screen readers. */
+export function ProjectDot({ color, className }: { color: { hex: string } | undefined; className?: string }) {
+  if (!color) return null
+  return (
+    <span
+      className={`project-dot${className ? ` ${className}` : ''}`}
+      style={{ background: color.hex }}
+      aria-hidden="true"
+    />
+  )
+}
+
 export function Spinner() {
   return <span className="spinner" aria-hidden="true" />
 }

@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { request } from '../api.js'
 import { groupByDay, relativeTime } from '../dates.js'
 import { modeLabel, repoName, statusLabel } from '../labels.js'
+import { repoColor } from '../repo-colors.js'
 import { modLabel } from '../shortcuts.js'
 import type { ConversationSummary, Repo, Task } from '../types.js'
-import { Icon, IconButton } from './ui.js'
+import { Mascot, MascotMark } from './Mascot.js'
+import { Icon, IconButton, ProjectDot } from './ui.js'
 
 interface QuotaReport {
   providers?: Record<string, { status: string; limitedNow?: boolean; resetsAt?: number }>
@@ -93,6 +95,16 @@ export interface SidebarProps {
   onCollapse: () => void
 }
 
+/** An empty list in the sidebar: the sleeping character beside one line of text. */
+function EmptyNote({ children }: { children: string }) {
+  return (
+    <p className="empty-list">
+      <Mascot mood="sleeping" size={28} decorative />
+      <span>{children}</span>
+    </p>
+  )
+}
+
 function contains(text: string | undefined, query: string): boolean {
   return (text ?? '').toLowerCase().includes(query)
 }
@@ -128,6 +140,7 @@ export function Sidebar(props: SidebarProps) {
   function taskRow(task: Task, archivedRow: boolean) {
     const selected = props.view === 'task' && props.selectedTaskId === task.id
     const waiting = task.status === 'awaiting_approval' || task.status === 'review_ready'
+    const working = task.status === 'running' || task.status === 'queued'
     const label = statusLabel(task.status, task.mode, props.pendingPlanTaskId === task.id)
     return (
       <div className={`nav-row-wrap${selected ? ' selected' : ''}`} key={task.id}>
@@ -138,15 +151,18 @@ export function Sidebar(props: SidebarProps) {
           title={`${label} · ${modeLabel(task.mode)}`}
           onClick={() => props.onOpenTask(task.id)}
         >
-          {task.status === 'running' || task.status === 'queued' ? (
-            <span className="task-spinner" aria-hidden="true" />
-          ) : (
-            <span className={`task-dot status-${task.status}`} aria-hidden="true" />
-          )}
+          <ProjectDot color={repoColor(task.repoId, props.repos)} />
           <span className="task-row-copy">
             <span className="task-title">{task.title}</span>
             {waiting ? <span className={`task-meta status-text-${task.status}`}>{label}</span> : null}
           </span>
+          {working ? (
+            <Mascot mood="thinking" size={20} label={label} />
+          ) : waiting ? (
+            <span className="task-flag" aria-hidden="true" />
+          ) : task.status === 'failed' ? (
+            <span className="task-flag task-flag-failed" aria-hidden="true" />
+          ) : null}
           <span className="task-time">{relativeTime(task.createdAt)}</span>
         </button>
         {archivedRow ? (
@@ -172,9 +188,7 @@ export function Sidebar(props: SidebarProps) {
     <nav className="sidebar" aria-label="主選單">
       <div className="sidebar-top">
         <div className="sidebar-brand">
-          <span className="brand-mark" aria-hidden="true">
-            J
-          </span>
+          <MascotMark size={26} />
           <span>Joy</span>
         </div>
         <IconButton
@@ -228,7 +242,7 @@ export function Sidebar(props: SidebarProps) {
             />
           </div>
           {conversations.length === 0 ? (
-            <p className="empty-list">{query ? '沒有符合的對話。' : '還沒有對話。'}</p>
+            <EmptyNote>{query ? '沒有符合的對話。' : '還沒有對話。'}</EmptyNote>
           ) : (
             conversations.map((conversation) => {
               const selected = props.view === 'assistant' && props.selectedConversationId === conversation.id
@@ -252,9 +266,9 @@ export function Sidebar(props: SidebarProps) {
             <span className="group-label">任務</span>
           </div>
           {props.tasks.length === 0 ? (
-            <p className="empty-list">你的任務會出現在這裡。</p>
+            <EmptyNote>你的任務會出現在這裡。</EmptyNote>
           ) : nothingFound ? (
-            <p className="empty-list">沒有符合的項目。</p>
+            <EmptyNote>沒有符合的項目。</EmptyNote>
           ) : (
             groups.map((group) => (
               <div className="task-group" key={group.repoId}>

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
 import { UNAUTHORIZED_EVENT, apiToken, saveApiToken } from './api.js'
+import { Mascot } from './components/Mascot.js'
 import { Button } from './components/ui.js'
 import { applyTheme, readTheme } from './theme.js'
 import { Workspace } from './Workspace.js'
@@ -10,6 +11,7 @@ import { Workspace } from './Workspace.js'
 function TokenGate() {
   return (
     <main className="token-gate" data-testid="token-gate">
+      <Mascot mood="normal" size={72} decorative />
       <h1>Joy 存取權杖</h1>
       <p className="muted">
         貼上執行 Joy 那台電腦裡 <code>~/.joy/api-token</code> 的內容。權杖只會存在這台裝置。

@@ -7,6 +7,7 @@ import { policyEventTitle } from '../policy-events.js'
 import { record } from '../types.js'
 import type { TaskDetails, WorkspaceDiff } from '../types.js'
 import { DiffCode } from './DiffView.js'
+import { Mascot } from './Mascot.js'
 import { Button, ButtonLink } from './ui.js'
 
 interface PendingApproval {
@@ -74,7 +75,10 @@ export function ApprovalsPanel({
   if (pending.length === 0) return null
   return (
     <section className="card approvals-card" aria-label="等你同意的動作" data-testid="pending-approvals">
-      <h2>{pending.some((a) => a.status === 'expired') ? '已暫停，等你同意後繼續' : '需要你同意'}</h2>
+      <h2 className="approvals-title">
+        <Mascot mood="waiting" size={32} decorative />
+        {pending.some((a) => a.status === 'expired') ? '已暫停，等你同意後繼續' : '需要你同意'}
+      </h2>
       {failure ? <p className="form-error">{failure}</p> : null}
       {pending.map((approval) => (
         <div className="approval-row" key={approval.id}>

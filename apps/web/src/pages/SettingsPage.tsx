@@ -215,7 +215,7 @@ export function SettingsPage(props: SettingsPageProps) {
           ) : (
             <div className="repo-list">
               {props.repos.map((repo) => (
-                <RepoSettingsCard key={repo.id} repo={repo} onSaved={props.onRepoSaved} />
+                <RepoSettingsCard key={repo.id} repo={repo} repos={props.repos} onSaved={props.onRepoSaved} />
               ))}
             </div>
           )}

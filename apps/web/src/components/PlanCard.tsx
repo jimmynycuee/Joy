@@ -4,8 +4,9 @@ import { ownerActionError } from '../messages.js'
 import { planReviewView } from '../timeline.js'
 import type { PendingPlan } from '../types.js'
 import { Markdown } from './Markdown.js'
+import { Mascot } from './Mascot.js'
 import { ReviewCard } from './Thread.js'
-import { Button, Icon } from './ui.js'
+import { Button } from './ui.js'
 
 /** The plan the agent wrote, waiting at the end of the thread for approval (or for a message that revises it). */
 export function PlanCard({
@@ -48,7 +49,7 @@ export function PlanCard({
   return (
     <section className="card plan-card" aria-label="等你核准的計畫" data-testid="plan-card">
       <header className="plan-head">
-        <Icon name="book" size={16} />
+        <Mascot mood="waiting" size={32} decorative />
         <strong>計畫等你核准</strong>
       </header>
       {plan.plan ? <Markdown text={plan.plan} /> : <p className="muted">agent 沒有寫出計畫內容。</p>}
