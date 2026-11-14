@@ -473,6 +473,27 @@ export const MIGRATIONS: readonly Migration[] = [
         CHECK (color IS NULL OR color IN ('blue', 'green', 'purple', 'orange', 'pink', 'teal'));
     `,
   },
+  {
+    version: 21,
+    name: 'attachments',
+    sql: /* sql */ `
+      -- Files the owner attached to a task or a message. The bytes live in <JOY_HOME>/attachments/<id>, never here.
+      -- task_id is NULL between the upload and the message that uses it; message_id is NULL for the task's first
+      -- prompt, else the id of the user.message event. disabled: the owner removed a sent file; agents only get its
+      -- name from then on (and the bytes are deleted).
+      CREATE TABLE attachments (
+        id          TEXT PRIMARY KEY CHECK (length(id) = 36),
+        name        TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 200),
+        media_type  TEXT NOT NULL CHECK (media_type IN ('image/png', 'image/jpeg', 'image/gif', 'image/webp', 'text/plain')),
+        size        INTEGER NOT NULL CHECK (size > 0),
+        task_id     TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+        message_id  TEXT,
+        disabled    INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1)),
+        created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      ) STRICT;
+      CREATE INDEX attachments_task ON attachments (task_id);
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

@@ -1,5 +1,7 @@
 import { ApiError, errorMessage, request } from '../api.js'
 import { followUpState, messageDeliveryStates, ownerActionError, pendingMessagesNote } from '../messages.js'
+import { sendableAttachments } from '../attachments.js'
+import { useAttachments } from '../hooks/useAttachments.js'
 import { useDraft } from '../storage.js'
 import { taskModels, worktreeRemoved } from '../task-info.js'
 import type { TaskDetails } from '../types.js'
@@ -29,6 +31,7 @@ export function ThreadComposer({
 }) {
   const { task } = details
   const [draft, setDraft, clearDraft] = useDraft(`task-${task.id}`)
+  const files = useAttachments(`task-${task.id}`)
   const [busy, setBusy] = useState(false)
   const state = followUpState({
     status: task.status,
@@ -51,7 +54,8 @@ export function ThreadComposer({
 
   async function send(): Promise<void> {
     const text = draft.trim()
-    if (!text) return
+    const { ids, blocked } = sendableAttachments(files.items)
+    if (blocked || (!text && !ids.length)) return
     if (text.length > MAX_MESSAGE_CHARS) {
       onError(`訊息太長了（上限 ${MAX_MESSAGE_CHARS} 字）`)
       return
@@ -60,9 +64,10 @@ export function ThreadComposer({
     try {
       await request(`/api/tasks/${encodeURIComponent(task.id)}/messages`, {
         method: 'POST',
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, ...(ids.length ? { attachments: ids } : {}) }),
       })
       clearDraft()
+      files.clear()
       onChanged()
     } catch (cause) {
       // The draft stays, so the owner can send it again.
@@ -95,6 +100,7 @@ export function ThreadComposer({
         sendLabel="送出"
         busy={busy}
         disabled={state.disabled}
+        attachments={{ items: files.items, onAdd: files.add, onRemove: files.remove, allowWithoutText: true }}
         {...(onStop ? { onStop, stopping, stopLabel: '停止任務' } : {})}
         trailing={
           models.implementer ? (

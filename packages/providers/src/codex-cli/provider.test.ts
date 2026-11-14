@@ -40,6 +40,56 @@ const opts = (cwd: string, over: Partial<RunOptions> = {}): RunOptions => ({
   ...over,
 })
 
+describe('CodexCliProvider: long prompts', () => {
+  it('sends a long prompt on stdin with `-` instead of one huge argument', async () => {
+    // setup() only gives the folder and the argv reader; this run also records stdin.
+    const { dir, received } = setup({})
+    const stdinOut = join(dir, 'stdin.txt')
+    const big = `fix it\n${'x'.repeat(200 * 1024)}`
+    const run = new CodexCliProvider({
+      mode: 'exec',
+      command: process.execPath,
+      argsPrefix: [fakeCli],
+      env: {
+        ...process.env,
+        FAKE_ARGS_OUT: join(dir, 'args.json'),
+        FAKE_REPLAY: fixturePath('codex', 'synthetic-edit'),
+        FAKE_READ_STDIN: '1',
+        FAKE_STDIN_OUT: stdinOut,
+      },
+    })
+    const events = await collect(run.run(opts(dir, { prompt: big }), model))
+    expect(events.at(-1)).toMatchObject({ type: 'done', isError: false })
+    expect(received().args.slice(-2)).toEqual(['--', '-'])
+    expect(readFileSync(stdinOut, 'utf8')).toBe(`${big}\n`)
+  })
+
+  it('refuses a prompt too long for the command line when the wrapper gives no stdin (containers)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'joy-codex-test-'))
+    dirs.push(dir)
+    const seen: Array<string[] | undefined> = []
+    const provider = new CodexCliProvider({
+      mode: 'exec',
+      command: process.execPath,
+      wrap: (run) => {
+        seen.push(run.readFiles)
+        return Promise.resolve({ command: run.command, args: [fakeCli, ...run.args] })
+      },
+    })
+    await expect(collect(provider.run(opts(dir, { prompt: 'x'.repeat(101 * 1024) }), model))).rejects.toThrow(
+      /too long for the command line in container mode.*long diffs, long messages, check output/,
+    )
+    // A short prompt still runs, and the wrapper is told which files to mount.
+    await collect(
+      provider.run(
+        opts(dir, { images: [{ path: '/joy/attachments/a.png', mediaType: 'image/png' }] }),
+        model,
+      ),
+    )
+    expect(seen).toEqual([['/joy/attachments/a.png']])
+  })
+})
+
 describe('CodexCliProvider', () => {
   it('replays a stream into normalized events', async () => {
     const { dir, provider, received } = setup({ FAKE_REPLAY: fixturePath('codex', 'synthetic-edit') })

@@ -3,6 +3,7 @@
 //   FAKE_REPLAY    JSONL file to print to stdout, line by line
 //   FAKE_MODE      'hang' (print nothing, never exit) | 'exit3' (stderr + exit 3) | 'garbage'
 //   FAKE_CAT_MCP   print the contents of the file after --mcp-config to stdout as one JSON line
+//   FAKE_READ_STDIN  (default mode) read stdin to its end into FAKE_STDIN_OUT before replaying (`codex exec -`)
 //   FAKE_MODE=stream  Claude `--input-format stream-json` stand-in (synthetic, not recorded): reads user messages from
 //                     stdin (each appended to FAKE_STDIN_OUT), answers each turn after FAKE_STREAM_HOLD_MS (default 150)
 //                     with a `result`. A message that arrives mid-turn joins that turn, or with FAKE_STREAM_QUEUE=1
@@ -90,5 +91,7 @@ switch (process.env.FAKE_MODE) {
     process.stdout.write('not json\n')
     break
   default:
+    if (process.env.FAKE_READ_STDIN && process.env.FAKE_STDIN_OUT)
+      writeFileSync(process.env.FAKE_STDIN_OUT, readFileSync(0, 'utf8'))
     if (process.env.FAKE_REPLAY) process.stdout.write(readFileSync(process.env.FAKE_REPLAY, 'utf8'))
 }

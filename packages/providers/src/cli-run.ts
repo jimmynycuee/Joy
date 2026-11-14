@@ -12,7 +12,21 @@ export type CommandWrapper = (run: {
   command: string
   args: string[]
   cwd: string
+  /** Files outside `cwd` the CLI reads (attached images): a container mounts exactly these, read-only. */
+  readFiles?: string[]
 }) => Promise<{ command: string; args: string[] }>
+
+/**
+ * Above this many bytes a prompt goes on stdin instead of the command line: Windows allows about 32K characters for
+ * a whole command line, Linux 128 KiB for one argument.
+ */
+export const PROMPT_ARG_LIMIT = 16 * 1024
+/** Without stdin (a container) a prompt must still fit in one argument everywhere Joy runs containers. */
+export const PROMPT_ARG_HARD_LIMIT = 100 * 1024
+
+export function promptBytes(prompt: string): number {
+  return Buffer.byteLength(prompt, 'utf8')
+}
 
 /** What both CLI parsers provide. */
 export interface StreamParser {

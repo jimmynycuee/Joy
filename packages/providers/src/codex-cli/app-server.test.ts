@@ -68,6 +68,15 @@ describe('Codex app-server', () => {
     expect(fixtureFor(cwd).commandApproval.params.cwd).toBe(cwd)
   })
 
+  it("drops the echo of Joy's own input, which may quote attached files", () => {
+    const parser = new CodexAppServerParser({ cwd: '/w', structured: false })
+    expect(
+      parser.notification('item/completed', {
+        item: { type: 'userMessage', id: 'u1', content: [{ type: 'text', text: 'secret file body' }] },
+      }),
+    ).toEqual([])
+  })
+
   it('normalizes Windows file-change paths to POSIX separators on any host', () => {
     const parser = new CodexAppServerParser({ cwd: 'C:\\worktree', structured: false })
     const events = parser.notification('item/completed', {
@@ -308,6 +317,46 @@ describe('Codex app-server', () => {
       const { events, results } = await steeredRun('steer-reject')
       expect(results).toEqual([false])
       expect(events.at(-1)).toMatchObject({ type: 'done', isError: false })
+    })
+
+    it('sends attached images as localImage input, at the start and when steering', async () => {
+      const { dir, env, rpcPath, readLines } = setup({ FAKE_APP_SERVER_MODE: 'steer' })
+      const provider = new CodexAppServerProvider({
+        command: process.execPath,
+        argsPrefix: [fakeCodexAppServer],
+        env,
+        timeoutMs: 5_000,
+        approvalHandler: () => 'accept',
+      })
+      const results: boolean[] = []
+      await collect(
+        provider.run(
+          opts(dir, {
+            images: [{ path: '/joy/attachments/first', mediaType: 'image/png' }],
+            onSteer: (steer) => {
+              if (steer)
+                void steer('also this', [{ path: '/joy/attachments/later', mediaType: 'image/webp' }]).then(
+                  (ok) => results.push(ok),
+                )
+            },
+          }),
+          model,
+        ),
+      )
+      const requests = readLines(rpcPath)
+      expect(requests.find((request) => request.method === 'turn/start')?.params).toMatchObject({
+        input: [
+          { type: 'text', text: 'fix it', text_elements: [] },
+          { type: 'localImage', path: '/joy/attachments/first' },
+        ],
+      })
+      expect(requests.find((request) => request.method === 'turn/steer')?.params).toMatchObject({
+        input: [
+          { type: 'text', text: 'also this', text_elements: [] },
+          { type: 'localImage', path: '/joy/attachments/later' },
+        ],
+      })
+      expect(results).toEqual([true])
     })
 
     it('offers nothing when the caller does not steer', async () => {

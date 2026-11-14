@@ -40,9 +40,16 @@ export interface ThreadResumeParams extends ThreadStartParams {
   threadId: string
 }
 
+/**
+ * The `UserInput` variants Joy sends (`codex app-server generate-json-schema`, codex-cli 0.166.0): text, and an image
+ * file on this computer that the app-server reads itself.
+ */
+export type UserInput =
+  { type: 'text'; text: string; text_elements: [] } | { type: 'localImage'; path: string }
+
 export interface TurnStartParams {
   threadId: string
-  input: Array<{ type: 'text'; text: string; text_elements: [] }>
+  input: UserInput[]
   cwd: string
   model: string
   effort?: string
@@ -53,7 +60,7 @@ export interface TurnStartParams {
 export interface TurnSteerParams {
   threadId: string
   expectedTurnId: string
-  input: Array<{ type: 'text'; text: string; text_elements: [] }>
+  input: UserInput[]
 }
 
 export interface TurnSteerResponse {

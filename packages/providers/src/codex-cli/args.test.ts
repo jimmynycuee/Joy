@@ -24,6 +24,23 @@ describe('buildCodexArgs', () => {
     ])
   })
 
+  it('attaches each image with its own --image before the prompt', () => {
+    const images = [
+      { path: '/joy/attachments/a', mediaType: 'image/png' as const },
+      { path: '/joy/attachments/b', mediaType: 'image/jpeg' as const },
+    ]
+    expect(buildCodexArgs({ ...base, images }, model).slice(-6)).toEqual([
+      '--image',
+      '/joy/attachments/a',
+      '--image',
+      '/joy/attachments/b',
+      '--',
+      '-do it',
+    ])
+    const resumed = buildCodexArgs({ ...base, images, resumeSessionId: 'th1' }, model)
+    expect(resumed.slice(-5)).toEqual(['--image', '/joy/attachments/b', '--', 'th1', '-do it'])
+  })
+
   it('resumes with the thread id before the prompt', () => {
     const args = buildCodexArgs({ ...base, resumeSessionId: 'th1' }, model)
     expect(args.slice(0, 3)).toEqual(['exec', 'resume', '--json'])

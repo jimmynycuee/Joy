@@ -2165,6 +2165,59 @@ describe('Joy local server', () => {
     expect(quota.providers['claude-cli']?.limitedNow).toBe(true)
   })
 
+  it('does not hand a container task with images to Claude Code, which could not see them there', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'joy-handoff-images-'))
+    dirs.push(home)
+    writeFileSync(join(home, 'config.yaml'), 'providers:\n  codex:\n    transport: exec\n')
+    const claude = scriptedProvider('claude-cli', [() => finished('s-claude')])
+    const codex = scriptedProvider('codex-cli', [
+      () => outOfQuota('s-codex', Math.floor(Date.now() / 1000) + 3600),
+    ])
+    const { serverPromise } = fixture({
+      providers: { 'claude-cli': claude.provider, 'codex-cli': codex.provider },
+      configStore: new ConfigStore(join(home, 'config.yaml')),
+    })
+    const { origin } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, {
+        path: '/tmp/handoff-box',
+        defaultBranch: 'main',
+        container: true,
+      })
+    ).json()) as { repo: { id: string } }
+    const upload = await fetch(`${origin}/api/attachments`, {
+      method: 'POST',
+      headers: {
+        origin: VITE_ORIGIN,
+        authorization: `Bearer ${TEST_API_TOKEN}`,
+        'x-joy-filename': 'shot.png',
+      },
+      body: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0]),
+    })
+    const { attachment } = (await upload.json()) as { attachment: { id: string } }
+    const taskResponse = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Look',
+      prompt: 'Fix the layout',
+      mode: 'single',
+      roleOverrides: {
+        implementer: { provider: 'codex-cli', model: 'gpt-6-luna' },
+        reviewer: { provider: 'claude-cli', model: 'haiku' },
+        orchestrator: { provider: 'claude-cli', model: 'haiku' },
+        judge: { provider: 'claude-cli', model: 'haiku' },
+      },
+      attachments: [attachment.id],
+    })
+    expect(taskResponse.status).toBe(201)
+    const { task } = (await taskResponse.json()) as { task: { id: string } }
+    await waitForEvent(origin, task.id, 'quota.queued')
+    const details = (await (await fetch(`${origin}/api/tasks/${task.id}`)).json()) as TaskDetails
+    expect(claude.calls).toHaveLength(0)
+    expect(details.events.some((event) => (event as { type?: string }).type === 'quota.handoff')).toBe(false)
+    expect(details.task.status).toBe('queued')
+    await postJson(`${origin}/api/tasks/${task.id}/cancel`, {})
+  })
+
   it('queues the task when nobody else can take over and resumes the session after the reset', async () => {
     const home = mkdtempSync(join(tmpdir(), 'joy-quota-queue-'))
     dirs.push(home)

@@ -1,9 +1,10 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
   AgentEvent,
   AgentProvider,
+  ImageInput,
   ModelRef,
   ProviderCapabilities,
   ProviderHealth,
@@ -11,9 +12,10 @@ import type {
   Steer,
 } from '@joy/core'
 import type { CommandWrapper, StreamParser } from '../cli-run.js'
-import { probeVersion, runCli } from '../cli-run.js'
+import { probeVersion, PROMPT_ARG_HARD_LIMIT, PROMPT_ARG_LIMIT, promptBytes, runCli } from '../cli-run.js'
 import { isRecord } from '../guards.js'
 import type { ProcessInput } from '../process.js'
+import type { ClaudeImage } from './args.js'
 import { buildClaudeArgs, claudeUserMessage, mcpConfigJson } from './args.js'
 import { ClaudeStreamParser } from './parse.js'
 
@@ -67,7 +69,20 @@ export class ClaudeCliProvider implements AgentProvider {
     // Streaming input only when the caller can steer: the one-shot `-p <prompt>` path stays as recorded in the
     // fixtures. A run whose wrapper does not forward stdin (a container) keeps it too.
     const stdinReaches = !this.wrap || (this.forwardsStdin?.(opts.cwd) ?? false)
-    const steering = opts.onSteer && stdinReaches ? new ClaudeSteering(opts) : undefined
+    // Images only travel as content blocks on stdin; `-p <prompt>` has no way to carry them.
+    if (opts.images?.length && !stdinReaches)
+      throw new Error(
+        'Claude Code cannot see attached images in container mode (the container gets no input stream). Remove the image from the message (✕ on it in the thread), or turn off container mode for this project.',
+      )
+    const size = promptBytes(opts.prompt)
+    if (!stdinReaches && size > PROMPT_ARG_HARD_LIMIT)
+      throw new Error(
+        `The prompt is too long for the command line in container mode (${Math.ceil(size / 1024)} KB; long diffs, long messages, check output and attached text all count). Send shorter messages, remove large attached files from the thread if there are any (✕ on them), or turn off container mode for this project.`,
+      )
+    const images = opts.images?.length ? await readImages(opts.images) : []
+    // A long prompt (attached text files) goes on stdin too: one command-line argument has an OS limit.
+    const streaming = stdinReaches && Boolean(opts.onSteer || images.length || size > PROMPT_ARG_LIMIT)
+    const steering = streaming ? new ClaudeSteering(opts, images) : undefined
     let tmp: string | undefined
     try {
       let mcpConfigPath: string | undefined
@@ -128,16 +143,22 @@ class ClaudeSteering {
   private input: ProcessInput | undefined
   private closed = false
 
-  constructor(private readonly opts: RunOptions) {}
+  constructor(
+    private readonly opts: RunOptions,
+    private readonly images: readonly ClaudeImage[] = [],
+  ) {}
 
-  readonly steer: Steer = (text) => {
-    if (this.closed || !this.input || this.opts.signal.aborted) return Promise.resolve(false)
-    return Promise.resolve(this.input.writeLine(claudeUserMessage(text)))
+  readonly steer: Steer = async (text, images) => {
+    if (this.closed || !this.input || this.opts.signal.aborted) return false
+    const blocks = images?.length ? await readImages(images) : []
+    // Reading the files took a moment: the run may have ended meanwhile.
+    if (this.closed || this.opts.signal.aborted) return false
+    return this.input.writeLine(claudeUserMessage(text, blocks))
   }
 
   start(input: ProcessInput): void {
     this.input = input
-    input.writeLine(claudeUserMessage(this.opts.prompt))
+    input.writeLine(claudeUserMessage(this.opts.prompt, this.images))
     if (!this.closed) this.opts.onSteer?.(this.steer)
   }
 
@@ -162,4 +183,20 @@ class ClaudeSteering {
     this.input?.end()
     this.opts.onSteer?.(undefined)
   }
+}
+
+/** Reads attached images for content blocks. A missing file is the caller's problem to report, not to skip. */
+async function readImages(images: readonly ImageInput[]): Promise<ClaudeImage[]> {
+  return Promise.all(
+    images.map(async (image) => {
+      try {
+        return { mediaType: image.mediaType, base64: (await readFile(image.path)).toString('base64') }
+      } catch (error) {
+        throw new Error(
+          `An attached image could not be read (${error instanceof Error ? error.message : String(error)}). Remove it from the message (✕ on it in the thread) and attach it again.`,
+          { cause: error },
+        )
+      }
+    }),
+  )
 }

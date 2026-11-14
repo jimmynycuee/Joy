@@ -1,5 +1,6 @@
 // OpenAI Responses API backend: streaming text, function calling, structured output, resume via
 // previous_response_id. Used for the cheap high-frequency roles (assistant brain, background work).
+import { readFile } from 'node:fs/promises'
 import type {
   AgentEvent,
   AgentProvider,
@@ -87,7 +88,7 @@ export class OpenAiApiProvider implements AgentProvider {
     const signal = AbortSignal.any([opts.signal, AbortSignal.timeout(this.timeoutMs)])
 
     let previous = opts.resumeSessionId
-    let input: unknown[] = [{ role: 'user', content: opts.prompt }]
+    let input: unknown[] = [{ role: 'user', content: await userContent(opts) }]
     const total: Usage = { input: 0, cached: 0, output: 0 }
     const state = { started: false }
     let lastText = ''
@@ -375,4 +376,26 @@ function add(total: Usage, u: Usage): void {
   total.input += u.input
   total.cached += u.cached
   total.output += u.output
+}
+
+/**
+ * The first user message. Images go as `input_image` parts with a data URL (Responses API image input), read from
+ * disk here so nothing but this request carries them.
+ */
+async function userContent(opts: RunOptions): Promise<unknown> {
+  if (!opts.images?.length) return opts.prompt
+  const images = await Promise.all(
+    opts.images.map(async (image) => {
+      try {
+        const data = (await readFile(image.path)).toString('base64')
+        return { type: 'input_image', image_url: `data:${image.mediaType};base64,${data}` }
+      } catch (error) {
+        throw new Error(
+          `An attached image could not be read (${error instanceof Error ? error.message : String(error)}). Remove it from the message (✕ on it in the thread) and attach it again.`,
+          { cause: error },
+        )
+      }
+    }),
+  )
+  return [{ type: 'input_text', text: opts.prompt }, ...images]
 }

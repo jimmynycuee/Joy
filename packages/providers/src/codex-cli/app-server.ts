@@ -1,6 +1,7 @@
 import type {
   AgentEvent,
   AgentProvider,
+  ImageInput,
   ModelRef,
   ProviderCapabilities,
   ProviderHealth,
@@ -18,6 +19,7 @@ import type {
   ThreadStartParams,
   TurnStartParams,
   TurnSteerParams,
+  UserInput,
 } from './app-server-protocol.js'
 import { CodexAppServerParser } from './app-server-parse.js'
 
@@ -117,7 +119,7 @@ export class CodexAppServerProvider implements AgentProvider {
 
       const turn: TurnStartParams = {
         threadId: sessionId,
-        input: [{ type: 'text', text: opts.prompt, text_elements: [] }],
+        input: userInput(opts.prompt, opts.images),
         cwd: opts.cwd,
         model: model.model,
         ...(model.effort ? { effort: model.effort } : {}),
@@ -129,13 +131,13 @@ export class CodexAppServerProvider implements AgentProvider {
         // Owner messages join the turn in flight (`turn/steer`); the turn id guards against steering a later one.
         const threadId = sessionId
         steerable = true
-        const steer: Steer = async (text) => {
+        const steer: Steer = async (text, images) => {
           if (!steerable || parser.finished || opts.signal.aborted) return false
           try {
             await client.request('turn/steer', {
               threadId,
               expectedTurnId: turnId,
-              input: [{ type: 'text', text, text_elements: [] }],
+              input: userInput(text, images),
             } satisfies TurnSteerParams)
             return true
           } catch {
@@ -217,4 +219,12 @@ function mcpConfig(servers: McpServerConfig[] | undefined): Record<string, unkno
         : { url: server.url, ...(server.headers ? { http_headers: server.headers } : {}) }
   }
   return { mcp_servers: mcpServers }
+}
+
+/** The prompt, then each attached image as a local file the app-server reads (never copied into the worktree). */
+export function userInput(text: string, images: readonly ImageInput[] = []): UserInput[] {
+  return [
+    { type: 'text', text, text_elements: [] },
+    ...images.map((image): UserInput => ({ type: 'localImage', path: image.path })),
+  ]
 }

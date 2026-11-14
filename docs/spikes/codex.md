@@ -71,6 +71,15 @@ codex exec resume --json [-m <model>] <thread_id> <prompt>
 - Joy 用 `turn/start` 回應裡的 `turn.id` 當 `expectedTurnId`，`turn/completed` 後就不再送。
 - **未驗證**：真實 app-server 對 steer 的事件（是否另有通知、agent 何時讀到）；contract test 用的是合成的假 app-server。
 
+## 附件：圖片（2026-11-14）
+
+- 本機 codex-cli 0.166.0：`codex exec --help` 與 `codex exec resume --help` 都有 `-i, --image <FILE>...`（附在第一則／resume 後那則 prompt）。這個旗標吃多個值，Joy 每張圖各給一個 `--image`，並用 `--` 結束清單再放 prompt。
+- `codex app-server generate-json-schema`：`UserInput` 有 `text`、`image`（`url` 或 `fileId`，可選 `detail`）、`localImage`（`path`，可選 `detail`）、`audio`／`localAudio`、`skill`、`mention`。Joy 在 `turn/start` 與 `turn/steer` 用 `{type:'localImage', path}`，路徑是 `<JOY_HOME>/attachments/<id>`（worktree 外）。
+- app-server 完成的 `userMessage` item 是 Joy 自己輸入的回聲（可能含引用進 prompt 的文字檔），parser 現在直接丟掉，不記成 `raw` 事件。
+- 容器模式（只有 `exec`）：provider 用 wrapper 的 `readFiles` 明確列出 `--image` 的路徑，容器以唯讀方式掛進來（同路徑）。附件檔名是 `<uuid>.<ext>`，副檔名依嗅探到的型別，給依副檔名判斷的工具用。
+- 長 prompt：`codex exec --help` 寫「If not provided as an argument (or if `-` is used), instructions are read from stdin」，`codex exec resume --help` 寫「If `-` is used, read from stdin」。prompt 超過 16 KB 時，Joy 用 `-` 並把 prompt 寫進 stdin；沒有 stdin 的容器 run 超過 100 KB 時報錯。
+- **未驗證**：app-server 是否自己讀 `localImage` 檔（推測是，因為 Joy 沒送內容）、sandbox 外的路徑是否可讀、`exec --image` 在容器裡是否可用；要錄 fixture。官方文件這次沒有另外查（schema 與 `--help` 已足夠決定做法）。
+
 ## 待確認（要在使用者的 Mac 上做）
 
 - [ ] 執行 `node scripts/record-fixtures.mjs codex`，錄下 edit / mcp / resume 的真實事件

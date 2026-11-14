@@ -115,3 +115,15 @@ export {
 export type { BackupFile } from './backup.js'
 export { deletePushSubscription, listPushSubscriptions, savePushSubscription } from './push.js'
 export type { PushSubscriptionRecord } from './push.js'
+export {
+  ATTACHMENT_MEDIA_TYPES,
+  createAttachment,
+  deleteUnusedAttachment,
+  deleteUnusedAttachments,
+  disableAttachment,
+  getAttachment,
+  linkAttachments,
+  listAttachmentIds,
+  listTaskAttachments,
+} from './attachments.js'
+export type { AttachmentMediaType, AttachmentRecord } from './attachments.js'
