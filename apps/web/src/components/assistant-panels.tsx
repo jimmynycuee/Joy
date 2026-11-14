@@ -219,7 +219,7 @@ export function HistorySearch(props: { onOpen: (conversationId: string) => void 
     <div className="history-search">
       <form role="search" className="search-field" onSubmit={(event) => void search(event)}>
         <Icon name="search" size={14} />
-        <input name="q" type="search" placeholder="搜尋以前的對話內容" aria-label="搜尋以前的對話" />
+        <input name="q" type="search" placeholder="搜尋對話內容" aria-label="搜尋以前的對話" />
       </form>
       {hits === null ? null : (
         <div className="history-results card">

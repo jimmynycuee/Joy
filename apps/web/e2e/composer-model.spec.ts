@@ -81,11 +81,17 @@ async function send(page: Page, text = 'fix the bug') {
   await form(page).getByLabel('任務內容').press('Enter')
 }
 
-test('the toolbar shows the model Settings would use, marked 預設', async ({ page }) => {
+test('the toolbar shows the model Settings would use; only the model menu marks the default', async ({
+  page,
+}) => {
   await mockApi(page)
   await page.goto('/')
   await expect(modelButton(page)).toContainText('Opus 5.5 · 中')
-  await expect(modelButton(page)).toContainText('（預設）')
+  await expect(modelButton(page)).not.toContainText('預設')
+  await modelButton(page).click()
+  await expect(page.getByRole('menuitemradio', { name: /Opus 5\.5/ })).toContainText('預設')
+  await expect(page.getByRole('menuitemradio', { name: /Sonnet 5\.5/ })).not.toContainText('預設')
+  await page.keyboard.press('Escape')
   await expect(form(page).getByRole('button', { name: /^專案/ })).toContainText('composer-project · main')
   await expect(form(page).getByRole('button', { name: /^做法/ })).toContainText('實作＋審查')
   // Plain buttons, no form controls left in the toolbar.
@@ -373,9 +379,9 @@ test('the last choice is remembered, and 照設定 clears it', async ({ page }) 
     .getByRole('menuitemradio', { name: /照設定/ })
     .click()
   await expect(modelButton(page)).toContainText('Opus 5.5 · 中')
-  await expect(modelButton(page)).toContainText('（預設）')
   await page.reload()
-  await expect(modelButton(page)).toContainText('（預設）')
+  await expect(modelButton(page)).toContainText('Opus 5.5 · 中')
+  await expect(modelButton(page)).not.toContainText('預設')
 })
 
 test('a broken remembered choice just means the defaults', async ({ page }) => {

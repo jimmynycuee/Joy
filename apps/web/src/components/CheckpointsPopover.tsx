@@ -82,9 +82,6 @@ export function CheckpointsPopover({
       }}
     >
       <h2 className="popover-title">檢查點</h2>
-      <p className="muted">
-        每次 agent 完成一輪，Joy 會存一份工作副本的快照。還原前會先把目前的狀態另存成新的檢查點。
-      </p>
       {working ? <p className="notice-line">任務進行中，先停止或等它結束才能還原。</p> : null}
       {loadFailure ? <p className="form-error">{loadFailure}</p> : null}
       {failure ? <p className="form-error">{failure}</p> : null}

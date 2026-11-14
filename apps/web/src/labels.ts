@@ -49,9 +49,9 @@ export const MODE_LABELS: Record<string, string> = {
 }
 
 export const MODE_HINTS: Record<string, string> = {
-  review_loop: '一個 AI 動手做，另一個 AI 再檢查一次。推送、刪除這類動作會先問你。',
-  single: '只用一個 AI 完成，最快。',
-  compete: '兩個 AI 各做一份、互相審查，最後由你挑一個。',
+  review_loop: '一個 AI 做，另一個檢查',
+  single: '一個 AI 完成，最快',
+  compete: '兩個 AI 各做一份，由你挑一個',
 }
 
 export const PHASE_LABELS: Record<string, string> = {

@@ -127,12 +127,15 @@ test('a task page shows the character for the state it is in', async ({ page }) 
   await expect(page.getByTestId('event-stream').locator('svg.mascot')).toHaveCount(0)
 })
 
-test('empty states sleep, and the new task page greets with the normal character', async ({ page }) => {
+test('the new task page greets with the normal character, and the empty sidebar has none', async ({
+  page,
+}) => {
   await mock(page, { empty: true })
   await page.goto('/')
   const sidebar = page.getByRole('navigation', { name: '主選單' })
-  await expect(sidebar.getByText('你的任務會出現在這裡。')).toBeVisible()
-  await expect(sidebar.locator('.empty-list svg.mascot[data-mood="sleeping"]')).toHaveCount(2)
+  // The sidebar says it in one faint line; the character is for the big empty page.
+  await expect(sidebar.getByText('還沒有任何工作')).toBeVisible()
+  await expect(sidebar.locator('.empty-list svg')).toHaveCount(0)
   await expect(page.locator('.home-mascot')).toHaveAttribute('data-mood', 'normal')
   await expect(page.locator('.home-mascot')).toHaveAttribute('width', '96')
 })

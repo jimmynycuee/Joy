@@ -30,7 +30,7 @@ test('outside actions the assistant asked for wait on the assistant page until a
   })
 
   await page.goto('/')
-  await page.getByRole('button', { name: '助理' }).click()
+  await page.getByRole('button', { name: '聊聊' }).click()
   const panel = page.getByTestId('assistant-actions')
   await expect(panel).toContainText('send_gmail_message')
   await expect(panel).toContainText('這是讀了郵件或行事曆內容之後提出的要求')

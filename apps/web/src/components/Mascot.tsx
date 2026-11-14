@@ -166,7 +166,7 @@ export function Mascot({ mood = 'normal', size = 96, label, decorative = false, 
           <stop offset="1" stopColor={TEAL} stopOpacity="0" />
         </radialGradient>
       </defs>
-      <ellipse cx="100" cy="188" rx="46" ry="6" fill="#F5C94A" opacity="0.22" />
+      <ellipse className="mascot-ground" cx="100" cy="188" rx="46" ry="6" fill="#F5C94A" opacity="0.22" />
       <path
         d="M12 122 A90 24 0 0 1 188 122"
         transform="rotate(-16 100 122)"

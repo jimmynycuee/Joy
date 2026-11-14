@@ -54,7 +54,6 @@ export function PlanCard({
       </header>
       {plan.plan ? <Markdown text={plan.plan} /> : <p className="muted">agent 沒有寫出計畫內容。</p>}
       {review ? <ReviewCard entry={review} /> : null}
-      <p className="muted plan-hint">想調整的話，在下面輸入要怎麼改，agent 會重寫計畫。</p>
       <div className="button-row">
         <Button variant="primary" disabled={busy !== null} onClick={() => void decide('approve')}>
           核准並開始實作

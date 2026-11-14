@@ -22,7 +22,6 @@ import { relativeTime } from '../dates.js'
 import {
   EFFORT_LABELS,
   MODEL_SUGGESTIONS,
-  MODE_HINTS,
   PROVIDER_LABELS,
   ROLE_LABELS,
   providersForRole,
@@ -31,6 +30,7 @@ import {
   taskTitle,
 } from '../labels.js'
 import { readStorage, useDraft, writeStorage } from '../storage.js'
+import { visibleStarters } from '../starters.js'
 import { tasksNeedingAttention } from '../task-info.js'
 import type { Repo, Task } from '../types.js'
 
@@ -45,13 +45,6 @@ export interface NewTaskInput {
   /** The agent writes a plan first and waits for the owner's approval before changing code. */
   planFirst: boolean
 }
-
-const STARTERS = [
-  { label: '修一個 bug', prompt: '修一個 bug：' },
-  { label: '補測試', prompt: '幫這段程式補上測試：' },
-  { label: '解釋這段程式', prompt: '請解釋這段程式在做什麼：' },
-  { label: '從 GitHub issue 開始', prompt: '處理 GitHub issue #' },
-] as const
 
 const ROLE_KEYS: Array<Extract<Role, 'implementer' | 'reviewer'>> = ['implementer', 'reviewer']
 
@@ -70,6 +63,7 @@ function TaskLine({ task, onOpen }: { task: Task; onOpen: (id: string) => void }
 export function NewTaskPage({
   repos,
   tasks,
+  hasAnyTask,
   config,
   customWorkflows,
   setupProblems,
@@ -79,7 +73,10 @@ export function NewTaskPage({
   onCreate,
 }: {
   repos: Repo[]
+  /** The tasks that are not archived. */
   tasks: Task[]
+  /** Any task at all, archived ones too: the quick-start chips are for a brand-new Joy only. */
+  hasAnyTask: boolean
   config: JoyConfig | null
   customWorkflows: Array<{ name: string; description?: string }>
   setupProblems: number
@@ -118,8 +115,8 @@ export function NewTaskPage({
     const resolved = resolveModels(effective.models, defaults)
     return { implementer: resolved.implementer.ref, reviewer: resolved.reviewer.ref }
   }, [effective, defaults])
-  const planFirstDisabledText = planFirstDisabledReason(mode)
-  const planFirstOn = choice.planFirst && !planFirstDisabledText
+  const planFirstOn = choice.planFirst && !planFirstDisabledReason(mode)
+  const starters = visibleStarters(hasAnyTask, activeRepo?.githubRemote)
 
   const attention = useMemo(() => tasksNeedingAttention(tasks), [tasks])
   const recent = useMemo(
@@ -168,7 +165,7 @@ export function NewTaskPage({
       <div className="home-column">
         {setupProblems > 0 ? (
           <button type="button" className="setup-banner" onClick={onOpenSetup}>
-            <Icon name="alert" size={14} />有 {setupProblems} 項環境設定需要處理，點這裡查看
+            <Icon name="alert" size={14} />有 {setupProblems} 項環境設定需要處理
           </button>
         ) : null}
 
@@ -185,7 +182,6 @@ export function NewTaskPage({
           <div className="home-empty">
             <Mascot mood="normal" size={96} decorative />
             <h1>先加入一個專案</h1>
-            <p>選一個電腦裡的 Git 專案資料夾，Joy 會在獨立的工作副本裡幫你改程式。</p>
             <Button variant="primary" large onClick={onAddRepo}>
               加入專案
             </Button>
@@ -200,7 +196,6 @@ export function NewTaskPage({
               onChange={setPrompt}
               onSubmit={submit}
               textareaRef={textareaRef}
-              placeholder="例如：登入頁按 Enter 不會送出，幫我修好"
               textareaLabel="任務內容"
               sendLabel="開始任務"
               busy={busy}
@@ -220,17 +215,8 @@ export function NewTaskPage({
                     workflows={customWorkflows}
                     onMode={(value) => setChoice((current) => ({ ...current, mode: value }))}
                     onPlanFirst={(on) => setChoice((current) => ({ ...current, planFirst: on }))}
+                    onAdvanced={() => setShowAdvanced((open) => !open)}
                   />
-                  <button
-                    type="button"
-                    className="btn btn-ghost composer-trigger"
-                    aria-label="進階"
-                    aria-expanded={showAdvanced}
-                    onClick={() => setShowAdvanced((open) => !open)}
-                  >
-                    <Icon name="settings" size={14} />
-                    <span className="trigger-text hide-narrow">進階</span>
-                  </button>
                 </>
               }
               trailing={
@@ -246,7 +232,7 @@ export function NewTaskPage({
                 <div className="composer-advanced" hidden={!showAdvanced}>
                   <div className="field-stack">
                     <label>
-                      標題（選填，預設用任務內容的第一行）
+                      標題（選填）
                       <input name="title" aria-label="任務標題" maxLength={500} />
                     </label>
                     <div className="role-grid">
@@ -318,23 +304,20 @@ export function NewTaskPage({
                 </div>
               }
             />
-            <p className="composer-hint">
-              {MODE_HINTS[mode] ?? '照這個自訂流程的設定執行。'}
-              {planFirstOn ? ' 先規劃：agent 會先寫計畫，等你核准才開始改程式。' : ''}
-            </p>
-
-            <div className="starter-row" role="group" aria-label="快速開始">
-              {STARTERS.map((starter) => (
-                <button
-                  key={starter.label}
-                  type="button"
-                  className="starter-chip"
-                  onClick={() => startWith(starter.prompt)}
-                >
-                  {starter.label}
-                </button>
-              ))}
-            </div>
+            {starters.length > 0 ? (
+              <div className="starter-row" role="group" aria-label="快速開始">
+                {starters.map((starter) => (
+                  <button
+                    key={starter.label}
+                    type="button"
+                    className="starter-chip"
+                    onClick={() => startWith(starter.prompt)}
+                  >
+                    {starter.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
 
             {recent.length > 0 ? (
               <section className="recent-section" aria-label="最近的任務">

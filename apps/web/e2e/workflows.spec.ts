@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { openAdvanced } from './helpers.js'
 
 const repo = { id: 'repo-w', path: '/work/joy', defaultBranch: 'main' }
 
@@ -59,7 +60,7 @@ test('a custom workflow from config can be picked when creating a task', async (
 
   await dialog.getByRole('button', { name: /^專案/ }).click()
   await page.getByRole('menuitemradio', { name: /joy · main/ }).click()
-  await dialog.getByRole('button', { name: '進階' }).click()
+  await openAdvanced(page, dialog)
   await dialog.getByLabel('任務標題').fill('Careful fix')
   await dialog.getByLabel('任務內容').fill('Fix add()')
   await dialog.getByRole('button', { name: /^做法/ }).click()

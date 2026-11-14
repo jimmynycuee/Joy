@@ -10,6 +10,7 @@ const ICONS = {
   'chevron-right': 'm9 18 6-6-6-6',
   search: 'm21 21-4.3-4.3M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14z',
   'arrow-up': 'M12 19V5M5 12l7-7 7 7',
+  'arrow-left': 'M19 12H5M12 19l-7-7 7-7',
   menu: 'M4 6h16M4 12h16M4 18h16',
   chat: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
   chart: 'M4 20V10M10 20V4M16 20v-7M22 20H2',

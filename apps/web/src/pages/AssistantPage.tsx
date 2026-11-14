@@ -150,7 +150,6 @@ export function AssistantPage({
               <div className="empty-state">
                 <Mascot mood="sleeping" size={72} decorative />
                 <h2>跟 Joy 聊聊</h2>
-                <p>可以問專案和任務的狀況、請它開任務或設提醒。助理用哪個模型可以在設定裡改。</p>
               </div>
             ) : (
               messages.map((message) =>

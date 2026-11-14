@@ -4,7 +4,6 @@ import type { JoyConfig } from '@joy/config'
 import { downloadFile, errorMessage, removeWithConfirmation, request, saveApiToken } from '../api.js'
 import { NO_ACTION_REPAIR, doctorStatusLabel, formatBytes } from '../labels.js'
 import type { DoctorReport, SecretStatus } from '../types.js'
-import { Mascot } from './Mascot.js'
 import { Button } from './ui.js'
 
 /** Telegram settings: owner chat id (config) and bot token (OS keychain). Applies after Joy restarts. */
@@ -64,10 +63,7 @@ export function TelegramSettings({
           {tokenStatus?.set && chatId ? '已設定' : '未設定'}
         </span>
       </div>
-      <p className="muted">
-        Joy 會把需要你同意的動作和任務結果傳到你的 Telegram 對話，也只接受從這個對話按下的按鈕。用 @BotFather
-        建立機器人；token 會存在作業系統鑰匙圈。
-      </p>
+      <p className="muted">用 @BotFather 建立機器人；token 存在作業系統鑰匙圈。</p>
       <form className="field-stack" onSubmit={(event) => void save(event)}>
         <label htmlFor="telegram-chat-id">你的 chat id</label>
         <input
@@ -201,7 +197,7 @@ export function LogsPanel() {
   return (
     <section className="card settings-card" aria-label="除錯紀錄" data-testid="logs-panel">
       <h2>除錯紀錄</h2>
-      <p className="muted">每天一個檔案，保留 14 天。寫入前會先移除已知的密碼和金鑰。</p>
+      <p className="muted">保留 14 天，已移除密碼和金鑰。</p>
       <ul className="row-list">
         {logs.map((log) => (
           <li key={log.day} className="row-item">
@@ -261,7 +257,7 @@ export function BackupsPanel() {
   return (
     <section className="card settings-card" aria-label="備份" data-testid="backups-panel">
       <h2>備份與匯出</h2>
-      <p className="muted">Joy 每天備份一次資料庫，保留最近 7 份。</p>
+      <p className="muted">每天自動備份，保留最近 7 份。</p>
       <ul className="row-list">
         {backups.map((backup) => (
           <li key={backup.day} className="row-item">
@@ -353,7 +349,6 @@ export function NotificationsPanel() {
   return (
     <section className="card settings-card" aria-label="通知" data-testid="notifications-panel">
       <h2>這台裝置的通知</h2>
-      <p className="muted">任務完成或需要你同意時，這台裝置會收到通知。</p>
       {unsupported ? (
         <p className="muted">{unsupported}</p>
       ) : state === 'on' ? (
@@ -396,7 +391,6 @@ export function AccessTokenPanel() {
   return (
     <section className="card settings-card" aria-label="存取權杖" data-testid="access-token-panel">
       <h2>存取權杖</h2>
-      <p className="muted">每個送到 Joy 的請求都要帶這個權杖。要從其他裝置連線（Tailscale）請看 README。</p>
       <div className="button-row">
         <Button onClick={() => void regenerate()}>重新產生權杖</Button>
       </div>
@@ -423,10 +417,7 @@ export function DoctorChecks({
   return (
     <section className="card settings-card" aria-labelledby="doctor-heading" data-testid="doctor-checks">
       <div className="section-heading">
-        <h2 id="doctor-heading" className="with-mascot">
-          <Mascot mood="normal" size={36} decorative />
-          環境檢查
-        </h2>
+        <h2 id="doctor-heading">環境檢查</h2>
         <Button aria-label="重新檢查環境" disabled={loading} onClick={onRetry}>
           重新檢查
         </Button>

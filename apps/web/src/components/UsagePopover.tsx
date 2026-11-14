@@ -59,9 +59,7 @@ export function UsagePopover({ usage }: { usage: TaskUsage }) {
           ))}
         </ul>
       ) : null}
-      <p className="muted">
-        Claude Code 與 Codex 的花費是依價目表估算，不是訂閱實際扣的錢；權限預審等額外呼叫不在內。
-      </p>
+      <p className="muted">花費依價目表估算，不是訂閱實際扣的錢；權限預審等額外呼叫不在內。</p>
     </Popover>
   )
 }

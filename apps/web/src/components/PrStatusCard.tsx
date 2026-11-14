@@ -95,7 +95,7 @@ export function PrStatusCard({
             </Button>
           ) : (
             <p className="muted">
-              工作副本已移除，agent 不能直接接續修正。可以複製失敗的檢查名稱，開一個新任務請它處理。
+              工作副本已移除，agent 不能接續修正。
               <CopyButton text={ciFixMessage(checks.failingNames)} label="複製修正 CI 的說明" />
             </p>
           )}

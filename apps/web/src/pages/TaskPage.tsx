@@ -195,7 +195,6 @@ export function TaskPage({
                   <Icon name="stop" size={18} />
                   <div className="error-card-copy">
                     <strong>任務已取消</strong>
-                    <p>可以從原本的進度接著做。</p>
                   </div>
                   {canResume ? (
                     <Button icon="retry" disabled={acting} onClick={() => void act('resume')}>
@@ -241,15 +240,7 @@ export function TaskPage({
               <h2>變更</h2>
               <IconButton icon="x" label="關閉變更面板" onClick={() => onToggleChanges(false)} />
             </div>
-            {diff && hasDiff ? (
-              <DiffBrowser diff={diff} />
-            ) : (
-              <div className="empty-state">
-                <Mascot mood="sleeping" size={56} decorative />
-                <h3>還沒有變更</h3>
-                <p>任務完成後，改了哪些地方會顯示在這裡。</p>
-              </div>
-            )}
+            {diff && hasDiff ? <DiffBrowser diff={diff} /> : <p className="pane-empty">還沒有變更</p>}
           </aside>
         ) : null}
       </div>

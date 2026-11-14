@@ -191,8 +191,6 @@ export function ComparePanel({ details, onChanged }: { details: TaskDetails; onC
           </p>
           {judgement.mergeRecommended ? <p className="muted">裁判認為合併兩邊會更好。</p> : null}
         </div>
-      ) : details.task.status === 'running' ? (
-        <p className="muted">兩個方案都在進行中；兩邊都審查完後，裁判會比較。</p>
       ) : null}
       <div className="compare-columns">
         {attempts.map((attempt) => {

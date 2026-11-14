@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { request } from '../api.js'
-import { groupByDay, relativeTime } from '../dates.js'
-import { modeLabel, repoName, statusLabel } from '../labels.js'
+import { relativeTime } from '../dates.js'
+import { modeLabel, statusLabel } from '../labels.js'
+import { NEW_CONVERSATION_TITLE, recentItems } from '../recent.js'
 import { repoColor } from '../repo-colors.js'
 import { modLabel } from '../shortcuts.js'
 import type { ConversationSummary, Repo, Task } from '../types.js'
@@ -76,74 +77,39 @@ export interface SidebarProps {
   repos: Repo[]
   tasks: Task[]
   conversations: ConversationSummary[]
-  /** Which view is showing, so the matching row can be highlighted. */
-  view: 'new-task' | 'task' | 'assistant' | 'stats' | 'settings'
+  /** Which view is showing, so the matching row or button can be highlighted. */
+  view: 'new-task' | 'task' | 'assistant' | 'settings'
   selectedTaskId: string
   selectedConversationId: string
   /** The task whose plan waits for approval, if the open one does: its row says so. */
   pendingPlanTaskId?: string
   onArchive: (id: string) => void
-  onRestore: (id: string) => void
   onNewTask: () => void
   onOpenTask: (id: string) => void
-  onOpenAssistant: () => void
   onNewConversation: () => void
   onOpenConversation: (id: string) => void
-  onOpenStats: () => void
   onOpenSettings: () => void
-  onAddRepo: () => void
   onCollapse: () => void
-}
-
-/** An empty list in the sidebar: the sleeping character beside one line of text. */
-function EmptyNote({ children }: { children: string }) {
-  return (
-    <p className="empty-list">
-      <Mascot mood="sleeping" size={28} decorative />
-      <span>{children}</span>
-    </p>
-  )
-}
-
-function contains(text: string | undefined, query: string): boolean {
-  return (text ?? '').toLowerCase().includes(query)
 }
 
 export function Sidebar(props: SidebarProps) {
   const [search, setSearch] = useState('')
-  const [showArchived, setShowArchived] = useState(false)
   const query = search.trim().toLowerCase()
 
-  const visibleTasks = useMemo(
-    () => props.tasks.filter((task) => !query || contains(task.title, query) || contains(task.prompt, query)),
-    [props.tasks, query],
+  // One list: tasks and conversations together, the most recently active first. Archived tasks live in 設定.
+  const items = useMemo(
+    () => recentItems(props.tasks, props.conversations, query),
+    [props.tasks, props.conversations, query],
   )
-  const activeTasks = visibleTasks.filter((task) => !task.archived)
-  const archivedTasks = visibleTasks.filter((task) => task.archived)
-  const conversations = props.conversations.filter(
-    (conversation) => !query || contains(conversation.title ?? '新對話', query),
-  )
+  const nothingYet = props.tasks.every((task) => task.archived) && props.conversations.length === 0
 
-  const groups = useMemo(() => {
-    const byRepo = new Map<string, Task[]>()
-    for (const task of activeTasks) byRepo.set(task.repoId, [...(byRepo.get(task.repoId) ?? []), task])
-    return [...byRepo.entries()].map(([repoId, list]) => ({
-      repoId,
-      name: repoName(props.repos.find((repo) => repo.id === repoId)?.path),
-      days: groupByDay(list, (task) => task.createdAt),
-    }))
-  }, [activeTasks, props.repos])
-
-  const nothingFound =
-    query && activeTasks.length === 0 && archivedTasks.length === 0 && conversations.length === 0
-
-  function taskRow(task: Task, archivedRow: boolean) {
+  function taskRow(task: Task, time: string | undefined) {
     const selected = props.view === 'task' && props.selectedTaskId === task.id
     const waiting = task.status === 'awaiting_approval' || task.status === 'review_ready'
     const working = task.status === 'running' || task.status === 'queued'
     const label = statusLabel(task.status, task.mode, props.pendingPlanTaskId === task.id)
     return (
-      <div className={`nav-row-wrap${selected ? ' selected' : ''}`} key={task.id}>
+      <div className={`nav-row-wrap${selected ? ' selected' : ''}`} key={`task:${task.id}`}>
         <button
           type="button"
           className="task-row"
@@ -151,7 +117,9 @@ export function Sidebar(props: SidebarProps) {
           title={`${label} · ${modeLabel(task.mode)}`}
           onClick={() => props.onOpenTask(task.id)}
         >
-          <ProjectDot color={repoColor(task.repoId, props.repos)} />
+          <span className="row-lead">
+            <ProjectDot color={repoColor(task.repoId, props.repos)} />
+          </span>
           <span className="task-row-copy">
             <span className="task-title">{task.title}</span>
             {waiting ? <span className={`task-meta status-text-${task.status}`}>{label}</span> : null}
@@ -163,26 +131,45 @@ export function Sidebar(props: SidebarProps) {
           ) : task.status === 'failed' ? (
             <span className="task-flag task-flag-failed" aria-hidden="true" />
           ) : null}
-          <span className="task-time">{relativeTime(task.createdAt)}</span>
+          <span className="task-time">{relativeTime(time)}</span>
         </button>
-        {archivedRow ? (
-          <IconButton
-            icon="retry"
-            label={`取消封存：${task.title}`}
-            className="row-action"
-            onClick={() => props.onRestore(task.id)}
-          />
-        ) : (
-          <IconButton
-            icon="archive"
-            label={`封存：${task.title}`}
-            className="row-action"
-            onClick={() => props.onArchive(task.id)}
-          />
-        )}
+        <IconButton
+          icon="archive"
+          label={`封存：${task.title}`}
+          className="row-action"
+          onClick={() => props.onArchive(task.id)}
+        />
       </div>
     )
   }
+
+  function conversationRow(conversation: ConversationSummary, time: string | undefined) {
+    const selected = props.view === 'assistant' && props.selectedConversationId === conversation.id
+    const title = conversation.title ?? NEW_CONVERSATION_TITLE
+    return (
+      <div className={`nav-row-wrap${selected ? ' selected' : ''}`} key={`conversation:${conversation.id}`}>
+        <button
+          type="button"
+          className="task-row"
+          aria-current={selected ? 'page' : undefined}
+          title="對話"
+          onClick={() => props.onOpenConversation(conversation.id)}
+        >
+          <span className="row-lead row-lead-chat">
+            <Icon name="chat" size={14} />
+          </span>
+          <span className="task-row-copy">
+            <span className="task-title">{title}</span>
+          </span>
+          <span className="task-time">{relativeTime(time)}</span>
+        </button>
+      </div>
+    )
+  }
+
+  // 新任務 / 聊聊 are lit only while that very page is open: the composer, or a conversation that has no messages yet.
+  const onNewTask = props.view === 'new-task'
+  const onNewChat = props.view === 'assistant' && props.selectedConversationId === ''
 
   return (
     <nav className="sidebar" aria-label="主選單">
@@ -199,135 +186,71 @@ export function Sidebar(props: SidebarProps) {
         />
       </div>
 
+      <div className="sidebar-actions">
+        <button
+          type="button"
+          className={`sidebar-action${onNewTask ? ' active' : ''}`}
+          aria-current={onNewTask ? 'page' : undefined}
+          onClick={props.onNewTask}
+        >
+          <Icon name="plus" />
+          新任務
+        </button>
+        <button
+          type="button"
+          className={`sidebar-action${onNewChat ? ' active' : ''}`}
+          aria-current={onNewChat ? 'page' : undefined}
+          onClick={props.onNewConversation}
+        >
+          <Icon name="chat" />
+          聊聊
+        </button>
+      </div>
+
       <div className="search-field sidebar-search">
         <Icon name="search" size={14} />
         <input
           type="search"
           aria-label="搜尋任務與對話"
-          placeholder="搜尋任務與對話"
+          placeholder="搜尋"
           value={search}
           onChange={(event) => setSearch(event.target.value)}
         />
         {search ? null : <kbd>{modLabel()}K</kbd>}
       </div>
 
-      <button
-        type="button"
-        className={`nav-item${props.view === 'new-task' ? ' active' : ''}`}
-        aria-current={props.view === 'new-task' ? 'page' : undefined}
-        onClick={props.onNewTask}
-      >
-        <Icon name="plus" />
-        新任務
-      </button>
-      <button
-        type="button"
-        className={`nav-item${props.view === 'assistant' ? ' active' : ''}`}
-        aria-current={props.view === 'assistant' ? 'page' : undefined}
-        onClick={props.onOpenAssistant}
-      >
-        <Icon name="chat" />
-        助理
-      </button>
-
       <div className="sidebar-scroll">
-        <div className="sidebar-group">
-          <div className="sidebar-group-head">
-            <span className="group-label">對話</span>
-            <IconButton
-              icon="plus"
-              label="新對話"
-              className="icon-btn-sm"
-              onClick={props.onNewConversation}
-            />
-          </div>
-          {conversations.length === 0 ? (
-            <EmptyNote>{query ? '沒有符合的對話。' : '還沒有對話。'}</EmptyNote>
-          ) : (
-            conversations.map((conversation) => {
-              const selected = props.view === 'assistant' && props.selectedConversationId === conversation.id
-              return (
-                <button
-                  type="button"
-                  key={conversation.id}
-                  className={`nav-row${selected ? ' selected' : ''}`}
-                  aria-current={selected ? 'page' : undefined}
-                  onClick={() => props.onOpenConversation(conversation.id)}
-                >
-                  <span className="task-title">{conversation.title ?? '新對話'}</span>
-                </button>
-              )
-            })
-          )}
-        </div>
-
-        <div className="sidebar-group task-list" aria-label="任務列表">
-          <div className="sidebar-group-head">
-            <span className="group-label">任務</span>
-          </div>
-          {props.tasks.length === 0 ? (
-            <EmptyNote>你的任務會出現在這裡。</EmptyNote>
-          ) : nothingFound ? (
-            <EmptyNote>沒有符合的項目。</EmptyNote>
-          ) : (
-            groups.map((group) => (
-              <div className="task-group" key={group.repoId}>
-                <div className="task-group-label">
-                  <Icon name="folder" size={13} />
-                  {group.name}
-                </div>
-                {group.days.map((day) => (
-                  <div key={day.group}>
-                    <div className="day-label">{day.label}</div>
-                    {day.items.map((task) => taskRow(task, false))}
-                  </div>
-                ))}
-              </div>
-            ))
-          )}
-          {archivedTasks.length > 0 ? (
-            <div className="task-group">
-              <button
-                type="button"
-                className="nav-row archived-toggle"
-                aria-expanded={showArchived}
-                onClick={() => setShowArchived((open) => !open)}
-              >
-                <Icon name={showArchived ? 'chevron-down' : 'chevron-right'} size={14} />
-                已封存（{archivedTasks.length}）
-              </button>
-              {showArchived ? archivedTasks.map((task) => taskRow(task, true)) : null}
+        <div className="sidebar-group task-list" aria-label="最近">
+          {nothingYet ? null : (
+            <div className="sidebar-group-head">
+              <span className="group-label">最近</span>
             </div>
-          ) : null}
+          )}
+          {nothingYet ? (
+            <p className="empty-list">還沒有任何工作</p>
+          ) : items.length === 0 ? (
+            <p className="empty-list">沒有符合的項目</p>
+          ) : (
+            items.map((item) =>
+              item.kind === 'task'
+                ? taskRow(item.task, item.time)
+                : conversationRow(item.conversation, item.time),
+            )
+          )}
         </div>
       </div>
 
       <div className="sidebar-footer">
         <UsageAlert />
-        <button type="button" className="nav-item" onClick={props.onAddRepo}>
-          <Icon name="folder" />
-          加入專案
+        <button
+          type="button"
+          className={`nav-item${props.view === 'settings' ? ' active' : ''}`}
+          aria-current={props.view === 'settings' ? 'page' : undefined}
+          onClick={props.onOpenSettings}
+        >
+          <Icon name="settings" />
+          設定
         </button>
-        <div className="footer-row">
-          <button
-            type="button"
-            className={`nav-item${props.view === 'stats' ? ' active' : ''}`}
-            aria-current={props.view === 'stats' ? 'page' : undefined}
-            onClick={props.onOpenStats}
-          >
-            <Icon name="chart" />
-            統計
-          </button>
-          <button
-            type="button"
-            className={`nav-item${props.view === 'settings' ? ' active' : ''}`}
-            aria-current={props.view === 'settings' ? 'page' : undefined}
-            onClick={props.onOpenSettings}
-          >
-            <Icon name="settings" />
-            設定
-          </button>
-        </div>
       </div>
     </nav>
   )

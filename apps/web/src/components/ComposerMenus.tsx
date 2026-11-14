@@ -88,12 +88,15 @@ export function ApproachMenu({
   workflows,
   onMode,
   onPlanFirst,
+  onAdvanced,
 }: {
   mode: string
   planFirst: boolean
   workflows: Array<{ name: string; description?: string }>
   onMode: (mode: string) => void
   onPlanFirst: (on: boolean) => void
+  /** Opens the advanced panel (title, per-role model fields); the last row of the menu. */
+  onAdvanced: () => void
 }) {
   const label = (value: string) =>
     value.startsWith('workflow:') ? value.slice('workflow:'.length) : modeLabel(value)
@@ -146,6 +149,10 @@ export function ApproachMenu({
       >
         先規劃
       </MenuItem>
+      <MenuSeparator />
+      <MenuItem icon="settings" onSelect={onAdvanced}>
+        進階
+      </MenuItem>
     </Menu>
   )
 }
@@ -182,9 +189,7 @@ export function ModelMenu({
   return (
     <Menu
       label="模型"
-      triggerLabel={
-        isWorkflow ? '模型：自訂流程' : `模型：${trigger}${resolved.implementer.isDefault ? '（預設）' : ''}`
-      }
+      triggerLabel={isWorkflow ? '模型：自訂流程' : `模型：${trigger}`}
       triggerTitle={isWorkflow ? '自訂流程使用自己設定的模型' : undefined}
       triggerClassName="btn btn-ghost composer-trigger composer-model"
       disabled={isWorkflow}
@@ -196,9 +201,6 @@ export function ModelMenu({
         ) : (
           <>
             <span className="trigger-text">{trigger}</span>
-            {resolved.implementer.isDefault ? (
-              <span className="trigger-tag hide-narrow">（預設）</span>
-            ) : null}
             <Icon name="chevron-down" size={12} />
           </>
         )
