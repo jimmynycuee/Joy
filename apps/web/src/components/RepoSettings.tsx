@@ -128,7 +128,6 @@ export function RepoSettingsCard({
               </label>
             ))}
           </div>
-          <p className="muted">任務和專案前面的小圓點用這個顏色；選「自動」就依專案加入的順序輪流配色。</p>
         </fieldset>
         <fieldset className="provider-fieldset">
           <legend>允許使用的服務</legend>
@@ -145,7 +144,6 @@ export function RepoSettingsCard({
               </label>
             ))}
           </div>
-          <p className="muted">這個專案的任務只會用勾選的服務，各個角色都要用得到其中一個。</p>
         </fieldset>
         <label>
           送審前檢查指令
@@ -163,10 +161,8 @@ export function RepoSettingsCard({
           />
         </label>
         <p className="muted">
-          用空白分隔指令與參數，不會經過 shell（沒有引號、管線、&& 或環境變數）。像 <code>pnpm check</code>、
-          <code>npm test</code>{' '}
-          這種已知只在工作副本內執行的指令會直接執行；其他指令每次都需要你同意，沒同意就會略過檢查。
-          留空表示不檢查。
+          不會經過 shell。<code>pnpm check</code>、<code>npm test</code>{' '}
+          這類已知指令直接執行；其他指令每次都要你同意，沒同意就略過檢查。留空表示不檢查。
         </p>
         {shellCharacter ? (
           <p className="notice-line" role="status">

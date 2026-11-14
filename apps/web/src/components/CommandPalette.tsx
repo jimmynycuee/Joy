@@ -64,7 +64,7 @@ export function CommandPalette({ items, onClose }: { items: PaletteItem[]; onClo
           <input
             ref={inputRef}
             aria-label="輸入指令或任務名稱"
-            placeholder="跳到任務或對話，或輸入指令…"
+            placeholder="搜尋任務、對話或指令"
             value={query}
             onChange={(event) => {
               setQuery(event.target.value)

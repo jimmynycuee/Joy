@@ -3,6 +3,7 @@ import type { Dispatch, FormEvent, SetStateAction } from 'react'
 import { EFFORTS, ROLES } from '@joy/core'
 import type { ModelRef, ProviderKind, Role } from '@joy/core'
 import type { JoyConfig } from '@joy/config'
+import { ArchivedPanel } from '../components/ArchivedPanel.js'
 import { RepoSettingsCard } from '../components/RepoSettings.js'
 import {
   AccessTokenPanel,
@@ -27,10 +28,19 @@ import { MODEL_PRESETS, matchingPreset } from '../presets.js'
 import { SHORTCUTS, modLabel } from '../shortcuts.js'
 import { THEME_LABELS } from '../theme.js'
 import type { ThemePreference } from '../theme.js'
-import type { DoctorReport, Repo, SecretStatus } from '../types.js'
+import type { DoctorReport, Repo, SecretStatus, Task } from '../types.js'
+import { StatsPanel } from './StatsPage.js'
 
 export type SettingsSection =
-  'general' | 'models' | 'permissions' | 'notifications' | 'projects' | 'data' | 'advanced'
+  | 'general'
+  | 'models'
+  | 'permissions'
+  | 'notifications'
+  | 'projects'
+  | 'data'
+  | 'stats'
+  | 'archived'
+  | 'advanced'
 
 const SECTIONS: Array<{ id: SettingsSection; label: string }> = [
   { id: 'general', label: '一般' },
@@ -39,6 +49,8 @@ const SECTIONS: Array<{ id: SettingsSection; label: string }> = [
   { id: 'notifications', label: '通知' },
   { id: 'projects', label: '專案' },
   { id: 'data', label: '資料與備份' },
+  { id: 'stats', label: '統計' },
+  { id: 'archived', label: '已封存' },
   { id: 'advanced', label: '進階' },
 ]
 
@@ -63,6 +75,12 @@ export interface SettingsPageProps {
   onRepoSaved: (repo: Repo) => void
   theme: ThemePreference
   onTheme: (theme: ThemePreference) => void
+  /** Every task, archived ones included (the 已封存 section lists those). */
+  tasks: Task[]
+  onOpenTask: (id: string) => void
+  onRestoreTask: (id: string) => void
+  /** Back to the page that was open before 設定. */
+  onBack: () => void
 }
 
 function RoleFields({
@@ -147,8 +165,7 @@ export function SettingsPage(props: SettingsPageProps) {
   const activePreset = config ? matchingPreset(config.roles) : undefined
   const saveBar = (
     <div className="save-bar">
-      <span className="muted">只套用到之後的新任務</span>
-      <Button variant="primary" type="submit">
+      <Button variant="primary" type="submit" title="只套用到之後的新任務">
         儲存設定
       </Button>
     </div>
@@ -160,7 +177,6 @@ export function SettingsPage(props: SettingsPageProps) {
         <>
           <section className="card settings-card">
             <h2>外觀</h2>
-            <p className="muted">選擇淺色或深色，或跟隨系統。</p>
             <div className="segmented" role="group" aria-label="主題">
               {(Object.keys(THEME_LABELS) as ThemePreference[]).map((value) => (
                 <button
@@ -209,9 +225,7 @@ export function SettingsPage(props: SettingsPageProps) {
             </Button>
           </div>
           {props.repos.length === 0 ? (
-            <p className="muted">
-              還沒有專案。加入一個電腦裡的 Git 資料夾，Joy 就能在獨立的工作副本裡改程式。
-            </p>
+            <p className="muted">還沒有專案</p>
           ) : (
             <div className="repo-list">
               {props.repos.map((repo) => (
@@ -228,6 +242,17 @@ export function SettingsPage(props: SettingsPageProps) {
           <BackupsPanel />
           <WorktreesPanel />
         </>
+      )
+    }
+    if (section === 'stats') return <StatsPanel repos={props.repos} />
+    if (section === 'archived') {
+      return (
+        <ArchivedPanel
+          tasks={props.tasks}
+          repos={props.repos}
+          onOpen={props.onOpenTask}
+          onRestore={props.onRestoreTask}
+        />
       )
     }
     if (section === 'advanced') {
@@ -276,9 +301,7 @@ export function SettingsPage(props: SettingsPageProps) {
               <option value="normal">一般：照每個動作的預設等級</option>
               <option value="hands-off">放手：少通知，但高風險動作仍要你同意</option>
             </select>
-            <p className="muted">
-              高風險動作（推送、刪除等）一定要你同意，並先由另一個模型預審。來自外部內容的要求永遠不會自動執行。
-            </p>
+            <p className="muted">高風險動作（推送、刪除等）一定要你同意。</p>
           </div>
           {saveBar}
         </form>
@@ -300,7 +323,6 @@ export function SettingsPage(props: SettingsPageProps) {
           }}
         >
           <h2>模型組合</h2>
-          <p className="muted">一鍵決定各個角色用哪個模型。想要更細，展開下面的詳細設定。</p>
           <div className="preset-grid" role="group" aria-label="模型組合">
             {MODEL_PRESETS.map((preset) => (
               <button
@@ -315,7 +337,6 @@ export function SettingsPage(props: SettingsPageProps) {
               </button>
             ))}
           </div>
-          {activePreset ? null : <p className="muted">目前是自訂組合。</p>}
           <Disclosure
             label="各角色的詳細設定"
             open={rolesOpen}
@@ -346,13 +367,11 @@ export function SettingsPage(props: SettingsPageProps) {
                     : '未設定'}
             </span>
           </div>
-          <p className="muted">
-            {props.secretStatusLoading
-              ? '正在檢查金鑰狀態…'
-              : props.secretStatus === null
-                ? '目前無法取得金鑰狀態，暫時不能管理金鑰。'
-                : '存在作業系統鑰匙圈。Joy 不會把金鑰傳回瀏覽器，也不會寫進設定檔、紀錄或資料庫。'}
-          </p>
+          {props.secretStatusLoading ? (
+            <p className="muted">正在檢查金鑰狀態…</p>
+          ) : props.secretStatus === null ? (
+            <p className="muted">目前無法取得金鑰狀態，暫時不能管理金鑰。</p>
+          ) : null}
           {props.secretStatusLoading ? null : props.secretStatus === null ? (
             <div className="button-row">
               <Button onClick={props.onRetrySecret}>重新檢查金鑰</Button>
@@ -378,9 +397,7 @@ export function SettingsPage(props: SettingsPageProps) {
                 </Button>
               </div>
               <div className="row-between">
-                <span className="muted">
-                  {props.secretStatus.set ? '已安全存在作業系統鑰匙圈' : '儲存後只會顯示狀態'}
-                </span>
+                <span className="muted">{props.secretStatus.set ? '存在作業系統鑰匙圈' : ''}</span>
                 {props.secretStatus.source === 'keychain' && (
                   <Button variant="danger" onClick={() => void props.onRemoveOpenAiKey()}>
                     移除金鑰
@@ -397,6 +414,10 @@ export function SettingsPage(props: SettingsPageProps) {
   return (
     <main className="settings-page">
       <nav className="settings-nav" aria-label="設定分類">
+        <button type="button" className="settings-back" onClick={props.onBack}>
+          <Icon name="arrow-left" />
+          返回
+        </button>
         <h1>設定</h1>
         {SECTIONS.map((item) => (
           <button

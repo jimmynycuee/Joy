@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { openSettings } from './helpers.js'
 
 test('model stats can be filtered by period and repository', async ({ page }) => {
   const queries: string[] = []
@@ -38,7 +39,7 @@ test('model stats can be filtered by period and repository', async ({ page }) =>
   })
 
   await page.goto('/')
-  await page.getByRole('button', { name: '統計' }).click()
+  await openSettings(page, '統計')
   const implementers = page.getByLabel('實作者統計')
   await expect(implementers).toContainText('claude-cli · opus')
   await expect(implementers).toContainText('75% (3/4)')

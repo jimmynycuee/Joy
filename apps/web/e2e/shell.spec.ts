@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
-import { openSettings } from './helpers.js'
+import { openAdvanced, openSettings } from './helpers.js'
 
 const repo = { id: 'shell-repo', path: '/tmp/shell-project', defaultBranch: 'main' }
 const config = {
@@ -62,7 +62,13 @@ async function mockApi(page: Page, created: unknown[] = [], patches: Patch[] = [
     } else if (path === '/api/config') {
       await route.fulfill({ json: { config } })
     } else if (path === '/api/conversations') {
-      await route.fulfill({ json: { conversations: [{ id: 'c1', title: 'Weekend plans' }] } })
+      await route.fulfill({
+        json: {
+          conversations: [
+            { id: 'c1', title: 'Weekend plans', createdAt: new Date(now - 3_600_000).toISOString() },
+          ],
+        },
+      })
     } else if (path.startsWith('/api/tasks/')) {
       await route.fulfill({ json: { task: tasks[0], repo, attempts: [], reviews: [], events: [] } })
     } else {
@@ -71,18 +77,17 @@ async function mockApi(page: Page, created: unknown[] = [], patches: Patch[] = [
   })
 }
 
-test('the home page lists what needs you, offers starters and keeps an unsent draft', async ({ page }) => {
+test('the home page is just Joy and the message box, and keeps an unsent draft', async ({ page }) => {
   await mockApi(page)
   await page.goto('/')
 
-  const attention = page.getByLabel('需要你處理')
-  await expect(attention).toContainText('Waiting for you')
-  await expect(attention).toContainText('等你同意')
-  await expect(page.getByLabel('最近的任務')).toContainText('Last week chore')
+  // What needs you and recent tasks live in the sidebar, not on the home page.
+  await expect(page.getByLabel('需要你處理')).toHaveCount(0)
+  await expect(page.getByLabel('最近的任務')).toHaveCount(0)
 
-  await page.getByRole('button', { name: '從 GitHub issue 開始' }).click()
+  // There are tasks already, so no quick-start chips.
+  await expect(page.getByRole('group', { name: '快速開始' })).toHaveCount(0)
   const prompt = page.getByLabel('任務內容')
-  await expect(prompt).toHaveValue('處理 GitHub issue #')
   await prompt.fill('處理 GitHub issue #42')
 
   // The draft survives leaving the page and coming back.
@@ -101,7 +106,7 @@ test('Enter sends, Shift+Enter adds a line, and the model preset fills implement
   const form = page.locator('form.composer-home')
   await form.getByRole('button', { name: /^模型/ }).click()
   await page.getByRole('menuitemradio', { name: /^省額度/ }).click()
-  await form.getByRole('button', { name: '進階' }).click()
+  await openAdvanced(page, form)
   await expect(form.getByLabel('實作者的模型')).toHaveValue('haiku')
   await expect(form.getByLabel('審查者的模型')).toHaveValue('gpt-6-luna')
 
@@ -124,14 +129,20 @@ test('Enter sends, Shift+Enter adds a line, and the model preset fills implement
   })
 })
 
-test('the sidebar groups tasks by day, filters them, and archives on the server', async ({ page }) => {
+test('the sidebar lists tasks and conversations together, filters them, and archives on the server', async ({
+  page,
+}) => {
   const patches: Patch[] = []
   await mockApi(page, [], patches)
   await page.goto('/')
   const sidebar = page.getByRole('navigation', { name: '主選單' })
-  await expect(sidebar.getByText('今天', { exact: true })).toBeVisible()
-  await expect(sidebar.getByText('更早', { exact: true })).toBeVisible()
-  await expect(sidebar.getByRole('button', { name: 'Weekend plans' })).toBeVisible()
+  // One list, newest first: the waiting task is minutes old, the chore six days.
+  await expect(sidebar.locator('.task-row .task-title')).toHaveText([
+    'Waiting for you',
+    'Weekend plans',
+    'Last week chore',
+  ])
+  await expect(sidebar.getByText('今天', { exact: true })).toHaveCount(0)
 
   await sidebar.getByLabel('搜尋任務與對話').fill('chore')
   await expect(sidebar.getByRole('button', { name: /Last week chore/ }).first()).toBeVisible()
@@ -141,14 +152,16 @@ test('the sidebar groups tasks by day, filters them, and archives on the server'
   await sidebar.getByRole('button', { name: '封存：Last week chore' }).click()
   await expect(sidebar.getByRole('button', { name: /^Last week chore/ })).toHaveCount(0)
   expect(patches).toEqual([{ path: '/api/tasks/older', body: { archived: true } }])
-  await sidebar.getByRole('button', { name: /已封存（1）/ }).click()
-  await expect(sidebar.getByRole('button', { name: /^Last week chore/ })).toBeVisible()
-  // The flag is on the server: a reload keeps the task in 已封存.
+  // The sidebar has no 已封存 group; the task is in 設定 → 已封存.
+  await expect(sidebar.getByRole('button', { name: /已封存/ })).toHaveCount(0)
+  await openSettings(page, '已封存')
+  await expect(page.getByLabel('已封存的任務')).toContainText('Last week chore')
+  // The flag is on the server: a reload keeps the task archived.
   await page.reload()
   await expect(sidebar.getByRole('button', { name: /^Last week chore/ })).toHaveCount(0)
-  await sidebar.getByRole('button', { name: /已封存（1）/ }).click()
-  await sidebar.getByRole('button', { name: '取消封存：Last week chore' }).click()
-  await expect(sidebar.getByRole('button', { name: /已封存/ })).toHaveCount(0)
+  await openSettings(page, '已封存')
+  await page.getByRole('button', { name: '取消封存：Last week chore' }).click()
+  await expect(sidebar.getByRole('button', { name: /^Last week chore/ })).toBeVisible()
   expect(patches.at(-1)).toEqual({ path: '/api/tasks/older', body: { archived: false } })
 })
 
@@ -163,7 +176,9 @@ test('archive choices an older version kept in localStorage move to the server o
   })
   await page.goto('/')
   const sidebar = page.getByRole('navigation', { name: '主選單' })
-  await expect(sidebar.getByRole('button', { name: /已封存（1）/ })).toBeVisible()
+  await expect(sidebar.getByRole('button', { name: /^Last week chore/ })).toHaveCount(0)
+  await openSettings(page, '已封存')
+  await expect(page.getByLabel('已封存的任務')).toContainText('Last week chore')
   // Only the task that still exists is sent, and the old key is gone.
   expect(patches).toEqual([{ path: '/api/tasks/older', body: { archived: true } }])
   expect(await page.evaluate(() => window.localStorage.getItem('joy.archivedTasks'))).toBeNull()

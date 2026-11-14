@@ -35,7 +35,7 @@ test('pending reminders and schedules are listed and can be cancelled', async ({
   })
 
   await page.goto('/')
-  await page.getByRole('button', { name: '助理' }).click()
+  await page.getByRole('button', { name: '聊聊' }).click()
   const panel = page.getByTestId('scheduled-panel')
   await expect(panel).toContainText('Call the bank')
   await expect(panel).toContainText('Stand-up')

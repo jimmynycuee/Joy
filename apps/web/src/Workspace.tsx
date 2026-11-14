@@ -16,9 +16,8 @@ import { NewTaskPage } from './pages/NewTaskPage.js'
 import type { NewTaskInput } from './pages/NewTaskPage.js'
 import { SettingsPage } from './pages/SettingsPage.js'
 import type { SettingsSection } from './pages/SettingsPage.js'
-import { StatsPage } from './pages/StatsPage.js'
 import { TaskPage } from './pages/TaskPage.js'
-import { isTypingTarget, shortcutFor } from './shortcuts.js'
+import { escapeLeavesSettings, isTypingTarget, shortcutFor } from './shortcuts.js'
 import type { ShortcutAction } from './shortcuts.js'
 import { clearLegacyArchivedIds, readLegacyArchivedIds, readStorage, writeStorage } from './storage.js'
 import { diffFrom } from './task-info.js'
@@ -26,12 +25,12 @@ import { THEME_LABELS, nextTheme, readTheme, saveTheme } from './theme.js'
 import type { ThemePreference } from './theme.js'
 import type { ConversationSummary, DoctorReport, Repo, SecretStatus, Task, TaskDetails } from './types.js'
 
-type Page = 'tasks' | 'assistant' | 'stats' | 'settings'
+type Page = 'tasks' | 'assistant' | 'settings'
 
 const SIDEBAR_COLLAPSED_KEY = 'joy.sidebarCollapsed'
 const MOBILE_QUERY = '(max-width: 859px)'
 
-/** Every task, archived ones included (each has `archived`); the sidebar sorts them into 任務 and 已封存. */
+/** Every task, archived ones included (each has `archived`): the sidebar lists the others, 設定 → 已封存 these. */
 const TASKS_PATH = '/api/tasks?archived=1'
 
 /**
@@ -83,7 +82,8 @@ export function Workspace() {
   const [notice, setNotice] = useState('')
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [conversationId, setConversationId] = useState('')
-  const [pickFirstConversation, setPickFirstConversation] = useState(false)
+  // The page 設定 was opened from, so 返回 goes back there (null: nothing to go back to).
+  const [pageBeforeSettings, setPageBeforeSettings] = useState<Exclude<Page, 'settings'> | null>(null)
   const [theme, setTheme] = useState<ThemePreference>(readTheme)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readStorage(SIDEBAR_COLLAPSED_KEY) === '1')
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -216,16 +216,6 @@ export function Workspace() {
     return () => window.clearTimeout(timer)
   }, [notice])
 
-  // Opening the assistant lands on the latest conversation, once the list is there.
-  useEffect(() => {
-    if (!pickFirstConversation || page !== 'assistant') return
-    const first = conversations[0]
-    if (first) {
-      setConversationId(first.id)
-      setPickFirstConversation(false)
-    }
-  }, [pickFirstConversation, page, conversations])
-
   // Each task starts with its changes pane following the diff.
   useEffect(() => {
     setChangesOpen(null)
@@ -254,21 +244,13 @@ export function Workspace() {
     closeDrawer()
   }
 
-  function openAssistant() {
-    setPage('assistant')
-    if (!conversationId) setPickFirstConversation(true)
-    closeDrawer()
-  }
-
   function newConversation() {
-    setPickFirstConversation(false)
     setConversationId('')
     setPage('assistant')
     closeDrawer()
   }
 
   function openConversation(id: string) {
-    setPickFirstConversation(false)
     setConversationId(id)
     setPage('assistant')
     closeDrawer()
@@ -276,8 +258,19 @@ export function Workspace() {
 
   function openSettings(section?: SettingsSection) {
     if (section) setSettingsSection(section)
+    if (page !== 'settings') setPageBeforeSettings(page)
     setPage('settings')
     closeDrawer()
+  }
+
+  /** 設定 → 返回: the task, conversation or composer that was open before; the composer when there was none. */
+  function leaveSettings() {
+    if (pageBeforeSettings === 'assistant') {
+      setPage('assistant')
+      return
+    }
+    if (pageBeforeSettings === null) setShowTaskForm(true)
+    setPage('tasks')
   }
 
   function changeTheme(next: ThemePreference) {
@@ -312,6 +305,31 @@ export function Workspace() {
       event.preventDefault()
       runShortcut.current(action)
     }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
+  // Esc leaves 設定, unless the owner is typing or a dialog, the palette or the drawer owns the key.
+  const escapeSettings = useRef<(event: KeyboardEvent) => void>(() => undefined)
+  escapeSettings.current = (event) => {
+    const overlayOpen =
+      paletteOpen ||
+      showRepoForm ||
+      drawerOpen ||
+      document.querySelector('[role="dialog"], [role="menu"]') !== null
+    if (
+      !escapeLeavesSettings(event, {
+        onSettings: page === 'settings',
+        typing: isTypingTarget(event.target),
+        overlayOpen,
+      })
+    )
+      return
+    event.preventDefault()
+    leaveSettings()
+  }
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => escapeSettings.current(event)
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
@@ -369,7 +387,7 @@ export function Workspace() {
       setShowTaskForm(false)
       setSelectedTaskId(task.id)
       await refreshLists()
-      setNotice('任務已建立，Joy 在獨立的工作副本裡處理。')
+      setNotice('任務已建立。')
       return true
     } catch (cause) {
       setError(errorMessage(cause, '無法建立任務'))
@@ -436,7 +454,7 @@ export function Workspace() {
       })
       setSecretStatus(status)
       formElement.reset()
-      setNotice('金鑰已安全儲存，之後不會再顯示。')
+      setNotice('金鑰已儲存。')
     } catch (cause) {
       setError(errorMessage(cause, '無法儲存金鑰'))
     }
@@ -459,17 +477,21 @@ export function Workspace() {
       : view === 'task'
         ? (details?.task.title ?? '任務')
         : view === 'assistant'
-          ? '助理'
-          : view === 'stats'
-            ? '模型統計'
-            : '設定'
+          ? '聊聊'
+          : '設定'
 
   const paletteItems: PaletteItem[] = [
     { id: 'cmd:new-task', label: '新任務', hint: '指令', icon: 'plus', run: openComposer },
-    { id: 'cmd:assistant', label: '助理', hint: '指令', icon: 'chat', run: openAssistant },
-    { id: 'cmd:new-conversation', label: '新對話', hint: '指令', icon: 'plus', run: newConversation },
-    { id: 'cmd:stats', label: '統計', hint: '指令', icon: 'chart', run: () => setPage('stats') },
+    { id: 'cmd:chat', label: '聊聊', hint: '指令', icon: 'chat', run: newConversation },
     { id: 'cmd:settings', label: '設定', hint: '指令', icon: 'settings', run: () => openSettings() },
+    { id: 'cmd:stats', label: '設定：統計', hint: '指令', icon: 'chart', run: () => openSettings('stats') },
+    {
+      id: 'cmd:archived',
+      label: '設定：已封存',
+      hint: '指令',
+      icon: 'archive',
+      run: () => openSettings('archived'),
+    },
     {
       id: 'cmd:theme',
       label: `切換主題（目前：${THEME_LABELS[theme]}）`,
@@ -490,7 +512,7 @@ export function Workspace() {
           },
         ]
       : []),
-    ...tasks.map((task) => ({
+    ...activeTasks.map((task) => ({
       id: `task:${task.id}`,
       label: task.title,
       hint: '任務',
@@ -511,16 +533,11 @@ export function Workspace() {
     content = (
       <AssistantPage
         conversationId={conversationId}
-        onSelectConversation={(id) => {
-          setPickFirstConversation(false)
-          setConversationId(id)
-        }}
+        onSelectConversation={setConversationId}
         onConversationsChanged={() => void loadConversations().catch(() => undefined)}
         onError={setError}
       />
     )
-  } else if (page === 'stats') {
-    content = <StatsPage repos={repos} />
   } else if (page === 'settings') {
     content = (
       <SettingsPage
@@ -548,6 +565,10 @@ export function Workspace() {
         }
         theme={theme}
         onTheme={changeTheme}
+        tasks={tasks}
+        onOpenTask={openTask}
+        onRestoreTask={(id) => void patchTask(id, { archived: false })}
+        onBack={leaveSettings}
       />
     )
   } else if (!composing && !details) {
@@ -563,13 +584,12 @@ export function Workspace() {
     content = (
       <NewTaskPage
         repos={repos}
-        tasks={activeTasks}
+        hasAnyTask={tasks.length > 0}
         config={config}
         customWorkflows={customWorkflows}
         setupProblems={setupProblems}
         onOpenSetup={() => openSettings('advanced')}
         onAddRepo={() => setShowRepoForm(true)}
-        onOpenTask={openTask}
         onCreate={createTask}
       />
     )
@@ -601,21 +621,11 @@ export function Workspace() {
         selectedConversationId={conversationId}
         pendingPlanTaskId={details?.pendingPlan ? details.task.id : ''}
         onArchive={(id) => void archiveTask(id)}
-        onRestore={(id) => void patchTask(id, { archived: false })}
         onNewTask={openComposer}
         onOpenTask={openTask}
-        onOpenAssistant={openAssistant}
         onNewConversation={newConversation}
         onOpenConversation={openConversation}
-        onOpenStats={() => {
-          setPage('stats')
-          closeDrawer()
-        }}
         onOpenSettings={() => openSettings()}
-        onAddRepo={() => {
-          setShowRepoForm(true)
-          closeDrawer()
-        }}
         onCollapse={toggleSidebar}
       />
       <div className="sidebar-scrim" onClick={closeDrawer} aria-hidden="true" />
@@ -656,7 +666,6 @@ export function Workspace() {
               <h2 id="repo-dialog-title">加入專案</h2>
               <IconButton icon="x" label="關閉" onClick={() => setShowRepoForm(false)} />
             </div>
-            <p className="muted">填入執行 Joy 這台電腦上，Git 專案資料夾的完整路徑。</p>
             <form className="field-stack" onSubmit={(event) => void createRepo(event)}>
               <label>
                 專案路徑
@@ -674,7 +683,7 @@ export function Workspace() {
               </label>
               <label className="checkbox-row">
                 <input type="checkbox" name="container" aria-label="在容器裡執行 agent" />
-                不信任的程式碼：在容器裡執行 agent（需要 Docker，見 README）
+                在容器裡執行 agent（需要 Docker）
               </label>
               <div className="dialog-actions">
                 <Button variant="ghost" onClick={() => setShowRepoForm(false)}>

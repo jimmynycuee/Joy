@@ -8,7 +8,7 @@ export function modLabel(): string {
 }
 
 export const SHORTCUTS = [
-  { keys: 'K', label: '命令面板：跳到任務或對話、執行指令' },
+  { keys: 'K', label: '命令面板' },
   { keys: 'N', label: '新任務' },
   { keys: 'B', label: '收合或展開側邊欄' },
   { keys: '\\', label: '顯示或隱藏變更面板' },
@@ -40,4 +40,22 @@ export function shortcutFor(
   if (key === 'b') return 'toggle-sidebar'
   if (key === '\\') return 'toggle-changes'
   return undefined
+}
+
+/**
+ * Whether Esc should take the owner back out of 設定. Not while typing (Esc belongs to the field), while something
+ * else is open on top (palette, dialog, menu, drawer), or when another handler already used the key.
+ */
+export function escapeLeavesSettings(
+  event: { key: string; defaultPrevented: boolean; isComposing: boolean },
+  state: { onSettings: boolean; typing: boolean; overlayOpen: boolean },
+): boolean {
+  return (
+    event.key === 'Escape' &&
+    !event.defaultPrevented &&
+    !event.isComposing &&
+    state.onSettings &&
+    !state.typing &&
+    !state.overlayOpen
+  )
 }

@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import type { ModelRef } from '@joy/core'
 import { E2E_API_TOKEN } from './fakes.js'
-import { openSettings, openSettingsSection } from './helpers.js'
+import { openAdvanced, openSettings, openSettingsSection } from './helpers.js'
 
 test('settings, secure key status, and a complete fake-provider task flow', async ({ page, request }) => {
   const apiRequests: Array<{ method: string; url: string; authorization: string | undefined }> = []
@@ -106,10 +106,10 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   await repoDialog.getByLabel('專案路徑').fill('/tmp/joy-e2e-project')
   await repoDialog.getByLabel('預設分支').fill('main')
   await repoDialog.getByRole('button', { name: '加入專案' }).click()
-  await expect(page.getByText('你的任務會出現在這裡。')).toBeVisible()
+  await expect(page.getByRole('navigation', { name: '主選單' }).getByText('還沒有任何工作')).toBeVisible()
 
   const taskDialog = page.locator('form.composer-home')
-  await taskDialog.getByRole('button', { name: '進階' }).click()
+  await openAdvanced(page, taskDialog)
   await expect(taskDialog.getByLabel('實作者的服務').locator('option[value="openai-api"]')).toHaveCount(0)
   await taskDialog.getByLabel('任務標題').fill('Show the fake diff')
   await taskDialog.getByLabel('任務內容').fill('Update the greeting and explain the result.')

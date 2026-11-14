@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { shortcutFor } from './shortcuts.js'
+import { escapeLeavesSettings, shortcutFor } from './shortcuts.js'
 
 const press = (key: string, extra: Partial<Parameters<typeof shortcutFor>[0]> = {}) => ({
   key,
@@ -31,5 +31,32 @@ describe('shortcutFor', () => {
     expect(shortcutFor(press('n'), true)).toBeUndefined()
     expect(shortcutFor(press('b'), true)).toBeUndefined()
     expect(shortcutFor(press('\\'), true)).toBeUndefined()
+  })
+})
+
+describe('escapeLeavesSettings', () => {
+  const esc = { key: 'Escape', defaultPrevented: false, isComposing: false }
+  const idle = { onSettings: true, typing: false, overlayOpen: false }
+
+  it('leaves 設定 on a plain Esc', () => {
+    expect(escapeLeavesSettings(esc, idle)).toBe(true)
+  })
+
+  it('does nothing outside 設定 or for other keys', () => {
+    expect(escapeLeavesSettings(esc, { ...idle, onSettings: false })).toBe(false)
+    expect(escapeLeavesSettings({ ...esc, key: 'Enter' }, idle)).toBe(false)
+  })
+
+  it('leaves Esc to a field the owner is typing in', () => {
+    expect(escapeLeavesSettings(esc, { ...idle, typing: true })).toBe(false)
+  })
+
+  it('leaves Esc to a palette, dialog, menu or drawer that is open on top', () => {
+    expect(escapeLeavesSettings(esc, { ...idle, overlayOpen: true })).toBe(false)
+  })
+
+  it('ignores an Esc another handler already used, or one that cancels an input method', () => {
+    expect(escapeLeavesSettings({ ...esc, defaultPrevented: true }, idle)).toBe(false)
+    expect(escapeLeavesSettings({ ...esc, isComposing: true }, idle)).toBe(false)
   })
 })

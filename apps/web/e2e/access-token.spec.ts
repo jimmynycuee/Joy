@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { openSettings } from './helpers.js'
+import { openSettings, openSettingsSection } from './helpers.js'
 
 const config = {
   autonomy_mode: 'normal',
@@ -55,6 +55,6 @@ test('a refused token asks for a new one, and regenerating switches this device 
   await panel.getByRole('button', { name: '重新產生權杖' }).click()
   await expect(panel.getByTestId('new-token')).toHaveText('rotated-token-0123456789abcdef')
   // Later requests from this device use the new token.
-  await page.getByRole('button', { name: '統計' }).click()
+  await openSettingsSection(page, '統計')
   await expect.poll(() => seen.at(-1)).toBe('Bearer rotated-token-0123456789abcdef')
 })
