@@ -2,7 +2,7 @@
 // not asked again in that task (and only that task), and that revoking, finishing and restarting behave.
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { AgentEvent, AgentProvider, ProviderKind, RunOptions, TaskId, Workspace } from '@joy/core'
 import { ConfigStore } from '@joy/config'
 import { openDatabase } from '@joy/db'
@@ -343,25 +343,31 @@ describe('allow for the rest of this task', () => {
   it('asks again after the owner revokes the allow', async () => {
     const { call, claude, newTask } = await setup()
     const answers: string[] = []
+    const revokes: number[] = []
+    let allows: Details['taskAllows'] = []
     let taskId = ''
     claude.hooks.implement = async (options) => {
       const first = ask(options, 'Write', { file_path: '/fake/shared/notes.md', content: 'x' })
       await call('POST', `/api/approvals/${(await nextApproval(call)).id}/approve`, { scope: 'task' })
       answers.push(await first)
       answers.push(await ask(options, 'Write', { file_path: '/fake/shared/notes.md', content: 'y' }))
-      const allows = (await details(call, taskId)).taskAllows
-      expect(allows).toEqual([
-        expect.objectContaining({ kind: 'file_write', target: '/fake/shared/notes.md' }),
-      ])
-      expect((await call('DELETE', `/api/tasks/${taskId}/allows/${allows[0]?.id}`)).status).toBe(200)
-      expect((await call('DELETE', `/api/tasks/${taskId}/allows/${allows[0]?.id}`)).status).toBe(404)
+      // Read here, asserted after the run: a failed expect inside the agent's turn would only fail the task.
+      allows = (await details(call, taskId)).taskAllows
+      revokes.push((await call('DELETE', `/api/tasks/${taskId}/allows/${allows[0]?.id}`)).status)
+      revokes.push((await call('DELETE', `/api/tasks/${taskId}/allows/${allows[0]?.id}`)).status)
       const again = ask(options, 'Write', { file_path: '/fake/shared/notes.md', content: 'z' })
       await call('POST', `/api/approvals/${(await nextApproval(call)).id}/deny`, {})
       answers.push(await again)
     }
     taskId = await newTask()
     const done = await until(() => details(call, taskId), settled, 'the task')
+    // The path as the server's OS resolves it (on Windows `/fake/...` gets the current drive).
+    expect(allows).toEqual([
+      expect.objectContaining({ kind: 'file_write', target: resolve(WORKTREE, '/fake/shared/notes.md') }),
+    ])
+    expect(revokes).toEqual([200, 404])
     expect(answers).toEqual(['allow', 'allow', 'deny'])
+    expect(done.task.status).toBe('done')
     expect(done.events.some((e) => e.type === 'task_allow.revoked')).toBe(true)
   })
 

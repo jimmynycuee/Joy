@@ -115,8 +115,9 @@ function judgeFile(
 ): TaskAllowJudgement {
   const blocked = judgeShell(`cat ${singleQuote(path)}`, cwd, cwd, env)
   if (blocked) return blocked
-  const target = resolvedPath(path, cwd, env)
-  return { offer: true, kind, target, fingerprint: fingerprintOf(kind, target) }
+  // The owner sees the path as written (resolved); the fingerprint compares it the way the OS does.
+  const target = pathsFor(cwd, env).resolve(cwd, path)
+  return { offer: true, kind, target, fingerprint: fingerprintOf(kind, resolvedPath(path, cwd, env)) }
 }
 
 function asRecord(input: unknown): Record<string, unknown> | undefined {
