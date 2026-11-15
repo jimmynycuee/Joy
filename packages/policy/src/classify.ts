@@ -50,7 +50,7 @@ function classifyKind(toolName: string, input: unknown, cwd: string): ActionKind
   }
   if (name === 'bash') {
     const command = typeof record?.command === 'string' ? record.command : ''
-    return isSafeWorktreeCommand(command) ? 'run_in_worktree' : 'run_outside_worktree'
+    return isSafeShellCommand(command) ? 'run_in_worktree' : 'run_outside_worktree'
   }
   return 'run_outside_worktree'
 }
@@ -75,6 +75,30 @@ export function isSafeWorktreeCommand(command: string): boolean {
     return first !== undefined && SAFE_SCRIPTS.has(first)
   }
   return false
+}
+
+/** Filters that only read their standard input (or files inside the worktree) and print a part of it. */
+const READ_ONLY_FILTERS = new Set(['head', 'tail', 'grep', 'wc', 'sort', 'uniq'])
+/** Filter arguments stay plain words: no quotes, globs, paths outside the worktree or anything a shell expands. */
+const PLAIN_FILTER_ARG = /^[A-Za-z0-9_.,:=+@%-]+$/
+
+/**
+ * Like `isSafeWorktreeCommand`, but for a command a shell will run: agents habitually add `2>&1` and pipe the
+ * output through `tail`/`grep` to keep it short, which changes nothing about what the command can touch.
+ * Every other shell feature (`;`, `&&`, `>`, `$`, quotes, ...) is still refused.
+ */
+export function isSafeShellCommand(command: string): boolean {
+  const segments = command.split('|').map((segment) => segment.trim())
+  const [first, ...filters] = segments
+  if (first === undefined) return false
+  const main = first.replace(/\s+2>&1$/, '')
+  if (!isSafeWorktreeCommand(main)) return false
+  return filters.every((segment) => {
+    const words = segment.replace(/\s+2>&1$/, '').split(/\s+/)
+    const [program, ...args] = words
+    if (program === undefined || !READ_ONLY_FILTERS.has(program)) return false
+    return args.every((arg) => PLAIN_FILTER_ARG.test(arg) && !arg.includes('..'))
+  })
 }
 
 function asRecord(input: unknown): Record<string, unknown> | undefined {
@@ -116,7 +140,7 @@ export function classifyCodexApproval(request: CodexApprovalInput, worktree: str
   if (request.method === 'item/commandExecution/requestApproval') {
     const command = unwrapShell(request.command ?? '')
     const cwdInside = !request.cwd || isInside(request.cwd, worktree)
-    if (request.kind === 'command' && cwdInside && isSafeWorktreeCommand(command)) kind = 'run_in_worktree'
+    if (request.kind === 'command' && cwdInside && isSafeShellCommand(command)) kind = 'run_in_worktree'
     summary = `Codex requested to run: ${request.command ?? '(no command given)'}`
   } else {
     if (request.grantRoot && isInside(request.grantRoot, worktree)) kind = 'edit_worktree'

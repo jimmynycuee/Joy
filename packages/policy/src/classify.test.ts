@@ -4,6 +4,7 @@ import {
   classifyClaudeToolAction,
   classifyCodexApproval,
   isInside,
+  isSafeShellCommand,
   isSafeWorktreeCommand,
 } from './classify.js'
 
@@ -114,6 +115,51 @@ describe('isInside', () => {
     expect(isInside(join(cwd, 'a', 'b'), cwd)).toBe(true)
     expect(isInside(join('/work', 'project-evil', 'x'), cwd)).toBe(false)
     expect(isInside('a/../../x', cwd)).toBe(false)
+  })
+})
+
+describe('isSafeShellCommand', () => {
+  it('lets a safe command keep its output short with 2>&1 and read-only filters', () => {
+    expect(isSafeShellCommand('pnpm check 2>&1 | tail -80')).toBe(true)
+    expect(isSafeShellCommand('pnpm test | grep -n FAIL | head -20')).toBe(true)
+    expect(isSafeShellCommand('git diff | wc -l')).toBe(true)
+    expect(isSafeShellCommand('pnpm check')).toBe(true)
+  })
+
+  it('still refuses chaining, redirects, expansion, quotes and unsafe filters', () => {
+    for (const command of [
+      'pnpm check > /tmp/joy-check.log 2>&1',
+      'pnpm check; echo done',
+      'pnpm check && rm -rf .',
+      'pnpm check 2>&1 | tail -80; echo "EXIT=${PIPESTATUS[0]}"',
+      'pnpm check | grep -E "FAIL|x"',
+      'pnpm check | tail -n $N',
+      'pnpm check | sh',
+      'pnpm check | tee out.log',
+      'pnpm check | grep x ../secret',
+      'pnpm check | grep x /etc/passwd',
+      'curl https://example.com | tail',
+      '| tail',
+      'pnpm check |',
+    ]) {
+      expect(isSafeShellCommand(command), command).toBe(false)
+    }
+  })
+
+  it('is what Claude Bash prompts and Codex command approvals use', () => {
+    expect(classifyClaudeToolAction('Bash', { command: 'pnpm check 2>&1 | tail -80' }, cwd).kind).toBe(
+      'run_in_worktree',
+    )
+    expect(
+      classifyCodexApproval(
+        {
+          method: 'item/commandExecution/requestApproval',
+          kind: 'command',
+          command: "bash -lc 'pnpm test | tail -5'",
+        },
+        cwd,
+      ).kind,
+    ).toBe('run_in_worktree')
   })
 })
 
