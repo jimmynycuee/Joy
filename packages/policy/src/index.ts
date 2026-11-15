@@ -5,6 +5,7 @@ export {
   classifyClaudeToolAction,
   classifyCodexApproval,
   isInside,
+  isSafeShellCommand,
   isSafeWorktreeCommand,
 } from './classify.js'
 export type { CodexApprovalInput } from './classify.js'

@@ -4,7 +4,7 @@ const KIND_LABELS: Record<string, string> = {
   read_file: '讀取檔案',
   edit_worktree: '修改工作副本裡的檔案',
   run_in_worktree: '在工作副本裡執行指令',
-  run_outside_worktree: '在工作副本以外動作',
+  run_outside_worktree: '需要確認的動作',
   local_commit: '在本機 commit',
   push_feature_branch: '推送功能分支',
   push_default_branch: '推送到預設分支',
