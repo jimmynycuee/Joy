@@ -9,12 +9,21 @@ function thread(...events: Array<[string, Record<string, unknown>]>): TurnEvent[
 describe('pendingMessages', () => {
   it('replays sends, edits, reorders, deliveries and discards', () => {
     const events = thread(
-      ['user.message', { id: 'a', text: 'A', delivery: 'queued' }],
+      ['user.message', { id: 'a', text: 'A', delivery: 'queued', persisted: true }],
       [
         'user.message',
-        { id: 'b', text: 'B', delivery: 'queued', attachments: [{ id: 'f1', name: 'x.png' }] },
+        {
+          id: 'b',
+          text: 'B',
+          delivery: 'queued',
+          persisted: true,
+          attachments: [{ id: 'f1', name: 'x.png' }],
+        },
       ],
-      ['user.message', { id: 'c', text: 'C', delivery: 'queued', settings: { mode: 'single' } }],
+      [
+        'user.message',
+        { id: 'c', text: 'C', delivery: 'queued', persisted: true, settings: { mode: 'single' } },
+      ],
       ['user.message', { id: 'd', text: 'D', delivery: 'follow_up' }],
       ['user.message.edited', { id: 'b', text: 'B2' }],
       ['user.message.reordered', { ids: ['c', 'b', 'a'] }],
@@ -31,10 +40,10 @@ describe('pendingMessages', () => {
 
   it('counts a steer that never arrived as waiting, and puts a failed steer at the end', () => {
     const events = thread(
-      ['user.message', { id: 's', text: 'S', delivery: 'steer' }],
-      ['user.message', { id: 'q', text: 'Q', delivery: 'queued' }],
+      ['user.message', { id: 's', text: 'S', delivery: 'steer', persisted: true }],
+      ['user.message', { id: 'q', text: 'Q', delivery: 'queued', persisted: true }],
       ['user.message.requeued', { ids: ['s'], reason: 'steer_failed' }],
-      ['user.message', { id: 'i', text: 'I', delivery: 'interrupt' }],
+      ['user.message', { id: 'i', text: 'I', delivery: 'interrupt', persisted: true }],
       ['user.message.delivered', { ids: ['i'], via: 'interrupt' }],
     )
     expect(pendingMessages(events).map((m) => m.id)).toEqual(['q', 's'])
@@ -42,10 +51,43 @@ describe('pendingMessages', () => {
 
   it('drops everything waiting when the owner goes back to an earlier round', () => {
     const events = thread(
-      ['user.message', { id: 'q', text: 'Q', delivery: 'queued' }],
+      ['user.message', { id: 'q', text: 'Q', delivery: 'queued', persisted: true }],
       ['task.rewound', { messageId: 'task', fromSeq: 1, discardedIds: ['q'] }],
     )
     expect(pendingMessages(events)).toEqual([])
+  })
+
+  it('does not bring back messages an older version lost (no `persisted` mark), even before a new run', () => {
+    const legacy = thread(
+      ['started', {}],
+      ['user.message', { id: 'old', text: 'stale', delivery: 'queued' }],
+      ['result', {}],
+      ['user.message', { id: 'f', text: 'go on', delivery: 'follow_up' }],
+      ['started', {}],
+    )
+    expect(pendingMessages(legacy)).toEqual([])
+    const current = thread(
+      ['started', {}],
+      ['user.message', { id: 'new', text: 'waiting', delivery: 'queued', persisted: true }],
+    )
+    expect(pendingMessages(current).map((m) => m.id)).toEqual(['new'])
+  })
+
+  it('takes a message as lost when a later run started without it, but not when its own run only just started', () => {
+    // Held, then the owner pressed Continue and Joy stopped before the run took it: still waiting.
+    const justStarted = thread(
+      ['user.message', { id: 'h', text: 'held', delivery: 'queued', persisted: true }],
+      ['started', {}],
+    )
+    expect(pendingMessages(justStarted).map((m) => m.id)).toEqual(['h'])
+    // That run never took it and another run started since: lost.
+    const passedOver = thread(
+      ['user.message', { id: 'h', text: 'held', delivery: 'queued', persisted: true }],
+      ['started', {}],
+      ['result', {}],
+      ['started', {}],
+    )
+    expect(pendingMessages(passedOver)).toEqual([])
   })
 })
 
@@ -53,9 +95,9 @@ describe('effectiveEvents', () => {
   it('leaves out rewound ranges and the messages discarded with them, and applies edits', () => {
     const events = thread(
       ['started', {}],
-      ['user.message', { id: 'early', text: 'queued early', delivery: 'queued' }],
+      ['user.message', { id: 'early', text: 'queued early', delivery: 'queued', persisted: true }],
       ['user.message.edited', { id: 'early', text: 'edited' }],
-      ['user.message', { id: 'kept', text: 'old', delivery: 'queued' }],
+      ['user.message', { id: 'kept', text: 'old', delivery: 'queued', persisted: true }],
       ['user.message.edited', { id: 'kept', text: 'new' }],
       ['result', {}],
       ['user.message', { id: 'r2', text: 'round 2', delivery: 'follow_up' }],
@@ -73,7 +115,7 @@ describe('rewindPoints', () => {
     const events = thread(
       ['started', {}],
       ['checkpoint.created', { n: 1, turnStart: true }],
-      ['user.message', { id: 'q1', text: 'queued', delivery: 'queued' }],
+      ['user.message', { id: 'q1', text: 'queued', delivery: 'queued', persisted: true }],
       ['checkpoint.created', { n: 2 }],
       ['result', {}],
       ['user.message.delivered', { ids: ['q1'], via: 'follow_up' }],
@@ -84,7 +126,7 @@ describe('rewindPoints', () => {
       ['user.message', { id: 'f2', text: 'and this', delivery: 'follow_up' }],
       ['started', {}],
       ['checkpoint.created', { n: 4, turnStart: true }],
-      ['user.message', { id: 'steered', text: 'mid-run', delivery: 'steer' }],
+      ['user.message', { id: 'steered', text: 'mid-run', delivery: 'steer', persisted: true }],
       ['result', {}],
       // A round whose run never got to its checkpoint cannot be gone back to.
       ['user.message', { id: 'f3', text: 'no checkpoint', delivery: 'follow_up' }],

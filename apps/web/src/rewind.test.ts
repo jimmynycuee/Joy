@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { foldTimeline } from './fold.js'
+import { ownerActionError } from './messages.js'
 import { deliveryRequest, moveQueued } from './queue.js'
 import { parseRewindPoints, rewindConfirmQuestion, rewindTargets } from './rewind.js'
 import { diffFrom } from './task-info.js'
@@ -68,6 +69,19 @@ describe('going back to an earlier round', () => {
       ['q1', 'q1'],
     ])
     expect(parseRewindPoints(undefined)).toEqual([])
+  })
+
+  it('says how to get back after a restore stopped half way', () => {
+    seq = 0
+    const [entry] = buildTimeline([event('checkpoint.restore_failed', { n: 3, savedAs: 7, message: 'x' })])
+    expect(entry).toMatchObject({ kind: 'step', tone: 'bad', text: expect.stringContaining('還原檢查點 7') })
+    expect(
+      ownerActionError(
+        500,
+        'Restoring stopped half way: boom. The worktree may be half restored; restore checkpoint 7 to get back the state from before',
+        '無法重做',
+      ),
+    ).toContain('還原檢查點 7')
   })
 
   it('asks only about the refusals a confirmation gets past', () => {

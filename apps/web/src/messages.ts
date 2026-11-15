@@ -122,6 +122,9 @@ export function followUpState(input: { mode: string; worktreeRemoved: boolean })
 export function ownerActionError(status: number | undefined, message: string, fallback: string): string {
   if (status === 404) return '找不到這個項目，可能已經被移除'
   if (status === 429) return '排隊中的訊息太多了，等 agent 讀完再送'
+  const halfRestored = /restore checkpoint (\d+) to get back/.exec(message)
+  if (halfRestored)
+    return `還原到一半失敗，工作副本可能只還原了一部分；還原檢查點 ${halfRestored[1]} 可以回到之前的狀態`
   if (status === 409) {
     if (/Another action on this task/i.test(message)) return '這個任務正在處理另一個動作，請稍後再送'
     if (/worktree was already removed/i.test(message)) return '工作副本已經移除，不能再接續；請開一個新任務'

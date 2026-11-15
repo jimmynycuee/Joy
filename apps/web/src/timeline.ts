@@ -199,6 +199,8 @@ export function eventTitle(event: TaskEvent): string {
     const dropped = typeof payload?.discardedCommits === 'number' ? payload.discardedCommits : 0
     return `已還原到檢查點 ${String(payload?.n ?? '')}${dropped > 0 ? `，丟掉 ${dropped} 個 commit` : ''}`
   }
+  if (event.type === 'checkpoint.restore_failed')
+    return `還原到一半失敗；還原檢查點 ${String(payload?.savedAs ?? '')} 可以回到之前的狀態`
   if (event.type === 'task.updated') return '任務已更新'
   if (event.type === 'task.settings') return settingsLine(payload)
   if (event.type === 'workspace.dependencies') {
@@ -249,6 +251,7 @@ const STEP_TONES: Record<string, string> = {
   'checks.skipped': 'muted',
   'run.interrupted': 'muted',
   'attachment.missing': 'bad',
+  'checkpoint.restore_failed': 'bad',
 }
 
 export function buildTimeline(

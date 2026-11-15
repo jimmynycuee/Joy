@@ -107,10 +107,17 @@ export function effectiveEvents<T extends TurnEvent>(events: readonly T[]): T[] 
  * The owner messages still waiting for the agent, in the order it will get them, replayed from the events: sent to a
  * busy task, minus those delivered or discarded since, with the owner's edits and reorders. A steer that was still on
  * its way when Joy stopped counts as waiting: nothing recorded that the agent got it.
+ *
+ * Only messages marked `persisted` count: versions before it kept the queue in memory and wrote nothing when a restart
+ * lost it. And a message that saw a later run start without being delivered or discarded is taken as lost too (each
+ * run takes the queue right after it starts), so a stale instruction never joins a new follow-up.
  */
 export function pendingMessages(events: readonly TurnEvent[]): PendingMessage[] {
   const waiting = new Map<string, PendingMessage>()
   let order: string[] = []
+  /** Waiting when a run started: lost unless that run (or a later event) delivers or discards them. */
+  let seenStart = new Set<string>()
+  const lostAtStart = new Set<string>()
   const take = (list: string[]) => {
     for (const id of list) waiting.delete(id)
     order = order.filter((id) => waiting.has(id))
@@ -119,7 +126,12 @@ export function pendingMessages(events: readonly TurnEvent[]): PendingMessage[] 
     const payload = record(event.payload)
     switch (event.type) {
       case 'user.message': {
-        if (typeof payload.id !== 'string' || !WAITING_DELIVERIES.has(String(payload.delivery))) break
+        if (
+          typeof payload.id !== 'string' ||
+          !WAITING_DELIVERIES.has(String(payload.delivery)) ||
+          payload.persisted !== true
+        )
+          break
         const files = attachmentIds(payload)
         waiting.set(payload.id, {
           id: payload.id,
@@ -154,8 +166,14 @@ export function pendingMessages(events: readonly TurnEvent[]): PendingMessage[] 
       case 'task.rewound':
         take([...order])
         break
+      case 'started':
+        // Still waiting from before the previous run started and that run never took them: lost.
+        for (const id of seenStart) if (waiting.has(id)) lostAtStart.add(id)
+        seenStart = new Set(order)
+        break
     }
   }
+  take([...lostAtStart])
   return order.flatMap((id) => {
     const message = waiting.get(id)
     return message ? [message] : []

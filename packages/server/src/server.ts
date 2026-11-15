@@ -188,6 +188,7 @@ import { TelegramChannel } from '@joy/channels'
 import type { WorktreeCleanupOptions, WorktreeInfo } from '@joy/executor'
 import {
   CheckpointCommitsError,
+  CheckpointRestoreIncompleteError,
   UnpushedCommitsError,
   WorktreeExecutor,
   checkpointRef,
@@ -3377,6 +3378,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         ...(files.length ? { attachments: files.map(attachmentInfo) } : {}),
         // Recorded so a queued message keeps its settings across a restart.
         ...(settings ? { settings } : {}),
+        // A waiting message this version can rebuild after a restart; older versions kept the queue in memory only.
+        ...(PENDING_DELIVERIES.has(delivery) ? { persisted: true } : {}),
       })
     }
     if (running.has(task.id) || ACTIVE_TASK_STATUSES.has(task.status)) {
@@ -3764,10 +3767,24 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       })
       return { restored: n, savedAs: saved, discardedCommits: restored.discardedCommits }
     } catch (error) {
-      if (error instanceof CheckpointCommitsError)
-        throw new HttpError(409, `${error.message} (send {"confirm": true})`)
-      throw new HttpError(409, redactor.redact(error instanceof Error ? error.message : 'Restore failed'))
+      throw restoreError(task, attempt, n, saved, error)
     }
+  }
+
+  /**
+   * What the owner hears when a restore failed. Before the worktree was touched it is a plain refusal; half way through,
+   * the thread says so and the answer names the checkpoint saved just before, which puts everything back.
+   */
+  function restoreError(task: StoredTask, attempt: AttemptRecord, n: number, saved: number, error: unknown) {
+    if (error instanceof CheckpointCommitsError)
+      return new HttpError(409, `${error.message} (send {"confirm": true})`)
+    const message = redactor.redact(error instanceof Error ? error.message : 'Restore failed')
+    if (!(error instanceof CheckpointRestoreIncompleteError)) return new HttpError(409, message)
+    publish(task.id, attempt.id, 'checkpoint.restore_failed', { n, savedAs: saved, message })
+    return new HttpError(
+      500,
+      `${message}. The worktree may be half restored; restore checkpoint ${saved} to get back the state from before`,
+    )
   }
 
   /** The rounds the owner can go back to, with whether their worktree is still there. */
@@ -3859,9 +3876,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         expectedCommit: checkpoint.commit,
       })
     } catch (error) {
-      if (error instanceof CheckpointCommitsError)
-        throw new HttpError(409, `${error.message} (send {"confirm": true})`)
-      throw new HttpError(409, redactor.redact(error instanceof Error ? error.message : 'Restore failed'))
+      throw restoreError(task, latest, checkpoint.n, saved, error)
     }
     const diff = await executor.diff(ws)
     const attempt = createAttempt(db, {
@@ -6494,7 +6509,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   // message): nothing starts a run on its own when Joy starts. A cancel by the owner already withdrew its messages, so
   // a cancelled task with messages left was stopped by Joy shutting down.
   for (const task of listTasks(db)) {
-    if (task.mode === 'compete') continue
+    // A finished or archived task has nothing waiting for it: whatever is left there was lost long ago.
+    if (task.mode === 'compete' || task.archived || task.status === 'done' || task.status === 'review_ready')
+      continue
     const events = listTaskEvents(db, task.id)
     const waiting = pendingMessages(events)
     if (!waiting.length) continue

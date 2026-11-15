@@ -47,6 +47,17 @@ export class CheckpointCommitsError extends Error {
   }
 }
 
+/**
+ * Restoring a checkpoint failed after the worktree was already reset: its files may be half way between the two
+ * states. Callers should tell the owner how to get back (the checkpoint they saved before restoring).
+ */
+export class CheckpointRestoreIncompleteError extends Error {
+  constructor(cause: unknown) {
+    super(`Restoring stopped half way: ${cause instanceof Error ? cause.message : String(cause)}`)
+    this.name = 'CheckpointRestoreIncompleteError'
+  }
+}
+
 /** Joy's checkpoint refs: refs/joy/checkpoints/<taskId>/<n>. */
 export const CHECKPOINT_REF_PREFIX = 'refs/joy/checkpoints/'
 
@@ -209,9 +220,13 @@ export class WorktreeExecutor implements Executor {
       if (discardedCommits > 0 && !options.confirmDiscardCommits)
         throw new CheckpointCommitsError(discardedCommits)
       await git(ws.path, ['reset', '--hard', '-q', parent])
-      // Ignored files (node_modules, build output) stay; files created after the checkpoint go.
-      await git(ws.path, ['clean', '-fdq'])
-      await git(ws.path, ['read-tree', '-u', '--reset', `${commit}^{tree}`])
+      try {
+        // Ignored files (node_modules, build output) stay; files created after the checkpoint go.
+        await git(ws.path, ['clean', '-fdq'])
+        await git(ws.path, ['read-tree', '-u', '--reset', `${commit}^{tree}`])
+      } catch (error) {
+        throw new CheckpointRestoreIncompleteError(error)
+      }
       return { commit, discardedCommits }
     })
   }

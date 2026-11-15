@@ -8,7 +8,7 @@ import type { AgentEvent, AgentProvider, ProviderKind, RunOptions, TaskId, Works
 import { ConfigStore } from '@joy/config'
 import { appendTaskLevelEvent, openDatabase } from '@joy/db'
 import type { Database } from '@joy/db'
-import { WorktreeExecutor } from '@joy/executor'
+import { CheckpointRestoreIncompleteError, WorktreeExecutor } from '@joy/executor'
 import { REVIEW_SCHEMA } from '@joy/orchestrator'
 import { MemoryBackend, Redactor, SecretStore } from '@joy/secrets'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -288,6 +288,37 @@ describe('messages queued for the end of the turn', () => {
     expect(prompt.indexOf('alpha two')).toBeLessThan(prompt.indexOf('go on'))
     expect((await details(second.call, id)).queuedMessages).toEqual([])
   })
+
+  it('does not rebuild after a restart what an older version lost, nor anything on finished or archived tasks', async () => {
+    const first = await setup()
+    const repoId = await newRepo(first.call)
+    const failed = await newTask(first.call, repoId)
+    const done = await newTask(first.call, repoId)
+    const archived = await newTask(first.call, repoId)
+    for (const id of [failed, done, archived]) await until(first.call, id, doneAfter(1), 'done')
+    await first.server.close()
+    first.db.prepare("UPDATE tasks SET status = 'failed' WHERE id = ?").run(failed)
+    first.db.prepare('UPDATE tasks SET archived = 1 WHERE id = ?').run(archived)
+    const queued = (id: string, extra: object) =>
+      appendTaskLevelEvent(first.db, id as TaskId, 'user.message', {
+        text: `waiting on ${id}`,
+        provenance: 'user',
+        delivery: 'queued',
+        ...extra,
+      })
+    // Written before this version: the queue lived in memory and a restart lost it without a trace.
+    queued(failed, { id: 'legacy' })
+    queued(failed, { id: 'current', persisted: true })
+    queued(done, { id: 'on-done', persisted: true })
+    queued(archived, { id: 'on-archived', persisted: true })
+
+    const second = await setup({ db: first.db, home: first.home })
+    expect((await details(second.call, failed)).queuedMessages).toEqual([
+      { id: 'current', text: `waiting on ${failed}` },
+    ])
+    expect((await details(second.call, done)).queuedMessages).toEqual([])
+    expect((await details(second.call, archived)).queuedMessages).toEqual([])
+  })
 })
 
 /** A one-commit repository with add.js, and where its worktrees go. */
@@ -305,9 +336,10 @@ function realRepo() {
 }
 
 /** A task with three rounds; each run writes `turn <n>` to add.js. */
-async function threeRounds() {
+async function threeRounds(Executor: typeof WorktreeExecutor = WorktreeExecutor) {
   const { repoPath, worktreesDir } = realRepo()
-  const env = await setup({ executor: new WorktreeExecutor({ worktreesDir }) })
+  const executor = new Executor({ worktreesDir })
+  const env = await setup({ executor })
   env.claude.state.work = (options, n) => writeFileSync(join(options.cwd, 'add.js'), `turn ${n}\n`)
   const id = await newTask(env.call, await newRepo(env.call, repoPath))
   const first = await until(env.call, id, doneAfter(1), 'round 1')
@@ -316,7 +348,7 @@ async function threeRounds() {
   await until(env.call, id, doneAfter(2), 'round 2')
   const third = messageId(await env.call('POST', `/api/tasks/${id}/messages`, { text: 'add a cache' }))
   const done = await until(env.call, id, doneAfter(3), 'round 3')
-  return { ...env, id, worktree, repoPath, second, third, done }
+  return { ...env, executor, id, worktree, repoPath, second, third, done }
 }
 
 const read = (worktree: string) => readFileSync(join(worktree, 'add.js'), 'utf8')
@@ -432,4 +464,35 @@ describe('going back to an earlier round', () => {
     expect(after.attempts).toHaveLength(1)
     expect(after.task.status).toBe('done')
   }, 30_000)
+
+  it('tells the owner which checkpoint puts things back when a restore stops half way', async () => {
+    const { call, id, second, worktree, executor } = await threeRounds(HalfRestoreExecutor)
+    ;(executor as HalfRestoreExecutor).failNext = true
+    const response = await call('POST', `/api/tasks/${id}/rewind`, { messageId: second, text: 'x' })
+    const after = await details(call, id)
+    const failed = after.events.find((e) => e.type === 'checkpoint.restore_failed')
+    const savedAs = failed?.payload.savedAs as number
+    expect(response).toMatchObject({
+      status: 500,
+      body: { error: expect.stringContaining(`restore checkpoint ${savedAs} to get back`) },
+    })
+    expect(count(after, 'task.rewound')).toBe(0)
+    expect(after.attempts).toHaveLength(1)
+    // The saved checkpoint does put the worktree back.
+    expect((await call('POST', `/api/tasks/${id}/checkpoints/${savedAs}/restore`, {})).status).toBe(200)
+    expect(read(worktree)).toBe('turn 3\n')
+  }, 30_000)
 })
+
+/** Resets the worktree like a real restore, then fails as if `git read-tree` had (once, when asked to). */
+class HalfRestoreExecutor extends WorktreeExecutor {
+  failNext = false
+  override async restoreCheckpoint(...args: Parameters<WorktreeExecutor['restoreCheckpoint']>) {
+    if (!this.failNext) return super.restoreCheckpoint(...args)
+    this.failNext = false
+    const [ws] = args
+    execFileSync('git', ['reset', '--hard', '-q', 'HEAD'], { cwd: ws.path })
+    writeFileSync(join(ws.path, 'add.js'), 'half\n')
+    throw new CheckpointRestoreIncompleteError(new Error('read-tree failed'))
+  }
+}
