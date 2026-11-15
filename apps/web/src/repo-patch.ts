@@ -2,7 +2,8 @@ import { PROVIDER_KINDS } from '@joy/core'
 import type { PermissionMode, ProviderKind } from '@joy/core'
 import { formatCheckCommand, parseCheckCommand } from './check-command.js'
 import type { RepoColorId } from './repo-colors.js'
-import type { Repo } from './types.js'
+import { sameDefaults } from './project-defaults.js'
+import type { ProjectDefaults, Repo } from './types.js'
 
 /** What changed in the form, in the shape `PATCH /api/repos/:id` takes (null clears a field). */
 export function repoPatch(
@@ -15,6 +16,12 @@ export function repoPatch(
     color: RepoColorId | null
     /** null is "no limit"; left out, the field is not part of the form. */
     maxPermissionMode?: PermissionMode | null
+    /** The project instructions text; left out, the field is not part of the form. */
+    instructions?: string
+    /** The install command as typed; empty means the lockfile install. Left out, not part of the form. */
+    installCommand?: string
+    /** No field set means no defaults. Left out, not part of the form. */
+    defaults?: ProjectDefaults
   },
 ): Record<string, unknown> {
   const patch: Record<string, unknown> = {}
@@ -29,5 +36,13 @@ export function repoPatch(
   if (form.color !== (repo.color ?? null)) patch.color = form.color
   if (form.maxPermissionMode !== undefined && form.maxPermissionMode !== (repo.maxPermissionMode ?? null))
     patch.maxPermissionMode = form.maxPermissionMode
+  if (form.instructions !== undefined && form.instructions.trim() !== (repo.instructions ?? ''))
+    patch.instructions = form.instructions.trim() || null
+  if (form.installCommand !== undefined) {
+    const install = parseCheckCommand(form.installCommand)
+    if ((install?.join(' ') ?? '') !== formatCheckCommand(repo.installCommand)) patch.installCommand = install
+  }
+  if (form.defaults !== undefined && !sameDefaults(form.defaults, repo.defaults))
+    patch.defaults = Object.keys(form.defaults).length > 0 ? form.defaults : null
   return patch
 }

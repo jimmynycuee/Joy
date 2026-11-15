@@ -507,6 +507,23 @@ export const MIGRATIONS: readonly Migration[] = [
         CHECK (max_permission_mode IS NULL OR max_permission_mode IN ('ask', 'auto', 'full'));
     `,
   },
+  {
+    version: 23,
+    name: 'project instructions, install command and defaults',
+    sql: /* sql */ `
+      -- Text the owner wrote for the project; every new agent session starts with it (like a CLAUDE.md). The limit
+      -- equals MAX_PROJECT_INSTRUCTIONS in repositories.ts.
+      ALTER TABLE repos ADD COLUMN instructions TEXT
+        CHECK (instructions IS NULL OR length(instructions) BETWEEN 1 AND 20000);
+      -- argv (a JSON array of strings, run without a shell) that replaces the lockfile install in a new worktree.
+      ALTER TABLE repos ADD COLUMN install_command TEXT
+        CHECK (install_command IS NULL OR (json_valid(install_command) AND json_type(install_command) = 'array'));
+      -- What the home page's message box starts from for this project: a JSON object with any of implementer,
+      -- reviewer (model refs), mode and permissionMode. The shape is checked by ProjectDefaults in repositories.ts.
+      ALTER TABLE repos ADD COLUMN defaults TEXT
+        CHECK (defaults IS NULL OR (json_valid(defaults) AND json_type(defaults) = 'object'));
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

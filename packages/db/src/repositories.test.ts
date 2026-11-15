@@ -22,11 +22,15 @@ import {
   listTaskEvents,
   listTasks,
   listUsage,
+  MAX_PROJECT_INSTRUCTIONS,
   REPO_COLORS,
   setTaskStatus,
   updateAttempt,
   updateRepoCheckCommand,
   updateRepoColor,
+  updateRepoDefaults,
+  updateRepoInstallCommand,
+  updateRepoInstructions,
   updateRepoMaxPermissionMode,
   updateTask,
   updateTaskSettings,
@@ -422,5 +426,84 @@ describe('permission modes', () => {
     // @ts-expect-error not a permission mode
     expect(() => updateRepoMaxPermissionMode(db, repo.id, 'root')).toThrow('Invalid permission mode')
     expect(() => db.prepare("UPDATE repos SET max_permission_mode = 'root'").run()).toThrow()
+  })
+
+  it('keeps project instructions, trims them, clears them and refuses too long ones', () => {
+    const db = fresh()
+    const { repo } = seed(db)
+    expect(repo.instructions).toBeUndefined()
+    expect(updateRepoInstructions(db, repo.id, '  Use pnpm.\nNo default exports.\n')?.instructions).toBe(
+      'Use pnpm.\nNo default exports.',
+    )
+    expect(updateRepoInstructions(db, repo.id, '   ')?.instructions).toBeUndefined()
+    expect(
+      updateRepoInstructions(db, repo.id, 'x'.repeat(MAX_PROJECT_INSTRUCTIONS))?.instructions,
+    ).toHaveLength(MAX_PROJECT_INSTRUCTIONS)
+    expect(updateRepoInstructions(db, repo.id, null)?.instructions).toBeUndefined()
+    expect(() => updateRepoInstructions(db, repo.id, 'x'.repeat(MAX_PROJECT_INSTRUCTIONS + 1))).toThrow(
+      'limited to',
+    )
+    expect(() =>
+      db.prepare('UPDATE repos SET instructions = ?').run('x'.repeat(MAX_PROJECT_INSTRUCTIONS + 1)),
+    ).toThrow()
+    expect(() => db.prepare("UPDATE repos SET instructions = ''").run()).toThrow()
+  })
+
+  it('stores the install command as argv and refuses anything else', () => {
+    const db = fresh()
+    const { repo } = seed(db)
+    expect(repo.installCommand).toBeUndefined()
+    expect(updateRepoInstallCommand(db, repo.id, ['pnpm', 'install', '--offline'])?.installCommand).toEqual([
+      'pnpm',
+      'install',
+      '--offline',
+    ])
+    expect(updateRepoInstallCommand(db, repo.id, null)?.installCommand).toBeUndefined()
+    expect(() => updateRepoInstallCommand(db, repo.id, [])).toThrow('Invalid install command')
+    expect(() => updateRepoInstallCommand(db, repo.id, ['pnpm', ''])).toThrow('Invalid install command')
+    expect(() => db.prepare('UPDATE repos SET install_command = \'"pnpm install"\'').run()).toThrow()
+  })
+
+  it('stores project defaults, drops empty ones and refuses invalid ones', () => {
+    const db = fresh()
+    const { repo } = seed(db)
+    expect(repo.defaults).toBeUndefined()
+    const defaults = {
+      implementer: { provider: 'codex-cli', model: 'gpt-6-luna', effort: 'low' },
+      reviewer: { provider: 'claude-cli', model: 'haiku' },
+      mode: 'single',
+      permissionMode: 'auto',
+    } as const
+    expect(updateRepoDefaults(db, repo.id, defaults)?.defaults).toEqual(defaults)
+    expect(updateRepoDefaults(db, repo.id, { mode: 'compete' })?.defaults).toEqual({ mode: 'compete' })
+    expect(updateRepoDefaults(db, repo.id, {})?.defaults).toBeUndefined()
+    expect(updateRepoDefaults(db, repo.id, defaults)?.defaults).toBeDefined()
+    expect(updateRepoDefaults(db, repo.id, null)?.defaults).toBeUndefined()
+    // @ts-expect-error not a task mode
+    expect(() => updateRepoDefaults(db, repo.id, { mode: 'party' })).toThrow('Invalid project default mode')
+    // @ts-expect-error not a permission mode
+    expect(() => updateRepoDefaults(db, repo.id, { permissionMode: 'root' })).toThrow('permission mode')
+    expect(() =>
+      updateRepoDefaults(db, repo.id, { implementer: { provider: 'openai-api', model: 'gpt' } }),
+    ).toThrow('cannot edit code')
+    // @ts-expect-error not a provider
+    expect(() => updateRepoDefaults(db, repo.id, { reviewer: { provider: 'x', model: 'm' } })).toThrow(
+      'Invalid project default reviewer',
+    )
+    // @ts-expect-error unknown field
+    expect(() => updateRepoDefaults(db, repo.id, { planFirst: true })).toThrow('unknown field planFirst')
+    expect(() => db.prepare("UPDATE repos SET defaults = '[]'").run()).toThrow()
+    expect(() => db.prepare("UPDATE repos SET defaults = 'nope'").run()).toThrow()
+  })
+
+  it('leaves repositories from before migration 23 without the new fields', () => {
+    const db = openDatabase(':memory:', { migrations: MIGRATIONS.filter((m) => m.version < 23) })
+    databases.push(db)
+    db.prepare("INSERT INTO repos (id, path, default_branch) VALUES ('r-old', '/old', 'main')").run()
+    migrate(db, MIGRATIONS)
+    const repo = getRepo(db, rid('r-old'))
+    expect(repo?.instructions).toBeUndefined()
+    expect(repo?.installCommand).toBeUndefined()
+    expect(repo?.defaults).toBeUndefined()
   })
 })

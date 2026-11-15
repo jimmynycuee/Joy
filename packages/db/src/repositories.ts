@@ -1,6 +1,7 @@
 import type {
   AttemptId,
   AttemptStatus,
+  ModelRef,
   ProviderKind,
   TaskProvenance,
   RepoId,
@@ -13,7 +14,7 @@ import type {
   TaskMode,
   TaskStatus,
 } from '@joy/core'
-import { isPermissionMode, isProviderKind, PROVIDER_KINDS } from '@joy/core'
+import { EFFORTS, isPermissionMode, isProviderKind, PROVIDER_KINDS, TASK_MODES } from '@joy/core'
 import type { Database } from './database.js'
 
 /** The ids of the six project colours; the web UI owns the hex values. */
@@ -22,6 +23,26 @@ export type RepoColor = (typeof REPO_COLORS)[number]
 
 export function isRepoColor(value: unknown): value is RepoColor {
   return typeof value === 'string' && (REPO_COLORS as readonly string[]).includes(value)
+}
+
+/** The longest project instructions text, in characters. */
+export const MAX_PROJECT_INSTRUCTIONS = 20_000
+
+/** What the home page's message box starts from for a project; every field is optional. */
+export interface ProjectDefaults {
+  implementer?: ModelRef
+  reviewer?: ModelRef
+  mode?: TaskMode
+  permissionMode?: PermissionMode
+}
+
+/** What a caller may pass: fields that are `undefined` count as left out (it is validated and rebuilt anyway). */
+export interface ProjectDefaultsInput {
+  implementer?:
+    (Pick<ModelRef, 'provider' | 'model'> & { effort?: ModelRef['effort'] | undefined }) | undefined
+  reviewer?: (Pick<ModelRef, 'provider' | 'model'> & { effort?: ModelRef['effort'] | undefined }) | undefined
+  mode?: TaskMode | undefined
+  permissionMode?: PermissionMode | undefined
 }
 
 export interface RepoRecord extends RepoRef {
@@ -34,6 +55,11 @@ export interface RepoRecord extends RepoRef {
   color?: RepoColor
   /** The highest permission mode a task here may use; absent means no limit. */
   maxPermissionMode?: PermissionMode
+  /** Written by the owner; goes in front of the prompt of every new agent session in this project. */
+  instructions?: string
+  /** argv that replaces the lockfile install in a new worktree. */
+  installCommand?: string[]
+  defaults?: ProjectDefaults
   createdAt: string
 }
 
@@ -120,6 +146,9 @@ interface RepoRow {
   check_command: string | null
   color: string | null
   max_permission_mode: string | null
+  instructions: string | null
+  install_command: string | null
+  defaults: string | null
   created_at: string
 }
 
@@ -251,6 +280,46 @@ export function updateRepoMaxPermissionMode(
 ): RepoRecord | undefined {
   if (mode !== null && !isPermissionMode(mode)) throw new Error(`Invalid permission mode: ${String(mode)}`)
   db.prepare('UPDATE repos SET max_permission_mode = ? WHERE id = ?').run(mode, id)
+  return getRepo(db, id)
+}
+
+/** Sets the project instructions, or clears them (null or only whitespace). */
+export function updateRepoInstructions(
+  db: Database,
+  id: RepoId,
+  instructions: string | null,
+): RepoRecord | undefined {
+  const text = instructions?.trim() || null
+  if (text !== null && text.length > MAX_PROJECT_INSTRUCTIONS)
+    throw new Error(`Project instructions are limited to ${MAX_PROJECT_INSTRUCTIONS} characters`)
+  db.prepare('UPDATE repos SET instructions = ? WHERE id = ?').run(text, id)
+  return getRepo(db, id)
+}
+
+/** Sets or clears (null) the command that installs dependencies in a new worktree instead of the lockfile install. */
+export function updateRepoInstallCommand(
+  db: Database,
+  id: RepoId,
+  installCommand: string[] | null,
+): RepoRecord | undefined {
+  db.prepare('UPDATE repos SET install_command = ? WHERE id = ?').run(
+    installCommand ? JSON.stringify(validateCheckCommand(installCommand, 'install command')) : null,
+    id,
+  )
+  return getRepo(db, id)
+}
+
+/** Sets the project's defaults for a new task, or clears them (null, or an object without any field). */
+export function updateRepoDefaults(
+  db: Database,
+  id: RepoId,
+  defaults: ProjectDefaultsInput | null,
+): RepoRecord | undefined {
+  const validated = defaults === null ? undefined : validateProjectDefaults(defaults)
+  db.prepare('UPDATE repos SET defaults = ? WHERE id = ?').run(
+    validated && Object.keys(validated).length > 0 ? JSON.stringify(validated) : null,
+    id,
+  )
   return getRepo(db, id)
 }
 
@@ -690,6 +759,11 @@ function mapRepo(row: RepoRow): RepoRecord {
     ...(row.check_command ? { checkCommand: validateCheckCommand(JSON.parse(row.check_command)) } : {}),
     ...(isRepoColor(row.color) ? { color: row.color } : {}),
     ...(isPermissionMode(row.max_permission_mode) ? { maxPermissionMode: row.max_permission_mode } : {}),
+    ...(row.instructions ? { instructions: row.instructions } : {}),
+    ...(row.install_command
+      ? { installCommand: validateCheckCommand(JSON.parse(row.install_command), 'install command') }
+      : {}),
+    ...(row.defaults ? { defaults: validateProjectDefaults(JSON.parse(row.defaults)) } : {}),
     createdAt: row.created_at,
   }
 }
@@ -704,14 +778,63 @@ function parseStoredAllowedProviders(value: string): ProviderKind[] {
   return validateAllowedProviders(parsed)
 }
 
-function validateCheckCommand(value: unknown): string[] {
+function validateCheckCommand(value: unknown, what = 'check command'): string[] {
   if (
     !Array.isArray(value) ||
     value.length === 0 ||
     !value.every((part) => typeof part === 'string' && part.length > 0 && !part.includes('\0'))
   )
-    throw new Error('Invalid check command: expected a non-empty array of non-empty strings')
+    throw new Error(`Invalid ${what}: expected a non-empty array of non-empty strings`)
   return value as string[]
+}
+
+function validateModelRef(value: unknown, field: string): ModelRef {
+  const input = typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : undefined
+  const effort = input?.effort
+  if (
+    !input ||
+    !isProviderKind(input.provider) ||
+    typeof input.model !== 'string' ||
+    input.model.trim().length === 0 ||
+    input.model.length > 100 ||
+    !(effort === undefined || (EFFORTS as readonly unknown[]).includes(effort))
+  )
+    throw new Error(`Invalid project default ${field}: expected a provider, a model and optionally an effort`)
+  return {
+    provider: input.provider,
+    model: input.model.trim(),
+    ...(effort ? { effort: effort as NonNullable<ModelRef['effort']> } : {}),
+  }
+}
+
+/** The shape of `repos.defaults`; unknown keys are refused so a typo does not silently do nothing. */
+function validateProjectDefaults(value: unknown): ProjectDefaults {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    throw new Error('Invalid project defaults: expected an object')
+  const input = value as Record<string, unknown>
+  const unknown = Object.keys(input).find(
+    (key) => input[key] !== undefined && !['implementer', 'reviewer', 'mode', 'permissionMode'].includes(key),
+  )
+  if (unknown) throw new Error(`Invalid project defaults: unknown field ${unknown}`)
+  const defaults: ProjectDefaults = {}
+  if (input.implementer !== undefined) {
+    defaults.implementer = validateModelRef(input.implementer, 'implementer')
+    // The OpenAI API cannot edit code, so it cannot be the implementer.
+    if (defaults.implementer.provider === 'openai-api')
+      throw new Error('Invalid project default implementer: openai-api cannot edit code')
+  }
+  if (input.reviewer !== undefined) defaults.reviewer = validateModelRef(input.reviewer, 'reviewer')
+  if (input.mode !== undefined) {
+    if (!(TASK_MODES as readonly unknown[]).includes(input.mode))
+      throw new Error(`Invalid project default mode: ${String(input.mode)}`)
+    defaults.mode = input.mode as TaskMode
+  }
+  if (input.permissionMode !== undefined) {
+    if (!isPermissionMode(input.permissionMode))
+      throw new Error(`Invalid project default permission mode: ${String(input.permissionMode)}`)
+    defaults.permissionMode = input.permissionMode
+  }
+  return defaults
 }
 
 function validateAllowedProviders(value: unknown): ProviderKind[] {

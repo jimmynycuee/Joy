@@ -3,6 +3,7 @@ export type {
   DependencyInstall,
   InstallDependenciesOptions,
   InstallDependenciesResult,
+  InstallManager,
   PackageManager,
 } from './dependencies.js'
 export { GitError, KeyedMutex, git } from './git.js'
