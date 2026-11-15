@@ -648,6 +648,64 @@ export function analyzeShellConcerns(
   return { verdict: result.verdict, reason: result.reason, concerns }
 }
 
+/** Glob characters: a directory segment with one of them can match any directory, secrets included. */
+const GLOB_CHARS = /[*?[\]{}]/
+
+/**
+ * Judges a file search (Claude's Grep and Glob), which reads many files from one call: `root` is where it starts
+ * (relative to the worktree), `patterns` the path globs it uses, `recursive` whether it descends below `root` by itself
+ * (Grep always does). Forbidden when a pattern names a secret, when a pattern resolves into one, or when the search may
+ * descend from a directory that holds a secret (the home directory, JOY_HOME's parent, `/`) into it.
+ */
+export function analyzeSearch(
+  root: string,
+  patterns: readonly string[],
+  options: { worktree: string; mode: 'auto' | 'full'; recursive: boolean; env?: ClassifyEnvironment },
+): ShellAnalysis {
+  const env = options.env ?? defaultClassifyEnvironment()
+  const path = pathFor(options.worktree, env)
+  const worktree = path.resolve(options.worktree)
+  const ctx: Context = {
+    worktree,
+    cwds: new Set([worktree]),
+    unknownCwd: false,
+    cdReplaces: false,
+    literalBackslash: path === win32,
+    env,
+    depth: 0,
+    path,
+  }
+  const result = new Verdict()
+  const start = path.resolve(worktree, root)
+  checkResolvedPath(start, ctx, options.mode, result, REASONS.outsidePath)
+  const fold = (value: string) => (path === win32 ? value.toLowerCase() : value)
+  // A secret named anywhere in a pattern (`**/.ssh/*`, `.config/gh/**`), wherever the search starts.
+  const secretSequences = [...SECRET_HOME_PATHS, ...SECRET_SEGMENTS].map((p) => p.split('/').map(fold))
+  let descends = options.recursive
+  for (const pattern of patterns) {
+    if (pattern.trim() === '') continue
+    const segments = pattern.replace(/\\/g, '/').split('/').filter(Boolean).map(fold)
+    const named = secretSequences.some((sequence) =>
+      segments.some((_, i) => sequence.every((part, j) => segments[i + j] === part)),
+    )
+    if (named) result.raise('forbidden', REASONS.secret)
+    checkResolvedPath(path.resolve(start, pattern), ctx, options.mode, result, REASONS.outsidePath)
+    if (pattern.includes('**') || segments.slice(0, -1).some((segment) => GLOB_CHARS.test(segment)))
+      descends = true
+  }
+  if (descends && !within(path, worktree, start)) {
+    const home = path.resolve(env.home)
+    const secrets = [
+      ...joyHomes(env).map((dir) => path.resolve(dir)),
+      ...SECRET_HOME_PATHS.map((p) => path.resolve(home, p)),
+      ...(path === win32 ? [] : SYSTEM_SECRET_PATHS),
+    ]
+    if (secrets.some((secret) => within(path, start, secret) && !within(path, worktree, secret)))
+      result.raise('forbidden', REASONS.secret)
+  }
+  return { verdict: result.verdict, reason: result.reason }
+}
+
 function analyzeScript(source: string, ctx: Context, mode: 'auto' | 'full', result: Verdict): void {
   if (ctx.depth > 4) return result.raise('outside', REASONS.unparseable)
   let tokens: Token[]

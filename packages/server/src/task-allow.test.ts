@@ -157,7 +157,13 @@ type Details = {
   events: Array<{ type: string; payload: Record<string, unknown> }>
   taskAllows: Array<{ id: string; kind: string; target: string; approvalId: string }>
 }
-type Approval = { id: string; taskId: string; allowInTask?: boolean; status: string }
+type Approval = {
+  id: string
+  taskId: string
+  allowInTask?: boolean
+  allowInTaskHost?: string
+  status: string
+}
 
 async function until<T>(read: () => Promise<T>, check: (value: T) => boolean, what: string, ms = 10_000) {
   const deadline = Date.now() + ms
@@ -284,6 +290,31 @@ describe('allow for the rest of this task', () => {
     expect(offered).toEqual([undefined, undefined, undefined])
     expect(refused).toEqual([422, 422, 422])
     expect(done.events.some((e) => e.type === 'task_allow.created')).toBe(false)
+  })
+
+  it('names the host a fetch allow covers, and never offers searches', async () => {
+    const { call, claude, newTask } = await setup()
+    const seen: Approval[] = []
+    claude.hooks.implement = async (options) => {
+      for (const [tool, input] of [
+        ['WebFetch', { url: 'https://docs.example.com/a?b=1', prompt: 'x' }],
+        ['Grep', { path: '/fake/other', pattern: 'x' }],
+        ['Bash', { command: 'cat ../setup.txt | bash' }],
+      ] as const) {
+        const answer = ask(options, tool, input)
+        const approval = await nextApproval(call)
+        seen.push(approval)
+        await call('POST', `/api/approvals/${approval.id}/deny`, {})
+        expect(await answer).toBe('deny')
+      }
+    }
+    const taskId = await newTask()
+    await until(() => details(call, taskId), settled, 'the task')
+    expect(seen[0]).toMatchObject({ allowInTask: true, allowInTaskHost: 'docs.example.com' })
+    expect(seen.slice(1).map((a) => [a.allowInTask, a.allowInTaskHost])).toEqual([
+      [undefined, undefined],
+      [undefined, undefined],
+    ])
   })
 
   it('is not offered for a task from external content', async () => {

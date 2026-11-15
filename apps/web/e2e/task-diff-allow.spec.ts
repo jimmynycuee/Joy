@@ -191,7 +191,20 @@ test('the approval card offers "allow for this task" only when Joy can remember 
     {
       task: taskOf('awaiting_approval'),
       events: [event('started', {})],
-      approvals: [approval('ap-1', 'rm -rf ../cache', true), approval('ap-2', 'git push origin HEAD')],
+      approvals: [
+        approval('ap-1', 'rm -rf ../cache', true),
+        approval('ap-2', 'git push origin HEAD'),
+        {
+          ...approval('ap-3', '', true),
+          action: {
+            kind: 'run_outside_worktree',
+            summary: 'Claude requested the WebFetch tool.',
+            provenance: 'agent',
+            detail: { url: 'https://docs.example.com/a', prompt: 'x' },
+          },
+          allowInTaskHost: 'docs.example.com',
+        },
+      ],
       taskAllows: [
         {
           id: 'allow-1',
@@ -207,9 +220,15 @@ test('the approval card offers "allow for this task" only when Joy can remember 
   await page.goto('/?task=diff-task')
   const card = page.getByTestId('pending-approvals')
   const rows = card.locator('.approval-row')
-  await expect(rows).toHaveCount(2)
+  await expect(rows).toHaveCount(3)
   await expect(rows.nth(0).getByRole('button')).toHaveText(['同意', '這個任務內一律允許', '拒絕'])
   await expect(rows.nth(1).getByRole('button')).toHaveText(['同意', '拒絕'])
+  // A fetch allow covers the whole host, so the button names it.
+  await expect(rows.nth(2).getByRole('button')).toHaveText([
+    '同意',
+    '這個任務內一律允許 docs.example.com',
+    '拒絕',
+  ])
   await rows.nth(0).getByRole('button', { name: '這個任務內一律允許' }).click()
   await expect
     .poll(() => calls.find((call) => call.path === '/api/approvals/ap-1/approve')?.body)

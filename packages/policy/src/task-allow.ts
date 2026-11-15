@@ -16,7 +16,9 @@ import { analyzeShellConcerns, defaultClassifyEnvironment } from './shell.js'
  * Never offered: anything that touches secrets, credentials or Joy's own data (the `forbidden` verdict, asked in every
  * permission mode), and actions that reach other people or machines on the owner's behalf (git remotes, network
  * programs such as `gh`, `curl` or `ssh`, package publishing or installing outside the lockfile), so a push or a pull
- * request is always the owner's own decision. Commands the analysis cannot read, MCP tools (Joy cannot tell what another
+ * request is always the owner's own decision. Commands the analysis cannot read, commands with expansions
+ * (`$VAR`, `$(…)`, backticks) or that pipe text into an interpreter (`| sh`, `| node`), searches (Grep, Glob, LS:
+ * their patterns reach more than the path says), MCP tools (Joy cannot tell what another
  * server's tool does, so it asks every time in every mode) and anything Joy does not recognise are not offered either.
  * External content is excluded by the caller (the task's provenance). The `mcp` kind stays in the list only because
  * the database's CHECK allows it; nothing creates one.
@@ -51,7 +53,7 @@ const EXTERNAL_CONCERNS: ReadonlySet<ShellConcern> = new Set<ShellConcern>([
   'unparseable',
 ])
 
-const READ_TOOLS = new Set(['read', 'glob', 'grep', 'listdirectory', 'ls'])
+const SEARCH_TOOLS = new Set(['glob', 'grep', 'listdirectory', 'ls'])
 const WRITE_TOOLS = new Set(['edit', 'multiedit', 'write', 'notebookedit'])
 
 const no = (reason: string): TaskAllowJudgement => ({ offer: false, reason })
@@ -65,13 +67,15 @@ export function normalizeCommand(command: string): string {
   return command.replace(/\r\n?/g, '\n').trim()
 }
 
-function pathsFor(worktree: string): typeof posix {
+/** Windows rules on Windows whatever the worktree string looks like (the same rule as shell.ts, see #144). */
+function pathsFor(worktree: string, env: ClassifyEnvironment): typeof posix {
+  if (env.platform === 'win32') return win32
   return /^[A-Za-z]:[\\/]/.test(worktree) || worktree.startsWith('\\\\') ? win32 : posix
 }
 
 /** Absolute, normalized path; Windows paths compare case-insensitively, so they are lower-cased. */
-function resolvedPath(path: string, cwd: string): string {
-  const paths = pathsFor(cwd)
+function resolvedPath(path: string, cwd: string, env: ClassifyEnvironment): string {
+  const paths = pathsFor(cwd, env)
   const resolved = paths.resolve(cwd, path)
   return paths === win32 ? resolved.toLowerCase() : resolved
 }
@@ -80,12 +84,27 @@ function singleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
+/** `$VAR`, `$(…)`, `${…}` and backticks: what runs depends on values only known when it runs. */
+const EXPANSION = /[$`]/
+/** A program text piped into an interpreter: what runs is whatever the left side prints. */
+const STDIN_INTERPRETER =
+  /\|&?\s*(?:(?:sudo|env|exec|command|nohup|time)\s+(?:-\S+\s+)*)*(?:\S*[\\/])?(?:ba|z|da|k|c|tc|fi|a)?sh(?:\.exe)?\b|\|&?\s*(?:(?:sudo|env|exec|command|nohup|time)\s+(?:-\S+\s+)*)*(?:\S*[\\/])?(?:node|nodejs|deno|bun|python\d*(?:\.\d+)?|py|ruby|perl|php|lua|tclsh|osascript|pwsh|powershell|cmd|Rscript|julia|groovy|scala|swift|java|jshell)(?:\.exe)?\b/i
+
 /** Whether a shell command may be remembered, judged with the strictest mode (`auto`) whatever the task's mode. */
 function judgeShell(command: string, cwd: string, worktree: string, env: ClassifyEnvironment) {
   const analysis = analyzeShellConcerns(command, { cwd, worktree, mode: 'auto', env })
   if (analysis.verdict === 'forbidden') return no('forbidden')
   const external = analysis.concerns.find((concern) => EXTERNAL_CONCERNS.has(concern))
   return external ? no(external === 'unparseable' ? 'unparseable' : 'external') : undefined
+}
+
+/** A command the owner allows by its text: only when the text is all that decides what runs. */
+function judgeCommand(command: string, cwd: string, worktree: string, env: ClassifyEnvironment) {
+  const blocked = judgeShell(command, cwd, worktree, env)
+  if (blocked) return blocked
+  if (EXPANSION.test(command)) return no('expansion')
+  if (STDIN_INTERPRETER.test(command)) return no('stdin_interpreter')
+  return undefined
 }
 
 function judgeFile(
@@ -96,7 +115,7 @@ function judgeFile(
 ): TaskAllowJudgement {
   const blocked = judgeShell(`cat ${singleQuote(path)}`, cwd, cwd, env)
   if (blocked) return blocked
-  const target = resolvedPath(path, cwd)
+  const target = resolvedPath(path, cwd, env)
   return { offer: true, kind, target, fingerprint: fingerprintOf(kind, target) }
 }
 
@@ -122,15 +141,17 @@ export function taskAllowForClaudeTool(
   if (toolName.startsWith('mcp__')) return no('unknown')
   const name = toolName.toLowerCase()
   const record = asRecord(input)
-  if (READ_TOOLS.has(name) || WRITE_TOOLS.has(name)) {
+  // Grep, Glob and LS read whatever their patterns reach, which a path alone does not describe: never remembered.
+  if (SEARCH_TOOLS.has(name)) return no('search')
+  if (name === 'read' || WRITE_TOOLS.has(name)) {
     const path = pathOf(record)
     if (path === undefined) return no('unknown')
-    return judgeFile(READ_TOOLS.has(name) ? 'file_read' : 'file_write', path, cwd, env)
+    return judgeFile(name === 'read' ? 'file_read' : 'file_write', path, cwd, env)
   }
   if (name === 'bash') {
     const command = typeof record?.command === 'string' ? normalizeCommand(record.command) : ''
     if (!command) return no('unknown')
-    const blocked = judgeShell(command, cwd, cwd, env)
+    const blocked = judgeCommand(command, cwd, cwd, env)
     if (blocked) return blocked
     // Claude's Bash is judged from the worktree root (see classify.ts), so the directory part is always the root.
     return { offer: true, kind: 'shell', target: command, fingerprint: fingerprintOf('shell', command, '') }
@@ -166,10 +187,10 @@ export function taskAllowForCodexApproval(
     const cwd = request.cwd || worktree
     const blockedCwd = judgeShell(`cd ${singleQuote(cwd)}`, worktree, worktree, env)
     if (blockedCwd && !blockedCwd.offer && blockedCwd.reason === 'forbidden') return blockedCwd
-    const blocked = judgeShell(command, cwd, worktree, env)
+    const blocked = judgeCommand(command, cwd, worktree, env)
     if (blocked) return blocked
-    const paths = pathsFor(worktree)
-    const relative = paths.relative(resolvedPath(worktree, worktree), resolvedPath(cwd, worktree))
+    const paths = pathsFor(worktree, env)
+    const relative = paths.relative(resolvedPath(worktree, worktree, env), resolvedPath(cwd, worktree, env))
     const directory = paths === win32 ? relative.replace(/\\/g, '/') : relative
     return {
       offer: true,

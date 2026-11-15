@@ -1842,7 +1842,16 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         approvals: listApprovals(db, {
           ...(status ? { status } : {}),
           ...(taskId ? { taskId: taskId as TaskId } : {}),
-        }).map((approval) => (taskAllowOffer(approval) ? { ...approval, allowInTask: true } : approval)),
+        }).map((approval) => {
+          const offer = taskAllowOffer(approval)
+          if (!offer) return approval
+          // A remembered fetch covers the whole host, so the card names it.
+          return {
+            ...approval,
+            allowInTask: true,
+            ...(offer.kind === 'network' ? { allowInTaskHost: offer.target } : {}),
+          }
+        }),
       })
       return
     }

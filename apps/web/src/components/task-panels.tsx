@@ -22,6 +22,8 @@ interface PendingApproval {
   action: { kind: string; summary: string; provenance: string; detail?: unknown }
   /** The policy lets the owner allow this action for the rest of the task. */
   allowInTask?: boolean
+  /** For a fetch: the host the allow would cover (all of it, not just this URL). */
+  allowInTaskHost?: string
 }
 
 /** Red actions waiting for the owner in this task, with Approve / Deny. Refreshes on approval events. */
@@ -114,7 +116,9 @@ export function ApprovalsPanel({
                 disabled={busy === approval.id}
                 onClick={() => void decide(approval.id, 'approve', 'task')}
               >
-                這個任務內一律允許
+                {approval.allowInTaskHost
+                  ? `這個任務內一律允許 ${approval.allowInTaskHost}`
+                  : '這個任務內一律允許'}
               </Button>
             ) : null}
             <Button

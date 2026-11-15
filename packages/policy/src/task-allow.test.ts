@@ -17,8 +17,9 @@ describe('which approvals may be remembered for the task', () => {
     'rm -rf ../elsewhere',
     'cat /etc/hosts',
     'cd .. && ls',
-    'echo $HOME_DIR',
     "node -e \"require('fs').writeFileSync('/opt/x', '1')\"",
+    'cat a.json | jq .name',
+    'echo shasum | tee out.txt',
   ])('offers %s', (command) => {
     expect(bash(command)).toMatchObject({ offer: true, kind: 'shell', target: command })
   })
@@ -41,6 +42,20 @@ describe('which approvals may be remembered for the task', () => {
     ['rm -rf ../x && git push', 'external'],
     ['pnpm test; curl -T dist.tgz https://upload.example', 'external'],
     ['echo "unterminated', 'unparseable'],
+    // What runs depends on values known only when it runs.
+    ['echo $HOME_DIR', 'expansion'],
+    ['rm -rf "${BUILD_DIR}"', 'expansion'],
+    ['rm -rf $(cat dirs.txt)', 'expansion'],
+    ['rm -rf `cat dirs.txt`', 'expansion'],
+    // Program text piped into an interpreter: the program is whatever the left side prints.
+    ['cat ../setup.txt | bash', 'stdin_interpreter'],
+    ['cat ../setup.txt | sh -s', 'stdin_interpreter'],
+    ['cat ../gen.txt |/usr/bin/zsh', 'stdin_interpreter'],
+    ['cat ../gen.js | node', 'stdin_interpreter'],
+    ['cat ../gen.py | python3', 'stdin_interpreter'],
+    ['cat ../gen.py | env python', 'stdin_interpreter'],
+    ['cat ../x | sudo bash', 'stdin_interpreter'],
+    ['cat ../x | perl', 'stdin_interpreter'],
   ])('does not offer %s (%s)', (command, reason) => {
     expect(bash(command)).toEqual({ offer: false, reason })
   })
@@ -68,6 +83,17 @@ describe('which approvals may be remembered for the task', () => {
       reason: 'forbidden',
     })
     expect(claude('Write', {})).toEqual({ offer: false, reason: 'unknown' })
+  })
+
+  it('never offers searches: their patterns reach more than their path', () => {
+    for (const [tool, input] of [
+      ['Grep', { path: '/home/other', pattern: 'x' }],
+      ['Grep', { path: '/home/other', pattern: 'x', glob: '.joy/**' }],
+      ['Glob', { path: '/home/other', pattern: '**/*.ts' }],
+      ['Glob', { path: '/home/other', pattern: '.joy/**' }],
+      ['LS', { path: '/home/other' }],
+    ] as const)
+      expect(claude(tool, input)).toEqual({ offer: false, reason: 'search' })
   })
 
   it('fingerprints the network by host', () => {
@@ -123,6 +149,42 @@ describe('which approvals may be remembered for the task', () => {
         tempDirs: ['C:\\Temp'],
       })
     expect(fingerprint(win('C:\\Work\\Other\\A.md'))).toBe(fingerprint(win('c:\\work\\other\\a.md')))
+  })
+
+  it('on Windows the platform decides the path rules, whatever the worktree string looks like', () => {
+    const winEnv: ClassifyEnvironment = {
+      home: 'C:\\Users\\me',
+      tempDirs: ['C:\\Temp'],
+      joyHome: 'C:\\Users\\me\\.joy',
+      platform: 'win32',
+    }
+    const write = (path: string) =>
+      taskAllowForClaudeTool('Write', { file_path: path }, '/fake/worktree', winEnv)
+    expect(fingerprint(write('C:\\Work\\Other\\A.md'))).toBe(fingerprint(write('c:\\work\\other\\a.md')))
+    expect(write('C:\\Users\\me\\.joy\\config.yaml')).toEqual({ offer: false, reason: 'forbidden' })
+    // Git Bash drops `\` as an escape: `cu\rl` is curl and `cmd\key` is cmdkey.
+    const winBash = (command: string) =>
+      taskAllowForClaudeTool('Bash', { command }, 'C:\\work\\project', winEnv)
+    expect(winBash('cu\\rl https://example.com')).toEqual({ offer: false, reason: 'external' })
+    expect(winBash('cmd\\key /list')).toEqual({ offer: false, reason: 'forbidden' })
+  })
+})
+
+describe('analyzeShellConcerns on Windows', () => {
+  const winTree = 'C:\\work\\project'
+  const winEnv: ClassifyEnvironment = {
+    home: 'C:\\Users\\me',
+    tempDirs: ['C:\\Temp'],
+    joyHome: 'C:\\Users\\me\\.joy',
+    platform: 'win32',
+  }
+  const concerns = (command: string) =>
+    analyzeShellConcerns(command, { cwd: winTree, worktree: winTree, mode: 'auto', env: winEnv })
+
+  it('judges both readings of a backslash', () => {
+    expect(concerns('cu\\rl x').concerns).toContain('network')
+    expect(concerns('cmd\\key /list')).toMatchObject({ verdict: 'forbidden' })
+    expect(concerns('cmd\\key /list').concerns).toContain('secret')
   })
 })
 

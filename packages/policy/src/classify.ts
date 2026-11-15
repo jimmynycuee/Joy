@@ -1,7 +1,7 @@
 import type { ActionKind, PermissionMode, ProposedAction } from '@joy/core'
 import { isAbsolute, relative, resolve } from 'node:path'
 import type { ClassifyEnvironment, ShellAnalysis } from './shell.js'
-import { analyzeShellCommand, defaultClassifyEnvironment } from './shell.js'
+import { analyzeSearch, analyzeShellCommand, defaultClassifyEnvironment } from './shell.js'
 
 /**
  * A classified agent action. `grant: 'full'` marks an action outside the worktree that the task's `full` permission
@@ -39,7 +39,7 @@ export function classifyClaudeToolAction(
 ): ClassifiedAction {
   if (mode === 'ask') {
     return {
-      kind: classifyKind(toolName, input, cwd),
+      kind: classifyKind(toolName, input, cwd, env),
       summary: `Claude requested the ${toolName} tool.`,
       detail: input,
       provenance: 'agent',
@@ -104,6 +104,10 @@ function judgeClaudeTool(
   }
   const name = toolName.toLowerCase()
   const record = asRecord(input)
+  if (name === 'glob' || name === 'grep') {
+    const analysis = judgeSearch(name, record, cwd, mode, env)
+    return analysis.verdict === 'inside' ? inside('read_file') : { kind: 'run_outside_worktree', analysis }
+  }
   if (READ_TOOLS.has(name) || WRITE_TOOLS.has(name)) {
     const path = pathOf(record)
     const ok = READ_TOOLS.has(name) ? 'read_file' : 'edit_worktree'
@@ -138,6 +142,26 @@ function judgePath(
   return analyzeShellCommand(`cat ${singleQuote(path)}`, { cwd: worktree, worktree, mode, env })
 }
 
+/**
+ * Grep and Glob read every file their search reaches: the path alone is not enough. Glob's `pattern` and Grep's
+ * `glob` are paths too, and a search from the home directory may descend into `.ssh` or JOY_HOME.
+ */
+function judgeSearch(
+  name: 'glob' | 'grep',
+  record: Record<string, unknown> | undefined,
+  cwd: string,
+  mode: 'auto' | 'full',
+  env: ClassifyEnvironment,
+): ShellAnalysis {
+  const glob = name === 'glob' ? record?.pattern : record?.glob
+  return analyzeSearch(pathOf(record) ?? cwd, typeof glob === 'string' ? [glob] : [], {
+    worktree: cwd,
+    mode,
+    recursive: name === 'grep',
+    env,
+  })
+}
+
 function singleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
@@ -155,7 +179,12 @@ function withVerdict(action: ProposedAction, judged: Judgement, mode: 'auto' | '
   return { ...action, kind: 'run_outside_worktree', summary }
 }
 
-function classifyKind(toolName: string, input: unknown, cwd: string): ActionKind {
+function classifyKind(
+  toolName: string,
+  input: unknown,
+  cwd: string,
+  env: ClassifyEnvironment = defaultClassifyEnvironment(),
+): ActionKind {
   if (toolName.startsWith('mcp__')) {
     if (!toolName.startsWith(JOY_MCP_PREFIX)) return 'run_outside_worktree'
     const tool = toolName.slice(JOY_MCP_PREFIX.length)
@@ -168,6 +197,12 @@ function classifyKind(toolName: string, input: unknown, cwd: string): ActionKind
   if (READ_TOOLS.has(name)) {
     // Glob and Grep default to the working directory when no path is given; Read always names a file.
     const path = pathOf(record)
+    // A search must also stay out of secrets with its patterns (see judgeSearch); the rest of `ask` is unchanged.
+    if (
+      (name === 'glob' || name === 'grep') &&
+      judgeSearch(name, record, cwd, 'auto', env).verdict !== 'inside'
+    )
+      return 'run_outside_worktree'
     if (path === undefined) return name === 'read' ? 'run_outside_worktree' : 'read_file'
     return isInside(path, cwd) ? 'read_file' : 'run_outside_worktree'
   }
