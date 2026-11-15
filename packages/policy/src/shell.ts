@@ -33,13 +33,28 @@ export interface ClassifyEnvironment {
   tempDirs: readonly string[]
   /** Joy's own data directory (JOY_HOME, default ~/.joy): config, database, attachments. Always forbidden. */
   joyHome?: string
+  /**
+   * Other spellings of the same directory (Windows 8.3 short names like `RUNNER~1` and their long form, a resolved
+   * symbolic link). Paths are only compared as text, so each spelling must be listed.
+   */
+  joyHomeAliases?: readonly string[]
+  /**
+   * The OS the agent's commands run on. On Windows every path is compared with Windows rules (drive letters, `\`,
+   * case-insensitive), whatever the worktree string looks like. Default: this process's platform.
+   */
+  platform?: NodeJS.Platform
 }
 
 export function defaultClassifyEnvironment(): ClassifyEnvironment {
   const temp = tmpdir()
   // macOS: tmpdir() is /var/folders/…/T, and /tmp is a link to /private/tmp; both are scratch space.
   const tempDirs = process.platform === 'win32' ? [temp] : [temp, '/tmp', '/private/tmp', '/var/tmp']
-  return { home: homedir(), tempDirs, ...(process.env.JOY_HOME ? { joyHome: process.env.JOY_HOME } : {}) }
+  return {
+    home: homedir(),
+    tempDirs,
+    platform: process.platform,
+    ...(process.env.JOY_HOME ? { joyHome: process.env.JOY_HOME } : {}),
+  }
 }
 
 /**
@@ -538,9 +553,21 @@ const REASONS = {
   cd: 'changes to a directory outside the worktree',
 } as const
 
-/** Paths are compared with Windows rules when the worktree is a Windows path, so tests are the same on every OS. */
-function pathFor(worktree: string): typeof posix {
+/**
+ * Windows rules on Windows, and for a Windows-looking worktree anywhere (so tests behave the same on every OS).
+ * Choosing by the worktree string alone was wrong: on Windows a worktree given as `/fake/x` fell back to POSIX rules,
+ * where `\` is an escape, so `C:\…\config.yaml` under JOY_HOME was read as a harmless relative word.
+ */
+function pathFor(worktree: string, env: ClassifyEnvironment): typeof posix {
+  if (env.platform === 'win32') return win32
   return /^[A-Za-z]:[\\/]/.test(worktree) || worktree.startsWith('\\\\') ? win32 : posix
+}
+
+/** Every spelling of JOY_HOME, without a trailing separator. */
+function joyHomes(env: ClassifyEnvironment): string[] {
+  return [env.joyHome, ...(env.joyHomeAliases ?? [])].filter(
+    (dir): dir is string => typeof dir === 'string' && dir.trim() !== '',
+  )
 }
 
 function within(path: typeof posix, root: string, target: string): boolean {
@@ -556,13 +583,14 @@ export function analyzeShellCommand(
   command: string,
   options: { cwd: string; worktree: string; mode: 'auto' | 'full'; env?: ClassifyEnvironment },
 ): ShellAnalysis {
-  const path = pathFor(options.worktree)
+  const env = options.env ?? defaultClassifyEnvironment()
+  const path = pathFor(options.worktree, env)
   const ctx: Context = {
     worktree: path.resolve(options.worktree),
     cwds: new Set([path.resolve(options.worktree, options.cwd)]),
     unknownCwd: false,
     cdReplaces: false,
-    env: options.env ?? defaultClassifyEnvironment(),
+    env,
     depth: 0,
     path,
   }
@@ -1188,8 +1216,15 @@ function resolveWord(value: string, ctx: Context, expands = false): Resolved {
   if (value === '~' || value.startsWith('~/') || value.startsWith('~\\'))
     return { kind: 'paths', paths: [path.resolve(ctx.env.home, value.slice(2) || '.')] }
   if (value.startsWith('~')) return { kind: 'unknown-home' }
+  // `/dev/null` and friends keep their POSIX spelling even when paths follow Windows rules (Git Bash has them).
+  if (DEVICES.has(value)) return { kind: 'paths', paths: [value] }
   const windowsAbsolute = /^[A-Za-z]:[\\/]|^\\\\/.test(value)
   if (windowsAbsolute && path === posix) return { kind: 'paths', paths: [`//windows/${value}`] }
+  if (path === win32) {
+    // Git Bash (`/c/Users/…`), Cygwin (`/cygdrive/c/…`) and WSL (`/mnt/c/…`) spellings of a drive path.
+    const drive = /^\/(?:cygdrive\/|mnt\/)?([A-Za-z])(?:[\\/](.*))?$/.exec(value)
+    if (drive?.[1]) return { kind: 'paths', paths: [win32.resolve(`${drive[1]}:\\`, drive[2] ?? '')] }
+  }
   if (path.isAbsolute(value)) return { kind: 'paths', paths: [path.resolve(value)] }
   if (ctx.unknownCwd) return { kind: 'expansion' }
   return { kind: 'paths', paths: [...ctx.cwds].map((cwd) => path.resolve(cwd, value)) }
@@ -1204,7 +1239,7 @@ function isInsideAllowed(target: string, ctx: Context): boolean {
 function isSecretPath(target: string, ctx: Context): boolean {
   const { path } = ctx
   if (within(path, ctx.worktree, target)) return false
-  if (ctx.env.joyHome && within(path, ctx.env.joyHome, target)) return true
+  if (joyHomes(ctx.env).some((dir) => within(path, dir, target))) return true
   const home = path.resolve(ctx.env.home)
   if (within(path, home, target)) {
     const rel = path.relative(home, target).replace(/\\/g, '/')
@@ -1347,10 +1382,23 @@ function scanSecrets(text: string, ctx: Context, result: Verdict, expands = fals
       })
     )
   }
-  if (ctx.env.joyHome) {
-    // Worktrees live in JOY_HOME by default: the task's own worktree is fine, anything else there is Joy's data.
-    const joy = ctx.env.joyHome.replace(/\\/g, '/').replace(/\/+$/, '')
-    if (normalized.includes(joy) && !inWorktree()) return result.raise('forbidden', REASONS.secret)
+  // Worktrees live in JOY_HOME by default: the task's own worktree is fine, anything else there is Joy's data.
+  // On Windows the comparison ignores case, and the Git Bash / WSL spellings of the drive count too.
+  const windows = ctx.path === win32
+  const haystack = windows ? normalized.toLowerCase() : normalized
+  for (const dir of joyHomes(ctx.env)) {
+    const joy = dir.replace(/\\/g, '/').replace(/\/+$/, '')
+    const spellings = [joy]
+    const drive = /^([A-Za-z]):(\/.*)$/.exec(joy)
+    if (drive?.[1] && drive[2]) {
+      const letter = drive[1].toLowerCase()
+      spellings.push(`/${letter}${drive[2]}`, `/mnt/${letter}${drive[2]}`, `/cygdrive/${letter}${drive[2]}`)
+    }
+    if (
+      spellings.some((spelling) => haystack.includes(windows ? spelling.toLowerCase() : spelling)) &&
+      !inWorktree()
+    )
+      return result.raise('forbidden', REASONS.secret)
   }
   for (const name of SECRET_HOME_PATHS) {
     const escaped = name.replace(/[.]/g, '\\.')

@@ -6,7 +6,13 @@ import { analyzeShellCommand } from './shell.js'
 import type { ClassifyEnvironment, ShellVerdict } from './shell.js'
 
 const worktree = '/work/project'
-const env: ClassifyEnvironment = { home: '/home/me', tempDirs: ['/tmp'], joyHome: '/home/me/.joy' }
+// POSIX rules whatever OS runs the tests; the Windows block below sets its own platform.
+const env: ClassifyEnvironment = {
+  home: '/home/me',
+  tempDirs: ['/tmp'],
+  joyHome: '/home/me/.joy',
+  platform: 'linux',
+}
 const verdict = (command: string, mode: 'auto' | 'full' = 'auto', cwd = worktree): ShellVerdict =>
   analyzeShellCommand(command, { cwd, worktree, mode, env }).verdict
 
@@ -355,6 +361,7 @@ describe('Windows paths', () => {
     home: 'C:\\Users\\me',
     tempDirs: ['C:\\Users\\me\\AppData\\Local\\Temp'],
     joyHome: 'C:\\Users\\me\\.joy',
+    platform: 'win32',
   }
   const win = (command: string, mode: 'auto' | 'full' = 'auto') =>
     analyzeShellCommand(command, { cwd: winTree, worktree: winTree, mode, env: winEnv }).verdict
@@ -369,6 +376,65 @@ describe('Windows paths', () => {
     expect(win('del ..\\other\\x')).toBe('outside')
     expect(win('type C:\\Users\\me\\.joy\\config.yaml', 'full')).toBe('forbidden')
     expect(win('type %USERPROFILE%\\.ssh\\id_rsa', 'full')).toBe('forbidden')
+  })
+
+  it('on Windows, JOY_HOME is forbidden in every mode however the path is spelled', () => {
+    // A JOY_HOME without `.joy` in its name (a custom JOY_HOME, or a test's temp dir), given in its 8.3 short form.
+    const joyEnv: ClassifyEnvironment = {
+      home: 'C:\\Users\\x',
+      tempDirs: ['C:\\Users\\RUNNER~1\\AppData\\Local\\Temp'],
+      joyHome: 'C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\joy-home-1',
+      joyHomeAliases: ['C:\\Users\\runneradmin\\AppData\\Local\\Temp\\joy-home-1'],
+      platform: 'win32',
+    }
+    const commands = [
+      'cat C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\joy-home-1/config.yaml',
+      'cat C:/Users/RUNNER~1/AppData/Local/Temp/joy-home-1/config.yaml',
+      'type c:\\users\\runner~1\\appdata\\local\\temp\\JOY-HOME-1\\config.yaml',
+      'cat C:\\Users\\runneradmin\\AppData\\Local\\Temp\\joy-home-1\\joy.sqlite',
+      'cat /c/Users/RUNNER~1/AppData/Local/Temp/joy-home-1/config.yaml',
+      'cat /mnt/c/Users/runneradmin/AppData/Local/Temp/joy-home-1/config.yaml',
+      "node -e \"require('fs').readFileSync('C:/Users/RUNNER~1/AppData/Local/Temp/joy-home-1/config.yaml')\"",
+    ]
+    // The worktree string does not decide the rules on Windows (the server test used `/fake/joy-worktree`).
+    for (const worktree of ['C:\\work\\project', '/fake/joy-worktree']) {
+      for (const command of commands) {
+        for (const mode of ['auto', 'full'] as const) {
+          expect(
+            analyzeShellCommand(command, { cwd: worktree, worktree, mode, env: joyEnv }).verdict,
+            `${mode} ${command}`,
+          ).toBe('forbidden')
+        }
+        const action = classifyClaudeToolAction('Bash', { command }, worktree, 'full', joyEnv)
+        expect(evaluateAction(action, 'normal').outcome, command).toBe('require_approval')
+      }
+    }
+    // Files elsewhere in the same temp dir are still scratch space.
+    expect(
+      analyzeShellCommand('cat C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\other\\x.txt', {
+        cwd: 'C:\\work\\project',
+        worktree: 'C:\\work\\project',
+        mode: 'auto',
+        env: joyEnv,
+      }).verdict,
+    ).toBe('inside')
+    expect(
+      analyzeShellCommand('pnpm test > /dev/null 2>&1', {
+        cwd: 'C:\\work\\project',
+        worktree: 'C:\\work\\project',
+        mode: 'auto',
+        env: joyEnv,
+      }).verdict,
+    ).toBe('inside')
+    expect(
+      classifyClaudeToolAction(
+        'Read',
+        { file_path: 'C:/Users/runneradmin/AppData/Local/Temp/joy-home-1/config.yaml' },
+        'C:\\work\\project',
+        'full',
+        joyEnv,
+      ).grant,
+    ).toBeUndefined()
   })
 
   it('a Windows path never counts as inside a POSIX worktree', () => {
