@@ -4449,7 +4449,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     )
   }
   /** Where Joy's own data lives, so the classifier treats it like a secret even when JOY_HOME is not ~/.joy. */
-  const classifyEnvironment: ClassifyEnvironment = { ...defaultClassifyEnvironment(), joyHome: home }
+  const classifyEnvironment: ClassifyEnvironment = {
+    ...defaultClassifyEnvironment(),
+    joyHome: home,
+    joyHomeAliases: pathSpellings(home),
+  }
 
   function createRunToolHub(
     task: StoredTask,
@@ -6588,4 +6592,21 @@ function json(res: ServerResponse, status: number, value: unknown): void {
     'x-content-type-options': 'nosniff',
   })
   res.end(body)
+}
+
+/**
+ * Other spellings of a directory the classifier compares as text: its resolved form (a symbolic link, or on Windows
+ * the long name behind an 8.3 short name such as `RUNNER~1`, and the other way round).
+ */
+function pathSpellings(dir: string): string[] {
+  const spellings = new Set<string>()
+  for (const resolveIt of [realpathSync.native, realpathSync]) {
+    try {
+      spellings.add(resolveIt(dir))
+    } catch {
+      // Not created yet: the given spelling is all there is.
+    }
+  }
+  spellings.delete(dir)
+  return [...spellings]
 }
