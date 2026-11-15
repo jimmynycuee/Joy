@@ -103,7 +103,14 @@ function fakeProvider(kind: ProviderKind) {
           options.onSteer?.(undefined)
         }
       }
-      yield { type: 'usage', inputTokens: 100, outputTokens: 20, costUsd: 0.5 }
+      yield {
+        type: 'usage',
+        inputTokens: 100,
+        outputTokens: 20,
+        cachedInputTokens: 60,
+        costUsd: 0.5,
+        costSource: 'cli',
+      }
       yield { type: 'done', sessionId, isError: false, finalMessage: `plan or result ${calls.length}` }
     },
     healthCheck: async () => ({ ok: true, installed: true, loggedIn: true as const }),
@@ -271,7 +278,9 @@ describe('task rename, archive and details', () => {
     expect(done.usage).toMatchObject({
       inputTokens: 100,
       outputTokens: 20,
+      cachedInputTokens: 60,
       costUsd: 0.5,
+      costSource: 'cli',
       byProvider: [{ provider: 'claude-cli', inputTokens: 100, outputTokens: 20, costUsd: 0.5 }],
     })
     expect(done.usage.durationMs).toEqual(expect.any(Number))
@@ -287,6 +296,57 @@ describe('task rename, archive and details', () => {
     expect((await call('GET', '/api/tasks?archived=1')).body.tasks).toMatchObject([{ id, archived: true }])
     expect((await details(call, id)).events.filter((e) => e.type === 'task.updated')).toHaveLength(2)
     expect((await call('PATCH', '/api/tasks/missing', { title: 'x' })).status).toBe(404)
+  })
+
+  it('tells the usage of each role and each run, and lists what the tasks cost on the stats page', async () => {
+    const { call } = await setup()
+    const id = await newTask(call, await newRepo(call), { mode: 'review_loop' })
+    const first = await until(call, id, settled('done'), 'done')
+    expect(first.usage).toMatchObject({
+      inputTokens: 110,
+      outputTokens: 21,
+      byRole: [
+        {
+          role: 'implementer',
+          provider: 'claude-cli',
+          inputTokens: 100,
+          outputTokens: 20,
+          cachedInputTokens: 60,
+        },
+        { role: 'reviewer', provider: 'codex-cli', inputTokens: 10, outputTokens: 1 },
+      ],
+      runs: [
+        { endSeq: expect.any(Number), durationMs: expect.any(Number), inputTokens: 110, outputTokens: 21 },
+      ],
+    })
+    const resultSeq = first.events.find((event) => event.type === 'result')
+    expect((first.usage.runs as Array<{ endSeq: number }>)[0]?.endSeq).toBe(
+      (resultSeq as unknown as { seq: number }).seq,
+    )
+
+    await call('POST', `/api/tasks/${id}/messages`, { text: 'Rename add to sum' })
+    const second = await until(
+      call,
+      id,
+      (d) => d.task.status === 'done' && count(d, 'result') === 2,
+      'follow-up',
+    )
+    expect(second.usage).toMatchObject({
+      inputTokens: 220,
+      runs: [{ inputTokens: 110 }, { inputTokens: 110 }],
+    })
+
+    const stats = (await call('GET', '/api/stats')).body as unknown as {
+      tasks: Array<{ id: string; usage: Record<string, unknown> }>
+    }
+    expect(stats.tasks).toEqual([
+      expect.objectContaining({
+        id,
+        usage: expect.objectContaining({ inputTokens: 220, outputTokens: 42, costUsd: 1 }),
+      }),
+    ])
+    // The stats list leaves out the per-run lines.
+    expect(stats.tasks[0]?.usage).not.toHaveProperty('runs')
   })
 
   it('refuses to archive a running task', async () => {

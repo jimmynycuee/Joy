@@ -658,16 +658,21 @@ test('checks show as a step card with collapsible output, and skipped checks as 
   await expect(page.getByTestId('event-stream')).toContainText('略過專案檢查')
 })
 
-test('usage shows time, tokens and an estimated cost per model', async ({ page }) => {
+test('usage shows time, tokens and cost per model and per role, and where the cost came from', async ({
+  page,
+}) => {
   const id = 'usage-task'
   const state: ThreadState = {
     task: taskOf('done', id),
     events: [event(id, 'started', {})],
     usage: {
       durationMs: 192_000,
+      approvalWaitMs: 45_000,
       inputTokens: 48_000,
       outputTokens: 3_400,
+      cachedInputTokens: 30_000,
       costUsd: 0.4321,
+      costSource: 'cli',
       byProvider: [
         { provider: 'claude-cli', model: 'opus', inputTokens: 40_000, outputTokens: 3_000, costUsd: 0.4 },
         {
@@ -678,6 +683,26 @@ test('usage shows time, tokens and an estimated cost per model', async ({ page }
           costUsd: 0.0321,
         },
       ],
+      byRole: [
+        {
+          role: 'implementer',
+          provider: 'claude-cli',
+          model: 'opus',
+          durationMs: 150_000,
+          inputTokens: 40_000,
+          outputTokens: 3_000,
+          costUsd: 0.4,
+        },
+        {
+          role: 'reviewer',
+          provider: 'codex-cli',
+          model: 'gpt-6-luna',
+          durationMs: 42_000,
+          inputTokens: 8_000,
+          outputTokens: 400,
+        },
+      ],
+      runs: [],
     },
   }
   await mockThread(page, state, [])
@@ -685,8 +710,85 @@ test('usage shows time, tokens and an estimated cost per model', async ({ page }
   await openTaskMenu(page, /^用量/)
   const panel = page.getByRole('dialog', { name: '用量' })
   await expect(panel).toContainText('3 分 12 秒')
-  await expect(panel).toContainText('輸入 48k / 輸出 3.4k')
-  await expect(panel).toContainText('$0.43')
+  await expect(panel).toContainText('等核准')
+  await expect(panel).toContainText('45 秒')
+  await expect(panel).toContainText('輸入 48k（快取 30k） / 輸出 3.4k')
+  await expect(panel).toContainText('$0.43 · CLI 回報')
   await expect(panel.getByLabel('各模型用量')).toContainText('Claude Code · opus')
-  await expect(panel.getByLabel('各模型用量')).toContainText('$0.40（估算）')
+  await expect(panel.getByLabel('各模型用量')).toContainText('輸入 40k / 輸出 3.0k · $0.40')
+  await expect(panel.getByLabel('各角色用量')).toContainText('審查 · Codex · gpt-6-luna')
+  await expect(panel.getByLabel('各角色用量')).toContainText('42 秒 · 輸入 8.0k / 輸出 400')
+})
+
+test('each round ends with a line of its time and tokens, which stays when the process folds away', async ({
+  page,
+}) => {
+  const id = 'rounds-task'
+  const first = [
+    event(id, 'started', {}, 300),
+    event(
+      id,
+      'agent',
+      { role: 'implementer', event: { type: 'message', text: 'Fixed it the first way.' } },
+      280,
+    ),
+    event(id, 'result', { type: 'result', status: 'succeeded', approved: true }, 250),
+  ]
+  const second = [
+    event(
+      id,
+      'user.message',
+      { id: 'm2', text: 'Also add a test', provenance: 'user', delivery: 'follow_up' },
+      200,
+    ),
+    event(id, 'started', {}, 199),
+    event(id, 'agent', { role: 'implementer', event: { type: 'message', text: 'Added the test.' } }, 150),
+    event(id, 'result', { type: 'result', status: 'succeeded', approved: true }, 100),
+  ]
+  const lastSeq = (events: Array<{ seq: number }>) => events.at(-1)?.seq ?? 0
+  const state: ThreadState = {
+    task: taskOf('done', id),
+    events: [...first, ...second],
+    usage: {
+      durationMs: 194_000,
+      inputTokens: 40_000,
+      outputTokens: 2_000,
+      byProvider: [],
+      byRole: [],
+      runs: [
+        { endSeq: lastSeq(first), durationMs: 134_000, inputTokens: 36_000, outputTokens: 2_000 },
+        { endSeq: lastSeq(second), durationMs: 60_000, inputTokens: 2_500, outputTokens: 500, costUsd: 0.12 },
+      ],
+    },
+  }
+  await mockThread(page, state, [])
+  await page.goto(`/?task=${id}`)
+  const lines = page.getByTestId('run-usage')
+  await expect(lines).toHaveCount(2)
+  await expect(lines.first()).toHaveText('2 分 14 秒 · 38k tokens')
+  await expect(lines.last()).toHaveText('1 分 · 3.0k tokens · $0.12')
+  // The finished task keeps its process folded, and the lines are still there.
+  await expect(page.getByRole('button', { name: /過程/ })).toHaveAttribute('aria-expanded', 'false')
+})
+
+test('a task from before usage was recorded shows no lines and no tokens', async ({ page }) => {
+  const id = 'old-task'
+  const events = [
+    event(id, 'started', {}, 300),
+    event(id, 'agent', { role: 'implementer', event: { type: 'message', text: 'Done.' } }, 280),
+    event(id, 'result', { type: 'result', status: 'succeeded', approved: true }, 250),
+  ]
+  await mockThread(
+    page,
+    { task: taskOf('done', id), events, usage: { durationMs: 50_000, byProvider: [] } },
+    [],
+  )
+  await page.goto(`/?task=${id}`)
+  await expect(page.getByText('Done.')).toBeVisible()
+  await expect(page.getByTestId('run-usage')).toHaveCount(0)
+  await openTaskMenu(page, /^用量/)
+  const panel = page.getByRole('dialog', { name: '用量' })
+  await expect(panel).toContainText('50 秒')
+  await expect(panel).toContainText('沒有回報')
+  await expect(panel.getByLabel('各角色用量')).toHaveCount(0)
 })

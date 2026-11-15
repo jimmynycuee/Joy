@@ -60,11 +60,14 @@ export type AgentEvent =
   | { type: 'quota'; status: 'allowed' | 'warning' | 'limited'; windows: QuotaWindow[]; resetsAt?: number }
   | {
       type: 'usage'
+      /** Every input token, the cached ones included (`cachedInputTokens` is the part of it read from the cache). */
       inputTokens?: number
       outputTokens?: number
       cachedInputTokens?: number
       /** Equivalent API cost. For subscription CLIs this is an estimate, not money spent. */
       costUsd?: number
+      /** Where `costUsd` comes from: the CLI's own report, or Joy's price table applied to the tokens. */
+      costSource?: 'cli' | 'price_table'
     }
   /** `recoverable: true` covers notices such as Codex's "Reconnecting... 2/5". */
   | { type: 'error'; message: string; recoverable: boolean }

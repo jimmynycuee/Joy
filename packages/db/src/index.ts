@@ -22,6 +22,8 @@ export {
   listReviews,
   listRepos,
   listTaskEvents,
+  listTaskEventsOfTypes,
+  listTasksCreated,
   listTasks,
   listUsage,
   REPO_COLORS,

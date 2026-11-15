@@ -93,6 +93,7 @@ describe('OpenAiApiProvider', () => {
         outputTokens: 20,
         cachedInputTokens: 40,
         costUsd: (60 * 1 + 40 * 0.1 + 20 * 4) / 1e6,
+        costSource: 'price_table',
       },
       { type: 'done', sessionId: 'resp_1', isError: false, finalMessage: 'Hi there' },
     ])

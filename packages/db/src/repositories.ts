@@ -387,6 +387,36 @@ export function listTasks(db: Database, filter: { archived?: boolean } = {}): St
   ).map(mapTask)
 }
 
+/** Tasks created in a period (ISO, `to` exclusive) and repository, newest first: what the stats page compares. */
+export function listTasksCreated(
+  db: Database,
+  filter: { from?: string; to?: string; repoId?: string },
+  limit: number,
+): StoredTask[] {
+  const clauses: string[] = []
+  const params: string[] = []
+  if (filter.from) {
+    clauses.push('created_at >= ?')
+    params.push(filter.from)
+  }
+  if (filter.to) {
+    clauses.push('created_at < ?')
+    params.push(filter.to)
+  }
+  if (filter.repoId) {
+    clauses.push('repo_id = ?')
+    params.push(filter.repoId)
+  }
+  const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''
+  return (
+    db
+      .prepare(
+        `SELECT * FROM tasks${where} ORDER BY created_at DESC, id LIMIT ${Math.max(0, Math.floor(limit))}`,
+      )
+      .all(...params) as unknown as TaskRow[]
+  ).map(mapTask)
+}
+
 export interface TaskUpdate {
   title?: string | undefined
   archived?: boolean | undefined
@@ -543,6 +573,45 @@ export function listTaskEvents(db: Database, taskId: TaskId, after = 0): TaskEve
        ) WHERE seq > ? ORDER BY seq, event_row_id`,
     )
     .all(taskId, taskId, after) as unknown as {
+    attempt_id: string | null
+    seq: number
+    type: string
+    payload: string
+    ts: string
+  }[]
+  return rows.map((row) => ({
+    taskId,
+    ...(row.attempt_id ? { attemptId: row.attempt_id as AttemptId } : {}),
+    seq: row.seq,
+    type: row.type,
+    payload: JSON.parse(row.payload) as unknown,
+    ts: row.ts,
+  }))
+}
+
+/**
+ * A task's events of the given types, in order, without loading the rest (tool output and diffs are large). An `agent`
+ * event counts only when it reports usage.
+ */
+export function listTaskEventsOfTypes(
+  db: Database,
+  taskId: TaskId,
+  types: readonly string[],
+): TaskEventRecord[] {
+  const marks = types.map(() => '?').join(', ')
+  const keep = `e.type IN (${marks}) AND (e.type != 'agent' OR json_extract(e.payload, '$.event.type') = 'usage')`
+  const rows = db
+    .prepare(
+      `SELECT attempt_id, seq, type, payload, ts FROM (
+         SELECT e.attempt_id, e.seq, e.type, e.payload, e.ts, e.id AS event_row_id
+         FROM events e JOIN attempts a ON a.id = e.attempt_id
+         WHERE a.task_id = ? AND ${keep}
+         UNION ALL
+         SELECT NULL AS attempt_id, e.seq, e.type, e.payload, e.ts, e.id AS event_row_id
+         FROM task_events e WHERE e.task_id = ? AND ${keep}
+       ) ORDER BY seq, event_row_id`,
+    )
+    .all(taskId, ...types, taskId, ...types) as unknown as {
     attempt_id: string | null
     seq: number
     type: string

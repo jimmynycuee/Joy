@@ -510,3 +510,66 @@ describe('dependency install events', () => {
     })
   })
 })
+
+describe('the line each round ends with', () => {
+  const events = () => {
+    seq = 0
+    return [
+      event('user.message', { id: 'm1', text: 'first', provenance: 'user', delivery: 'task' }),
+      event('started', {}),
+      agent('implementer', { type: 'message', text: 'done one' }),
+      event('result', { type: 'result', status: 'succeeded', approved: true }),
+      event('user.message', { id: 'm2', text: 'second', provenance: 'user', delivery: 'follow_up' }),
+      event('started', {}),
+      agent('implementer', { type: 'message', text: 'done two' }),
+      event('result', { type: 'result', status: 'succeeded', approved: true }),
+    ]
+  }
+  const kinds = (entries: ReturnType<typeof buildTimeline>) => entries.map((entry) => entry.kind)
+
+  it('goes right after the event that ended the run, once per run', () => {
+    const list = events()
+    const entries = buildTimeline(list, undefined, {
+      runs: [
+        { endSeq: 8, durationMs: 90_000, inputTokens: 5_000, outputTokens: 500 },
+        { endSeq: 4, durationMs: 134_000, inputTokens: 36_000, outputTokens: 2_000 },
+      ],
+    })
+    expect(kinds(entries)).toEqual([
+      'user',
+      'step',
+      'message',
+      'step',
+      'usage',
+      'user',
+      'step',
+      'message',
+      'step',
+      'usage',
+    ])
+    const lines = entries.filter((entry) => entry.kind === 'usage')
+    expect(lines.map((entry) => entry.text)).toEqual(['2 分 14 秒 · 38k tokens', '1 分 30 秒 · 5.5k tokens'])
+    expect(lines.map((entry) => entry.seq)).toEqual([4, 8])
+  })
+
+  it('is absent for a task with no recorded runs, and for a run with nothing to say', () => {
+    expect(kinds(buildTimeline(events()))).not.toContain('usage')
+    expect(
+      kinds(buildTimeline(events(), undefined, { runs: [{ endSeq: 4, durationMs: 200 }] })),
+    ).not.toContain('usage')
+  })
+
+  it('does not break when the ending event is no longer in the log', () => {
+    const entries = buildTimeline(events(), undefined, { runs: [{ endSeq: 99, durationMs: 5_000 }] })
+    expect(kinds(entries).at(-1)).toBe('usage')
+    expect(buildTimeline([], undefined, { runs: [{ endSeq: 1, durationMs: 5_000 }] })).toEqual([])
+  })
+
+  it('keeps the judge usage event out of sight', () => {
+    seq = 0
+    const entries = buildTimeline([
+      event('compete.usage', { role: 'judge', event: { type: 'usage', inputTokens: 1 } }),
+    ])
+    expect(entries[0]).toMatchObject({ kind: 'noise' })
+  })
+})

@@ -164,3 +164,36 @@ describe('foldSummary', () => {
     expect(foldSummary({ reviewRounds: 0, steps: 4, durationMs: 45_000 })).toBe('4 個步驟 · 45 秒')
   })
 })
+
+describe('foldTimeline and the line each round ends with', () => {
+  it("keeps every round's line in view when the process folds away", () => {
+    seq = 0
+    const events = [
+      event('started', {}, 0),
+      tool('c1', 'pnpm test'),
+      agent('implementer', { type: 'message', text: 'First.' }, 5),
+      event('result', { status: 'succeeded' }, 10),
+      event('user.message', { id: 'm1', text: 'more', provenance: 'user', delivery: 'follow_up' }, 20),
+      event('started', {}, 21),
+      tool('c2', 'pnpm lint'),
+      agent('implementer', { type: 'message', text: 'Second.' }, 30),
+      event('result', { status: 'succeeded' }, 40),
+    ]
+    const entries = buildTimeline(events, undefined, {
+      runs: [
+        { endSeq: 4, durationMs: 10_000, inputTokens: 100 },
+        { endSeq: 9, durationMs: 20_000, inputTokens: 300 },
+      ],
+    })
+    const items = foldTimeline(entries, 'done')
+    const visible = items.flatMap((item) => (item.kind === 'entry' ? [item.entry] : []))
+    expect(visible.filter((entry) => entry.kind === 'usage').map((entry) => entry.text)).toEqual([
+      '10 秒 · 100 tokens',
+      '20 秒 · 300 tokens',
+    ])
+    expect(items.filter((item) => item.kind === 'fold')).toHaveLength(1)
+    // The last message still shows, ahead of the last line.
+    expect(visible.at(-1)).toMatchObject({ kind: 'usage' })
+    expect(visible.some((entry) => entry.kind === 'message' && entry.text === 'Second.')).toBe(true)
+  })
+})

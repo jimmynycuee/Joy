@@ -22,7 +22,7 @@ describe('withServerFields', () => {
       attempts: [{ id: 'a' }],
       reviews: [],
       events: [],
-      usage: { durationMs: 5, byProvider: [] },
+      usage: { durationMs: 5, byProvider: [], byRole: [], runs: [] },
       pendingPlan: { plan: '# plan' },
       queuedMessages: [{ id: 'm', text: 'hi' }],
       steerable: true,
@@ -46,7 +46,7 @@ describe('withServerFields', () => {
       attempts: [],
       reviews: [],
       events: [],
-      usage: { durationMs: 9, byProvider: [] },
+      usage: { durationMs: 9, byProvider: [], byRole: [], runs: [] },
       pendingPlan: { plan: '# old' },
     }
     const merged = withServerFields(current, { task, repo: null, attempts: [], reviews: [], events: [] })

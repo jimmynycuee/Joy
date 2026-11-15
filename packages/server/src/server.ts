@@ -97,6 +97,8 @@ import {
   linkAttachments,
   listTaskAttachments,
   listTaskEvents,
+  listTaskEventsOfTypes,
+  listTasksCreated,
   listTasks,
   listUsage,
   MAX_PROJECT_INSTRUCTIONS,
@@ -141,6 +143,7 @@ import { ApprovalBroker } from './approvals.js'
 import type { TaskAllowOffer } from './approvals.js'
 import { runAssistantTurn, toApiTools } from './assistant.js'
 import { rewindHandoffPrompt, switchHandoffPrompt } from './handoff.js'
+import { summarizeTaskUsage, USAGE_EVENT_TYPES } from './task-usage.js'
 import { TASK_ROUND, effectiveEvents, pendingMessages, rewindPoints } from './turns.js'
 import { ExternalMcpServers, classifyExternalTool } from './external-mcp.js'
 import { sendPush, vapidKeys } from './push.js'
@@ -708,17 +711,10 @@ type ContinuationKind = 'follow_up' | 'replan' | 'plan_approved'
 
 /** Statuses from which the owner can continue a task with a message. */
 const CONTINUABLE_STATUSES = new Set<TaskStatus>(['done', 'review_ready', 'failed', 'cancelled'])
-/** Events that end one run of a task (for the duration in its usage). */
-const RUN_END_EVENTS = new Set([
-  'result',
-  'error',
-  'task.paused',
-  'interrupted',
-  'quota.queued',
-  'run.interrupted',
-])
 const PLAN_EVENTS = new Set(['plan.awaiting_approval', 'plan.approved', 'plan.rejected'])
 const MAX_QUEUED_MESSAGES = 20
+/** How many tasks the stats page compares. */
+const STATS_TASK_LIMIT = 50
 
 /** An owner message waiting for the agent. `attachments` are ids; the agent gets them through markers. */
 interface QueuedMessage {
@@ -1803,7 +1799,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         attempts,
         reviews: attempts.flatMap((attempt) => listReviews(db, attempt.id)),
         events,
-        usage: taskUsage(events, attempts, running.has(task.id)),
+        usage: summarizeTaskUsage(events, attempts, { running: running.has(task.id) }),
         pendingPlan: pendingPlan(task, events) ?? null,
         // Files of the first prompt have no messageId; a message's files are also on its user.message event.
         attachments: listTaskAttachments(db, task.id).map((record) => ({
@@ -2326,11 +2322,29 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       })
       // Whole days in UTC; `to` includes its day.
       const nextDay = (day: string) => new Date(Date.parse(`${day}T00:00:00.000Z`) + 86_400_000).toISOString()
+      const period = {
+        ...(filter.from ? { from: `${filter.from}T00:00:00.000Z` } : {}),
+        ...(filter.to ? { to: nextDay(filter.to) } : {}),
+        ...(filter.repoId ? { repoId: filter.repoId } : {}),
+      }
       json(res, 200, {
-        stats: modelStats(db, {
-          ...(filter.from ? { from: `${filter.from}T00:00:00.000Z` } : {}),
-          ...(filter.to ? { to: nextDay(filter.to) } : {}),
-          ...(filter.repoId ? { repoId: filter.repoId } : {}),
+        stats: modelStats(db, period),
+        // The latest tasks of the period with what each cost, to compare them (a task with nothing recorded has no
+        // tokens or cost).
+        tasks: listTasksCreated(db, period, STATS_TASK_LIMIT).map((task) => {
+          const { runs: _runs, ...usage } = summarizeTaskUsage(
+            listTaskEventsOfTypes(db, task.id, USAGE_EVENT_TYPES),
+            listAttempts(db, task.id),
+            { running: running.has(task.id) },
+          )
+          return {
+            id: task.id,
+            title: task.title,
+            mode: task.mode,
+            status: task.status,
+            createdAt: task.createdAt,
+            usage,
+          }
         }),
       })
       return
@@ -3489,59 +3503,6 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
   }
 
-  /** Wall-clock time the task ran and the tokens and cost its agents reported (only what was recorded). */
-  function taskUsage(events: TaskEventRecord[], attempts: AttemptRecord[], isRunning: boolean) {
-    const byAttempt = new Map(attempts.map((attempt) => [attempt.id as string, attempt]))
-    const roleModels = new Map<string, ModelRef>()
-    const totals: { inputTokens?: number; outputTokens?: number; costUsd?: number } = {}
-    const byProvider = new Map<
-      string,
-      { provider: ProviderKind; model: string; inputTokens?: number; outputTokens?: number; costUsd?: number }
-    >()
-    const add = (
-      target: { inputTokens?: number; outputTokens?: number; costUsd?: number },
-      key: 'inputTokens' | 'outputTokens' | 'costUsd',
-      value: unknown,
-    ) => {
-      if (typeof value === 'number' && Number.isFinite(value)) target[key] = (target[key] ?? 0) + value
-    }
-    let durationMs = 0
-    let openedAt: number | undefined
-    for (const event of events) {
-      const at = Date.parse(event.ts)
-      if (event.type === 'started' && openedAt === undefined) openedAt = at
-      else if (RUN_END_EVENTS.has(event.type) && openedAt !== undefined) {
-        durationMs += Math.max(0, at - openedAt)
-        openedAt = undefined
-      }
-      const payload = event.payload as {
-        role?: unknown
-        model?: ModelRef
-        type?: unknown
-        event?: { type?: unknown; inputTokens?: unknown; outputTokens?: unknown; costUsd?: unknown }
-      }
-      if (typeof payload !== 'object' || payload === null) continue
-      const role = typeof payload.role === 'string' ? payload.role : undefined
-      if (event.type === 'phase' && role && payload.model?.provider)
-        roleModels.set(`${event.attemptId ?? ''}:${role}`, payload.model)
-      if (payload.event?.type !== 'usage') continue
-      const attempt = event.attemptId ? byAttempt.get(event.attemptId) : undefined
-      const model =
-        roleModels.get(`${event.attemptId ?? ''}:${role ?? ''}`) ??
-        (role === 'implementer' && attempt ? { provider: attempt.provider, model: attempt.model } : undefined)
-      for (const key of ['inputTokens', 'outputTokens', 'costUsd'] as const)
-        add(totals, key, payload.event[key])
-      if (!model) continue
-      const id = `${model.provider}:${model.model}`
-      const entry = byProvider.get(id) ?? { provider: model.provider, model: model.model }
-      for (const key of ['inputTokens', 'outputTokens', 'costUsd'] as const)
-        add(entry, key, payload.event[key])
-      byProvider.set(id, entry)
-    }
-    if (openedAt !== undefined && isRunning) durationMs += Math.max(0, Date.now() - openedAt)
-    return { durationMs, ...totals, byProvider: [...byProvider.values()] }
-  }
-
   /**
    * Runs the repository's check command in the worktree (T: pre-review checks). It is a run_in_worktree action
    * under the policy; an approval-tier decision waits for the owner and skips the checks when not approved.
@@ -4344,6 +4305,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           publishTaskLevel(task.id, 'compete.judging', { model: event.model })
         } else if (event.type === 'judge_agent') {
           persistUsageEvent(db, judge.provider, event.event)
+          // The judge runs outside any attempt; its usage is kept with the task like the contestants'.
+          if (event.event.type === 'usage')
+            publishTaskLevel(task.id, 'compete.usage', { role: 'judge', model: judge, event: event.event })
         } else if (event.type === 'judgement') {
           publishTaskLevel(task.id, 'compete.judgement', {
             judgement: event.judgement,
