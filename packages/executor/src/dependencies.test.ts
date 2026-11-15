@@ -108,4 +108,50 @@ describe('installDependencies', () => {
     expect(result).toMatchObject({ status: 'failed', manager: 'yarn', exitCode: null })
     expect(result.status === 'failed' && result.spawnError).toBeTruthy()
   })
+
+  it('runs the owner’s own install command instead of the lockfile one, even without a lockfile', async () => {
+    const dir = temp()
+    writeFileSync(join(dir, 'pnpm-lock.yaml'), '')
+    const script = fakePackageManager()
+    const seen: string[] = []
+    const result = await installDependencies(dir, {
+      command: ['make', 'deps', '$HOME; rm -rf /'],
+      env: { ...process.env, FAKE_PM_EXIT: '0' },
+      resolve: (command) => {
+        seen.push(command)
+        return { command: process.execPath, prefix: [script] }
+      },
+    })
+    expect(seen).toEqual(['make'])
+    expect(result).toMatchObject({
+      status: 'installed',
+      manager: 'custom',
+      command: 'make deps $HOME; rm -rf /',
+      exitCode: 0,
+    })
+    // Every word is one argument: nothing was split or expanded by a shell.
+    const call = JSON.parse(readFileSync(join(dir, 'pm-call.json'), 'utf8')) as { args: string[] }
+    expect(call.args).toEqual(['deps', '$HOME; rm -rf /'])
+  })
+
+  it('an owner command needs no lockfile, and a failure of it is reported', async () => {
+    const dir = temp()
+    const script = fakePackageManager()
+    const result = await installDependencies(dir, {
+      command: ['bundle', 'install'],
+      env: { ...process.env, FAKE_PM_EXIT: '1' },
+      resolve: () => ({ command: process.execPath, prefix: [script] }),
+    })
+    expect(result).toMatchObject({
+      status: 'failed',
+      manager: 'custom',
+      command: 'bundle install',
+      exitCode: 1,
+    })
+  })
+
+  it('an empty owner command falls back to the lockfile', async () => {
+    const dir = temp()
+    expect(await installDependencies(dir, { command: [] })).toEqual({ status: 'none' })
+  })
 })

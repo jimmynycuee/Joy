@@ -2,12 +2,25 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-15（輸入框自動長高；任務中用首頁的選單切換模型、做法與權限模式，分支 `composer-switch`，基於 `permission-modes`）；2026-11-15（每個任務的權限模式：要求核准／自動／完整存取，分支 `permission-modes`，core 與 policy 待擁有者審）；2026-11-15（修正：review loop／compete 的 Claude 實作者沒有核准管道，`pnpm check` 被 CLI 自動拒絕）；2026-11-14（附件：輸入框附加檔案與貼上圖片；介面減量：側邊欄單一清單、設定返回鍵、移除說明文字；品牌角色、配色與專案色；2026-11-13：不用終端機：單一程式＋背景服務、上限停下後排隊訊息不自動接續；擁有者已審即時補充的 core 介面）
+- 最後更新：2026-11-15（專案設定：專案指示、安裝指令、新任務預設、側邊欄依專案分組，分支 `project-settings`，基於 `composer-switch`）；2026-11-15（輸入框自動長高；任務中用首頁的選單切換模型、做法與權限模式，分支 `composer-switch`，基於 `permission-modes`）；2026-11-15（每個任務的權限模式：要求核准／自動／完整存取，分支 `permission-modes`，core 與 policy 待擁有者審）；2026-11-15（修正：review loop／compete 的 Claude 實作者沒有核准管道，`pnpm check` 被 CLI 自動拒絕）；2026-11-14（附件：輸入框附加檔案與貼上圖片；介面減量：側邊欄單一清單、設定返回鍵、移除說明文字；品牌角色、配色與專案色；2026-11-13：不用終端機：單一程式＋背景服務、上限停下後排隊訊息不自動接續；擁有者已審即時補充的 core 介面）
 - 最後更新：2026-11-15（任務頁整理：短標題、標題列只留點＋標題＋變更＋⋯、完成後過程預設收合、去掉色塊與光暈；2026-11-14：附件：輸入框附加檔案與貼上圖片；介面減量：側邊欄單一清單、設定返回鍵、移除說明文字；品牌角色、配色與專案色；2026-11-13：不用終端機：單一程式＋背景服務、上限停下後排隊訊息不自動接續；擁有者已審即時補充的 core 介面）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
 ## 驗證結果
+
+### 專案設定：專案指示、安裝指令、新任務預設、側邊欄分組（2026-11-15，分支 `project-settings`，基於 `composer-switch`）
+
+- **盤點**：repo 本來就有 `checkCommand`、`allowedProviders`、`maxPermissionMode`、`color`、`githubRemote`、`container`，這些沒動。新增三個欄位（migration 23，只新增、STRICT 的 `repos` 加欄位、CHECK 約束）：`instructions`（長度 1–20,000）、`install_command`（JSON 陣列）、`defaults`（JSON 物件）。`packages/core` 沒動（`ProjectDefaults` 型別放在 `packages/db`）。
+- **專案指示**（`packages/server/src/project-instructions.ts`）：在 server 把每個 provider 包一層 `withProjectInstructions`，由任務的 AsyncLocalStorage 取得任務所屬專案的指示，**每個開新 session 的 run** 都把指示放在 prompt 最前面（實作者、計畫、審查者、裁判、合併版、換家交接）。包在附件包裝**裡面**，所以指示裡的文字不會被當成附件標記解析。**接續既有 session 的 run（`resumeSessionId`）不再重複帶**：那個 session 第一個 prompt 已經有了，每輪重複只是浪費 token。它是擁有者在設定頁寫的，不是外部內容；prompt 裡明講「像 CLAUDE.md 一樣遵守」。指示改了之後，下一個新 session 才吃到新版（舊 session 維持原樣）。助理對話、政策預審、Tool Hub 的 ask_peer 不帶（不是任務的 agent run）。
+- **安裝指令**（`packages/executor/src/dependencies.ts`）：`installDependencies` 新增 `command`（argv，不經 shell，沿用 `resolve` 找程式），有給就取代 lockfile 判斷，**沒有 lockfile 也會跑**；結果事件 `manager: 'custom'`、`command` 是原樣 argv 串起來。server 的 `prepareDependencies` 條件完全沿用：ask 模式、外部內容、容器專案都不跑（事件改成：只要有自訂指令或有 lockfile 就發 `skipped`）；失敗只是事件，任務照跑。PATCH 的 `installCommand` 用跟檢查指令同一個 zod 結構（1–64 個非空字串、無 NUL），`null` 清除。
+- **專案預設**：`PATCH /api/repos/:id` 的 `defaults: {implementer?, reviewer?, mode?, permissionMode?} | null`（`mode` 是 single／review_loop／compete；實作者不能是 openai-api；`{}` 等於清除）。儲存時檢查：模型的 provider 必須在專案允許的服務裡、預設權限不能超過專案最高權限（同一個請求裡一起送的 `allowedProviders`／`maxPermissionMode` 也算），不合回 422。**server 建任務時不套用預設**（API 沒給的欄位還是原本的預設）；套用只發生在首頁輸入框。
+- **首頁套用**（`apps/web/src/project-defaults.ts`、`NewTaskPage.tsx`）：切換專案（含頁面打開時的第一個專案）時，專案有設定的欄位覆蓋輸入框的選擇，沒設定的欄位維持使用者上次的選擇（`joy.composer.v1`）；套用後的結果也會被存回 `joy.composer.v1`，所以「沒有預設的專案」沿用的是「目前輸入框的樣子」。模型沒給 effort 時，用輸入框本來就會用的規則（跟 Settings 同一個模型就用 Settings 的，否則最接近 medium）；跟 Settings 一樣的模型視為「照設定」。預設權限超過專案最高權限時降到最高權限，之後送出時照舊再 clamp 一次。
+- **設定頁**（`RepoSettings.tsx`）：新增「新任務的預設」（實作者、審查者、做法、權限，空白＝「照上次選擇」）、「專案指示」（textarea）、「安裝指令」（空白＝依 lockfile 自動安裝）。不加說明句。取消允許某服務時，用到它的預設模型一起清掉；調低最高權限時，高過它的預設權限一起降下來；預設權限選項高過最高權限的停用。
+- **側邊欄**（`sidebar-groups.ts`、`Sidebar.tsx`）：未封存的任務屬於 2 個以上專案時，清單依專案分組（順序＝專案加入順序，組內新到舊；對話放最後一組「對話」），每組標題可點擊收合（`aria-expanded`），收合狀態存 `joy.sidebar.collapsed.v1`（只存組的 key；讀寫都經過有 try/catch 的 `readStorage`／`writeStorage`，讀到壞資料當成沒有收合）。只有一個專案（或只有一個專案有任務）時維持原本的「最近」單一清單、沒有分組標題。搜尋時所有組都展開顯示符合的項目；收合中的組若有等你的任務，標題尾端有一個點。
+- **測試**：db 4 個（指示／安裝指令／預設的儲存、清除、CHECK、migration 前的舊資料）；executor 3 個（自訂指令取代 lockfile 並逐字當 argv、不需 lockfile、空指令退回 lockfile）；server `project-settings.test.ts` 21 個＋`project-instructions.test.ts` 5 個（PATCH 驗證與上限；實作者與審查者 prompt 以指示開頭、接續的 session 不帶、別的專案不帶、先規劃也帶；預設的儲存／拒絕／與限制互動；安裝指令在 auto 跑且逐字 argv、沒 lockfile 也跑、清除後退回、ask／外部內容／容器都不跑、失敗不擋任務）；web `project-defaults.test.ts`、`sidebar-groups.test.ts`、`repo-patch.test.ts` 新增；e2e `project-settings.spec.ts` 5 個（設定頁儲存與清除、切換專案套用預設、分組與收合與重新整理後仍收合與搜尋、單一專案無標題、localStorage 被擋）。
+- **驗證**：`pnpm check` 通過（vitest 1271 passed、4 skipped）。e2e 用不提交的暫時 harness（fake runtime 4398＋Vite 4173，`/api` 與 `/ws` proxy 都指向 4398，啟動時檢查不含 4317／5173，跑完已刪除）：109 個全部通過（`origin-proxy.spec.ts` 寫死 5173，沒跑）。淺色桌面寬度看過設定頁與分組側邊欄截圖。
+- **沒驗證到**：沒有呼叫真的 Claude Code／Codex，所以「指示放在 prompt 最前面」只驗證到 provider 收到的 `RunOptions.prompt`；真實模型是否遵守沒測。深色與手機寬度沒看。使用者在首頁手動改了選擇後離開再回來，第一個專案的預設會再套一次（見決策）。
 
 ### 輸入框高度＋任務中切換模型、做法與權限模式（2026-11-15，分支 `composer-switch`，基於 `permission-modes`）
 
@@ -394,6 +407,7 @@
 
 ## 已確認決策
 
+- 2026-11-15 專案設定（擁有者要求；以下細節為 agent 決定，`packages/core` 與 `packages/policy` 沒動）：(1) 專案指示只放在「開新 session」的 run 的 prompt 最前面，接續 session 的 run 不重複；改了指示只影響之後新開的 session，已開的 session 維持原樣；(2) 專案指示上限 20,000 字（server、DB CHECK、設定頁 textarea 三處同值）；(3) 安裝指令存 argv、不經 shell，取代 lockfile 判斷（沒有 lockfile 也跑），仍只在 auto／full、非外部內容、非容器專案執行，失敗不擋任務；(4) 專案預設只在首頁輸入框套用，server 建任務（API、助理、排程）不套用；預設不能超過專案允許的服務與最高權限（儲存時回 422，顯示時再 clamp 一次）；(5) 切換專案時預設覆蓋輸入框、沒預設的欄位和沒預設的專案沿用目前輸入框（也就是上次的選擇），套用結果會存回 `joy.composer.v1`；頁面每次打開，第一個專案的預設也套用一次，所以在有預設的專案手動改過的選擇，離開首頁再回來會被預設蓋回去；(6) 側邊欄在 2 個以上專案有未封存任務時才分組，組序＝專案加入順序，收合狀態存 localStorage `joy.sidebar.collapsed.v1`。
 - 2026-11-15 任務中切換模型、做法與權限（擁有者要求；以下細節為 agent 決定，待擁有者確認）：(1) 設定跟著下一則訊息送出，只在選單上改不會立即生效；(2) 任務在跑時，帶設定的訊息一律排隊（不 steer、不打斷），它和後面的訊息都等這一輪結束才送；(3) 同一家換模型或 effort：續用同一個 session，更新 `attempt.model`；換一家：同一個工作副本開新 attempt、新 session，第一個 prompt 是從事件紀錄組出來的交接摘要（不呼叫模型），之後接新 provider 自己的 session；(4) 只能在 single 和 review_loop 之間切換，compete 任務與切成 compete 都不開放；權限模式依建立任務的規則（外部內容固定 `ask`、專案上限 clamp）；(5) 值跟目前設定相同就當作沒有設定，不記事件；(6) `task.settings` 在任務完成後收合時仍然顯示；(7) 輸入框高度上限是 12 行或視窗的 40%，助理對話的輸入框也一樣。沒有新的 migration，沒有改 `packages/core` 的介面。
 - 2026-11-15 每個任務的權限模式（擁有者核准三種模式與各自的範圍；以下細節為 agent 決定，**core 與 policy 的變更待擁有者審**）：(1) 網頁新任務預設選 `auto`；API 沒給模式、助理 `create_task`、排程任務都是 `ask`；既有任務 `ask`，外部內容一律 `ask`，專案可設最高模式、server 降級；(2) 三種模式的 CLI 旗標相同（Claude `acceptEdits`＋核准工具、Codex `workspace-write`＋`on-request`），`full` 不用 `bypassPermissions`／`danger-full-access`，好讓密鑰與 Joy 設定一定經過 Joy；(3) 分類器是方便用的啟發式，邊界是 CLI 的 sandbox；Claude 的 Bash 沒有 sandbox 是已知缺口；(4) `full` 放行的動作以 `ClassifiedAction.grant` 標記，不新增 `ActionKind`；(5) OS 暫存目錄算工作區；(6) worktree 建好後依 lockfile 安裝相依套件，只限 `auto`／`full` 且非外部內容的任務，失敗不讓任務失敗，容器專案不在本機裝；(8) 非 Joy 的 MCP 工具與未知工具在 `full` 也要問；(7) Codex 檔案寫入沒給 `grantRoot` 時 `full` 也問。
 - 2026-11-15 Windows CI 偶發逾時（agent 決定）：`db`、`executor`、`server` 會跑真實 git／SQLite 的測試，`testTimeout` 拉到 30 s、`hookTimeout` 60 s；測試暫存目錄用 `rmSync(..., { maxRetries: 5, retryDelay: 100 })` 清理，避開 Windows `EBUSY`。不跳過、不弱化測試。

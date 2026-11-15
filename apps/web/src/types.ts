@@ -1,5 +1,14 @@
-import type { PermissionMode, ProviderKind, RoleConfig } from '@joy/core'
+import type { ModelRef, PermissionMode, ProviderKind, RoleConfig } from '@joy/core'
 import type { RepoColorId } from './repo-colors.js'
+
+/** What the home page's message box starts from for a project; every field is optional. */
+export type ProjectDefaults = {
+  implementer?: ModelRef
+  reviewer?: ModelRef
+  /** A built-in mode: `single`, `review_loop` or `compete`. */
+  mode?: string
+  permissionMode?: PermissionMode
+}
 
 export type Repo = {
   id: string
@@ -13,6 +22,11 @@ export type Repo = {
   color?: RepoColorId
   /** The highest permission mode a task here may use; missing means no limit. */
   maxPermissionMode?: PermissionMode
+  /** Written by the owner; every new agent session in the project starts with it. */
+  instructions?: string
+  /** argv that installs dependencies in a new worktree instead of the lockfile install. */
+  installCommand?: string[]
+  defaults?: ProjectDefaults
 }
 export type Task = {
   id: string

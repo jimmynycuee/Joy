@@ -4,12 +4,19 @@ import { PERMISSION_MODES, PROVIDER_KINDS } from '@joy/core'
 import type { PermissionMode, ProviderKind } from '@joy/core'
 import { errorMessage, request } from '../api.js'
 import { formatCheckCommand, shellCharactersIn } from '../check-command.js'
-import { PERMISSION_HINTS, PERMISSION_LABELS, PROVIDER_LABELS, repoName } from '../labels.js'
+import { MODE_LABELS, PERMISSION_HINTS, PERMISSION_LABELS, PROVIDER_LABELS, repoName } from '../labels.js'
+import { IMPLEMENTER_MODELS, MODEL_CATALOG, modelLabel } from '../models.js'
+import { DEFAULT_MODES, MAX_INSTRUCTIONS, buildDefaults, defaultsForm, refKey } from '../project-defaults.js'
+import type { DefaultsForm } from '../project-defaults.js'
 import { REPO_COLORS, repoColor } from '../repo-colors.js'
 import type { RepoColorId } from '../repo-colors.js'
 import { repoPatch } from '../repo-patch.js'
 import type { Repo } from '../types.js'
 import { Button, ProjectDot } from './ui.js'
+
+function permissionAllowed(mode: PermissionMode, max: PermissionMode | null): boolean {
+  return !max || PERMISSION_MODES.indexOf(mode) <= PERMISSION_MODES.indexOf(max)
+}
 
 /** One project's settings: where its PRs go, which services may work on it, and the check run before each review. */
 export function RepoSettingsCard({
@@ -29,13 +36,26 @@ export function RepoSettingsCard({
   const [maxPermissionMode, setMaxPermissionMode] = useState<PermissionMode | null>(
     repo.maxPermissionMode ?? null,
   )
+  const [instructions, setInstructions] = useState(repo.instructions ?? '')
+  const [installCommand, setInstallCommand] = useState(formatCheckCommand(repo.installCommand))
+  const [defaults, setDefaults] = useState<DefaultsForm>(() => defaultsForm(repo.defaults))
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState('')
   const [saved, setSaved] = useState(false)
 
-  const patch = repoPatch(repo, { githubRemote, providers, checkCommand, color, maxPermissionMode })
+  const patch = repoPatch(repo, {
+    githubRemote,
+    providers,
+    checkCommand,
+    color,
+    maxPermissionMode,
+    instructions,
+    installCommand,
+    defaults: buildDefaults(defaults, repo.defaults),
+  })
   const changed = Object.keys(patch).length > 0
   const shellCharacter = shellCharactersIn(checkCommand)
+  const installShellCharacter = shellCharactersIn(installCommand)
   const name = repoName(repo.path)
   // What the dot shows in the card head right now, saved or not.
   const shown = REPO_COLORS.find((item) => item.id === color) ?? repoColor(repo.id, repos)
@@ -43,6 +63,30 @@ export function RepoSettingsCard({
   function toggleProvider(kind: ProviderKind, on: boolean) {
     setSaved(false)
     setProviders((current) => (on ? [...current, kind] : current.filter((item) => item !== kind)))
+    // A default model from a service the project no longer allows would be refused on save: drop it with the service.
+    if (!on)
+      setDefaults((current) => ({
+        ...current,
+        implementer: current.implementer.startsWith(`${kind}|`) ? '' : current.implementer,
+        reviewer: current.reviewer.startsWith(`${kind}|`) ? '' : current.reviewer,
+      }))
+  }
+
+  function setDefault<K extends keyof DefaultsForm>(key: K, value: DefaultsForm[K]) {
+    setSaved(false)
+    setDefaults((current) => ({ ...current, [key]: value }))
+  }
+
+  /** The models a role can default to: the project's allowed services, plus a stored one that is not in the catalog. */
+  function modelOptions(role: 'implementer' | 'reviewer') {
+    const catalog = (role === 'implementer' ? IMPLEMENTER_MODELS : MODEL_CATALOG).filter((entry) =>
+      providers.includes(entry.provider),
+    )
+    const options = catalog.map((entry) => ({ value: refKey(entry), label: modelLabel(entry) }))
+    const stored = repo.defaults?.[role]
+    if (stored && providers.includes(stored.provider) && !options.some((o) => o.value === refKey(stored)))
+      options.push({ value: refKey(stored), label: modelLabel(stored) })
+    return options
   }
 
   async function save(event: FormEvent<HTMLFormElement>) {
@@ -156,7 +200,11 @@ export function RepoSettingsCard({
             title={maxPermissionMode ? PERMISSION_HINTS[maxPermissionMode] : undefined}
             onChange={(event) => {
               setSaved(false)
-              setMaxPermissionMode((event.target.value || null) as PermissionMode | null)
+              const max = (event.target.value || null) as PermissionMode | null
+              setMaxPermissionMode(max)
+              // A default above the new maximum would be refused on save: it goes down with the maximum.
+              if (max && defaults.permissionMode && !permissionAllowed(defaults.permissionMode, max))
+                setDefaults((current) => ({ ...current, permissionMode: max }))
             }}
           >
             <option value="">不限制</option>
@@ -167,6 +215,94 @@ export function RepoSettingsCard({
             ))}
           </select>
         </label>
+        <fieldset className="defaults-fieldset">
+          <legend>新任務的預設</legend>
+          <div className="defaults-grid">
+            {(['implementer', 'reviewer'] as const).map((role) => (
+              <label key={role}>
+                {role === 'implementer' ? '實作者' : '審查者'}
+                <select
+                  aria-label={`${name} 的預設${role === 'implementer' ? '實作者' : '審查者'}`}
+                  value={defaults[role]}
+                  onChange={(event) => setDefault(role, event.target.value)}
+                >
+                  <option value="">照上次選擇</option>
+                  {modelOptions(role).map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ))}
+            <label>
+              做法
+              <select
+                aria-label={`${name} 的預設做法`}
+                value={defaults.mode}
+                onChange={(event) => setDefault('mode', event.target.value)}
+              >
+                <option value="">照上次選擇</option>
+                {DEFAULT_MODES.map((mode) => (
+                  <option key={mode} value={mode}>
+                    {MODE_LABELS[mode] ?? mode}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              權限
+              <select
+                aria-label={`${name} 的預設權限`}
+                value={defaults.permissionMode}
+                title={defaults.permissionMode ? PERMISSION_HINTS[defaults.permissionMode] : undefined}
+                onChange={(event) => setDefault('permissionMode', event.target.value as PermissionMode | '')}
+              >
+                <option value="">照上次選擇</option>
+                {PERMISSION_MODES.map((mode) => (
+                  <option key={mode} value={mode} disabled={!permissionAllowed(mode, maxPermissionMode)}>
+                    {PERMISSION_LABELS[mode]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </fieldset>
+        <label>
+          專案指示
+          <textarea
+            name="instructions"
+            aria-label={`${name} 的專案指示`}
+            rows={5}
+            maxLength={MAX_INSTRUCTIONS}
+            spellCheck={false}
+            value={instructions}
+            onChange={(event) => {
+              setSaved(false)
+              setInstructions(event.target.value)
+            }}
+          />
+        </label>
+        <label>
+          安裝指令
+          <input
+            name="installCommand"
+            aria-label={`${name} 的安裝指令`}
+            placeholder="依 lockfile 自動安裝"
+            autoComplete="off"
+            spellCheck={false}
+            value={installCommand}
+            onChange={(event) => {
+              setSaved(false)
+              setInstallCommand(event.target.value)
+            }}
+          />
+        </label>
+        {installShellCharacter ? (
+          <p className="notice-line" role="status">
+            偵測到 <code>{installShellCharacter}</code>：它會原封不動傳給程式，不會被 shell 解讀。
+          </p>
+        ) : null}
         <label>
           送審前檢查指令
           <input

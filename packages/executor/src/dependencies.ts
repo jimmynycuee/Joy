@@ -6,6 +6,8 @@ import { runCommand } from './run.js'
 import type { RunCommandInput, RunCommandResult } from './run.js'
 
 export type PackageManager = 'pnpm' | 'npm' | 'yarn'
+/** `custom`: the owner's own install command for the project, not a lockfile guess. */
+export type InstallManager = PackageManager | 'custom'
 
 export interface DependencyInstall {
   manager: PackageManager
@@ -34,6 +36,11 @@ export function dependencyInstall(
 }
 
 export interface InstallDependenciesOptions {
+  /**
+   * The owner's install command (argv, no shell). It replaces the lockfile install and runs even without a lockfile.
+   * The program is looked up through `resolve` like the package managers are.
+   */
+  command?: readonly string[]
   signal?: AbortSignal
   /** Default 10 minutes. */
   timeoutMs?: number
@@ -52,7 +59,7 @@ export type InstallDependenciesResult =
   | { status: 'none' }
   | {
       status: 'installed' | 'failed'
-      manager: PackageManager
+      manager: InstallManager
       /** As the owner would type it. */
       command: string
       exitCode: number | null
@@ -68,7 +75,10 @@ export async function installDependencies(
   dir: string,
   options: InstallDependenciesOptions = {},
 ): Promise<InstallDependenciesResult> {
-  const install = dependencyInstall(dir, options.exists)
+  const [program, ...rest] = options.command ?? []
+  const install: (Omit<DependencyInstall, 'manager'> & { manager: InstallManager }) | undefined = program
+    ? { manager: 'custom', lockfile: '', command: program, args: rest }
+    : dependencyInstall(dir, options.exists)
   if (!install) return { status: 'none' }
   const resolved = options.resolve?.(install.command) ?? { command: install.command, prefix: [] }
   const startedAt = Date.now()

@@ -80,4 +80,45 @@ describe('repoPatch', () => {
     expect(repoPatch(limited, { ...same, maxPermissionMode: null })).toEqual({ maxPermissionMode: null })
     expect(repoPatch(limited, { ...same })).toEqual({})
   })
+
+  it('sends the instructions trimmed, only when they change, and null once they are emptied', () => {
+    const written: Repo = { ...repo, instructions: 'Use pnpm.' }
+    expect(repoPatch(repo, { ...same, instructions: '' })).toEqual({})
+    expect(repoPatch(repo, { ...same, instructions: '  \n ' })).toEqual({})
+    expect(repoPatch(written, { ...same, instructions: ' Use pnpm.\n' })).toEqual({})
+    expect(repoPatch(written, { ...same, instructions: 'Use npm.' })).toEqual({ instructions: 'Use npm.' })
+    expect(repoPatch(written, { ...same, instructions: '' })).toEqual({ instructions: null })
+    expect(repoPatch(repo, { ...same, instructions: 'a\n\nb' })).toEqual({ instructions: 'a\n\nb' })
+    expect(repoPatch(written, { ...same })).toEqual({})
+  })
+
+  it('sends the install command as argv, and null to go back to the lockfile install', () => {
+    const custom: Repo = { ...repo, installCommand: ['make', 'deps'] }
+    expect(repoPatch(repo, { ...same, installCommand: '' })).toEqual({})
+    expect(repoPatch(repo, { ...same, installCommand: ' pnpm  install --offline ' })).toEqual({
+      installCommand: ['pnpm', 'install', '--offline'],
+    })
+    expect(repoPatch(custom, { ...same, installCommand: 'make   deps' })).toEqual({})
+    expect(repoPatch(custom, { ...same, installCommand: '' })).toEqual({ installCommand: null })
+    expect(repoPatch(custom, { ...same })).toEqual({})
+  })
+
+  it('sends the defaults as a whole when they change, and null once none is left', () => {
+    const withDefaults: Repo = { ...repo, defaults: { mode: 'single', permissionMode: 'auto' } }
+    expect(repoPatch(repo, { ...same, defaults: {} })).toEqual({})
+    expect(
+      repoPatch(withDefaults, { ...same, defaults: { mode: 'single', permissionMode: 'auto' } }),
+    ).toEqual({})
+    expect(repoPatch(withDefaults, { ...same, defaults: { mode: 'single' } })).toEqual({
+      defaults: { mode: 'single' },
+    })
+    expect(repoPatch(withDefaults, { ...same, defaults: {} })).toEqual({ defaults: null })
+    expect(
+      repoPatch(repo, {
+        ...same,
+        defaults: { implementer: { provider: 'claude-cli', model: 'haiku' } },
+      }),
+    ).toEqual({ defaults: { implementer: { provider: 'claude-cli', model: 'haiku' } } })
+    expect(repoPatch(withDefaults, { ...same })).toEqual({})
+  })
 })

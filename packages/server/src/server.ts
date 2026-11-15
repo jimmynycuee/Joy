@@ -31,7 +31,15 @@ import type {
   TaskStatus,
   Workspace,
 } from '@joy/core'
-import { clampPermissionMode, EFFORTS, PERMISSION_MODES, PROVIDER_KINDS, ROLES, resolveRole } from '@joy/core'
+import {
+  clampPermissionMode,
+  EFFORTS,
+  PERMISSION_MODES,
+  PROVIDER_KINDS,
+  ROLES,
+  TASK_MODES,
+  resolveRole,
+} from '@joy/core'
 import type { PermissionMode } from '@joy/core'
 import { ConfigStore, configSchema, joyHome, resolvePaths, type JoyConfig } from '@joy/config'
 import {
@@ -91,6 +99,7 @@ import {
   listTaskEvents,
   listTasks,
   listUsage,
+  MAX_PROJECT_INSTRUCTIONS,
   REPO_COLORS,
   modelStats,
   markMemoriesUsed,
@@ -105,6 +114,9 @@ import {
   updateRepoAllowedProviders,
   updateRepoCheckCommand,
   updateRepoColor,
+  updateRepoDefaults,
+  updateRepoInstallCommand,
+  updateRepoInstructions,
   updateRepoContainer,
   updateRepoGithubRemote,
   updateRepoMaxPermissionMode,
@@ -251,6 +263,7 @@ import type { AttachmentInfo } from './attachments.js'
 import { cliVersionWarnings, runDoctor } from './doctor.js'
 import type { DoctorOptions } from './doctor.js'
 import { describeDisallowedRoleProvider, findDisallowedRoleProviders } from './provider-allowlist.js'
+import { withProjectInstructions } from './project-instructions.js'
 
 const modelSchema = z.strictObject({
   provider: z.enum(PROVIDER_KINDS),
@@ -286,6 +299,15 @@ const repoInputSchema = z.strictObject({
   container: z.boolean().optional(),
   checkCommand: checkCommandSchema.optional(),
 })
+/** What the home page's message box starts from for a project. The implementer must be able to edit code. */
+const projectDefaultsSchema = z.strictObject({
+  implementer: modelSchema
+    .refine((model) => model.provider !== 'openai-api', 'openai-api cannot edit code')
+    .optional(),
+  reviewer: modelSchema.optional(),
+  mode: z.enum(TASK_MODES).optional(),
+  permissionMode: z.enum(PERMISSION_MODES).optional(),
+})
 const repoAllowlistInputSchema = z
   .strictObject({
     allowedProviders: allowedProvidersSchema.optional(),
@@ -298,6 +320,12 @@ const repoAllowlistInputSchema = z
     color: z.enum(REPO_COLORS).nullable().optional(),
     /** The highest permission mode a task here may use; null removes the limit. */
     maxPermissionMode: z.enum(PERMISSION_MODES).nullable().optional(),
+    /** The owner's text for every new agent session in this project; null or blank clears it. */
+    instructions: z.string().max(MAX_PROJECT_INSTRUCTIONS).nullable().optional(),
+    /** argv that installs dependencies in a new worktree instead of the lockfile install; null clears it. */
+    installCommand: checkCommandSchema.nullable().optional(),
+    /** Starting choices for the message box on the home page; null clears them. */
+    defaults: projectDefaultsSchema.nullable().optional(),
   })
   .refine(
     (input) =>
@@ -306,8 +334,14 @@ const repoAllowlistInputSchema = z
       input.container !== undefined ||
       input.checkCommand !== undefined ||
       input.color !== undefined ||
-      input.maxPermissionMode !== undefined,
-    { message: 'Send allowedProviders, githubRemote, container, checkCommand, color or maxPermissionMode' },
+      input.maxPermissionMode !== undefined ||
+      input.instructions !== undefined ||
+      input.installCommand !== undefined ||
+      input.defaults !== undefined,
+    {
+      message:
+        'Send allowedProviders, githubRemote, container, checkCommand, color, maxPermissionMode, instructions, installCommand or defaults',
+    },
   )
 const publishInputSchema = z.strictObject({
   title: z.string().trim().min(1).max(256).optional(),
@@ -349,6 +383,40 @@ const SECRET_ROUTES: Record<string, { name: 'openai_api_key' | 'telegram_bot_tok
   'telegram-bot-token': { name: 'telegram_bot_token', env: 'JOY_TELEGRAM_BOT_TOKEN' },
 }
 const secretValueSchema = z.strictObject({ value: z.string().trim().min(1).max(4096) })
+/**
+ * A project default that the project's own limits would refuse is refused when it is saved (a provider the project does
+ * not allow, a permission mode above its maximum), so the home page never starts from a choice that cannot work. The
+ * limits of the same request count: the form saves both together.
+ */
+function assertDefaultsFit(
+  defaults: NonNullable<z.infer<typeof projectDefaultsSchema>>,
+  repo: RepoRecord,
+  change: {
+    allowedProviders?: ProviderKind[] | undefined
+    maxPermissionMode?: PermissionMode | null | undefined
+  },
+): void {
+  const allowed = change.allowedProviders ?? repo.allowedProviders
+  for (const role of ['implementer', 'reviewer'] as const) {
+    const model = defaults[role]
+    if (model && !allowed.includes(model.provider))
+      throw new HttpError(
+        422,
+        `The ${role} default uses ${model.provider}, which this project does not allow`,
+      )
+  }
+  const max = change.maxPermissionMode === undefined ? repo.maxPermissionMode : change.maxPermissionMode
+  if (
+    defaults.permissionMode &&
+    max &&
+    clampPermissionMode(defaults.permissionMode, max) !== defaults.permissionMode
+  )
+    throw new HttpError(
+      422,
+      `The default permission mode ${defaults.permissionMode} is above this project's maximum (${max})`,
+    )
+}
+
 /** Runs `check` before every run of `inner`; a thrown error refuses the run before any request is made. */
 function withMonthlyBudget(inner: AgentProvider, check: () => Promise<void>): AgentProvider {
   return {
@@ -776,7 +844,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const provider = providers[kind]
     if (provider)
       providers[kind] = withAttachments(
-        provider,
+        // Inside the attachment wrapper: the owner's instructions are never searched for attachment markers.
+        withProjectInstructions(provider, () => {
+          const taskId = runningTaskId.getStore()
+          const task = taskId ? getTask(db, taskId) : undefined
+          return task ? getRepo(db, task.repoId)?.instructions : undefined
+        }),
         attachmentStore,
         () => runningTaskId.getStore(),
         // A sent file gone from disk (for example a backup restored on another computer) is named as missing; the
@@ -827,7 +900,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (permissionMode === 'ask' || task?.provenance === 'external_content') {
       // Installing runs the project's lifecycle scripts and uses the network on this computer: only a task the owner
       // let work on its own (auto or full) gets it. In ask mode Joy behaves as before permission modes existed.
-      if (dependencyInstallFor(ws.path))
+      if (repo?.installCommand || dependencyInstallFor(ws.path))
         publish(ws.taskId, ws.attemptId, 'workspace.dependencies', {
           status: 'skipped',
           reason:
@@ -840,7 +913,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (repo?.container) {
       // An untrusted repository's install scripts must not run on this computer, and the agent image does not
       // install them in the container either; the agent installs inside its container if it needs to.
-      if (dependencyInstallFor(ws.path))
+      if (repo.installCommand || dependencyInstallFor(ws.path))
         publish(ws.taskId, ws.attemptId, 'workspace.dependencies', {
           status: 'skipped',
           reason: 'container repository: dependencies are not installed on this computer',
@@ -849,6 +922,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     try {
       const result = await installDependencies(ws.path, {
+        // The owner's own command for this project, else the one the lockfile implies.
+        ...(repo?.installCommand ? { command: repo.installCommand } : {}),
         signal: running.get(ws.taskId)?.controller.signal ?? AbortSignal.timeout(10 * 60_000),
         env: checkEnvironment(process.env),
         resolve: dependencyOptions?.resolve ?? ((command) => resolveCommand(command)),
@@ -1564,7 +1639,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       const repoId = idSchema.parse(decodePathSegment(repoMatch[1] ?? '')) as RepoId
       assertJsonContentType(req)
       const input = repoAllowlistInputSchema.parse(await readJson(req))
-      if (!getRepo(db, repoId)) throw new HttpError(404, `Repository ${repoId} was not found`)
+      const before = getRepo(db, repoId)
+      if (!before) throw new HttpError(404, `Repository ${repoId} was not found`)
+      if (input.defaults) assertDefaultsFit(input.defaults, before, input)
       if (input.allowedProviders) updateRepoAllowedProviders(db, repoId, input.allowedProviders)
       if (input.githubRemote !== undefined) updateRepoGithubRemote(db, repoId, input.githubRemote)
       if (input.container !== undefined) updateRepoContainer(db, repoId, input.container)
@@ -1572,6 +1649,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (input.color !== undefined) updateRepoColor(db, repoId, input.color)
       if (input.maxPermissionMode !== undefined)
         updateRepoMaxPermissionMode(db, repoId, input.maxPermissionMode)
+      if (input.instructions !== undefined) updateRepoInstructions(db, repoId, input.instructions)
+      if (input.installCommand !== undefined) updateRepoInstallCommand(db, repoId, input.installCommand)
+      if (input.defaults !== undefined) updateRepoDefaults(db, repoId, input.defaults)
       const repo = getRepo(db, repoId)
       if (!repo) throw new HttpError(404, `Repository ${repoId} was not found`)
       json(res, 200, { repo })

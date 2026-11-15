@@ -5,6 +5,16 @@ import { modeLabel, shortTitle, statusLabel } from '../labels.js'
 import { NEW_CONVERSATION_TITLE, recentItems } from '../recent.js'
 import { repoColor } from '../repo-colors.js'
 import { modLabel } from '../shortcuts.js'
+import {
+  COLLAPSED_GROUPS_KEY,
+  CONVERSATIONS_GROUP,
+  groupByProject,
+  parseCollapsedGroups,
+  serializeCollapsedGroups,
+  toggleCollapsed,
+} from '../sidebar-groups.js'
+import type { SidebarGroup } from '../sidebar-groups.js'
+import { readStorage, writeStorage } from '../storage.js'
 import type { ConversationSummary, Repo, Task } from '../types.js'
 import { MascotMark } from './Mascot.js'
 import { Icon, IconButton, ProjectDot } from './ui.js'
@@ -102,6 +112,17 @@ export function Sidebar(props: SidebarProps) {
     [props.tasks, props.conversations, query],
   )
   const nothingYet = props.tasks.every((task) => task.archived) && props.conversations.length === 0
+  // With tasks from more than one project the list is split by project; each group can be folded away.
+  const groups = useMemo(
+    () => groupByProject(items, props.repos, props.tasks),
+    [items, props.repos, props.tasks],
+  )
+  const [collapsed, setCollapsed] = useState(() => parseCollapsedGroups(readStorage(COLLAPSED_GROUPS_KEY)))
+  function toggleGroup(key: string) {
+    const next = toggleCollapsed(collapsed, key)
+    setCollapsed(next)
+    writeStorage(COLLAPSED_GROUPS_KEY, serializeCollapsedGroups(next))
+  }
 
   function taskRow(task: Task, time: string | undefined) {
     const selected = props.view === 'task' && props.selectedTaskId === task.id
@@ -168,6 +189,44 @@ export function Sidebar(props: SidebarProps) {
     )
   }
 
+  function itemRow(item: (typeof items)[number]) {
+    return item.kind === 'task'
+      ? taskRow(item.task, item.time)
+      : conversationRow(item.conversation, item.time)
+  }
+
+  function groupBlock(group: SidebarGroup) {
+    // A search shows every match, folded or not.
+    const open = query !== '' || !collapsed.has(group.key)
+    const needsYou =
+      !open &&
+      group.items.some(
+        (item) =>
+          item.kind === 'task' &&
+          (item.task.status === 'awaiting_approval' || item.task.status === 'review_ready'),
+      )
+    return (
+      <div className="sidebar-group" key={group.key} role="group" aria-label={group.label}>
+        <button
+          type="button"
+          className="sidebar-group-toggle"
+          aria-expanded={open}
+          onClick={() => toggleGroup(group.key)}
+        >
+          <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} />
+          {group.repoId ? (
+            <ProjectDot color={repoColor(group.repoId, props.repos)} />
+          ) : group.key === CONVERSATIONS_GROUP ? (
+            <Icon name="chat" size={12} />
+          ) : null}
+          <span className="group-label">{group.label}</span>
+          {needsYou ? <span className="task-flag" aria-label="有任務在等你" role="img" /> : null}
+        </button>
+        {open ? group.items.map(itemRow) : null}
+      </div>
+    )
+  }
+
   // 新任務 / 聊聊 are lit only while that very page is open: the composer, or a conversation that has no messages yet.
   const onNewTask = props.view === 'new-task'
   const onNewChat = props.view === 'assistant' && props.selectedConversationId === ''
@@ -221,24 +280,24 @@ export function Sidebar(props: SidebarProps) {
       </div>
 
       <div className="sidebar-scroll">
-        <div className="sidebar-group task-list" aria-label="最近">
-          {nothingYet ? null : (
-            <div className="sidebar-group-head">
-              <span className="group-label">最近</span>
-            </div>
-          )}
-          {nothingYet ? (
-            <p className="empty-list">還沒有任何工作</p>
-          ) : items.length === 0 ? (
-            <p className="empty-list">沒有符合的項目</p>
-          ) : (
-            items.map((item) =>
-              item.kind === 'task'
-                ? taskRow(item.task, item.time)
-                : conversationRow(item.conversation, item.time),
-            )
-          )}
-        </div>
+        {groups && items.length > 0 ? (
+          <div className="task-list">{groups.map(groupBlock)}</div>
+        ) : (
+          <div className="sidebar-group task-list" aria-label="最近">
+            {nothingYet ? null : (
+              <div className="sidebar-group-head">
+                <span className="group-label">最近</span>
+              </div>
+            )}
+            {nothingYet ? (
+              <p className="empty-list">還沒有任何工作</p>
+            ) : items.length === 0 ? (
+              <p className="empty-list">沒有符合的項目</p>
+            ) : (
+              items.map(itemRow)
+            )}
+          </div>
+        )}
       </div>
 
       <div className="sidebar-footer">
