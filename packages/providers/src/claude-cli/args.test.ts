@@ -70,6 +70,23 @@ describe('buildClaudeArgs', () => {
     expect(args).not.toContain('none')
   })
 
+  it('keeps the approval tool when the prompt goes on stdin (steering, images, long prompts)', () => {
+    const args = buildClaudeArgs({ ...base, approvalTool: 'mcp__joy__approve' }, model, '/tmp/mcp.json', true)
+    expect(args).toEqual(
+      expect.arrayContaining([
+        '--input-format',
+        'stream-json',
+        '--permission-prompt-tool',
+        'mcp__joy__approve',
+        '--permission-prompts',
+        'host',
+        '--mcp-config',
+        '/tmp/mcp.json',
+      ]),
+    )
+    expect(args).not.toContain('none')
+  })
+
   it('passes MCP config strictly and the output schema as JSON', () => {
     const args = buildClaudeArgs({ ...base, outputSchema: { type: 'object' } }, model, '/tmp/mcp.json')
     expect(args).toEqual(expect.arrayContaining(['--mcp-config', '/tmp/mcp.json', '--strict-mcp-config']))

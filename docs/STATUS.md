@@ -2,11 +2,33 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-15（修正：review loop／compete 的 Claude 實作者沒有核准管道，`pnpm check` 被 CLI 自動拒絕）；2026-11-14（附件：輸入框附加檔案與貼上圖片；介面減量：側邊欄單一清單、設定返回鍵、移除說明文字；品牌角色、配色與專案色；2026-11-13：不用終端機：單一程式＋背景服務、上限停下後排隊訊息不自動接續；擁有者已審即時補充的 core 介面）
 - 最後更新：2026-11-15（任務頁整理：短標題、標題列只留點＋標題＋變更＋⋯、完成後過程預設收合、去掉色塊與光暈；2026-11-14：附件：輸入框附加檔案與貼上圖片；介面減量：側邊欄單一清單、設定返回鍵、移除說明文字；品牌角色、配色與專案色；2026-11-13：不用終端機：單一程式＋背景服務、上限停下後排隊訊息不自動接續；擁有者已審即時補充的 core 介面）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
 ## 驗證結果
+
+### 修正：review loop／compete 的實作者沒有核准管道（2026-11-15，分支 `claude-approval-surface`）
+
+擁有者實測：review_loop 任務的 Claude 實作者（haiku）跑 `pnpm check` 兩次都被拒，事件是 `permission_denied`「no approval surface in this session; permission request denied automatically」。擁有者資料庫裡 14 筆這種事件全部來自 `review_loop` 任務（唯讀查 `~/.joy/joy.sqlite`）。
+
+- **根本原因**：只有 `runSingle` 會建立 Tool Hub 並傳 `mcpServers`＋`approvalTool`。`runReviewLoop`、`runCompete`、`runCompeteMerge` 呼叫 orchestrator 時都沒傳，於是 `buildClaudeArgs` 走 `--permission-prompts none`，CLI 自己拒絕所有權限請求，Joy 的 policy 與核准中心都沒被問到。orchestrator 原本的 `ReviewLoopInput.mcpServers／approvalTool` 沒有人用，而且會連審查者一起給。Codex app-server 實作者在 review loop 也一樣：核准處理器只在 single 註冊，所以連 `pnpm test` 都被 decline。
+- **跟 OpenAI key 無關**：Tool Hub 只需要本機 server 在 listen（`createRunToolHub` 唯一的前提），不需要 OpenAI key 或其他設定，所以不需要另做「只有 approval tool 的最小 MCP server」。
+- **修法**（只改接線，`packages/policy` 沒動）：
+  - orchestrator：`ReviewLoopInput.mcpServers／approvalTool` 換成 `implementerTools(ws)`，worktree 建好後呼叫一次，只用在實作者的 implementing／fixing 回合；計畫（唯讀）與審查不給。`CompeteInput.implementerTools(contestant, ws)` 讓每位參賽者各自一個。
+  - server：新增 `implementerToolHubs`，每個 attempt 一個 Tool Hub（與 single 相同的 `createRunToolHub`），run 結束時關閉。Claude 帶 `--permission-prompt-tool mcp__joy__approve`；Codex app-server 的核准處理器只在該 attempt 的 implementing／fixing 回合掛上，計畫與審查回合拿掉，審查者照舊一律 decline。
+  - 涵蓋：single（原本就有）、review loop（含修正回合、follow-up／resume、steer 時的 stream-json）、compete 兩位參賽者、compete 合併版、額度換手（走 `runSingle`）。容器模式沿用 `inContainer` 的既有規則。
+- **測試**：
+  - `packages/server/src/approval-surface.test.ts`：single、review loop（實作＋修正＋follow-up 都帶 approval tool，審查者沒有）、compete 與合併版。另一個測試用真的 `ClaudeCliProvider`＋假 CLI（`fake-cli.mjs` 新增 `FAKE_MODE=permission`：照 `--mcp-config` 啟動 Joy 的 stdio MCP bridge，用 JSON-RPC 呼叫 `approve`，跟 CLI 一樣傳 `{tool_name,input,tool_use_id}`）跑 review loop：`pnpm check` 由 policy 自動放行、`curl …` 進核准中心後擁有者核准才放行、`rm -rf ../elsewhere` 擁有者拒絕。在舊的 `server.ts` 上這三個測試都失敗，假 CLI 也產生和擁有者一樣的「no approval surface」拒絕。
+  - `server.test.ts`：review loop 的 Codex app-server 實作者，安全指令 accept、worktree 外寫入 decline（舊程式碼是兩個都 decline）。
+  - orchestrator：只有實作回合拿到工具（計畫與審查沒有）；compete 每位參賽者拿到自己的。providers：stream-json 輸入時仍帶 `--permission-prompt-tool`。
+- **審查後修正（M1、N1、N2）**：
+  - M1：`approvals.on_timeout: pause`（預設）下，review loop 的紅色動作逾時後，任務原本直接變 `cancelled`，補核准回 409。現在比照 single：attempt 設 `cancelled`、任務設 `awaiting_approval`、發 `task.paused {approvalId, diff}`；補核准後用同一個 session 接續，新 hub 的 `approvalGrants` 放行那一次。compete 與合併版的逾時當作拒絕（不設 `pausedFor`），避免一位參賽者逾時就中止整個 compete；這時補核准回 409。
+  - N1：`implementerToolHubs` 關閉後再要 hub 會丟錯，不會在沒有核准管道的情況下繼續跑。
+  - N2：hub 延到第一次實作回合前才建立，只有計畫的 run（plan first）不建。Codex 處理器在建立時就掛上（這時已在實作回合）。
+  - 測試（`approval-surface.test.ts`）：pause 下 review loop 進 `awaiting_approval`＋`task.paused`，補核准 200 並在同一 session 接續、放行該動作；compete 逾時當拒絕、兩位參賽者都跑完並由裁判比較、沒有 `task.paused`。兩個測試在 341d700 的 `server.ts` 上都失敗。
+- **沒驗證到**：真的 Claude Code CLI 在 review loop 中的 permission prompt 往返（假 CLI 是依 spike 文件寫的合成行為，不是錄下來的）。擁有者下次用 haiku 跑 review_loop 任務、讓它執行 `pnpm check`，應該看到 `policy.action`（run_in_worktree、auto），不再出現「no approval surface」。
 
 ### 任務頁整理：短標題、單行標題列、完成後收合過程（2026-11-15，分支 `task-page-cleanup`）
 
@@ -332,6 +354,7 @@
 
 ## 已確認決策
 
+- 2026-11-15 實作者的核准管道（agent 決定）：所有會寫程式的實作者 run（single、review loop、compete、合併版）都接 Tool Hub 與 approval tool；計畫與審查（唯讀）不接。Codex app-server 的核准處理器只在實作者回合掛上。orchestrator 的 `ReviewLoopInput.mcpServers／approvalTool`（未使用、且會連審查者一起給）改為 `implementerTools(ws)`。
 - 2026-11-15 任務頁整理（擁有者原則，實作細節為 agent 決定）：任務完成（`done`／`review_ready`）或失敗／取消後，時間軸預設只留使用者訊息、agent 最後一則訊息、最後一個審查卡與錯誤，其餘收進「過程」；執行中、等核准計畫與比賽任務維持展開。標題列只有狀態點、單行標題、「變更」與「⋯」；任務標題顯示一律用 `shortTitle()`（約 24 全形或 48 半形字元）。選中、聚焦、卡片一律中性（不用 accent 色塊、外框或光暈）。
 - 2026-11-14 擁有者決定：通過本機 listener 接受自身 Origin（#134）、附件的 core 介面 `RunOptions.images`／`ImageInput`／`Steer` 第二參數（#138）、文字附件定位為參考資料而非擁有者指示，以及附件上限（圖片 3.75 MiB、文字 256 KB、每則 10 個、每任務 40 個／100 MB、每次 run 最多 8 張圖與 256 KB 文字）。
 

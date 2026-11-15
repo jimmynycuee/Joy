@@ -8,9 +8,10 @@ import type {
   ModelRef,
   RepoRef,
   TaskId,
+  Workspace,
   WorkspaceDiff,
 } from '@joy/core'
-import type { LoopEvent, ReviewLoopDeps } from './review-loop.js'
+import type { ImplementerTools, LoopEvent, ReviewLoopDeps } from './review-loop.js'
 import { reviewLoop } from './review-loop.js'
 import { MAX_DIFF_CHARS } from './prompts.js'
 
@@ -28,6 +29,8 @@ export interface CompeteInput {
   contestants: Contestant[]
   judge: ModelRef
   signal: AbortSignal
+  /** Joy's Tool Hub and approval tool for each contestant's implementer turns (see ReviewLoopInput). */
+  implementerTools?: (contestant: Contestant, ws: Workspace) => ImplementerTools
 }
 
 export interface ContestantOutcome {
@@ -215,6 +218,9 @@ export async function* compete(input: CompeteInput, deps: ReviewLoopDeps): Async
           // One cross-model review each; the judge, not more rounds, decides between them.
           maxRounds: 1,
           signal: input.signal,
+          ...(input.implementerTools
+            ? { implementerTools: (ws: Workspace) => input.implementerTools?.(contestant, ws) ?? {} }
+            : {}),
         },
         deps,
       )) {

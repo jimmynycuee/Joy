@@ -1657,6 +1657,64 @@ describe('Joy local server', () => {
     },
   )
 
+  it(
+    "routes a review-loop Codex implementer's approval requests through its policy too",
+    { timeout: 20_000 },
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'joy-codex-loop-approvals-'))
+      dirs.push(dir)
+      const approvalsPath = join(dir, 'approvals.jsonl')
+      const fixtureData = structuredClone(syntheticCodexAppServerFixture)
+      fixtureData.commandApproval.params.command = 'pnpm test'
+      fixtureData.commandApproval.params.cwd = dir
+      const { serverPromise } = fixture({
+        worktreePath: dir,
+        // The Claude reviewer approves the change.
+        implementer: new FakeProvider('claude-cli', [
+          {
+            type: 'done',
+            sessionId: 'review-session',
+            isError: false,
+            structured: { approve: true, summary: 'ok', findings: [] },
+          },
+        ]),
+        codexAppServer: {
+          command: process.execPath,
+          argsPrefix: [fakeCodexAppServer],
+          env: { FAKE_APP_SERVER_FIXTURE: JSON.stringify(fixtureData), FAKE_APPROVALS_OUT: approvalsPath },
+          timeoutMs: 10_000,
+        },
+      })
+      const { origin } = await start(serverPromise)
+      const repoResponse = await postJson(`${origin}/api/repos`, {
+        path: '/tmp/codex-loop-approvals',
+        defaultBranch: 'main',
+      })
+      const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+      const taskResponse = await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: 'Codex approvals in a review loop',
+        prompt: 'Run the tests',
+        mode: 'review_loop',
+        roleOverrides: {
+          implementer: { provider: 'codex-cli', model: 'gpt-6-luna', effort: 'low' },
+          reviewer: { provider: 'claude-cli', model: 'haiku', effort: 'low' },
+        },
+      })
+      const { task } = (await taskResponse.json()) as { task: { id: string } }
+      await waitForStatus(origin, task.id, 'done', 15_000)
+      const answers = readFileSync(approvalsPath, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { id: string; result: { decision: string } })
+      // Before: no handler for the loop's worktree, so even the safe test command was declined.
+      expect(answers).toEqual([
+        { id: 'command-approval', result: { decision: 'accept' } },
+        { id: 'file-approval', result: { decision: 'decline' } },
+      ])
+    },
+  )
+
   it('holds red actions until the owner decides through the API', { timeout: 20_000 }, async () => {
     const implementer = new FakeProvider('claude-cli')
     implementer.capabilities.delegatedApproval = true

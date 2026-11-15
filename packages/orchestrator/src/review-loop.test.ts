@@ -243,6 +243,39 @@ describe('reviewLoop', () => {
     expect(rev.calls.map((call) => call.onSteer)).toEqual([undefined, undefined])
   })
 
+  it("gives the implementer's code-writing turns Joy's approval tool, never plans or reviews", async () => {
+    const tools = {
+      mcpServers: [{ name: 'joy', transport: 'stdio' as const, command: 'node', args: ['hub.js'] }],
+      approvalTool: 'mcp__joy__approve',
+    }
+    const workspaces: string[] = []
+    const implementerTools = (ws: Workspace) => {
+      workspaces.push(ws.path)
+      return tools
+    }
+    const impl = new FakeProvider('claude-cli', [() => ok('s1'), () => ok('s1')])
+    const rev = new FakeProvider('codex-cli', [verdict(false, [major]), verdict(true)])
+    await run(input({ implementerTools }), impl, rev, new FakeExecutor([changed(), changed()]))
+    expect(workspaces).toEqual(['/wt/t1-a1'])
+    expect(impl.calls.map((call) => [call.autonomy, call.approvalTool, call.mcpServers])).toEqual([
+      ['workspace-write', 'mcp__joy__approve', tools.mcpServers],
+      ['workspace-write', 'mcp__joy__approve', tools.mcpServers],
+    ])
+    expect(rev.calls.map((call) => [call.approvalTool, call.mcpServers])).toEqual([
+      [undefined, undefined],
+      [undefined, undefined],
+    ])
+
+    const planner = new FakeProvider('claude-cli', [() => ok('s1', 'plan')])
+    const planReviewer = new FakeProvider('codex-cli', [verdict(true)])
+    await run(input({ planFirst: true, implementerTools }), planner, planReviewer, new FakeExecutor([]))
+    expect(planner.calls[0]).toMatchObject({ autonomy: 'read-only' })
+    expect(planner.calls[0]?.approvalTool).toBeUndefined()
+    expect(planReviewer.calls[0]?.mcpServers).toBeUndefined()
+    // A run that only plans never asks for them (no hub is made for it).
+    expect(workspaces).toEqual(['/wt/t1-a1'])
+  })
+
   it('reads the review brief again before each review', async () => {
     const impl = new FakeProvider('claude-cli', [() => ok('s1'), () => ok('s1')])
     const rev = new FakeProvider('codex-cli', [verdict(false, [major]), verdict(true)])
