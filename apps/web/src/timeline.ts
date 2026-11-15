@@ -186,6 +186,12 @@ export function eventTitle(event: TaskEvent): string {
     return `已還原到檢查點 ${String(payload?.n ?? '')}${dropped > 0 ? `，丟掉 ${dropped} 個 commit` : ''}`
   }
   if (event.type === 'task.updated') return '任務已更新'
+  if (event.type === 'workspace.dependencies') {
+    const command = typeof payload?.command === 'string' ? payload.command : '相依套件'
+    if (payload?.status === 'installed') return `已安裝相依套件：${command}`
+    if (payload?.status === 'skipped') return '沒有在這台電腦安裝相依套件（容器專案）'
+    return `安裝相依套件失敗：${command}（agent 仍會繼續）`
+  }
   if (event.type === 'attachment.missing') {
     const names = parseAttachments(payload?.attachments).map((file) => file.name)
     return `這台電腦上找不到附件：${names.join('、')}（agent 只收到檔名）`
@@ -365,6 +371,18 @@ export function buildTimeline(
     }
     if (QUIET_EVENTS.has(event.type)) {
       entries.push({ ...base, kind: 'noise', text })
+      return
+    }
+    if (event.type === 'workspace.dependencies') {
+      // Only a failure is worth a visible step; a normal install stays behind 顯示細節.
+      if (payload?.status !== 'failed') {
+        entries.push({ ...base, kind: 'noise', text })
+        return
+      }
+      const detail = [payload.outputTail, payload.spawnError]
+        .filter((part) => typeof part === 'string')
+        .join('\n')
+      entries.push({ ...base, kind: 'step', text, tone: 'bad', ...(detail ? { detail } : {}) })
       return
     }
     if (event.type === 'plan.awaiting_approval') {

@@ -1,3 +1,10 @@
+export { dependencyInstall, installDependencies } from './dependencies.js'
+export type {
+  DependencyInstall,
+  InstallDependenciesOptions,
+  InstallDependenciesResult,
+  PackageManager,
+} from './dependencies.js'
 export { GitError, KeyedMutex, git } from './git.js'
 export { runCommand } from './run.js'
 export type { RunCommandInput, RunCommandResult } from './run.js'

@@ -9,7 +9,8 @@ import {
 import { sendableAttachments } from '../attachments.js'
 import { useAttachments } from '../hooks/useAttachments.js'
 import { useDraft } from '../storage.js'
-import { taskModels, worktreeRemoved } from '../task-info.js'
+import { PERMISSION_LABELS } from '../labels.js'
+import { taskModels, taskPermissionMode, worktreeRemoved } from '../task-info.js'
 import type { TaskDetails } from '../types.js'
 import { useMemo, useState } from 'react'
 import { Composer } from './Composer.js'
@@ -51,6 +52,7 @@ export function ThreadComposer({
     [details.events, details.queuedMessages, task.status],
   )
   const models = taskModels(details)
+  const permission = taskPermissionMode(details)
 
   async function send(): Promise<void> {
     const text = draft.trim()
@@ -103,12 +105,21 @@ export function ThreadComposer({
         attachments={{ items: files.items, onAdd: files.add, onRemove: files.remove, allowWithoutText: true }}
         {...(onStop ? { onStop, stopping, stopLabel: '停止任務' } : {})}
         trailing={
-          models.implementer ? (
+          models.implementer || permission ? (
             <span
               className="composer-model-label"
               data-testid="task-models"
               title={models.reviewer ? `實作：${models.implementer}，審查：${models.reviewer}` : undefined}
             >
+              {permission ? (
+                <span
+                  className={`permission-tag${permission === 'full' ? ' permission-full' : ''}`}
+                  data-testid="task-permission"
+                >
+                  {PERMISSION_LABELS[permission]}
+                  {models.implementer ? ' · ' : ''}
+                </span>
+              ) : null}
               {models.implementer}
               {models.reviewer ? <span className="muted"> · 審查 {models.reviewer}</span> : null}
             </span>

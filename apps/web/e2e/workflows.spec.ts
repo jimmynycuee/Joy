@@ -73,6 +73,7 @@ test('a custom workflow from config can be picked when creating a task', async (
     repoId: repo.id,
     title: 'Careful fix',
     prompt: 'Fix add()',
+    permissionMode: 'auto',
     workflow: 'careful',
   })
 })

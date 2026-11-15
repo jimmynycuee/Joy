@@ -1,5 +1,5 @@
-import { EFFORTS, PROVIDER_KINDS } from '@joy/core'
-import type { Effort, ModelRef, ProviderKind } from '@joy/core'
+import { EFFORTS, PERMISSION_MODES, PROVIDER_KINDS, clampPermissionMode, isPermissionMode } from '@joy/core'
+import type { Effort, ModelRef, PermissionMode, ProviderKind } from '@joy/core'
 import { DEFAULT_EFFORT, effortLabel, nearestSupported, supportedEfforts } from './effort.js'
 import { PROVIDER_LABELS } from './labels.js'
 import { modelLabel, modelShort, sameModelName } from './models.js'
@@ -16,10 +16,35 @@ export interface ComposerChoice {
   /** `review_loop`, `single`, `compete` or `workflow:<name>`. */
   mode: string
   planFirst: boolean
+  /** How much the agent may do without asking (要求核准 / 自動 / 完整存取). */
+  permissionMode: PermissionMode
 }
 
 export const DEFAULT_MODE = 'review_loop'
-export const EMPTY_CHOICE: ComposerChoice = { models: {}, mode: DEFAULT_MODE, planFirst: false }
+export const DEFAULT_PERMISSION_MODE: PermissionMode = 'auto'
+export const EMPTY_CHOICE: ComposerChoice = {
+  models: {},
+  mode: DEFAULT_MODE,
+  planFirst: false,
+  permissionMode: DEFAULT_PERMISSION_MODE,
+}
+
+/** Why a permission mode cannot be picked for this repository, or undefined when it can. */
+export function permissionBlockedReason(
+  mode: PermissionMode,
+  max: PermissionMode | undefined,
+): string | undefined {
+  if (!max || PERMISSION_MODES.indexOf(mode) <= PERMISSION_MODES.indexOf(max)) return undefined
+  return '專案設定不允許'
+}
+
+/** The mode a task gets: the remembered one, lowered to what the repository allows. */
+export function effectivePermissionMode(
+  choice: ComposerChoice,
+  max: PermissionMode | undefined,
+): PermissionMode {
+  return max ? clampPermissionMode(choice.permissionMode, max) : choice.permissionMode
+}
 
 export function sameRef(a: ModelRef | undefined, b: ModelRef | undefined): boolean {
   return sameModelName(a, b) && a?.effort === b?.effort
@@ -230,7 +255,10 @@ export function parseStoredChoice(raw: string | null): ComposerChoice {
     const reviewer = parseRef((storedModels as Record<string, unknown>).reviewer)
     if (reviewer) models.reviewer = reviewer
     const mode = typeof stored.mode === 'string' && stored.mode.length <= 100 ? stored.mode : DEFAULT_MODE
-    return { models, mode, planFirst: stored.planFirst === true }
+    const permissionMode = isPermissionMode(stored.permissionMode)
+      ? stored.permissionMode
+      : DEFAULT_PERMISSION_MODE
+    return { models, mode, planFirst: stored.planFirst === true, permissionMode }
   } catch {
     return EMPTY_CHOICE
   }

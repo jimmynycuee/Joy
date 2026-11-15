@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import { PROVIDER_KINDS } from '@joy/core'
-import type { ProviderKind } from '@joy/core'
+import { PERMISSION_MODES, PROVIDER_KINDS } from '@joy/core'
+import type { PermissionMode, ProviderKind } from '@joy/core'
 import { errorMessage, request } from '../api.js'
 import { formatCheckCommand, shellCharactersIn } from '../check-command.js'
-import { PROVIDER_LABELS, repoName } from '../labels.js'
+import { PERMISSION_HINTS, PERMISSION_LABELS, PROVIDER_LABELS, repoName } from '../labels.js'
 import { REPO_COLORS, repoColor } from '../repo-colors.js'
 import type { RepoColorId } from '../repo-colors.js'
 import { repoPatch } from '../repo-patch.js'
@@ -26,11 +26,14 @@ export function RepoSettingsCard({
   const [providers, setProviders] = useState<ProviderKind[]>(repo.allowedProviders ?? [...PROVIDER_KINDS])
   const [checkCommand, setCheckCommand] = useState(formatCheckCommand(repo.checkCommand))
   const [color, setColor] = useState<RepoColorId | null>(repo.color ?? null)
+  const [maxPermissionMode, setMaxPermissionMode] = useState<PermissionMode | null>(
+    repo.maxPermissionMode ?? null,
+  )
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState('')
   const [saved, setSaved] = useState(false)
 
-  const patch = repoPatch(repo, { githubRemote, providers, checkCommand, color })
+  const patch = repoPatch(repo, { githubRemote, providers, checkCommand, color, maxPermissionMode })
   const changed = Object.keys(patch).length > 0
   const shellCharacter = shellCharactersIn(checkCommand)
   const name = repoName(repo.path)
@@ -146,6 +149,25 @@ export function RepoSettingsCard({
           </div>
         </fieldset>
         <label>
+          最高權限
+          <select
+            aria-label={`${name} 的最高權限`}
+            value={maxPermissionMode ?? ''}
+            title={maxPermissionMode ? PERMISSION_HINTS[maxPermissionMode] : undefined}
+            onChange={(event) => {
+              setSaved(false)
+              setMaxPermissionMode((event.target.value || null) as PermissionMode | null)
+            }}
+          >
+            <option value="">不限制</option>
+            {PERMISSION_MODES.map((mode) => (
+              <option key={mode} value={mode}>
+                {PERMISSION_LABELS[mode]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
           送審前檢查指令
           <input
             name="checkCommand"
@@ -161,8 +183,7 @@ export function RepoSettingsCard({
           />
         </label>
         <p className="muted">
-          不會經過 shell。<code>pnpm check</code>、<code>npm test</code>{' '}
-          這類已知指令直接執行；其他指令每次都要你同意，沒同意就略過檢查。留空表示不檢查。
+          不會經過 shell；要不要先問你，依任務的權限而定，沒同意就略過檢查。留空表示不檢查。
         </p>
         {shellCharacter ? (
           <p className="notice-line" role="status">

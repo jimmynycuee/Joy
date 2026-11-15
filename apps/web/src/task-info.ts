@@ -4,7 +4,8 @@ import { effortLabel } from './effort.js'
 import { modelLabel } from './models.js'
 import { record } from './types.js'
 import type { Task, TaskDetails, TaskEvent, WorkspaceDiff } from './types.js'
-import type { ProviderKind } from '@joy/core'
+import { clampPermissionMode } from '@joy/core'
+import type { PermissionMode, ProviderKind } from '@joy/core'
 
 export interface BranchInfo {
   branch?: string
@@ -132,6 +133,18 @@ function modelRef(provider: unknown, model: unknown): { provider: ProviderKind; 
   return typeof provider === 'string' && PROVIDERS.includes(provider) && typeof model === 'string' && model
     ? { provider: provider as ProviderKind, model }
     : undefined
+}
+
+/**
+ * The permission mode the task's actions are judged with: its own, lowered to the project's current maximum (the
+ * server does the same). Undefined for a server from before permission modes.
+ */
+export function taskPermissionMode(details: TaskDetails): PermissionMode | undefined {
+  const own = details.task.permissionMode
+  if (!own) return undefined
+  if (details.task.provenance === 'external_content') return 'ask'
+  const max = details.repo?.maxPermissionMode
+  return max ? clampPermissionMode(own, max) : own
 }
 
 /**

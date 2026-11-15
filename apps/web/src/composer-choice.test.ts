@@ -7,12 +7,14 @@ import {
   buildRoleOverrides,
   comboSummary,
   defaultEffortFor,
+  effectivePermissionMode,
   fitEffort,
   followSettings,
   modeSummary,
   modelButtonText,
   normalizeModels,
   parseStoredChoice,
+  permissionBlockedReason,
   pickEffort,
   pickModel,
   planFirstDisabledReason,
@@ -248,6 +250,7 @@ describe('remembering the last choice', () => {
       models: { implementer: { ...haiku, effort: 'low' }, reviewer: { ...sol, effort: 'high' } },
       mode: 'compete',
       planFirst: true,
+      permissionMode: 'full',
     }
     expect(parseStoredChoice(serializeChoice(choice))).toEqual(choice)
   })
@@ -267,12 +270,14 @@ describe('remembering the last choice', () => {
       },
       mode: 7,
       planFirst: 'yes',
+      permissionMode: 'root',
     })
     expect(parseStoredChoice(stored)).toEqual({
       // The OpenAI API cannot edit code; Codex has no top effort, so it moves down one step.
       models: { reviewer: { provider: 'codex-cli', model: 'gpt-6.1-sol', effort: 'xhigh' } },
       mode: 'review_loop',
       planFirst: false,
+      permissionMode: 'auto',
     })
     expect(
       parseStoredChoice(
@@ -291,5 +296,23 @@ describe('remembering the last choice', () => {
       models: { implementer: { provider: 'claude-cli', model: 'made-up', effort: 'high' } },
     })
     expect(parseStoredChoice(stored).models.implementer).toEqual({ provider: 'claude-cli', model: 'made-up' })
+  })
+})
+
+describe('permission mode', () => {
+  it('starts at auto for new tasks, and an old stored choice without one gets auto too', () => {
+    expect(EMPTY_CHOICE.permissionMode).toBe('auto')
+    expect(parseStoredChoice(JSON.stringify({ mode: 'single' })).permissionMode).toBe('auto')
+    expect(parseStoredChoice(JSON.stringify({ permissionMode: 'ask' })).permissionMode).toBe('ask')
+  })
+
+  it('respects the repository maximum', () => {
+    const full = { ...EMPTY_CHOICE, permissionMode: 'full' as const }
+    expect(effectivePermissionMode(full, undefined)).toBe('full')
+    expect(effectivePermissionMode(full, 'auto')).toBe('auto')
+    expect(effectivePermissionMode({ ...EMPTY_CHOICE, permissionMode: 'ask' }, 'auto')).toBe('ask')
+    expect(permissionBlockedReason('full', 'auto')).toBe('專案設定不允許')
+    expect(permissionBlockedReason('auto', 'auto')).toBeUndefined()
+    expect(permissionBlockedReason('full', undefined)).toBeUndefined()
   })
 })

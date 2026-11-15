@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hasUnpublishedChanges, taskModels, worktreeRemoved } from './task-info.js'
+import { hasUnpublishedChanges, taskModels, taskPermissionMode, worktreeRemoved } from './task-info.js'
 import type { TaskDetails, TaskEvent } from './types.js'
 
 const ev = (type: string, seq: number, payload: unknown = {}): TaskEvent => ({
@@ -63,5 +63,42 @@ describe('taskModels', () => {
   it('falls back to the overrides and leaves out what is unknown', () => {
     expect(taskModels(details({}))).toEqual({})
     expect(taskModels(details({ attempts: [{ provider: 'nope', model: 'x' }] }))).toEqual({})
+  })
+})
+
+describe('taskPermissionMode', () => {
+  const details = (task: Partial<TaskDetails['task']>, repo: TaskDetails['repo'] = null): TaskDetails => ({
+    task: {
+      id: 't1',
+      repoId: 'r1',
+      title: 't',
+      prompt: 'p',
+      mode: 'single',
+      status: 'running',
+      createdAt: '',
+      ...task,
+    },
+    repo,
+    attempts: [],
+    reviews: [],
+    events: [],
+  })
+  const repo = { id: 'r1', path: '/w', defaultBranch: 'main' }
+
+  it("is the task's own mode, lowered to the project's maximum", () => {
+    expect(taskPermissionMode(details({ permissionMode: 'full' }))).toBe('full')
+    expect(
+      taskPermissionMode(details({ permissionMode: 'full' }, { ...repo, maxPermissionMode: 'auto' })),
+    ).toBe('auto')
+    expect(
+      taskPermissionMode(details({ permissionMode: 'ask' }, { ...repo, maxPermissionMode: 'full' })),
+    ).toBe('ask')
+  })
+
+  it('is ask for external content and unknown for an older server', () => {
+    expect(taskPermissionMode(details({ permissionMode: 'full', provenance: 'external_content' }))).toBe(
+      'ask',
+    )
+    expect(taskPermissionMode(details({}))).toBeUndefined()
   })
 })

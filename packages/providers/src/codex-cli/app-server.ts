@@ -204,6 +204,11 @@ function sandboxMode(autonomy: RunOptions['autonomy']): ThreadStartParams['sandb
   }
 }
 
+/**
+ * Every task permission mode (ask, auto, full) uses `workspace-write` + `on-request`: the sandbox keeps writes in the
+ * worktree and the network off, and Codex asks Joy only to step outside it; the mode decides that answer. Neither
+ * `danger-full-access` nor `never` is used for `full`, since Joy must still see requests that touch secrets.
+ */
 function approvalPolicy(autonomy: RunOptions['autonomy']): ThreadStartParams['approvalPolicy'] {
   return autonomy === 'workspace-write' ? 'on-request' : 'never'
 }

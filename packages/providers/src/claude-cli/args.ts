@@ -33,6 +33,11 @@ export function buildClaudeArgs(
       args.push('--permission-mode', 'plan', '--permission-prompts', 'none')
       break
     case 'workspace-write':
+      // Every task permission mode (ask, auto, full) runs like this: the CLI accepts edits only in its working
+      // directory (the worktree; Joy never passes `--add-dir`) and hands every other prompt to Joy's approval tool,
+      // where the mode decides. `bypassPermissions` would skip Joy entirely, so even `full` never uses it: secrets
+      // and Joy's own config must still reach the owner. Claude Code has no OS sandbox in this setup, so for Bash
+      // the classifier is the only gate (known gap, docs/STATUS.md).
       args.push('--permission-mode', 'acceptEdits')
       if (opts.approvalTool)
         args.push('--permission-prompt-tool', opts.approvalTool, '--permission-prompts', 'host')

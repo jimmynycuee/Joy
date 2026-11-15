@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AttemptId, RepoId, TaskId } from '@joy/core'
-import { openDatabase } from './database.js'
+import { migrate, openDatabase } from './database.js'
 import { MIGRATIONS } from './migrations.js'
 import type { Database } from './database.js'
 import {
@@ -27,6 +27,7 @@ import {
   updateAttempt,
   updateRepoCheckCommand,
   updateRepoColor,
+  updateRepoMaxPermissionMode,
   updateTask,
 } from './repositories.js'
 
@@ -345,5 +346,46 @@ describe('repository colour', () => {
         "INSERT INTO repos (id, path, default_branch, allowed_providers, created_at) VALUES (?, ?, 'main', '[\"claude-cli\"]', '2025-01-01T00:00:00.000Z')",
       ).run(id, path)
     expect(listRepos(db).map((r) => r.id)).toEqual(['a', 'b'])
+  })
+})
+
+describe('permission modes', () => {
+  it('stores a task mode, defaulting to ask', () => {
+    const db = fresh()
+    const { repo, task } = seed(db)
+    expect(task.permissionMode).toBe('ask')
+    const auto = createTask(db, {
+      id: tid('t-auto'),
+      repoId: repo.id,
+      title: 'Auto',
+      prompt: 'Go',
+      mode: 'single',
+      permissionMode: 'auto',
+    })
+    expect(getTask(db, auto.id)?.permissionMode).toBe('auto')
+    expect(() => db.prepare("UPDATE tasks SET permission_mode = 'bypass'").run()).toThrow()
+  })
+
+  it('gives tasks created before the migration the ask mode', () => {
+    const db = openDatabase(':memory:', { migrations: MIGRATIONS.filter((m) => m.version < 22) })
+    databases.push(db)
+    db.prepare("INSERT INTO repos (id, path, default_branch) VALUES ('r-old', '/old', 'main')").run()
+    db.prepare(
+      "INSERT INTO tasks (id, repo_id, title, prompt, mode, status) VALUES ('t-old', 'r-old', 'Old', 'Old', 'single', 'done')",
+    ).run()
+    migrate(db, MIGRATIONS)
+    expect(getTask(db, tid('t-old'))?.permissionMode).toBe('ask')
+    expect(getRepo(db, rid('r-old'))?.maxPermissionMode).toBeUndefined()
+  })
+
+  it('sets and clears a repository maximum, refusing unknown modes', () => {
+    const db = fresh()
+    const { repo } = seed(db)
+    expect(repo.maxPermissionMode).toBeUndefined()
+    expect(updateRepoMaxPermissionMode(db, repo.id, 'auto')?.maxPermissionMode).toBe('auto')
+    expect(updateRepoMaxPermissionMode(db, repo.id, null)?.maxPermissionMode).toBeUndefined()
+    // @ts-expect-error not a permission mode
+    expect(() => updateRepoMaxPermissionMode(db, repo.id, 'root')).toThrow('Invalid permission mode')
+    expect(() => db.prepare("UPDATE repos SET max_permission_mode = 'root'").run()).toThrow()
   })
 })

@@ -1,14 +1,18 @@
 import type { ActionKind, AutonomyMode, ProposedAction, Tier } from '@joy/core'
 import { ACTION_KINDS } from '@joy/core'
+import type { ClassifiedAction } from './classify.js'
 
 export {
+  classifyCheckCommand,
   classifyClaudeToolAction,
   classifyCodexApproval,
   isInside,
   isSafeShellCommand,
   isSafeWorktreeCommand,
 } from './classify.js'
-export type { CodexApprovalInput } from './classify.js'
+export type { ClassifiedAction, CodexApprovalInput } from './classify.js'
+export { analyzeShellCommand, defaultClassifyEnvironment } from './shell.js'
+export type { ClassifyEnvironment, ShellAnalysis, ShellVerdict } from './shell.js'
 
 /** The baseline tier for each operation. High-impact operations require a person regardless of mode. */
 export const ACTION_TIERS = {
@@ -39,9 +43,16 @@ export interface ActionPolicyDecision {
   requiresPreReview: boolean
 }
 
-/** Applies the global mode without ever lowering an approval-tier or externally sourced action. */
-export function evaluateAction(action: ProposedAction, mode: AutonomyMode): ActionPolicyDecision {
-  const baseline = ACTION_TIERS[action.kind]
+/**
+ * Applies the global mode without ever lowering an approval-tier or externally sourced action. The one exception
+ * is an action the classifier granted under a task's `full` permission mode (`grant: 'full'`): it starts from the
+ * auto tier, so the global mode still applies to it (`careful` makes it notify), and external content still asks.
+ */
+export function evaluateAction(
+  action: ProposedAction | ClassifiedAction,
+  mode: AutonomyMode,
+): ActionPolicyDecision {
+  const baseline = 'grant' in action && action.grant === 'full' ? 'auto' : ACTION_TIERS[action.kind]
   const tier = action.provenance === 'external_content' ? 'approve' : applyMode(baseline, mode)
   return {
     action,

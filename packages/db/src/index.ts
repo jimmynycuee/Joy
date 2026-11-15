@@ -30,6 +30,7 @@ export {
   updateRepoAllowedProviders,
   updateRepoCheckCommand,
   updateRepoColor,
+  updateRepoMaxPermissionMode,
   updateRepoContainer,
   updateRepoGithubRemote,
 } from './repositories.js'

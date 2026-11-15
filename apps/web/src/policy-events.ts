@@ -37,7 +37,8 @@ export function policyEventTitle(type: string, payload: Payload): string | undef
     const kind = text(payload?.kind) ?? 'unknown'
     const tier = text(payload?.tier) ?? 'approve'
     const external = payload?.provenance === 'external_content' ? '（來自外部內容）' : ''
-    return `權限：${KIND_LABELS[kind] ?? kind}${external} — ${TIER_LABELS[tier] ?? tier}`
+    const granted = payload?.grant === 'full' ? '（完整存取）' : ''
+    return `權限：${KIND_LABELS[kind] ?? kind}${external} — ${TIER_LABELS[tier] ?? tier}${granted}`
   }
   if (type === 'policy.pre_review') {
     if (payload?.status === 'skipped') return '權限：沒有預審就拒絕（還沒設定讓你同意的管道）'

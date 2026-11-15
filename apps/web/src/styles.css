@@ -72,6 +72,8 @@
   --amber: #8a5a00;
   --amber-dot: #d39b00;
   --amber-soft: #fff6db;
+  /* 完整存取: a mode that rarely asks. Orange, distinct from the amber of waiting states. */
+  --warning: #b4530f;
   --violet: #6b46c1;
   --violet-soft: #f1ecfb;
   --row-hover: rgb(0 0 0 / 0.04);
@@ -106,6 +108,7 @@
     --amber: #e8c06a;
     --amber-dot: #d9a526;
     --amber-soft: #352b16;
+    --warning: #f29a52;
     --violet: #b9a2f0;
     --violet-soft: #2b2340;
     --row-hover: rgb(255 255 255 / 0.05);
@@ -140,6 +143,7 @@
   --amber: #e8c06a;
   --amber-dot: #d9a526;
   --amber-soft: #352b16;
+  --warning: #f29a52;
   --violet: #b9a2f0;
   --violet-soft: #2b2340;
   --row-hover: rgb(255 255 255 / 0.05);
@@ -1429,6 +1433,29 @@ svg {
 .approval-row .button-row {
   margin-top: 0;
 }
+.approval-target {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+}
+.approval-target-label,
+.approval-target-cwd {
+  color: var(--muted);
+  font-size: var(--fs-12);
+}
+.approval-target pre {
+  margin: 0;
+  max-height: 160px;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: var(--fs-12);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .error-card,
 .note-card {
   display: flex;
@@ -2620,6 +2647,17 @@ summary.checks-head {
 .composer-model {
   flex: none;
   margin-right: 4px;
+}
+.composer-permission {
+  flex: none;
+}
+/* 完整存取: the only coloured choice in the bar, so it is noticed. */
+.composer-permission.permission-full,
+.composer-permission.permission-full:hover:not(:disabled),
+.composer-permission.permission-full[aria-expanded='true'],
+.menu-item.permission-full .menu-item-label,
+.permission-tag.permission-full {
+  color: var(--warning);
 }
 
 /* The shared menu: 6px padding, 32px rows, 4px from its trigger, a shadow instead of a border. */

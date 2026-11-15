@@ -1,5 +1,5 @@
 import { PROVIDER_KINDS } from '@joy/core'
-import type { ModelRef, ProviderKind, Role } from '@joy/core'
+import type { ModelRef, PermissionMode, ProviderKind, Role } from '@joy/core'
 import type { JoyConfig } from '@joy/config'
 import { MODEL_CATALOG } from './models.js'
 import type { DoctorStatus } from './types.js'
@@ -52,6 +52,18 @@ export const MODE_HINTS: Record<string, string> = {
   review_loop: '一個 AI 做，另一個檢查',
   single: '一個 AI 完成，最快',
   compete: '兩個 AI 各做一份，由你挑一個',
+}
+
+export const PERMISSION_LABELS: Record<PermissionMode, string> = {
+  ask: '要求核准',
+  auto: '自動',
+  full: '完整存取',
+}
+
+export const PERMISSION_HINTS: Record<PermissionMode, string> = {
+  ask: '白名單以外都先問',
+  auto: '只在碰到工作副本以外時才問',
+  full: '幾乎不問，只擋密鑰與 Joy 設定',
 }
 
 export const PHASE_LABELS: Record<string, string> = {
