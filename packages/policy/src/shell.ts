@@ -524,6 +524,8 @@ interface Context {
   unknownCwd: boolean
   /** The command being analyzed runs only if the one before succeeded, and the next only if it succeeds. */
   cdReplaces: boolean
+  /** `\` is a literal character (cmd/PowerShell), not a shell escape (Git Bash, POSIX). */
+  literalBackslash: boolean
   env: ClassifyEnvironment
   depth: number
   path: typeof posix
@@ -590,13 +592,32 @@ export function analyzeShellCommand(
     cwds: new Set([path.resolve(options.worktree, options.cwd)]),
     unknownCwd: false,
     cdReplaces: false,
+    literalBackslash: path === win32,
     env,
     depth: 0,
     path,
   }
   const result = new Verdict()
   if (command.trim() === '') result.raise('outside', REASONS.unparseable)
-  else analyzeScript(command, ctx, options.mode, result)
+  else {
+    analyzeScript(command, ctx, options.mode, result)
+    // On Windows the same text means different things: cmd/PowerShell keep `\` (paths), Git Bash (where Claude Code
+    // runs its Bash tool) drops it as an escape, so `cu\rl` runs curl. Judge both readings and keep the stricter
+    // one (one Verdict collects both, and it only ever gets worse).
+    if (path === win32 && command.includes('\\'))
+      analyzeScript(
+        command,
+        {
+          ...ctx,
+          cwds: new Set([path.resolve(options.worktree, options.cwd)]),
+          unknownCwd: false,
+          cdReplaces: false,
+          literalBackslash: false,
+        },
+        options.mode,
+        result,
+      )
+  }
   return { verdict: result.verdict, reason: result.reason }
 }
 
@@ -604,7 +625,7 @@ function analyzeScript(source: string, ctx: Context, mode: 'auto' | 'full', resu
   if (ctx.depth > 4) return result.raise('outside', REASONS.unparseable)
   let tokens: Token[]
   try {
-    tokens = tokenize(source, ctx.path === win32)
+    tokens = tokenize(source, ctx.literalBackslash)
   } catch {
     // Still look for secrets in what could not be parsed, so `full` cannot be talked past with a stray quote.
     scanText(source, ctx, mode, result)
@@ -1236,10 +1257,22 @@ function isInsideAllowed(target: string, ctx: Context): boolean {
   return ctx.env.tempDirs.some((dir) => within(ctx.path, dir, target))
 }
 
+/**
+ * A Windows 8.3 short name (`JOYDAT~1`, `CLAUDE~1`) outside the worktree and the temp dirs. Joy cannot tell which
+ * long name it stands for without the file system, so it could be JOY_HOME or `.claude`: treated as a secret.
+ */
+function shortNameOutside(target: string, ctx: Context): boolean {
+  if (ctx.path !== win32) return false
+  if (within(ctx.path, ctx.worktree, target)) return false
+  if (ctx.env.tempDirs.some((dir) => within(ctx.path, dir, target))) return false
+  return target.split(/[\\/]/).some((segment) => /~\d+$/.test(segment.replace(/\.[^.]*$/, '')))
+}
+
 function isSecretPath(target: string, ctx: Context): boolean {
   const { path } = ctx
   if (within(path, ctx.worktree, target)) return false
   if (joyHomes(ctx.env).some((dir) => within(path, dir, target))) return true
+  if (shortNameOutside(target, ctx)) return true
   const home = path.resolve(ctx.env.home)
   if (within(path, home, target)) {
     const rel = path.relative(home, target).replace(/\\/g, '/')
@@ -1371,6 +1404,14 @@ const HOME_PREFIX =
 
 function scanSecrets(text: string, ctx: Context, result: Verdict, expands = false) {
   const normalized = text.replace(/\\/g, '/')
+  // Short names inside free text (inline code) too, in every mode.
+  if (ctx.path === win32) {
+    for (const candidate of embeddedPaths(text)) {
+      const resolved = resolveWord(candidate, ctx)
+      if (resolved.kind === 'paths' && resolved.paths.some((p) => shortNameOutside(p, ctx)))
+        return result.raise('forbidden', REASONS.secret)
+    }
+  }
   const inWorktree = () => {
     if (expands) return false
     const candidates = [...embeddedPaths(text), ...(looksLikePath(text) && !/\s/.test(text) ? [text] : [])]
