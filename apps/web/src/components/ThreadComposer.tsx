@@ -16,16 +16,18 @@ import { taskPermissionMode, worktreeRemoved } from '../task-info.js'
 import { isSwitchableMode, parsePendingSettings, settingsRequest, taskChoice } from '../task-settings.js'
 import type { TaskDetails } from '../types.js'
 import { useEffect, useMemo, useState } from 'react'
+import { deliveryRequest } from '../queue.js'
 import { Composer } from './Composer.js'
+import { QueuedMessages } from './QueuedMessages.js'
 import { ApproachMenu, ModelMenu, PermissionMenu } from './ComposerMenus.js'
 
 const MAX_MESSAGE_CHARS = 20_000
 const NO_COMPETE = { compete: '開始後不能改' }
 
 /**
- * The message box at the bottom of a task thread. A message steers a running task (the working agent gets it without
- * stopping, or it waits for the agent's next turn during a review, checks or an approval), continues a finished one, or
- * revises a plan that waits for approval. The menus start at the task's own models, mode and permission mode; what the
+ * The message box at the bottom of a task thread. While the task works, Enter queues the message for the end of the
+ * agent's turn (listed above the box, where it can be changed) and ⌘/Ctrl+Enter hands it to the working agent now. A
+ * finished task is continued, and a plan that waits for approval is revised. The menus start at the task's own models, mode and permission mode; what the
  * owner changes there goes out with the next message and applies from the next run. The draft survives a failed send.
  */
 export function ThreadComposer({
@@ -73,8 +75,9 @@ export function ThreadComposer({
   // The server applied or queued a change (or another tab did): start from what the task uses now.
   useEffect(() => setChoice(initial), [initial])
   const switchable = isSwitchableMode(task.mode)
+  const working = task.status === 'queued' || task.status === 'running' || task.status === 'awaiting_approval'
 
-  async function send(): Promise<void> {
+  async function send(now = false): Promise<void> {
     const text = draft.trim()
     const { ids, blocked } = sendableAttachments(files.items)
     if (blocked || (!text && !ids.length)) return
@@ -88,6 +91,7 @@ export function ThreadComposer({
         method: 'POST',
         body: JSON.stringify({
           text,
+          ...deliveryRequest(working, now),
           ...(ids.length ? { attachments: ids } : {}),
           ...(switchable ? settingsRequest(initial, choice, defaults) : {}),
         }),
@@ -116,11 +120,18 @@ export function ThreadComposer({
           {pendingNote}
         </p>
       ) : null}
+      <QueuedMessages
+        taskId={task.id}
+        messages={details.queuedMessages ?? []}
+        onChanged={onChanged}
+        onError={onError}
+      />
       <Composer
         className="composer-chat composer-menus"
         value={draft}
         onChange={setDraft}
-        onSubmit={send}
+        onSubmit={() => send(false)}
+        {...(working ? { onSubmitNow: () => send(true), nowLabel: '立即插話' } : {})}
         placeholder={state.disabled ? '' : THREAD_PLACEHOLDER}
         textareaLabel="傳訊息給任務"
         sendLabel="送出"

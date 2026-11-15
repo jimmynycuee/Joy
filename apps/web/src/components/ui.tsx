@@ -7,6 +7,8 @@ const ICONS = {
   x: 'M18 6 6 18M6 6l12 12',
   check: 'M20 6 9 17l-5-5',
   'chevron-down': 'm6 9 6 6 6-6',
+  'chevron-up': 'm6 15 6-6 6 6',
+  undo: 'M9 14 4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H11',
   'chevron-right': 'm9 18 6-6-6-6',
   search: 'm21 21-4.3-4.3M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14z',
   'arrow-up': 'M12 19V5M5 12l7-7 7 7',

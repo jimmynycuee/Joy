@@ -390,9 +390,11 @@ export function listTasks(db: Database, filter: { archived?: boolean } = {}): St
 export interface TaskUpdate {
   title?: string | undefined
   archived?: boolean | undefined
+  /** The owner rewrote the first message after going back to the first round. */
+  prompt?: string | undefined
 }
 
-/** Renames or (un)archives a task. Returns the updated task, or undefined when it does not exist. */
+/** Renames or (un)archives a task, or replaces its prompt. Returns the updated task, or undefined when it does not exist. */
 export function updateTask(db: Database, id: TaskId, update: TaskUpdate): StoredTask | undefined {
   const sets: string[] = []
   const values: (string | number)[] = []
@@ -403,6 +405,10 @@ export function updateTask(db: Database, id: TaskId, update: TaskUpdate): Stored
   if (update.archived !== undefined) {
     sets.push('archived = ?')
     values.push(update.archived ? 1 : 0)
+  }
+  if (update.prompt !== undefined) {
+    sets.push('prompt = ?')
+    values.push(update.prompt)
   }
   if (sets.length) {
     sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")

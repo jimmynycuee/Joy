@@ -149,7 +149,8 @@ describe('interrupting messages', () => {
           ['b', 'queued'],
         ]),
       ),
-    ).toContain('2 則訊息排隊中')
+      // Queued messages are listed above the composer instead.
+    ).toBeUndefined()
     expect(
       pendingMessagesNote(
         new Map([

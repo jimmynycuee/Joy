@@ -1408,23 +1408,26 @@ describe('checkpoints', () => {
     await until(
       call,
       id,
-      (d) => d.task.status === 'done' && count(d, 'checkpoint.created') === 2,
+      (d) => d.task.status === 'done' && count(d, 'checkpoint.created') === 4,
       'second turn',
     )
     expect(readFileSync(join(worktree, 'add.js'), 'utf8')).toBe('turn 2\n')
 
+    // Each run is also checkpointed as it starts (the point the owner can go back to).
     const listed = (await call('GET', `/api/tasks/${id}/checkpoints`)).body.checkpoints as Array<
       Record<string, unknown>
     >
-    expect(listed.map((c) => [c.n, c.ref, c.available])).toEqual([
-      [1, `refs/joy/checkpoints/${id}/1`, true],
-      [2, `refs/joy/checkpoints/${id}/2`, true],
+    expect(listed.map((c) => [c.n, c.ref, c.available, c.label])).toEqual([
+      [1, `refs/joy/checkpoints/${id}/1`, true, 'before turn'],
+      [2, `refs/joy/checkpoints/${id}/2`, true, 'implementer turn'],
+      [3, `refs/joy/checkpoints/${id}/3`, true, 'before turn'],
+      [4, `refs/joy/checkpoints/${id}/4`, true, 'implementer turn'],
     ])
-    const restored = await call('POST', `/api/tasks/${id}/checkpoints/1/restore`, {})
-    expect(restored).toMatchObject({ status: 200, body: { restored: 1, savedAs: 3, discardedCommits: 0 } })
+    const restored = await call('POST', `/api/tasks/${id}/checkpoints/2/restore`, {})
+    expect(restored).toMatchObject({ status: 200, body: { restored: 2, savedAs: 5, discardedCommits: 0 } })
     expect(readFileSync(join(worktree, 'add.js'), 'utf8')).toBe('turn 1\n')
     expect(readFileSync(join(repoPath, 'add.js'), 'utf8')).toBe('start\n')
-    expect((await call('POST', `/api/tasks/${id}/checkpoints/3/restore`, {})).status).toBe(200)
+    expect((await call('POST', `/api/tasks/${id}/checkpoints/5/restore`, {})).status).toBe(200)
     expect(readFileSync(join(worktree, 'add.js'), 'utf8')).toBe('turn 2\n')
     expect((await call('POST', `/api/tasks/${id}/checkpoints/9/restore`, {})).status).toBe(404)
 
@@ -1469,20 +1472,20 @@ describe('checkpoints', () => {
     claude.state.work = (options, n) => writeFileSync(join(options.cwd, 'add.js'), `turn ${n}\n`)
     const id = await newTask(call, await newRepo(call, repoPath))
     await until(call, id, settled('done'), 'done')
-    const first = call('POST', `/api/tasks/${id}/checkpoints/1/restore`, {})
+    const first = call('POST', `/api/tasks/${id}/checkpoints/2/restore`, {})
     await new Promise((resolve) => setTimeout(resolve, 150))
-    const second = await call('POST', `/api/tasks/${id}/checkpoints/1/restore`, {})
+    const second = await call('POST', `/api/tasks/${id}/checkpoints/2/restore`, {})
     const message = await call('POST', `/api/tasks/${id}/messages`, { text: 'go on' })
     expect(second).toMatchObject({ status: 409, body: { error: expect.stringContaining('in progress') } })
     expect(message).toMatchObject({ status: 409, body: { error: expect.stringContaining('in progress') } })
-    expect(await first).toMatchObject({ status: 200, body: { restored: 1, savedAs: 2 } })
+    expect(await first).toMatchObject({ status: 200, body: { restored: 2, savedAs: 3 } })
     expect(claude.calls).toHaveLength(1)
     // Every checkpoint number is unique and each one can still be restored.
     const listed = (await call('GET', `/api/tasks/${id}/checkpoints`)).body.checkpoints as Array<{
       n: number
     }>
-    expect(listed.map((c) => c.n)).toEqual([1, 2])
-    expect((await call('POST', `/api/tasks/${id}/checkpoints/2/restore`, {})).status).toBe(200)
+    expect(listed.map((c) => c.n)).toEqual([1, 2, 3])
+    expect((await call('POST', `/api/tasks/${id}/checkpoints/3/restore`, {})).status).toBe(200)
     expect((await call('POST', `/api/tasks/${id}/messages`, { text: 'go on' })).status).toBe(202)
     await until(call, id, (d) => d.task.status === 'done' && count(d, 'result') === 2, 'follow-up')
   }, 30_000)

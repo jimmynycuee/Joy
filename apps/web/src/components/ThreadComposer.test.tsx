@@ -58,6 +58,27 @@ describe('ThreadComposer', () => {
     expect(markup).not.toContain('做法：')
     expect(markup).not.toContain('模型：')
   })
+
+  it('lists the queued messages above the box, each with move, edit and delete', () => {
+    const markup = html(
+      details(
+        { status: 'running' },
+        {
+          queuedMessages: [
+            { id: 'a', text: 'first' },
+            { id: 'b', text: 'second' },
+          ],
+        },
+      ),
+    )
+    expect(markup).toContain('aria-label="排隊中的訊息"')
+    expect(markup.indexOf('first')).toBeLessThan(markup.indexOf('second'))
+    expect(markup.match(/aria-label="刪除"/g)).toHaveLength(2)
+    expect(markup.match(/aria-label="修改"/g)).toHaveLength(2)
+    // The first cannot move up and the last cannot move down.
+    expect(markup).toMatch(/aria-label="往前"[^>]*disabled=""/)
+    expect(html(details({ status: 'running' }))).not.toContain('排隊中的訊息')
+  })
 })
 
 describe('Composer', () => {
@@ -66,5 +87,22 @@ describe('Composer', () => {
       <Composer value="" onChange={() => {}} onSubmit={() => {}} textareaLabel="x" sendLabel="送出" />,
     )
     expect(markup).toContain('rows="1"')
+  })
+
+  it('offers the second way to send only when given one and there is something to send', () => {
+    const now = (value: string) =>
+      renderToStaticMarkup(
+        <Composer
+          value={value}
+          onChange={() => {}}
+          onSubmit={() => {}}
+          onSubmitNow={() => {}}
+          nowLabel="立即插話"
+          textareaLabel="x"
+          sendLabel="送出"
+        />,
+      )
+    expect(now('hi')).toContain('aria-label="立即插話"')
+    expect(now('')).not.toContain('立即插話')
   })
 })

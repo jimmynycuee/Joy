@@ -16,6 +16,7 @@ export interface CheckpointView {
 export function checkpointLabel(label: string): string {
   const turn = /^implementer turn(?:, round (\d+))?$/.exec(label)
   if (turn) return turn[1] ? `實作者完成第 ${turn[1]} 輪` : '實作者完成一輪'
+  if (label === 'before turn') return '這一輪開始前'
   const before = /^before restoring checkpoint (\d+)$/.exec(label)
   if (before) return `還原到檢查點 ${before[1]} 之前的狀態`
   return label

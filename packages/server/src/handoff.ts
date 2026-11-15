@@ -161,3 +161,43 @@ export function switchHandoffPrompt(input: SwitchHandoffInput): string {
     input.next,
   ].join('\n')
 }
+
+export interface RewindHandoffInput {
+  /** The task as the agent first got it. */
+  task: string
+  /** The thread up to the round the owner went back to; the rounds after it are already left out. */
+  events: readonly HandoffEvent[]
+  /** The worktree's changes once restored (against the starting commit). */
+  diff: { files: ReadonlyArray<{ path: string }>; patch: string }
+  /** The round's message as the owner sent it again (the follow-up or plan-revision prompt). */
+  next: string
+  skipMessageIds?: ReadonlySet<string>
+}
+
+/**
+ * The first prompt of a new session after the owner went back to an earlier round. The old session remembers the
+ * rounds that were thrown away, so it is not resumed; the new agent gets the task, the conversation up to that round,
+ * the restored worktree's changes and the owner's message again. Built only from what Joy recorded.
+ */
+export function rewindHandoffPrompt(input: RewindHandoffInput): string {
+  const turns = conversationTurns(input.events, input.skipMessageIds)
+  const patch =
+    input.diff.patch.length > MAX_PATCH_CHARS
+      ? `${input.diff.patch.slice(0, MAX_PATCH_CHARS)}\n… (diff truncated)`
+      : input.diff.patch
+  return [
+    'The owner went back to an earlier point of this task and threw away what came after it. The worktree is back as it was then. You are a new session, so this is what happened up to that point. Continue in this same worktree.',
+    '',
+    `Task:\n${input.task}`,
+    '',
+    turns.length ? `Conversation so far (oldest first):\n${formatTurns(turns)}` : 'No earlier conversation.',
+    '',
+    input.diff.files.length
+      ? `Changes in the worktree so far (unified diff against the starting commit; files: ${input.diff.files.map((file) => file.path).join(', ')}):\n${patch}`
+      : 'No files have been changed yet.',
+    '',
+    '---',
+    '',
+    input.next,
+  ].join('\n')
+}

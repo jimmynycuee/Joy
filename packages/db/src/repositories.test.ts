@@ -301,6 +301,15 @@ describe('task rename and archive', () => {
     expect(updateTask(db, tid('missing'), { title: 'x' })).toBeUndefined()
     expect(() => db.prepare('UPDATE tasks SET archived = 2').run()).toThrow()
   })
+
+  it('replaces the prompt and keeps the title', () => {
+    const db = fresh()
+    const { task } = seed(db)
+    expect(updateTask(db, task.id, { prompt: 'Rewritten request' })).toMatchObject({
+      prompt: 'Rewritten request',
+      title: task.title,
+    })
+  })
 })
 
 describe('task settings', () => {

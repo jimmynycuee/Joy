@@ -4,6 +4,7 @@ import { PHASE_LABELS, ROLE_SPEAKERS } from './labels.js'
 import { messageDeliveryStates } from './messages.js'
 import type { DeliveryState } from './messages.js'
 import { policyEventIsNoise, policyEventKind, policyEventTitle } from './policy-events.js'
+import { rewoundParts } from './rewind.js'
 import { settingsLine } from './task-settings.js'
 import { summarizeToolCall, toolCallLabel, toolOutputText } from './tool-calls.js'
 import type { ToolOutput, ToolSummary } from './tool-calls.js'
@@ -80,6 +81,8 @@ export type TimelineEntry =
    * the details but is not one of them, so it is not counted.
    */
   | (EntryBase & { kind: 'noise'; text: string; fragment?: true })
+  /** Rounds the owner went back over: kept, folded and marked as discarded. */
+  | (EntryBase & { kind: 'rewound'; entries: TimelineEntry[] })
 
 const SEVERITIES = new Set(['blocker', 'major', 'minor', 'nit'])
 
@@ -175,7 +178,11 @@ export function eventTitle(event: TaskEvent): string {
       ? 'agent 可以邊做邊收你的訊息'
       : 'agent 這一步結束，訊息改為下一次動手時送達'
   if (event.type === 'run.interrupted') return '已中斷目前這一步，帶著你的訊息繼續'
-  if (event.type === 'user.message.discarded') return '訊息已撤回'
+  if (event.type === 'user.message.discarded')
+    return payload?.reason === 'owner' ? '你刪除了排隊中的訊息' : '訊息已撤回'
+  if (event.type === 'user.message.edited') return '你修改了排隊中的訊息'
+  if (event.type === 'user.message.reordered') return '你調整了排隊順序'
+  if (event.type === 'task.rewound') return '從這裡重做'
   if (event.type === 'plan.awaiting_approval') return '計畫寫好了，等你核准'
   if (event.type === 'plan.approved')
     return typeof payload?.note === 'string' ? `你核准了計畫：${payload.note}` : '你核准了計畫，開始實作'
@@ -184,7 +191,10 @@ export function eventTitle(event: TaskEvent): string {
   if (event.type === 'checks') return payload?.ok === true ? '專案檢查通過' : '專案檢查失敗'
   if (event.type === 'checks.skipped')
     return `略過專案檢查${typeof payload?.reason === 'string' ? `：${payload.reason}` : ''}`
-  if (event.type === 'checkpoint.created') return `已建立檢查點 ${String(payload?.n ?? '')}`.trim()
+  if (event.type === 'checkpoint.created')
+    return payload?.turnStart === true
+      ? `已在這一輪開始前建立檢查點 ${String(payload.n ?? '')}`.trim()
+      : `已建立檢查點 ${String(payload?.n ?? '')}`.trim()
   if (event.type === 'checkpoint.restored') {
     const dropped = typeof payload?.discardedCommits === 'number' ? payload.discardedCommits : 0
     return `已還原到檢查點 ${String(payload?.n ?? '')}${dropped > 0 ? `，丟掉 ${dropped} 個 commit` : ''}`
@@ -224,6 +234,8 @@ const QUIET_EVENTS = new Set([
   'user.message.delivered',
   'user.message.discarded',
   'user.message.requeued',
+  'user.message.edited',
+  'user.message.reordered',
   'steer.available',
   'checkpoint.created',
   'attachment.removed',
@@ -256,6 +268,17 @@ export function buildTimeline(
   // review event arrives the raw reply is not shown.
   let reviewerReplies: TimelineEntry[] = []
   const hidden = new Set<TimelineEntry>()
+  // A queued message the owner rewrote reads as rewritten.
+  const edits = new Map<string, string>()
+  for (const event of events) {
+    const payload = record(event.payload)
+    if (
+      event.type === 'user.message.edited' &&
+      typeof payload?.id === 'string' &&
+      typeof payload.text === 'string'
+    )
+      edits.set(payload.id, payload.text)
+  }
 
   events.forEach((event, index) => {
     const base = { key: `${event.seq}-${index}`, seq: event.seq, ts: event.ts }
@@ -351,12 +374,15 @@ export function buildTimeline(
     }
     if (event.type === 'user.message' && typeof payload?.text === 'string') {
       const id = typeof payload.id === 'string' ? payload.id : base.key
+      const state = deliveries.get(id) ?? 'sent'
+      // Still waiting in the server's queue: it shows above the composer, where the owner can change it.
+      if ((state === 'queued' || state === 'held') && options.queuedIds?.has(id)) return
       entries.push({
         ...base,
         kind: 'user',
         id,
-        text: payload.text,
-        state: deliveries.get(id) ?? 'sent',
+        text: edits.get(id) ?? payload.text,
+        state,
         attachments: parseAttachments(payload.attachments),
       })
       return
@@ -400,18 +426,44 @@ export function buildTimeline(
       entries.push({ ...base, kind: 'noise', text })
       return
     }
-    if (event.type === 'task.settings') {
+    if (event.type === 'task.settings' || event.type === 'task.rewound') {
       entries.push({ ...base, kind: 'step', text, owner: true })
       return
     }
     const tone = STEP_TONES[event.type] ?? policyEventKind(event.type, payload)
     entries.push({ ...base, kind: 'step', text, ...(tone ? { tone } : {}) })
   })
-  return entries.filter(
-    (entry) =>
-      !hidden.has(entry) &&
-      !(entry.kind === 'message' && entry.role === ROLE_SPEAKERS.reviewer && looksLikeVerdict(entry.text)),
+  return groupRewound(
+    entries.filter(
+      (entry) =>
+        !hidden.has(entry) &&
+        !(entry.kind === 'message' && entry.role === ROLE_SPEAKERS.reviewer && looksLikeVerdict(entry.text)),
+    ),
+    events,
   )
+}
+
+/** Each run of entries the owner went back over becomes one folded `rewound` entry, where the run started. */
+export function groupRewound(entries: TimelineEntry[], events: readonly TaskEvent[]): TimelineEntry[] {
+  const { inRange, messageIds } = rewoundParts(events)
+  const discarded = (entry: TimelineEntry) =>
+    inRange(entry.seq) || (entry.kind === 'user' && messageIds.has(entry.id))
+  if (!entries.some(discarded)) return entries
+  const result: TimelineEntry[] = []
+  let group: Extract<TimelineEntry, { kind: 'rewound' }> | undefined
+  for (const entry of entries) {
+    if (!discarded(entry)) {
+      group = undefined
+      result.push(entry)
+      continue
+    }
+    if (!group) {
+      group = { key: `rewound-${entry.key}`, seq: entry.seq, ts: entry.ts, kind: 'rewound', entries: [] }
+      result.push(group)
+    }
+    group.entries.push(entry)
+  }
+  return result
 }
 
 /**
