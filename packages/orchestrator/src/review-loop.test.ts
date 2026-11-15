@@ -219,6 +219,33 @@ describe('reviewLoop', () => {
     expect(result).toMatchObject({ approved: false, rounds: 5, reason: expect.stringMatching(/2 round/) })
   })
 
+  it('starts a new session in a kept worktree with the resume prompt (another provider took the task over)', async () => {
+    const impl = new FakeProvider('codex-cli', [() => ok('new-session')])
+    const rev = new FakeProvider('claude-cli', [verdict(true)])
+    const workspace: Workspace = {
+      repo: { id: 'r1' as RepoId, path: '/repo', defaultBranch: 'main' },
+      taskId: 't1' as TaskId,
+      attemptId: 'a1' as AttemptId,
+      path: '/persisted/worktree',
+      branch: 'joy/t1/a1',
+      baseCommit: 'base',
+    }
+    const exec = new FakeExecutor([changed()])
+    await run(
+      input({
+        implementer: codex,
+        reviewer: claude,
+        resumeWorkspace: workspace,
+        resumePrompt: 'Summary, then go',
+      }),
+      impl,
+      rev,
+      exec,
+    )
+    expect(impl.calls[0]?.resumeSessionId).toBeUndefined()
+    expect(impl.calls[0]).toMatchObject({ cwd: '/persisted/worktree', prompt: 'Summary, then go' })
+  })
+
   it('delivers owner messages with the next implementer turn', async () => {
     const impl = new FakeProvider('claude-cli', [() => ok('s1'), () => ok('s1')])
     const rev = new FakeProvider('codex-cli', [verdict(false, [major]), verdict(true)])

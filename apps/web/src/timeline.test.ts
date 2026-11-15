@@ -21,6 +21,21 @@ const event = (type: string, payload: unknown, ts = '2026-11-08T10:00:00.000Z'):
 const agent = (role: string, inner: unknown) => event('agent', { role, event: inner })
 
 describe('buildTimeline', () => {
+  it('shows a settings change as one short visible step', () => {
+    const entries = buildTimeline([
+      event('task.settings', {
+        implementer: { provider: 'claude-cli', model: 'opus', effort: 'high' },
+        mode: 'review_loop',
+        handoff: {
+          from: { provider: 'codex-cli', model: 'gpt-6.1-sol' },
+          to: { provider: 'claude-cli', model: 'opus' },
+        },
+      }),
+    ])
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({ kind: 'step', text: '改用 Opus · 實作＋審查' })
+  })
+
   it('joins a streamed reply into one message and one line of thinking', () => {
     const entries = buildTimeline([
       agent('implementer', { type: 'thinking', text: '先看' }),

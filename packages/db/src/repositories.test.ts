@@ -29,6 +29,7 @@ import {
   updateRepoColor,
   updateRepoMaxPermissionMode,
   updateTask,
+  updateTaskSettings,
 } from './repositories.js'
 
 const databases: Database[] = []
@@ -295,6 +296,40 @@ describe('task rename and archive', () => {
     expect(listTasks(db, { archived: true }).map((t) => t.id)).toEqual([task.id])
     expect(updateTask(db, tid('missing'), { title: 'x' })).toBeUndefined()
     expect(() => db.prepare('UPDATE tasks SET archived = 2').run()).toThrow()
+  })
+})
+
+describe('task settings', () => {
+  it('changes the mode, models and permission mode and leaves the rest alone', () => {
+    const db = fresh()
+    const { task } = seed(db)
+    const roleOverrides = {
+      implementer: { provider: 'codex-cli' as const, model: 'gpt-6', effort: 'high' as const },
+    }
+    const updated = updateTaskSettings(db, task.id, { mode: 'single', roleOverrides, permissionMode: 'auto' })
+    expect(updated).toMatchObject({
+      mode: 'single',
+      roleOverrides,
+      permissionMode: 'auto',
+      title: task.title,
+    })
+    expect(updateTaskSettings(db, task.id, { mode: 'review_loop' })).toMatchObject({
+      mode: 'review_loop',
+      roleOverrides,
+      permissionMode: 'auto',
+    })
+    expect(updateTaskSettings(db, task.id, {})).toMatchObject({ mode: 'review_loop' })
+    expect(updateTaskSettings(db, tid('missing'), { mode: 'single' })).toBeUndefined()
+  })
+
+  it('refuses compete and unknown permission modes', () => {
+    const db = fresh()
+    const { task } = seed(db)
+    expect(() => updateTaskSettings(db, task.id, { mode: 'compete' as never })).toThrow('cannot switch')
+    expect(() => updateTaskSettings(db, task.id, { permissionMode: 'root' as never })).toThrow(
+      'Invalid permission mode',
+    )
+    expect(getTask(db, task.id)?.mode).toBe(task.mode)
   })
 })
 

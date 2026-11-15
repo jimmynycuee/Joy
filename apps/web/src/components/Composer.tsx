@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, ReactNode, RefObject } from 'react'
 import type { PendingAttachment } from '../attachments.js'
 import { pastedFiles, sendableAttachments } from '../attachments.js'
+import { composerHeight, composerMaxHeight } from '../composer-height.js'
 import { AttachmentTray } from './Attachments.js'
 import { Icon, IconButton, Spinner } from './ui.js'
 
@@ -29,7 +30,7 @@ export function Composer({
   busy = false,
   disabled = false,
   autoFocus = false,
-  rows = 2,
+  rows = 1,
   bar,
   trailing,
   advanced,
@@ -74,13 +75,28 @@ export function Composer({
   // An upload still running or a file that failed must not be left out silently.
   const canSend = hasContent && !files.blocked
 
-  // Grow with the text up to a limit, then scroll.
+  // One line when empty; grows with the text up to 12 lines or 40% of the window, then scrolls. Measured before the
+  // browser paints, so the bar under the box never shows a frame at the wrong place.
+  const [viewportHeight, setViewportHeight] = useState(() =>
+    typeof window === 'undefined' ? 800 : window.innerHeight,
+  )
   useEffect(() => {
+    const onResize = () => setViewportHeight(window.innerHeight)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  useLayoutEffect(() => {
     const element = ref.current
     if (!element) return
+    const style = window.getComputedStyle(element)
+    const lineHeight = Number.parseFloat(style.lineHeight) || 24
+    const paddingY =
+      (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0)
     element.style.height = 'auto'
-    element.style.height = `${Math.min(element.scrollHeight, 260)}px`
-  }, [value, ref])
+    const next = composerHeight(element.scrollHeight, composerMaxHeight(lineHeight, paddingY, viewportHeight))
+    element.style.height = `${next.height}px`
+    element.style.overflowY = next.overflowY
+  }, [value, ref, viewportHeight])
 
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== 'Enter' || event.shiftKey) return

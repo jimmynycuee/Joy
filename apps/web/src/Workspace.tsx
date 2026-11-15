@@ -600,6 +600,7 @@ export function Workspace() {
       <TaskPage
         key={details.task.id}
         details={details}
+        config={config}
         changesOpen={changesOpen}
         onToggleChanges={setChangesOpen}
         onChanged={() => void refreshSelectedTask().catch(() => undefined)}

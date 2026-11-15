@@ -4,6 +4,7 @@ import { PHASE_LABELS, ROLE_SPEAKERS } from './labels.js'
 import { messageDeliveryStates } from './messages.js'
 import type { DeliveryState } from './messages.js'
 import { policyEventIsNoise, policyEventKind, policyEventTitle } from './policy-events.js'
+import { settingsLine } from './task-settings.js'
 import { summarizeToolCall, toolCallLabel, toolOutputText } from './tool-calls.js'
 import type { ToolOutput, ToolSummary } from './tool-calls.js'
 import { record } from './types.js'
@@ -69,8 +70,11 @@ export type TimelineEntry =
       outputTail: string
       timedOut: boolean
     })
-  /** `detail` is Markdown that the step folds away (a past version of the plan). */
-  | (EntryBase & { kind: 'step'; text: string; tone?: string; detail?: string })
+  /**
+   * `detail` is Markdown that the step folds away (a past version of the plan). `owner` marks what the owner decided
+   * (another model or mode): it stays in view when a finished task folds its process.
+   */
+  | (EntryBase & { kind: 'step'; text: string; tone?: string; detail?: string; owner?: true })
   /**
    * `fragment` marks what the stream leaves behind (thinking, a result with no call, bookkeeping events): it shows with
    * the details but is not one of them, so it is not counted.
@@ -186,6 +190,7 @@ export function eventTitle(event: TaskEvent): string {
     return `已還原到檢查點 ${String(payload?.n ?? '')}${dropped > 0 ? `，丟掉 ${dropped} 個 commit` : ''}`
   }
   if (event.type === 'task.updated') return '任務已更新'
+  if (event.type === 'task.settings') return settingsLine(payload)
   if (event.type === 'workspace.dependencies') {
     const command = typeof payload?.command === 'string' ? payload.command : '相依套件'
     if (payload?.status === 'installed') return `已安裝相依套件：${command}`
@@ -393,6 +398,10 @@ export function buildTimeline(
     }
     if (policyEventIsNoise(event.type, payload) || event.type === 'compete.result') {
       entries.push({ ...base, kind: 'noise', text })
+      return
+    }
+    if (event.type === 'task.settings') {
+      entries.push({ ...base, kind: 'step', text, owner: true })
       return
     }
     const tone = STEP_TONES[event.type] ?? policyEventKind(event.type, payload)

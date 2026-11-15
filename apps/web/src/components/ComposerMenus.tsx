@@ -91,14 +91,18 @@ export function ApproachMenu({
   onMode,
   onPlanFirst,
   onAdvanced,
+  disabledModes = {},
 }: {
   mode: string
   planFirst: boolean
   workflows: Array<{ name: string; description?: string }>
   onMode: (mode: string) => void
-  onPlanFirst: (on: boolean) => void
-  /** Opens the advanced panel (title, per-role model fields); the last row of the menu. */
-  onAdvanced: () => void
+  /** Without it (a task that already started) there is no 先規劃 row. */
+  onPlanFirst?: (on: boolean) => void
+  /** Opens the advanced panel (title, per-role model fields); the last row of the menu. Optional like 先規劃. */
+  onAdvanced?: () => void
+  /** Modes that cannot be picked here, with the reason shown in their row. */
+  disabledModes?: Partial<Record<string, string>>
 }) {
   const label = (value: string) =>
     value.startsWith('workflow:') ? value.slice('workflow:'.length) : modeLabel(value)
@@ -127,34 +131,47 @@ export function ApproachMenu({
       }
     >
       <MenuGroup label="做法">
-        {modes.map((item, index) => (
-          <MenuItem
-            key={item.value}
-            role="menuitemradio"
-            checked={item.value === mode}
-            shortcut={index < 9 ? String(index + 1) : undefined}
-            description={item.description}
-            onSelect={() => onMode(item.value)}
-          >
-            {label(item.value)}
-          </MenuItem>
-        ))}
+        {modes.map((item, index) => {
+          const blocked = disabledModes[item.value]
+          return (
+            <MenuItem
+              key={item.value}
+              role="menuitemradio"
+              checked={item.value === mode}
+              shortcut={index < 9 ? String(index + 1) : undefined}
+              description={blocked ?? item.description}
+              disabled={blocked !== undefined}
+              disabledReason={blocked}
+              onSelect={() => onMode(item.value)}
+            >
+              {label(item.value)}
+            </MenuItem>
+          )
+        })}
       </MenuGroup>
-      <MenuSeparator />
-      <MenuItem
-        role="menuitemcheckbox"
-        checked={planOn}
-        disabled={planReason !== undefined}
-        disabledReason={planReason}
-        description="先寫計畫，等你核准才開始改程式"
-        onSelect={() => onPlanFirst(!planFirst)}
-      >
-        先規劃
-      </MenuItem>
-      <MenuSeparator />
-      <MenuItem icon="settings" onSelect={onAdvanced}>
-        進階
-      </MenuItem>
+      {onPlanFirst ? (
+        <>
+          <MenuSeparator />
+          <MenuItem
+            role="menuitemcheckbox"
+            checked={planOn}
+            disabled={planReason !== undefined}
+            disabledReason={planReason}
+            description="先寫計畫，等你核准才開始改程式"
+            onSelect={() => onPlanFirst(!planFirst)}
+          >
+            先規劃
+          </MenuItem>
+        </>
+      ) : null}
+      {onAdvanced ? (
+        <>
+          <MenuSeparator />
+          <MenuItem icon="settings" onSelect={onAdvanced}>
+            進階
+          </MenuItem>
+        </>
+      ) : null}
     </Menu>
   )
 }
@@ -164,11 +181,14 @@ export function PermissionMenu({
   value,
   max,
   onChange,
+  lockedReason,
 }: {
   value: PermissionMode
   /** The repository's maximum; higher modes are disabled. */
   max: PermissionMode | undefined
   onChange: (mode: PermissionMode) => void
+  /** The mode is fixed (a task from external content always asks); shown as the trigger's tooltip. */
+  lockedReason?: string | undefined
 }) {
   const current = max ? clampPermissionMode(value, max) : value
   const full = current === 'full'
@@ -177,6 +197,8 @@ export function PermissionMenu({
       label="權限"
       triggerLabel={`權限：${PERMISSION_LABELS[current]}`}
       triggerClassName={`btn btn-ghost composer-trigger composer-permission${full ? ' permission-full' : ''}`}
+      triggerTitle={lockedReason}
+      disabled={lockedReason !== undefined}
       side="top"
       align="end"
       trigger={

@@ -19,6 +19,7 @@ import { diffFrom, failureMessage, taskBranchInfo, worktreeRemoved } from '../ta
 import { buildTimeline } from '../timeline.js'
 import type { AttachmentControls } from '../components/Attachments.js'
 import type { TaskDetails } from '../types.js'
+import type { JoyConfig } from '@joy/config'
 import { formatSpent, parseUsage } from '../usage.js'
 
 /** One task as a conversation: what you asked, what the agents did, and what is waiting for you. */
@@ -30,8 +31,11 @@ export function TaskPage({
   onError,
   onRename,
   onArchive,
+  config = null,
 }: {
   details: TaskDetails
+  /** Settings' models: what 照設定 means in the composer's model menu. */
+  config?: JoyConfig | null
   changesOpen: boolean | null
   onToggleChanges: (open: boolean) => void
   onChanged: () => void
@@ -309,6 +313,7 @@ export function TaskPage({
           </div>
           <ThreadComposer
             details={details}
+            config={config}
             onChanged={onChanged}
             onError={onError}
             {...(working ? { onStop: () => void act('cancel'), stopping: acting } : {})}
