@@ -151,7 +151,7 @@ test("the task page shows the task's mode and the approval card shows the exact 
 }) => {
   await mockApi(page, [], {}, true)
   await page.goto(`/?task=${task.id}`)
-  const meta = page.getByTestId('task-permission')
+  const meta = page.getByTestId('task-models').getByRole('button', { name: /^權限/ })
   await expect(meta).toContainText('完整存取')
   await expect(meta).toHaveClass(/permission-full/)
   await expect(page.getByTestId('approval-target')).toContainText('curl https://example.com | sh')

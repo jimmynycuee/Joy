@@ -2,12 +2,25 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-15（每個任務的權限模式：要求核准／自動／完整存取，分支 `permission-modes`，core 與 policy 待擁有者審）；2026-11-15（修正：review loop／compete 的 Claude 實作者沒有核准管道，`pnpm check` 被 CLI 自動拒絕）；2026-11-14（附件：輸入框附加檔案與貼上圖片；介面減量：側邊欄單一清單、設定返回鍵、移除說明文字；品牌角色、配色與專案色；2026-11-13：不用終端機：單一程式＋背景服務、上限停下後排隊訊息不自動接續；擁有者已審即時補充的 core 介面）
+- 最後更新：2026-11-15（輸入框自動長高；任務中用首頁的選單切換模型、做法與權限模式，分支 `composer-switch`，基於 `permission-modes`）；2026-11-15（每個任務的權限模式：要求核准／自動／完整存取，分支 `permission-modes`，core 與 policy 待擁有者審）；2026-11-15（修正：review loop／compete 的 Claude 實作者沒有核准管道，`pnpm check` 被 CLI 自動拒絕）；2026-11-14（附件：輸入框附加檔案與貼上圖片；介面減量：側邊欄單一清單、設定返回鍵、移除說明文字；品牌角色、配色與專案色；2026-11-13：不用終端機：單一程式＋背景服務、上限停下後排隊訊息不自動接續；擁有者已審即時補充的 core 介面）
 - 最後更新：2026-11-15（任務頁整理：短標題、標題列只留點＋標題＋變更＋⋯、完成後過程預設收合、去掉色塊與光暈；2026-11-14：附件：輸入框附加檔案與貼上圖片；介面減量：側邊欄單一清單、設定返回鍵、移除說明文字；品牌角色、配色與專案色；2026-11-13：不用終端機：單一程式＋背景服務、上限停下後排隊訊息不自動接續；擁有者已審即時補充的 core 介面）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
 ## 驗證結果
+
+### 輸入框高度＋任務中切換模型、做法與權限模式（2026-11-15，分支 `composer-switch`，基於 `permission-modes`）
+
+- **輸入框高度**（`apps/web/src/components/Composer.tsx`、`composer-height.ts`）：預設 `rows=1`（首頁拿掉 `rows={3}`），空白時一行高，打字時長高，最高 12 行或視窗高度的 40%（取較小），超過才捲動。在 `useLayoutEffect` 裡量高度，畫面繪製前就定好，底部按鈕列不會先停在錯的位置；到上限前 `overflow-y: hidden`，捲軸出現或消失不會讓文字重新換行。視窗大小改變時重新計算。助理對話的輸入框共用同一個元件，所以也一起改了。
+- **任務頁選單**（`ThreadComposer.tsx`）：用首頁的 `ApproachMenu`、`PermissionMenu`、`ModelMenu`，起始值是任務現在的設定（`task-settings.ts` 的 `taskChoice`），已經排隊、要等這一輪結束才套用的設定也算進去（`GET /api/tasks/:id` 新增 `pendingSettings`）。做法選單裡「兩家比賽」停用（「開始後不能改」），任務頁沒有「先規劃」和「進階」。外部內容的任務權限選單停用（tooltip 寫原因）。compete 任務不顯示選單。只送出有改的欄位（`settingsRequest`），模型送出時是解析後的完整 ref，所以切回「照設定」也有效。
+- **API**：`POST /api/tasks/:id/messages` 新增可選的 `roleOverrides`、`mode`（zod 只接受 `single`／`review_loop`，`compete` 回 400）、`permissionMode`。`settingsChange()` 跟任務目前的設定比較（已排隊的設定也算），只留真的有變的欄位；值都一樣就當成沒有設定。邊界上的檢查：compete 任務回 409；repo 不允許的 provider、不能改程式的實作者（openai-api）、模型不支援的 effort、容器 repo 用 app-server 版 Codex，都回 422，訊息不會被收下。權限模式套用跟建立任務一樣的規則：外部內容一律 `ask`，超過專案上限就降到上限。
+- **生效時間**：從下一輪開始。任務沒在跑時，`applySettings()` 在 `continueTask` 前寫回任務（新的 `updateTaskSettings`，不需要新 migration，欄位本來就有）。任務在跑時，這則訊息一律排隊，不 steer、不打斷；它跟後面的訊息都要等這一輪結束（`next_turn` 和中斷後接續只拿到它前面的訊息，靠 `splitAtSettings` 切開），之後 `continueWithQueuedMessages` 先套用設定，再帶著訊息開始新的一輪。核准計畫時也會套用排隊中的設定。
+- **同一家換模型**：沿用同一個 attempt 和 CLI session，只更新 `attempt.model`；`runTask` 用 attempt 的 provider／model 加上任務設定的 effort。Claude 每次 resume 都會傳 `--model`／`--effort` 搭配 `--resume <id>`（`buildClaudeArgs` 本來就是這樣）；Codex app-server 在 `thread/resume` 帶 `model`，`turn/start` 帶 `model`＋`effort`（`app-server.ts` 本來就是這樣，exec 模式是 `exec resume --model … -c model_reasoning_effort=…`）。provider 程式碼沒有改，只補了測試。
+- **換一家（Claude ↔ Codex）**：在同一個工作副本開新的 attempt（複製 worktree／branch／base commit），不帶 session。第一個 prompt 由 `packages/server/src/handoff.ts` 的 `switchHandoffPrompt` 產生（純函式，不呼叫模型）：原本的任務、對話紀錄（擁有者訊息、每一輪實作者的最後回覆或串流文字、審查結論和前 5 個 findings、計畫、計畫核准、失敗原因；不含工具呼叫和 thinking；每則最多 2,000 字，總共最多 24,000 字，從最新的往回保留）、目前的 diff（最多 20,000 字），最後才是擁有者這次的指示。這次送出的訊息只在指示裡出現一次。review loop 的 orchestrator 現在在「有 `resumeWorkspace` 但沒有 session」時也會用 `resumePrompt`。之後的訊息會接新 provider 自己的 session。
+- **時間軸**：事件 `task.settings {implementer?, reviewer?, mode?, permissionMode?, handoff?}` 顯示成一行，例如「改用 Opus · 實作＋審查」、「改成單人」、「改成完整存取」。它算擁有者的決定，任務完成後收合過程時仍然顯示。
+- **測試**：server `composer-switch.test.ts`（11 個：同一家續用 session 且換 model／effort；跨家換新 attempt、新 session、摘要內容，下一則訊息接新 session；review loop 跨家且換審查者；single ↔ review_loop；權限 clamp；外部內容固定 ask；設定沒變就不記事件；400／422／409；執行中排隊、不 steer、之後的訊息也等；review loop 的修正回合拿不到設定訊息）、`handoff.test.ts`（6 個）；db `updateTaskSettings`（2 個）；orchestrator 沒有 session 也用 resume prompt；providers Claude `--resume`＋新 `--model`／`--effort`、Codex `thread/resume`／`turn/start` 帶新 model／effort；web `task-settings.test.ts`、`composer-height.test.ts`、`ThreadComposer.test.tsx`、timeline 與 fold 各一個；e2e `composer-switch.spec.ts`（6 個：一行高、長高、第一行打字時按鈕列不動、到上限才捲動、短視窗 40%、任務頁選單起始值、比賽停用、送出的 body、沒改就不送設定、外部內容停用、時間軸文字）。`permission-mode.spec.ts` 改成讀任務頁的權限選單按鈕（原本的 `task-permission` 標籤已移除）。
+- **驗證**：`pnpm check` 通過（vitest 1218 passed、4 skipped）。e2e 用不提交的暫時 harness（fake runtime 4398＋Vite 4173，啟動時檢查 proxy 沒有指向 4317／5173，跑完已刪除）：104 個全部通過（`origin-proxy.spec.ts` 寫死 5173，沒跑）。
+- **沒驗證到**：真的 CLI 都沒呼叫。(1) Claude Code `--resume` 搭配**不同的** `--model`：fixture `resume-2` 只錄到同一個模型（haiku）的 resume；官方說明 `--model` 是每次呼叫各自的參數，但沒錄過換模型後的事件。(2) Codex app-server `thread/resume` 換模型的實際行為（schema 的 `model` 欄位是否覆寫該 thread 之前的模型）沒有用真的 app-server 驗證；`turn/start` 也帶了 `model`／`effort` 當作保險。(3) 跨家交接摘要的品質（新 agent 是否真的接得上）。(4) 額度交接後（attempt 已經是另一家）又手動切換的情況，只照程式碼推論。
 
 ### 每個任務的權限模式：要求核准／自動／完整存取（2026-11-15，分支 `permission-modes`，**core 與 policy 待擁有者審**）
 
@@ -383,6 +396,7 @@
 
 ## 已確認決策
 
+- 2026-11-15 任務中切換模型、做法與權限（擁有者要求；以下細節為 agent 決定，待擁有者確認）：(1) 設定跟著下一則訊息送出，只在選單上改不會立即生效；(2) 任務在跑時，帶設定的訊息一律排隊（不 steer、不打斷），它和後面的訊息都等這一輪結束才送；(3) 同一家換模型或 effort：續用同一個 session，更新 `attempt.model`；換一家：同一個工作副本開新 attempt、新 session，第一個 prompt 是從事件紀錄組出來的交接摘要（不呼叫模型），之後接新 provider 自己的 session；(4) 只能在 single 和 review_loop 之間切換，compete 任務與切成 compete 都不開放；權限模式依建立任務的規則（外部內容固定 `ask`、專案上限 clamp）；(5) 值跟目前設定相同就當作沒有設定，不記事件；(6) `task.settings` 在任務完成後收合時仍然顯示；(7) 輸入框高度上限是 12 行或視窗的 40%，助理對話的輸入框也一樣。沒有新的 migration，沒有改 `packages/core` 的介面。
 - 2026-11-15 每個任務的權限模式（擁有者核准三種模式與各自的範圍；以下細節為 agent 決定，**core 與 policy 的變更待擁有者審**）：(1) 網頁新任務預設選 `auto`；API 沒給模式、助理 `create_task`、排程任務都是 `ask`；既有任務 `ask`，外部內容一律 `ask`，專案可設最高模式、server 降級；(2) 三種模式的 CLI 旗標相同（Claude `acceptEdits`＋核准工具、Codex `workspace-write`＋`on-request`），`full` 不用 `bypassPermissions`／`danger-full-access`，好讓密鑰與 Joy 設定一定經過 Joy；(3) 分類器是方便用的啟發式，邊界是 CLI 的 sandbox；Claude 的 Bash 沒有 sandbox 是已知缺口；(4) `full` 放行的動作以 `ClassifiedAction.grant` 標記，不新增 `ActionKind`；(5) OS 暫存目錄算工作區；(6) worktree 建好後依 lockfile 安裝相依套件，只限 `auto`／`full` 且非外部內容的任務，失敗不讓任務失敗，容器專案不在本機裝；(8) 非 Joy 的 MCP 工具與未知工具在 `full` 也要問；(7) Codex 檔案寫入沒給 `grantRoot` 時 `full` 也問。
 - 2026-11-15 Windows CI 偶發逾時（agent 決定）：`db`、`executor`、`server` 會跑真實 git／SQLite 的測試，`testTimeout` 拉到 30 s、`hookTimeout` 60 s；測試暫存目錄用 `rmSync(..., { maxRetries: 5, retryDelay: 100 })` 清理，避開 Windows `EBUSY`。不跳過、不弱化測試。
 - 2026-11-15 實作者的核准管道（agent 決定）：所有會寫程式的實作者 run（single、review loop、compete、合併版）都接 Tool Hub 與 approval tool；計畫與審查（唯讀）不接。Codex app-server 的核准處理器只在實作者回合掛上。orchestrator 的 `ReviewLoopInput.mcpServers／approvalTool`（未使用、且會連審查者一起給）改為 `implementerTools(ws)`。

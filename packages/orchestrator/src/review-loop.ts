@@ -71,7 +71,10 @@ export interface ReviewLoopInput {
   /** Reuse a persisted worktree and resume the implementer's last CLI session after server restart. */
   resumeWorkspace?: Workspace
   resumeSessionId?: string
-  /** What the resumed session is told first; defaults to the implement prompt for `prompt`. */
+  /**
+   * What the resumed session is told first; defaults to the implement prompt for `prompt`. With `resumeWorkspace` but
+   * no session (another provider takes the task over) it starts the new session.
+   */
   resumePrompt?: string
   /** Plan again in the resumed session with this prompt (owner feedback on a plan), then stop for approval. */
   replanPrompt?: string
@@ -210,7 +213,10 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
       first,
       base({
         prompt: withOwnerMessages(
-          session && input.resumePrompt ? input.resumePrompt : implementPrompt(input.prompt),
+          // A kept worktree without a session is a task moved to another provider: its prompt carries the history.
+          (session || input.resumeWorkspace) && input.resumePrompt
+            ? input.resumePrompt
+            : implementPrompt(input.prompt),
           take(),
         ),
         ...toolsForImplementer(),

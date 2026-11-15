@@ -100,6 +100,7 @@ import {
   setTaskStatus,
   updateAttempt,
   updateTask,
+  updateTaskSettings,
   updateConversationSession,
   updateRepoAllowedProviders,
   updateRepoCheckCommand,
@@ -120,6 +121,7 @@ import type {
 } from '@joy/db'
 import { ApprovalBroker } from './approvals.js'
 import { runAssistantTurn, toApiTools } from './assistant.js'
+import { switchHandoffPrompt } from './handoff.js'
 import { ExternalMcpServers, classifyExternalTool } from './external-mcp.js'
 import { sendPush, vapidKeys } from './push.js'
 import type { PushMessage } from './push.js'
@@ -376,6 +378,13 @@ const messageInputSchema = z
      * running agent without stopping it when its backend can take it, else wait for the agent's next turn.
      */
     interrupt: z.boolean().optional(),
+    /**
+     * From the next run on: other models, single ↔ review loop (never compete) and another permission mode. A running
+     * task applies them once its current run ends, with the message.
+     */
+    roleOverrides: roleOverridesSchema.optional(),
+    mode: z.enum(['single', 'review_loop']).optional(),
+    permissionMode: z.enum(PERMISSION_MODES).optional(),
   })
   .refine((input) => input.text !== '' || (input.attachments?.length ?? 0) > 0, {
     message: 'Send text or attachments',
@@ -565,7 +574,8 @@ interface ActiveTask {
 interface ResumeState {
   attempt: AttemptRecord
   workspace: Workspace
-  sessionId: string
+  /** Missing when the owner moved the task to another provider: a new session starts in the same worktree. */
+  sessionId?: string
   /** What to tell the resumed session; defaults to the task prompt. */
   prompt?: string
   /** Why the session is continued, when the owner asked for it (follow-up message, plan feedback or approval). */
@@ -598,6 +608,35 @@ interface QueuedMessage {
   id: string
   text: string
   attachments?: string[]
+  /** Settings the message changes: it waits for the end of the current run, and so do the messages after it. */
+  settings?: TaskSettingsChange
+}
+
+/** What an owner message may change about a task's next runs; only fields that really change are set. */
+interface TaskSettingsChange {
+  mode?: 'single' | 'review_loop'
+  roleOverrides?: Partial<RoleConfig>
+  permissionMode?: PermissionMode
+}
+
+/** Later changes win, field by field (and role by role). */
+function mergeSettings(...changes: Array<TaskSettingsChange | undefined>): TaskSettingsChange | undefined {
+  let merged: TaskSettingsChange | undefined
+  for (const change of changes) {
+    if (!change) continue
+    merged = {
+      ...merged,
+      ...change,
+      ...(merged?.roleOverrides || change.roleOverrides
+        ? { roleOverrides: { ...merged?.roleOverrides, ...change.roleOverrides } }
+        : {}),
+    }
+  }
+  return merged
+}
+
+function sameModelRef(a: ModelRef | undefined, b: ModelRef | undefined): boolean {
+  return a?.provider === b?.provider && a?.model === b?.model && a?.effort === b?.effort
 }
 
 /** How long a steer may take before the message falls back to the queue. */
@@ -1614,6 +1653,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           ...(record.disabled ? { disabled: true } : {}),
         })),
         queuedMessages: (queuedMessages.get(task.id) ?? []).map(({ id, text }) => ({ id, text })),
+        // Models, mode or permission mode a queued message changes once the current run ends.
+        pendingSettings: queuedSettings(task.id) ?? null,
         // Whether a message sent now reaches the running agent at once (else it waits for the agent's next turn).
         // A message waiting in the queue keeps later ones behind it, so the box should not promise steering then.
         steerable: !queuedMessages.get(task.id)?.length && canSteer(task),
@@ -1730,12 +1771,24 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const messagesMatch = /^\/api\/tasks\/([^/]+)\/messages$/.exec(url.pathname)
     if (messagesMatch && method === 'POST') {
       assertJsonContentType(req)
-      const { text, interrupt, attachments } = messageInputSchema.parse(await readJson(req))
+      const { text, interrupt, attachments, roleOverrides, mode, permissionMode } = messageInputSchema.parse(
+        await readJson(req),
+      )
       const task = requireTask(decodePathSegment(messagesMatch[1] ?? ''))
+      const requested: TaskSettingsChange | undefined =
+        roleOverrides || mode || permissionMode
+          ? {
+              ...(roleOverrides ? { roleOverrides: roleOverrides as Partial<RoleConfig> } : {}),
+              ...(mode ? { mode } : {}),
+              ...(permissionMode ? { permissionMode } : {}),
+            }
+          : undefined
       json(
         res,
         202,
-        await exclusive(task.id, () => postTaskMessage(task, text, interrupt ?? false, attachments ?? [])),
+        await exclusive(task.id, () =>
+          postTaskMessage(task, text, interrupt ?? false, attachments ?? [], requested),
+        ),
       )
       // A message queued while the run was ending (the run's own check may have found the task busy with this one).
       void continueWithQueuedMessages(task.id)
@@ -1760,15 +1813,19 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         const current = assertUnchanged(task)
         if (!pendingPlan(current)) throw new HttpError(409, 'This task has no plan waiting for approval')
         publishTaskLevel(task.id, 'plan.approved', note ? { note } : {})
+        const settings = queuedSettings(task.id)
+        const queuedIds = queuedMessageIds(task.id)
         const queued = takeQueuedMessages(task.id, 'plan_approved')
+        const next = await applySettings(
+          current,
+          state,
+          settings,
+          approvedPlanPrompt(note, pending.review, queued),
+          queuedIds,
+        )
         return {
           status: 202,
-          task: continueTask(
-            current,
-            state,
-            'plan_approved',
-            approvedPlanPrompt(note, pending.review, queued),
-          ),
+          task: continueTask(next.task, next.state, 'plan_approved', next.prompt),
         }
       })
       json(res, result.status, { task: result.task })
@@ -2573,8 +2630,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const task = getTask(db, taskId)
     if (!task) return
     const planning = !planApproved(task)
-    const queued = queuedMessages.get(taskId) ?? []
-    queuedMessages.delete(taskId)
+    // A message that changes settings, and those after it, wait until this continued run ends too.
+    const queued = splitAtSettings(taskId)
     scheduleTask(task, {
       ...state,
       prompt: interruptedPrompt(queued.map(agentText), planning),
@@ -2735,11 +2792,174 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   /** Hands the owner's queued messages to the next agent turn, recording that they were delivered. */
   function takeQueuedMessages(taskId: TaskId, via: string): string[] {
-    const queued = queuedMessages.get(taskId)
-    if (!queued?.length) return []
-    queuedMessages.delete(taskId)
+    // A turn inside the current run uses its models: a message that changes them (and any after it) waits for the
+    // run to end. A new run (follow-up, plan approval) applies the settings first and takes everything.
+    const queued = via === 'next_turn' ? splitAtSettings(taskId) : takeAllQueued(taskId)
+    if (!queued.length) return []
     publishTaskLevel(taskId, 'user.message.delivered', { ids: queued.map((m) => m.id), via })
     return queued.map(agentText)
+  }
+
+  function takeAllQueued(taskId: TaskId): QueuedMessage[] {
+    const queued = queuedMessages.get(taskId) ?? []
+    queuedMessages.delete(taskId)
+    return queued
+  }
+
+  /** Takes the queued messages before the first one that changes settings; that one and the rest stay queued. */
+  function splitAtSettings(taskId: TaskId): QueuedMessage[] {
+    const queued = queuedMessages.get(taskId) ?? []
+    const cut = queued.findIndex((message) => message.settings)
+    if (cut < 0) return takeAllQueued(taskId)
+    const taken = queued.slice(0, cut)
+    queuedMessages.set(taskId, queued.slice(cut))
+    return taken
+  }
+
+  /** Every settings change waiting in the queue, merged in order. */
+  function queuedSettings(taskId: TaskId): TaskSettingsChange | undefined {
+    return mergeSettings(...(queuedMessages.get(taskId) ?? []).map((message) => message.settings))
+  }
+
+  function queuedMessageIds(taskId: TaskId): string[] {
+    return (queuedMessages.get(taskId) ?? []).map((message) => message.id)
+  }
+
+  /**
+   * What the owner's requested settings really change, compared with the task as it will be once the settings already
+   * waiting in the queue apply. Checked here, at the boundary: a repository that does not allow a provider, a model
+   * that cannot edit code or an effort the model does not take is refused before the message is accepted.
+   */
+  async function settingsChange(
+    task: StoredTask,
+    requested: TaskSettingsChange | undefined,
+  ): Promise<TaskSettingsChange | undefined> {
+    if (!requested) return undefined
+    if (task.mode === 'compete') throw new HttpError(409, 'A compete task cannot change its models or mode')
+    const config = await configStore.get()
+    const roles = config.roles as RoleConfig
+    const repo = getRepo(db, task.repoId)
+    if (!repo) throw new HttpError(404, `Repository ${task.repoId} was not found`)
+    const pending = queuedSettings(task.id)
+    const baseMode = pending?.mode ?? task.mode
+    const baseOverrides = { ...task.roleOverrides, ...pending?.roleOverrides }
+    const basePermission = pending?.permissionMode ?? task.permissionMode
+    const change: TaskSettingsChange = {}
+    if (requested.mode && requested.mode !== baseMode) change.mode = requested.mode
+    if (requested.permissionMode) {
+      // Same rules as a new task: content from outside the owner always asks, and the project sets the ceiling.
+      let mode: PermissionMode = task.provenance === 'external_content' ? 'ask' : requested.permissionMode
+      if (repo.maxPermissionMode) mode = clampPermissionMode(mode, repo.maxPermissionMode)
+      if (mode !== basePermission) change.permissionMode = mode
+    }
+    const roleChanges: Partial<RoleConfig> = {}
+    for (const role of ROLES) {
+      const picked = requested.roleOverrides?.[role]
+      if (!picked) continue
+      const ref: ModelRef = picked.effort
+        ? { provider: picked.provider, model: picked.model, effort: picked.effort }
+        : { provider: picked.provider, model: picked.model }
+      if (!sameModelRef(resolveRole(role, roles, baseOverrides), ref)) roleChanges[role] = ref
+    }
+    if (Object.keys(roleChanges).length) change.roleOverrides = roleChanges
+    if (!change.mode && !change.permissionMode && !change.roleOverrides) return undefined
+
+    const nextOverrides = { ...baseOverrides, ...roleChanges }
+    const selected = selectActiveRoles(change.mode ?? baseMode, roles, nextOverrides)
+    const disallowed = findDisallowedRoleProviders(selected, repo.allowedProviders)[0]
+    if (disallowed) throw new HttpError(422, describeDisallowedRoleProvider(disallowed))
+    const implementer = selected.implementer
+    if (implementer && !providers[implementer.provider]?.capabilities.codeEdit)
+      throw new HttpError(422, `${implementer.provider} cannot edit code, so it cannot be the implementer`)
+    for (const ref of Object.values(roleChanges)) {
+      const issue = ref?.effort ? effortCompatibilityError(ref.provider, ref.model, ref.effort) : undefined
+      if (issue) throw new HttpError(422, issue)
+    }
+    if (repo.container) {
+      try {
+        assertContainerProviders(Object.values(selected), config)
+      } catch (error) {
+        throw new HttpError(422, error instanceof Error ? error.message : 'Not allowed in a container')
+      }
+    }
+    return change
+  }
+
+  /**
+   * Writes the owner's settings to the task right before its next run starts, and records them in the thread. Same
+   * provider: the saved session goes on with the new model or effort (both CLIs take the model on every resumed
+   * run). Another provider: a new attempt in the same worktree, whose first prompt carries the conversation so far.
+   */
+  async function applySettings(
+    task: StoredTask,
+    state: ResumeState,
+    change: TaskSettingsChange | undefined,
+    prompt: string,
+    deliveredIds: readonly string[],
+  ): Promise<{ task: StoredTask; state: ResumeState; prompt: string }> {
+    if (!change) return { task, state, prompt }
+    const config = await configStore.get()
+    const roles = config.roles as RoleConfig
+    const roleOverrides = change.roleOverrides
+      ? { ...task.roleOverrides, ...change.roleOverrides }
+      : undefined
+    const updated =
+      updateTaskSettings(db, task.id, {
+        ...(change.mode ? { mode: change.mode } : {}),
+        ...(roleOverrides ? { roleOverrides } : {}),
+        ...(change.permissionMode ? { permissionMode: change.permissionMode } : {}),
+      }) ?? task
+    const implementer = resolveRole('implementer', roles, updated.roleOverrides)
+    const from = { provider: state.attempt.provider, model: state.attempt.model }
+    let next = state
+    let nextPrompt = prompt
+    let handoff = false
+    if (change.roleOverrides?.implementer) {
+      if (implementer.provider === state.attempt.provider) {
+        if (implementer.model !== state.attempt.model) {
+          updateAttempt(db, state.attempt.id, { model: implementer.model })
+          next = { ...state, attempt: getAttempt(db, state.attempt.id) ?? state.attempt }
+        }
+      } else {
+        const diff = await executor.diff(state.workspace)
+        const attempt = createAttempt(db, {
+          id: randomUUID() as AttemptId,
+          taskId: task.id,
+          provider: implementer.provider,
+          model: implementer.model,
+          status: 'preparing',
+        })
+        updateAttempt(db, attempt.id, {
+          worktreePath: state.workspace.path,
+          branch: state.workspace.branch,
+          baseCommit: state.workspace.baseCommit,
+          diffStats: summarizeDiff(diff),
+        })
+        nextPrompt = switchHandoffPrompt({
+          from,
+          to: implementer,
+          task: agentPrompt(updated),
+          events: listTaskEvents(db, task.id),
+          diff,
+          next: prompt,
+          skipMessageIds: new Set(deliveredIds),
+        })
+        const { sessionId: _previous, ...rest } = state
+        next = { ...rest, attempt: getAttempt(db, attempt.id) ?? attempt }
+        handoff = true
+      }
+    }
+    const reviewer = change.roleOverrides?.reviewer
+    publishTaskLevel(task.id, 'task.settings', {
+      ...(change.roleOverrides?.implementer ? { implementer } : {}),
+      ...(reviewer ? { reviewer: resolveRole('reviewer', roles, updated.roleOverrides) } : {}),
+      ...(change.mode ? { mode: change.mode } : {}),
+      ...(change.permissionMode ? { permissionMode: change.permissionMode } : {}),
+      ...(handoff
+        ? { handoff: { from, to: { provider: implementer.provider, model: implementer.model } } }
+        : {}),
+    })
+    return { task: updated, state: next, prompt: nextPrompt }
   }
 
   /** The task's worktree is gone: its queued and held messages can never be delivered. */
@@ -2821,24 +3041,32 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     text: string,
     interrupt = false,
     attachmentIds: readonly string[] = [],
+    requested?: TaskSettingsChange,
   ) {
     if (task.mode === 'compete')
       throw new HttpError(409, 'Compete tasks cannot take messages; choose an attempt or start a new task')
     const id = randomUUID()
+    const settings = await settingsChange(task, requested)
     // Checked before anything happens; linked only once the message is accepted.
     const files = attachmentStore.checkUnused(attachmentIds, task.id)
     if (files.length) {
       const config = await configStore.get()
       const latest = latestAttempt(db, task.id)
+      const pending = mergeSettings(queuedSettings(task.id), settings)
       assertAttachmentsFit(
         getRepo(db, task.repoId),
         Object.values(
-          selectActiveRoles(
-            task.mode,
-            config.roles as RoleConfig,
-            task.roleOverrides,
-            latest ? { provider: latest.provider, model: latest.model } : undefined,
-          ),
+          pending
+            ? selectActiveRoles(pending.mode ?? task.mode, config.roles as RoleConfig, {
+                ...task.roleOverrides,
+                ...pending.roleOverrides,
+              })
+            : selectActiveRoles(
+                task.mode,
+                config.roles as RoleConfig,
+                task.roleOverrides,
+                latest ? { provider: latest.provider, model: latest.model } : undefined,
+              ),
         ),
         files,
         task.id,
@@ -2848,6 +3076,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       id,
       text,
       ...(files.length ? { attachments: files.map((f) => f.id) } : {}),
+      ...(settings ? { settings } : {}),
     }
     const linkFiles = () => {
       if (files.length && !linkAttachments(db, message.attachments ?? [], task.id, id))
@@ -2873,13 +3102,16 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       // (`user.message.delivered`, or `user.message.requeued` when the run could not take it after all). A message
       // already waiting in the queue stays ahead, so the new one waits behind it; while earlier steers are still going
       // out, the new one follows them through the lane (and is queued there if the run cannot take it any more).
-      if (!interrupt && queue.length === 0 && (canSteer(task) || steerLanes.has(task.id))) {
+      // A message that changes the models, mode or permission mode is never steered or used to interrupt: it waits
+      // for the run to end, and the next run starts with the new settings.
+      if (!settings && !interrupt && queue.length === 0 && (canSteer(task) || steerLanes.has(task.id))) {
         linkFiles()
         userMessage('steer')
         enqueueSteer(task.id, message)
         return { task: getTask(db, task.id), message: { id, delivery: 'steer' } }
       }
-      const delivery = interrupt && canInterrupt(task) ? 'interrupt' : 'queued'
+      const delivery =
+        !settings && interrupt && canInterrupt(task) && !queuedSettings(task.id) ? 'interrupt' : 'queued'
       linkFiles()
       userMessage(delivery)
       queue.push(message)
@@ -2896,6 +3128,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const current = assertUnchanged(task)
     const kind: ContinuationKind = planApproved(current) ? 'follow_up' : 'replan'
     linkFiles()
+    const pending = mergeSettings(queuedSettings(task.id), settings)
+    const deliveredIds = [...queuedMessageIds(task.id), id]
     const earlier = takeQueuedMessages(task.id, kind)
     userMessage(kind)
     const messages = [...earlier, agentText(message)]
@@ -2903,7 +3137,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       kind === 'replan'
         ? revisePlanPrompt(messages)
         : [...restoreNote(task.id), followUpPrompt(messages)].join('\n')
-    return { task: continueTask(current, state, kind, prompt), message: { id, delivery: kind } }
+    const next = await applySettings(current, state, pending, prompt, deliveredIds)
+    return {
+      task: continueTask(next.task, next.state, kind, next.prompt),
+      message: { id, delivery: kind },
+    }
   }
 
   /** Messages that arrived too late for the last agent turn start a follow-up once the run ends. */
@@ -2939,14 +3177,18 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         const state = await continuationState(task)
         const current = assertUnchanged(task)
         const kind: ContinuationKind = planApproved(current) ? 'follow_up' : 'replan'
+        const settings = queuedSettings(taskId)
+        const ids = queuedMessageIds(taskId)
         const messages = takeQueuedMessages(taskId, kind)
         if (!messages.length) return
-        continueTask(
+        const next = await applySettings(
           current,
           state,
-          kind,
+          settings,
           kind === 'replan' ? revisePlanPrompt(messages) : followUpPrompt(messages),
+          ids,
         )
+        continueTask(next.task, next.state, kind, next.prompt)
       })
     } catch (error) {
       discardQueuedMessages(
@@ -3885,7 +4127,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           reviewBrief: () => taskBrief(task),
           implementerTools: (ws) => hubs.tools(attempt, implementer, ws),
           runChecks: (ws, round) => runProjectChecks(task, repo, attempt, ws, round, controller.signal),
-          ...(resume ? { resumeWorkspace: resume.workspace, resumeSessionId: resume.sessionId } : {}),
+          ...(resume ? { resumeWorkspace: resume.workspace } : {}),
+          ...(resume?.sessionId ? { resumeSessionId: resume.sessionId } : {}),
           ...(resume && planning ? { replanPrompt: resume.prompt ?? planPrompt(brief) } : {}),
           ...(resume?.prompt && !planning ? { resumePrompt: resume.prompt } : {}),
         },
@@ -5537,7 +5780,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       ...(toolHub && provider.capabilities.delegatedApproval
         ? { approvalTool: TOOL_HUB_APPROVAL_TOOL_NAME }
         : {}),
-      ...(resume ? { resumeSessionId: resume.sessionId } : {}),
+      ...(resume?.sessionId ? { resumeSessionId: resume.sessionId } : {}),
       onSteer: steerHook(task.id),
     }
     let done: Extract<AgentEvent, { type: 'done' }> | undefined
@@ -5657,7 +5900,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           ),
           autonomy: 'read-only',
           signal: controller.signal,
-          ...(resume ? { resumeSessionId: resume.sessionId } : {}),
+          ...(resume?.sessionId ? { resumeSessionId: resume.sessionId } : {}),
           onSteer: steerHook(task.id),
         },
         model,

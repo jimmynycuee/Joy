@@ -341,6 +341,48 @@ export function updateTask(db: Database, id: TaskId, update: TaskUpdate): Stored
   return getTask(db, id)
 }
 
+/** What the owner may change on a task between runs: its models, the workflow (never compete) and the permission mode. */
+export interface TaskSettingsUpdate {
+  mode?: Exclude<TaskMode, 'compete'>
+  /** Replaces the task's role overrides as a whole (the caller merges). */
+  roleOverrides?: Partial<RoleConfig>
+  permissionMode?: PermissionMode
+}
+
+/**
+ * Changes how the next run of a task works. Compete is never a target (nor a source, checked by the caller): its
+ * attempts and judge are set up when the task starts. Returns the updated task, or undefined when it does not exist.
+ */
+export function updateTaskSettings(
+  db: Database,
+  id: TaskId,
+  update: TaskSettingsUpdate,
+): StoredTask | undefined {
+  const sets: string[] = []
+  const values: string[] = []
+  if (update.mode !== undefined) {
+    if (update.mode !== 'single' && update.mode !== 'review_loop')
+      throw new Error(`A task cannot switch to mode ${String(update.mode)}`)
+    sets.push('mode = ?')
+    values.push(update.mode)
+  }
+  if (update.roleOverrides !== undefined) {
+    sets.push('role_overrides = ?')
+    values.push(JSON.stringify(update.roleOverrides))
+  }
+  if (update.permissionMode !== undefined) {
+    if (!isPermissionMode(update.permissionMode))
+      throw new Error(`Invalid permission mode: ${String(update.permissionMode)}`)
+    sets.push('permission_mode = ?')
+    values.push(update.permissionMode)
+  }
+  if (sets.length) {
+    sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")
+    db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...values, id)
+  }
+  return getTask(db, id)
+}
+
 export function setTaskStatus(db: Database, id: TaskId, status: TaskStatus): void {
   db.prepare(
     "UPDATE tasks SET status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",

@@ -1,3 +1,4 @@
+import type { JoyConfig } from '@joy/config'
 import { ApiError, errorMessage, request } from '../api.js'
 import {
   THREAD_PLACEHOLDER,
@@ -7,29 +8,36 @@ import {
   pendingMessagesNote,
 } from '../messages.js'
 import { sendableAttachments } from '../attachments.js'
+import type { ComposerChoice, RoleDefaults } from '../composer-choice.js'
 import { useAttachments } from '../hooks/useAttachments.js'
 import { useDraft } from '../storage.js'
-import { PERMISSION_LABELS } from '../labels.js'
-import { taskModels, taskPermissionMode, worktreeRemoved } from '../task-info.js'
+import { roleModel } from '../labels.js'
+import { taskPermissionMode, worktreeRemoved } from '../task-info.js'
+import { isSwitchableMode, parsePendingSettings, settingsRequest, taskChoice } from '../task-settings.js'
 import type { TaskDetails } from '../types.js'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Composer } from './Composer.js'
+import { ApproachMenu, ModelMenu, PermissionMenu } from './ComposerMenus.js'
 
 const MAX_MESSAGE_CHARS = 20_000
+const NO_COMPETE = { compete: '開始後不能改' }
 
 /**
  * The message box at the bottom of a task thread. A message steers a running task (the working agent gets it without
  * stopping, or it waits for the agent's next turn during a review, checks or an approval), continues a finished one, or
- * revises a plan that waits for approval. The draft survives a failed send.
+ * revises a plan that waits for approval. The menus start at the task's own models, mode and permission mode; what the
+ * owner changes there goes out with the next message and applies from the next run. The draft survives a failed send.
  */
 export function ThreadComposer({
   details,
+  config,
   onChanged,
   onError,
   onStop,
   stopping = false,
 }: {
   details: TaskDetails
+  config: JoyConfig | null
   onChanged: () => void
   onError: (message: string) => void
   /** Set while the task runs: an empty box shows a stop button. */
@@ -51,8 +59,20 @@ export function ThreadComposer({
       ),
     [details.events, details.queuedMessages, task.status],
   )
-  const models = taskModels(details)
-  const permission = taskPermissionMode(details)
+  const defaults: RoleDefaults = useMemo(
+    () => ({ implementer: roleModel(config, 'implementer'), reviewer: roleModel(config, 'reviewer') }),
+    [config],
+  )
+  const external = task.provenance === 'external_content'
+  const permission = taskPermissionMode(details) ?? 'ask'
+  const pending = parsePendingSettings(details.pendingSettings)
+  // The task's settings (and those waiting in the queue) decide where the menus start, not every refresh.
+  const settingsKey = JSON.stringify([task.mode, task.roleOverrides ?? {}, permission, pending])
+  const initial = useMemo(() => taskChoice(task, defaults, permission, pending), [settingsKey, defaults])
+  const [choice, setChoice] = useState<ComposerChoice>(initial)
+  // The server applied or queued a change (or another tab did): start from what the task uses now.
+  useEffect(() => setChoice(initial), [initial])
+  const switchable = isSwitchableMode(task.mode)
 
   async function send(): Promise<void> {
     const text = draft.trim()
@@ -66,13 +86,17 @@ export function ThreadComposer({
     try {
       await request(`/api/tasks/${encodeURIComponent(task.id)}/messages`, {
         method: 'POST',
-        body: JSON.stringify({ text, ...(ids.length ? { attachments: ids } : {}) }),
+        body: JSON.stringify({
+          text,
+          ...(ids.length ? { attachments: ids } : {}),
+          ...(switchable ? settingsRequest(initial, choice, defaults) : {}),
+        }),
       })
       clearDraft()
       files.clear()
       onChanged()
     } catch (cause) {
-      // The draft stays, so the owner can send it again.
+      // The draft and the picked settings stay, so the owner can send it again.
       onError(
         ownerActionError(
           cause instanceof ApiError ? cause.status : undefined,
@@ -93,7 +117,7 @@ export function ThreadComposer({
         </p>
       ) : null}
       <Composer
-        className="composer-chat"
+        className="composer-chat composer-menus"
         value={draft}
         onChange={setDraft}
         onSubmit={send}
@@ -104,24 +128,33 @@ export function ThreadComposer({
         disabled={state.disabled}
         attachments={{ items: files.items, onAdd: files.add, onRemove: files.remove, allowWithoutText: true }}
         {...(onStop ? { onStop, stopping, stopLabel: '停止任務' } : {})}
+        bar={
+          switchable && !state.disabled ? (
+            <ApproachMenu
+              mode={choice.mode}
+              planFirst={false}
+              workflows={[]}
+              disabledModes={NO_COMPETE}
+              onMode={(mode) => setChoice((current) => ({ ...current, mode }))}
+            />
+          ) : null
+        }
         trailing={
-          models.implementer || permission ? (
-            <span
-              className="composer-model-label"
-              data-testid="task-models"
-              title={models.reviewer ? `實作：${models.implementer}，審查：${models.reviewer}` : undefined}
-            >
-              {permission ? (
-                <span
-                  className={`permission-tag${permission === 'full' ? ' permission-full' : ''}`}
-                  data-testid="task-permission"
-                >
-                  {PERMISSION_LABELS[permission]}
-                  {models.implementer ? ' · ' : ''}
-                </span>
-              ) : null}
-              {models.implementer}
-              {models.reviewer ? <span className="muted"> · 審查 {models.reviewer}</span> : null}
+          switchable && !state.disabled ? (
+            <span className="composer-task-settings" data-testid="task-models">
+              <PermissionMenu
+                value={choice.permissionMode}
+                max={details.repo?.maxPermissionMode}
+                lockedReason={external ? '外部內容的任務一律要求核准' : undefined}
+                onChange={(permissionMode) => setChoice((current) => ({ ...current, permissionMode }))}
+              />
+              <ModelMenu
+                choice={choice}
+                defaults={defaults}
+                allowed={details.repo?.allowedProviders}
+                mode={choice.mode}
+                onChange={setChoice}
+              />
             </span>
           ) : null
         }

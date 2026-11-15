@@ -86,6 +86,8 @@ export type TaskDetails = {
   steerable?: boolean
   /** `interrupt: true` would stop the agent's current step now (missing from older servers). */
   interruptible?: boolean
+  /** Models, mode or permission mode a queued message changes once the current run ends (see task-settings.ts). */
+  pendingSettings?: unknown
 }
 export type SecretStatus = { set: boolean; source?: 'env' | 'keychain' }
 export type DoctorStatus = 'ok' | 'missing' | 'untested'

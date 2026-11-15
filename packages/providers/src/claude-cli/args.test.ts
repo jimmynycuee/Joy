@@ -46,6 +46,23 @@ describe('buildClaudeArgs', () => {
     expect(resumed).not.toContain('--session-id')
   })
 
+  it('resumes the same session with another model and effort (the owner switched models)', () => {
+    // `--model` and `--effort` are per invocation, so a resumed run takes whatever this run passes.
+    const args = buildClaudeArgs(
+      { ...base, resumeSessionId: 's1' },
+      { ...model, model: 'sonnet', effort: 'high' },
+    )
+    expect(args.slice(0, 6)).toEqual([
+      '-p',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--model',
+      'sonnet',
+    ])
+    expect(args).toEqual(expect.arrayContaining(['--effort', 'high', '--resume', 's1']))
+  })
+
   it('maps autonomy to permission modes and never leaves a prompt unanswered', () => {
     const ro = buildClaudeArgs({ ...base, autonomy: 'read-only' }, model)
     expect(ro).toEqual(expect.arrayContaining(['--permission-mode', 'plan', '--permission-prompts', 'none']))

@@ -175,7 +175,6 @@ export function NewTaskPage({
               sendLabel="開始任務"
               busy={busy}
               autoFocus
-              rows={3}
               attachments={{ items: files.items, onAdd: files.add, onRemove: files.remove }}
               bar={
                 <>

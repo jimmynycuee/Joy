@@ -46,6 +46,21 @@ const kinds = (items: ReturnType<typeof foldTimeline>) =>
   items.map((item) => (item.kind === 'fold' ? 'fold' : item.entry.kind))
 
 describe('foldTimeline', () => {
+  it("keeps the owner's switch of model or mode in view", () => {
+    seq = 0
+    const entries = buildTimeline([
+      event('user.message', { id: 'm1', text: 'use Opus', provenance: 'user', delivery: 'follow_up' }, 0),
+      event('task.settings', { implementer: { provider: 'claude-cli', model: 'opus' } }, 1),
+      event('started', {}, 2),
+      tool('c1', 'pnpm test'),
+      agent('implementer', { type: 'message', text: 'Done.' }, 5),
+    ])
+    const items = foldTimeline(entries, 'done')
+    const visible = items.flatMap((item) => (item.kind === 'entry' ? [item.entry] : []))
+    expect(visible.map((entry) => entry.kind)).toEqual(['user', 'step', 'message'])
+    expect(visible[1]).toMatchObject({ text: '改用 Opus', owner: true })
+  })
+
   it('keeps the last message and the last review of a finished task, and folds the rest into one process', () => {
     const items = foldTimeline(twoRounds(), 'done')
     expect(kinds(items)).toEqual(['fold', 'message', 'review'])

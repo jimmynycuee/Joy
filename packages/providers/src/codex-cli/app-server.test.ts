@@ -230,6 +230,33 @@ describe('Codex app-server', () => {
     ])
   })
 
+  it('resumes the same thread with another model and effort (the owner switched models)', async () => {
+    const { dir, rpcPath, approvalsPath, readLines } = setup()
+    const provider = new CodexAppServerProvider({
+      command: process.execPath,
+      argsPrefix: [fakeCodexAppServer],
+      env: {
+        FAKE_APP_SERVER_FIXTURE: JSON.stringify(fixtureFor(dir)),
+        FAKE_RPC_OUT: rpcPath,
+        FAKE_APPROVALS_OUT: approvalsPath,
+      },
+      timeoutMs: 5_000,
+    })
+    const switched = { provider: 'codex-cli', model: 'gpt-6.1-sol', effort: 'high' } as const
+    await collect(provider.run(opts(dir, { resumeSessionId: 'thread-existing' }), switched))
+    const requests = readLines(rpcPath)
+    expect(requests.find((request) => request.method === 'thread/resume')?.params).toMatchObject({
+      threadId: 'thread-existing',
+      model: 'gpt-6.1-sol',
+    })
+    // The turn carries the model and effort too: app-server applies them from this turn on.
+    expect(requests.find((request) => request.method === 'turn/start')?.params).toMatchObject({
+      threadId: 'thread-synthetic-1',
+      model: 'gpt-6.1-sol',
+      effort: 'high',
+    })
+  })
+
   it('falls back to exec --json when app-server startup fails', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'joy-codex-fallback-test-'))
     dirs.push(dir)
