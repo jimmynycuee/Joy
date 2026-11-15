@@ -6509,12 +6509,19 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   // message): nothing starts a run on its own when Joy starts. A cancel by the owner already withdrew its messages, so
   // a cancelled task with messages left was stopped by Joy shutting down.
   for (const task of listTasks(db)) {
-    // A finished or archived task has nothing waiting for it: whatever is left there was lost long ago.
-    if (task.mode === 'compete' || task.archived || task.status === 'done' || task.status === 'review_ready')
-      continue
+    if (task.mode === 'compete') continue
     const events = listTaskEvents(db, task.id)
     const waiting = pendingMessages(events)
     if (!waiting.length) continue
+    // A finished or archived task has nothing waiting for it: whatever is left there was lost, so the thread stops
+    // showing it as waiting.
+    if (task.archived || task.status === 'done' || task.status === 'review_ready') {
+      publishTaskLevel(task.id, 'user.message.discarded', {
+        ids: waiting.map((message) => message.id),
+        reason: 'Joy restarted after the task had finished; the message was never sent',
+      })
+      continue
+    }
     queuedMessages.set(
       task.id,
       waiting.map((message) => ({

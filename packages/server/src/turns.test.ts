@@ -91,6 +91,25 @@ describe('pendingMessages', () => {
   })
 })
 
+describe('pendingMessages across interrupts', () => {
+  it('keeps messages waiting through two interrupts in a row, in the order they were sent', () => {
+    const events = thread(
+      ['started', {}],
+      [
+        'user.message',
+        { id: 'S', text: 'switch', delivery: 'queued', persisted: true, settings: { mode: 'single' } },
+      ],
+      ['user.message', { id: 'I1', text: 'first stop', delivery: 'interrupt', persisted: true }],
+      ['run.interrupted', {}],
+      ['started', {}],
+      ['user.message', { id: 'I2', text: 'second stop', delivery: 'interrupt', persisted: true }],
+      ['run.interrupted', {}],
+      ['started', {}],
+    )
+    expect(pendingMessages(events).map((m) => m.id)).toEqual(['S', 'I1', 'I2'])
+  })
+})
+
 describe('effectiveEvents', () => {
   it('leaves out rewound ranges and the messages discarded with them, and applies edits', () => {
     const events = thread(

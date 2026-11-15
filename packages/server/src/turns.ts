@@ -171,6 +171,10 @@ export function pendingMessages(events: readonly TurnEvent[]): PendingMessage[] 
         for (const id of seenStart) if (waiting.has(id)) lostAtStart.add(id)
         seenStart = new Set(order)
         break
+      case 'run.interrupted':
+        // The next run continues this one and takes the waiting messages then: it does not pass them over.
+        seenStart = new Set()
+        break
     }
   }
   take([...lostAtStart])

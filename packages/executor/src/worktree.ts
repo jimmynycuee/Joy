@@ -219,8 +219,9 @@ export class WorktreeExecutor implements Executor {
       )
       if (discardedCommits > 0 && !options.confirmDiscardCommits)
         throw new CheckpointCommitsError(discardedCommits)
-      await git(ws.path, ['reset', '--hard', '-q', parent])
       try {
+        // A failed reset may already have changed some files, so it counts as half way too.
+        await git(ws.path, ['reset', '--hard', '-q', parent])
         // Ignored files (node_modules, build output) stay; files created after the checkpoint go.
         await git(ws.path, ['clean', '-fdq'])
         await git(ws.path, ['read-tree', '-u', '--reset', `${commit}^{tree}`])

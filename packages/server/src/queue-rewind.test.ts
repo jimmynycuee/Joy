@@ -316,8 +316,20 @@ describe('messages queued for the end of the turn', () => {
     expect((await details(second.call, failed)).queuedMessages).toEqual([
       { id: 'current', text: `waiting on ${failed}` },
     ])
-    expect((await details(second.call, done)).queuedMessages).toEqual([])
-    expect((await details(second.call, archived)).queuedMessages).toEqual([])
+    // On a finished or archived task the leftovers are recorded as discarded, so they stop showing as waiting.
+    for (const [id, message] of [
+      [done, 'on-done'],
+      [archived, 'on-archived'],
+    ] as const) {
+      const after = await details(second.call, id)
+      expect(after.queuedMessages).toEqual([])
+      expect(after.events.find((e) => e.type === 'user.message.discarded')?.payload).toMatchObject({
+        ids: [message],
+        reason: expect.stringContaining('never sent'),
+      })
+    }
+    // The legacy message is left alone: it was never marked as waiting, and is not marked discarded either.
+    expect(count(await details(second.call, failed), 'user.message.discarded')).toBe(0)
   })
 })
 
