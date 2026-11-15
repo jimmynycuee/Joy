@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
-import { openSettings, openSettingsSection } from './helpers.js'
+import { openSettings, openSettingsSection, rowMenu } from './helpers.js'
 
 const repo = { id: 'dc-repo', path: '/tmp/declutter-project', defaultBranch: 'main' }
 const githubRepo = { ...repo, githubRemote: 'https://github.com/owner/declutter.git' }
@@ -78,7 +78,7 @@ const sidebarOf = (page: Page) => page.getByRole('navigation', { name: '主選�
 /** The row itself, not its hover action (封存：…), which has the title in its name too. */
 const rowOf = (page: Page, title: string) => sidebarOf(page).locator('.task-row', { hasText: title })
 
-test('the sidebar is one 最近 list: tasks and conversations mixed by last activity, no archived, no extra sections', async ({
+test('最近項目 mixes tasks and conversations by last activity, without archived ones or extra sections', async ({
   page,
 }) => {
   await mockApi(page, {
@@ -94,7 +94,8 @@ test('the sidebar is one 最近 list: tasks and conversations mixed by last acti
   await page.goto('/')
   const sidebar = sidebarOf(page)
 
-  const rows = sidebar.locator('.task-row .task-title')
+  const recent = sidebar.getByRole('region', { name: '最近項目' })
+  const rows = recent.locator('.task-row .task-title')
   await expect(rows).toHaveText(['Busy task', 'Weekend plans', 'Middle task', 'Oldest task'])
   // A task row has the project dot, a conversation row the speech-bubble icon.
   await expect(sidebar.locator('.task-row', { hasText: 'Busy task' }).locator('.project-dot')).toHaveCount(1)
@@ -107,10 +108,10 @@ test('the sidebar is one 最近 list: tasks and conversations mixed by last acti
   await expect(sidebar.getByRole('button', { name: /已封存/ })).toHaveCount(0)
   await expect(sidebar.getByRole('button', { name: '助理' })).toHaveCount(0)
   await expect(sidebar.getByRole('button', { name: '統計' })).toHaveCount(0)
-  await expect(sidebar.getByRole('button', { name: '加入專案' })).toHaveCount(0)
   await expect(sidebar.getByText('對話', { exact: true })).toHaveCount(0)
   await expect(sidebar.getByText('任務', { exact: true })).toHaveCount(0)
-  await expect(sidebar.getByText('最近', { exact: true })).toBeVisible()
+  await expect(sidebar.getByRole('button', { name: '最近項目' })).toBeVisible()
+  await expect(sidebar.getByRole('button', { name: '專案', exact: true })).toBeVisible()
   // Footer: just 設定.
   await expect(sidebar.locator('.sidebar-footer').getByRole('button')).toHaveText(['設定'])
 
@@ -268,7 +269,7 @@ test('archived tasks live in 設定 → 已封存, where they can be opened or r
   await expect(page.getByRole('heading', { name: 'Archived two' })).toBeVisible()
 
   // Archiving from the sidebar moves a task here.
-  await sidebar.getByRole('button', { name: '封存：Kept task' }).click()
+  await rowMenu(page, 'Kept task', '封存')
   await expect(sidebar.getByRole('button', { name: /^Kept task/ })).toHaveCount(0)
   await openSettings(page, '已封存')
   await expect(page.getByLabel('已封存的任務').getByText('Kept task')).toBeVisible()

@@ -1,88 +1,159 @@
 import { describe, expect, it } from 'vitest'
 import { recentItems } from './recent.js'
 import {
-  CONVERSATIONS_GROUP,
-  UNKNOWN_PROJECT_GROUP,
-  groupByProject,
-  parseCollapsedGroups,
-  serializeCollapsedGroups,
-  toggleCollapsed,
+  EMPTY_MEMORY,
+  NO_FILTER,
+  applyFilter,
+  isFiltering,
+  parseSidebarMemory,
+  pinnedRows,
+  serializeSidebarMemory,
+  tasksOfProject,
+  toggleKey,
+  unpinnedRows,
+  waitsForYou,
 } from './sidebar-groups.js'
-import type { ConversationSummary, Repo, Task } from './types.js'
+import type { ConversationSummary, Task } from './types.js'
 
-const repos: Repo[] = [
-  { id: 'a', path: '/work/alpha', defaultBranch: 'main' },
-  { id: 'b', path: '/work/beta', defaultBranch: 'main' },
-]
 function task(id: string, repoId: string, createdAt: string, extra: Partial<Task> = {}): Task {
   return { id, repoId, title: `task ${id}`, prompt: '', mode: 'single', status: 'done', createdAt, ...extra }
 }
-const chat: ConversationSummary = { id: 'c', createdAt: '2026-11-11T10:00:00Z' }
+const chat = (extra: Partial<ConversationSummary> = {}): ConversationSummary => ({
+  id: 'c',
+  createdAt: '2026-11-11T10:00:00Z',
+  ...extra,
+})
 
-describe('groupByProject', () => {
-  it('has no groups when the tasks belong to one project, even with several projects added', () => {
-    const tasks = [task('1', 'a', '2026-11-10T10:00:00Z'), task('2', 'a', '2026-11-11T10:00:00Z')]
-    expect(groupByProject(recentItems(tasks, [chat]), repos, tasks)).toBeNull()
-    expect(groupByProject([], repos, [])).toBeNull()
+describe('pinnedRows and unpinnedRows', () => {
+  const tasks = [
+    task('plain', 'a', '2026-11-12T10:00:00Z'),
+    task('first-pin', 'a', '2026-11-09T10:00:00Z', { pinnedAt: '2026-11-13T08:00:00Z' }),
+    task('last-pin', 'b', '2026-11-08T10:00:00Z', { pinnedAt: '2026-11-14T08:00:00Z' }),
+  ]
+
+  it('puts the pin made last first, tasks and conversations together', () => {
+    const items = recentItems(tasks, [chat({ pinnedAt: '2026-11-13T12:00:00Z' })])
+    expect(pinnedRows(items).map((item) => item.id)).toEqual(['last-pin', 'c', 'first-pin'])
   })
 
-  it('does not count archived tasks as a project', () => {
-    const tasks = [
-      task('1', 'a', '2026-11-10T10:00:00Z'),
-      task('2', 'b', '2026-11-11T10:00:00Z', { archived: true }),
-    ]
-    expect(groupByProject(recentItems(tasks, []), repos, tasks)).toBeNull()
+  it('splits the rest off in their own order, and never loses a row', () => {
+    const items = recentItems(tasks, [chat()])
+    const pinned = pinnedRows(items)
+    const rest = unpinnedRows(items)
+    expect(rest.map((item) => item.id)).toEqual(['plain', 'c'])
+    expect(pinned.length + rest.length).toBe(items.length)
   })
 
-  it('splits by project in the order projects were added, newest first inside, conversations last', () => {
-    const tasks = [
-      task('b-new', 'b', '2026-11-12T10:00:00Z'),
-      task('a-old', 'a', '2026-11-09T10:00:00Z'),
-      task('a-new', 'a', '2026-11-10T10:00:00Z'),
-    ]
-    const groups = groupByProject(recentItems(tasks, [chat]), repos, tasks)
-    expect(groups?.map((group) => [group.key, group.label, group.items.map((item) => item.id)])).toEqual([
-      ['a', 'alpha', ['a-new', 'a-old']],
-      ['b', 'beta', ['b-new']],
-      [CONVERSATIONS_GROUP, '對話', ['c']],
-    ])
-    expect(groups?.[0]?.repoId).toBe('a')
-    expect(groups?.[2]?.repoId).toBeUndefined()
+  it('leaves out archived tasks, which recentItems never lists', () => {
+    const items = recentItems(
+      [task('gone', 'a', '2026-11-12T10:00:00Z', { archived: true, pinnedAt: 'x' })],
+      [],
+    )
+    expect(pinnedRows(items)).toEqual([])
   })
 
-  it('leaves out a project without rows (a search) but still groups', () => {
-    const tasks = [
-      task('x', 'a', '2026-11-10T10:00:00Z', { title: 'needle' }),
-      task('y', 'b', '2026-11-11T10:00:00Z'),
-    ]
-    const groups = groupByProject(recentItems(tasks, [], 'needle'), repos, tasks)
-    expect(groups?.map((group) => group.key)).toEqual(['a'])
-  })
-
-  it('never loses a task whose project is not in the list', () => {
-    const tasks = [task('x', 'gone', '2026-11-10T10:00:00Z'), task('y', 'a', '2026-11-11T10:00:00Z')]
-    const groups = groupByProject(recentItems(tasks, []), repos, tasks)
-    expect(groups?.map((group) => group.key)).toEqual(['a', UNKNOWN_PROJECT_GROUP])
+  it('keeps a pin whose time cannot be read, ahead of the others, in the given order', () => {
+    const items = recentItems(
+      [
+        task('ok', 'a', '2026-11-12T10:00:00Z', { pinnedAt: '2026-11-13T08:00:00Z' }),
+        task('odd', 'a', '2026-11-11T10:00:00Z', { pinnedAt: 'not a time' }),
+      ],
+      [],
+    )
+    expect(pinnedRows(items).map((item) => item.id)).toEqual(['odd', 'ok'])
   })
 })
 
-describe('collapsed groups', () => {
-  it('reads what was stored and treats anything else as none', () => {
-    expect([...parseCollapsedGroups('["a","b"]')]).toEqual(['a', 'b'])
-    for (const raw of [null, '', 'nope', '{}', '"a"', '5', '[1,{"x":1},null]'])
-      expect(parseCollapsedGroups(raw).size).toBe(0)
-    expect([...parseCollapsedGroups('["a",1,"b"]')]).toEqual(['a', 'b'])
+describe('tasksOfProject', () => {
+  it('keeps one project’s tasks, newest first, and no conversation', () => {
+    const items = recentItems(
+      [
+        task('a-old', 'a', '2026-11-09T10:00:00Z'),
+        task('b', 'b', '2026-11-12T10:00:00Z'),
+        task('a-new', 'a', '2026-11-10T10:00:00Z'),
+      ],
+      [chat()],
+    )
+    expect(tasksOfProject(items, 'a').map((item) => item.id)).toEqual(['a-new', 'a-old'])
+    expect(tasksOfProject(items, 'nope')).toEqual([])
+  })
+})
+
+describe('applyFilter', () => {
+  const items = recentItems(
+    [
+      task('w1', 'a', '2026-11-12T10:00:00Z', { status: 'awaiting_approval' }),
+      task('w2', 'b', '2026-11-12T09:00:00Z', { status: 'review_ready' }),
+      task('r', 'a', '2026-11-12T08:00:00Z', { status: 'running' }),
+      task('q', 'b', '2026-11-12T07:00:00Z', { status: 'queued' }),
+      task('d', 'a', '2026-11-12T06:00:00Z', { status: 'done' }),
+      task('f', 'b', '2026-11-12T05:00:00Z', { status: 'failed' }),
+      task('x', 'a', '2026-11-12T04:00:00Z', { status: 'cancelled' }),
+    ],
+    [chat()],
+  )
+  const ids = (filter: Parameters<typeof applyFilter>[1]) => applyFilter(items, filter).map((item) => item.id)
+
+  it('shows everything, conversations too, without a filter', () => {
+    expect(isFiltering(NO_FILTER)).toBe(false)
+    expect(ids(NO_FILTER)).toHaveLength(items.length)
   })
 
-  it('round-trips and toggles without changing the old set', () => {
-    const open = new Set<string>()
-    const closed = toggleCollapsed(open, 'a')
-    expect([...closed]).toEqual(['a'])
-    expect(open.size).toBe(0)
-    expect(toggleCollapsed(closed, 'a').size).toBe(0)
-    expect([...parseCollapsedGroups(serializeCollapsedGroups(toggleCollapsed(closed, 'b')))]).toEqual([
-      'a',
-      'b',
-    ])
+  it('filters by status: waiting, running (queued too), done, and what did not finish', () => {
+    expect(ids({ status: 'waiting', repoId: null })).toEqual(['w1', 'w2'])
+    expect(ids({ status: 'running', repoId: null })).toEqual(['r', 'q'])
+    expect(ids({ status: 'done', repoId: null })).toEqual(['d'])
+    expect(ids({ status: 'failed', repoId: null })).toEqual(['f', 'x'])
+  })
+
+  it('filters by project, and by both; a conversation has neither, so it drops out', () => {
+    expect(ids({ status: 'all', repoId: 'b' })).toEqual(['w2', 'q', 'f'])
+    expect(ids({ status: 'waiting', repoId: 'b' })).toEqual(['w2'])
+    expect(ids({ status: 'done', repoId: 'b' })).toEqual([])
+    expect(isFiltering({ status: 'all', repoId: 'b' })).toBe(true)
+    expect(isFiltering({ status: 'done', repoId: null })).toBe(true)
+  })
+
+  it('treats a status the app does not know as not finished', () => {
+    const odd = recentItems([task('z', 'a', '2026-11-12T10:00:00Z', { status: 'mystery' })], [])
+    expect(applyFilter(odd, { status: 'failed', repoId: null }).map((item) => item.id)).toEqual(['z'])
+  })
+})
+
+describe('waitsForYou', () => {
+  it('is true for an approval or a review that waits', () => {
+    expect(waitsForYou(task('1', 'a', '', { status: 'awaiting_approval' }))).toBe(true)
+    expect(waitsForYou(task('1', 'a', '', { status: 'review_ready' }))).toBe(true)
+    expect(waitsForYou(task('1', 'a', '', { status: 'running' }))).toBe(false)
+  })
+})
+
+describe('sidebar memory', () => {
+  it('round-trips folded sections and opened projects', () => {
+    const memory = { collapsed: new Set(['recent']), open: new Set(['a', 'b']) }
+    expect(parseSidebarMemory(serializeSidebarMemory(memory))).toEqual(memory)
+  })
+
+  it('remembers nothing for a missing, broken, or wrong-shaped value', () => {
+    expect(parseSidebarMemory(null)).toBe(EMPTY_MEMORY)
+    expect(parseSidebarMemory('{not json')).toBe(EMPTY_MEMORY)
+    expect(parseSidebarMemory('[]')).toBe(EMPTY_MEMORY)
+    expect(parseSidebarMemory('"text"')).toBe(EMPTY_MEMORY)
+    expect(parseSidebarMemory('null')).toBe(EMPTY_MEMORY)
+  })
+
+  it('keeps only strings of a sensible length from each list', () => {
+    const memory = parseSidebarMemory(
+      JSON.stringify({ collapsed: ['ok', 3, null, 'x'.repeat(201)], open: 'a' }),
+    )
+    expect([...memory.collapsed]).toEqual(['ok'])
+    expect([...memory.open]).toEqual([])
+  })
+
+  it('toggles a key without changing the set it was given', () => {
+    const keys = new Set(['a'])
+    expect([...toggleKey(keys, 'b')].sort()).toEqual(['a', 'b'])
+    expect([...toggleKey(keys, 'a')]).toEqual([])
+    expect([...keys]).toEqual(['a'])
   })
 })

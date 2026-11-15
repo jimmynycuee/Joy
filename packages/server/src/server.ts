@@ -105,6 +105,7 @@ import {
   markMemoriesUsed,
   updateMemoryContent,
   openDatabase,
+  setConversationPinned,
   setConversationTitle,
   setTaskStatus,
   updateAttempt,
@@ -264,6 +265,7 @@ import { cliVersionWarnings, runDoctor } from './doctor.js'
 import type { DoctorOptions } from './doctor.js'
 import { describeDisallowedRoleProvider, findDisallowedRoleProviders } from './provider-allowlist.js'
 import { withProjectInstructions } from './project-instructions.js'
+import { FolderError, initGitRepository, listFolders } from './folders.js'
 
 const modelSchema = z.strictObject({
   provider: z.enum(PROVIDER_KINDS),
@@ -370,10 +372,13 @@ const taskUpdateSchema = z
   .strictObject({
     title: z.string().trim().min(1).max(500).optional(),
     archived: z.boolean().optional(),
+    /** Pin to (or unpin from) the top of the sidebar. */
+    pinned: z.boolean().optional(),
   })
-  .refine((input) => input.title !== undefined || input.archived !== undefined, {
-    message: 'Send title or archived',
-  })
+  .refine(
+    (input) => input.title !== undefined || input.archived !== undefined || input.pinned !== undefined,
+    { message: 'Send title, archived or pinned' },
+  )
 const planDecisionSchema = z.strictObject({ note: z.string().trim().min(1).max(20_000).optional() })
 const restoreCheckpointSchema = z.strictObject({ confirm: z.boolean().optional() })
 const idSchema = z.string().min(1).max(128)
@@ -435,6 +440,11 @@ function actionFingerprint(action: { kind: string; detail: unknown }): string {
   return JSON.stringify({ kind: action.kind, detail: action.detail })
 }
 
+const conversationUpdateSchema = z.strictObject({ pinned: z.boolean() })
+/** Folder browsing for 加入專案: a path to look into (the home folder when missing). */
+const folderListSchema = z.strictObject({ path: z.string().max(4096).optional() })
+/** `git init` in a folder; `confirm` must be true, so a stray request cannot create a repository. */
+const gitInitSchema = z.strictObject({ path: z.string().trim().min(1).max(4096), confirm: z.literal(true) })
 const conversationInputSchema = z.strictObject({ title: z.string().trim().min(1).max(200).optional() })
 const messageInputSchema = z
   .strictObject({
@@ -594,6 +604,8 @@ export interface JoyServerOptions {
    * it off; `resolve` replaces how the package manager is found (tests use a fake one).
    */
   dependencyInstall?: false | { resolve?: (command: string) => { command: string; prefix: string[] } }
+  /** Where the project folder picker starts (and what `~` means). Default the user's home folder; tests use a temp one. */
+  folderBrowserHome?: string
 }
 
 export interface JoyServer {
@@ -734,6 +746,7 @@ function selectActiveRoles(
 export async function createJoyServer(options: JoyServerOptions = {}): Promise<JoyServer> {
   const allowedOrigins = createOriginAllowlist(options.allowPlaywrightOrigin ?? false)
   const home = options.home ?? joyHome()
+  const folderBrowserOptions = options.folderBrowserHome ? { home: options.folderBrowserHome } : {}
   const configStore = options.configStore ?? new ConfigStore(join(home, 'config.yaml'))
   const initialConfig = await configStore.get()
   // Remote access (T4.1) is read once at start: the extra listener, its Host and Origin are fixed until restart.
@@ -1437,7 +1450,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           error: 'Invalid request',
           issues: error.issues.map(({ path, message }) => ({ path, message })),
         })
-      } else if (error instanceof HttpError || error instanceof AttachmentError) {
+      } else if (
+        error instanceof HttpError ||
+        error instanceof AttachmentError ||
+        error instanceof FolderError
+      ) {
         json(res, error.status, { error: redactor.redact(error.message) })
       } else {
         const message = error instanceof Error ? error.message : 'Unexpected server error'
@@ -1634,6 +1651,18 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       json(res, 201, { repo })
       return
     }
+    if (url.pathname === '/api/fs/folders' && method === 'GET') {
+      // Only folder names, never files or their contents; Joy's data and the home folder's hidden folders are left out.
+      const { path } = folderListSchema.parse({ path: url.searchParams.get('path') ?? undefined })
+      json(res, 200, await listFolders(path, { joyHome: home, ...folderBrowserOptions }))
+      return
+    }
+    if (url.pathname === '/api/fs/git-init' && method === 'POST') {
+      assertJsonContentType(req)
+      const input = gitInitSchema.parse(await readJson(req))
+      json(res, 201, await initGitRepository(input.path, { joyHome: home, ...folderBrowserOptions }))
+      return
+    }
     const repoMatch = /^\/api\/repos\/([^/]+)$/.exec(url.pathname)
     if (repoMatch && method === 'PATCH') {
       const repoId = idSchema.parse(decodePathSegment(repoMatch[1] ?? '')) as RepoId
@@ -1749,6 +1778,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       const task = requireTask(decodePathSegment(taskMatch[1] ?? ''))
       if (input.archived && (ACTIVE_TASK_STATUSES.has(task.status) || running.has(task.id)))
         throw new HttpError(409, `Task cannot be archived while it is ${task.status}; cancel it first`)
+      if (input.pinned && task.archived) throw new HttpError(409, 'An archived task cannot be pinned')
       const updated = updateTask(db, task.id, input)
       if (!updated) throw new HttpError(404, `Task ${task.id} was not found`)
       publishTaskLevel(task.id, 'task.updated', input)
@@ -2254,6 +2284,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       const conversation = getConversation(db, decodePathSegment(conversationMatch[1] ?? ''))
       if (!conversation) throw new HttpError(404, 'Conversation not found')
       json(res, 200, { conversation, messages: listMessages(db, conversation.id) })
+      return
+    }
+    if (conversationMatch && method === 'PATCH') {
+      assertJsonContentType(req)
+      const { pinned } = conversationUpdateSchema.parse(await readJson(req))
+      const id = decodePathSegment(conversationMatch[1] ?? '')
+      if (!setConversationPinned(db, id, pinned)) throw new HttpError(404, 'Conversation not found')
+      json(res, 200, { conversation: getConversation(db, id) })
       return
     }
     const messageMatch = /^\/api\/conversations\/([^/]+)\/messages$/.exec(url.pathname)

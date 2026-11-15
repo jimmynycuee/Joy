@@ -524,6 +524,16 @@ export const MIGRATIONS: readonly Migration[] = [
         CHECK (defaults IS NULL OR (json_valid(defaults) AND json_type(defaults) = 'object'));
     `,
   },
+  {
+    version: 24,
+    name: 'pinned tasks and conversations',
+    sql: /* sql */ `
+      -- When the owner pinned the row to the top of the sidebar; NULL means not pinned. Pinning changes no other
+      -- column (the sidebar's recent order follows updated_at, which a pin must not move).
+      ALTER TABLE tasks ADD COLUMN pinned_at TEXT CHECK (pinned_at IS NULL OR length(pinned_at) > 0);
+      ALTER TABLE conversations ADD COLUMN pinned_at TEXT CHECK (pinned_at IS NULL OR length(pinned_at) > 0);
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

@@ -1,83 +1,123 @@
-import { repoName } from './labels.js'
+import { parseTimestamp } from './dates.js'
 import type { RecentItem } from './recent.js'
-import type { Repo, Task } from './types.js'
+import type { Task } from './types.js'
 
-/** The group that holds assistant conversations, which belong to no project. */
-export const CONVERSATIONS_GROUP = 'conversations'
-/** Tasks whose project is gone from the list (should not happen, but a row must never disappear). */
-export const UNKNOWN_PROJECT_GROUP = 'unknown-project'
+/*
+ * What the sidebar shows besides the plain search result: pinned rows, the rows of one project, and the 最近項目
+ * filter. Everything here is a pure function of the rows, so the component only draws.
+ */
 
-export interface SidebarGroup {
-  /** The project's id, or one of the two keys above. Also what the collapsed state remembers. */
-  key: string
-  label: string
-  /** Set for a project: the dot colour comes from it. */
-  repoId?: string
-  items: RecentItem[]
+/** A task whose work waits for the owner: an approval, or a review with findings (or a plan, or a pick). */
+export function waitsForYou(task: Task): boolean {
+  return task.status === 'awaiting_approval' || task.status === 'review_ready'
+}
+
+function pinnedAtOf(item: RecentItem): string | undefined {
+  return item.kind === 'task' ? item.task.pinnedAt : item.conversation.pinnedAt
+}
+
+/** The pinned rows, the one pinned last first. Archived tasks are never in `items`, so they never show here. */
+export function pinnedRows(items: readonly RecentItem[]): RecentItem[] {
+  return items
+    .map((item, index) => ({ item, index, at: parseTimestamp(pinnedAtOf(item)) }))
+    .filter((entry) => pinnedAtOf(entry.item) !== undefined)
+    .sort((a, b) => {
+      // A pin time that cannot be read counts as the newest, like an activity time that cannot be read.
+      const ra = a.at ?? Number.POSITIVE_INFINITY
+      const rb = b.at ?? Number.POSITIVE_INFINITY
+      return ra === rb ? a.index - b.index : rb > ra ? 1 : -1
+    })
+    .map((entry) => entry.item)
+}
+
+/** Everything that is not pinned, in the order given. */
+export function unpinnedRows(items: readonly RecentItem[]): RecentItem[] {
+  return items.filter((item) => pinnedAtOf(item) === undefined)
+}
+
+/** The tasks of one project, in the order given (newest first). */
+export function tasksOfProject(
+  items: readonly RecentItem[],
+  repoId: string,
+): Array<RecentItem & { kind: 'task' }> {
+  return items.filter(
+    (item): item is RecentItem & { kind: 'task' } => item.kind === 'task' && item.task.repoId === repoId,
+  )
+}
+
+export type StatusFilter = 'all' | 'waiting' | 'running' | 'done' | 'failed'
+export const STATUS_FILTERS: readonly StatusFilter[] = ['all', 'waiting', 'running', 'done', 'failed']
+
+export interface RecentFilter {
+  status: StatusFilter
+  /** Only this project's tasks; null means every project. */
+  repoId: string | null
+}
+export const NO_FILTER: RecentFilter = { status: 'all', repoId: null }
+
+export function isFiltering(filter: RecentFilter): boolean {
+  return filter.status !== 'all' || filter.repoId !== null
+}
+
+function statusGroup(task: Task): Exclude<StatusFilter, 'all'> {
+  if (waitsForYou(task)) return 'waiting'
+  if (task.status === 'running' || task.status === 'queued') return 'running'
+  if (task.status === 'done') return 'done'
+  // failed and cancelled: what did not finish.
+  return 'failed'
 }
 
 /**
- * The sidebar's rows split by project, in the order the projects were added (so a group never jumps around while
- * work goes on), with the assistant conversations last. Rows keep their order (newest first) inside a group.
- * Returns null when the tasks belong to only one project: then there is nothing to tell apart, and the sidebar shows
- * its plain list without headings. `allTasks` decides that, not `items`, so a search does not make headings come and go.
+ * The rows that pass the filter. A conversation has no status and no project, so it only shows while nothing is
+ * filtered.
  */
-export function groupByProject(
-  items: readonly RecentItem[],
-  repos: readonly Repo[],
-  allTasks: readonly Task[],
-): SidebarGroup[] | null {
-  const projects = new Set(allTasks.filter((task) => !task.archived).map((task) => task.repoId))
-  if (projects.size < 2) return null
-
-  const groups: SidebarGroup[] = []
-  const byKey = new Map<string, SidebarGroup>()
-  const group = (key: string, label: string, repoId?: string): SidebarGroup => {
-    let found = byKey.get(key)
-    if (!found) {
-      found = { key, label, ...(repoId ? { repoId } : {}), items: [] }
-      byKey.set(key, found)
-      groups.push(found)
-    }
-    return found
-  }
-  // Projects first, in list order; each is created only when it has a row.
-  for (const item of items) {
-    if (item.kind !== 'task') continue
-    const repo = repos.find((candidate) => candidate.id === item.task.repoId)
-    if (repo) group(repo.id, repoName(repo.path), repo.id).items.push(item)
-    else group(UNKNOWN_PROJECT_GROUP, '其他').items.push(item)
-  }
-  groups.sort((a, b) => order(a, repos) - order(b, repos))
-  const chats = items.filter((item) => item.kind === 'conversation')
-  if (chats.length) groups.push({ key: CONVERSATIONS_GROUP, label: '對話', items: chats })
-  return groups
+export function applyFilter(items: readonly RecentItem[], filter: RecentFilter): RecentItem[] {
+  if (!isFiltering(filter)) return [...items]
+  return items.filter((item) => {
+    if (item.kind !== 'task') return false
+    if (filter.repoId !== null && item.task.repoId !== filter.repoId) return false
+    return filter.status === 'all' || statusGroup(item.task) === filter.status
+  })
 }
 
-function order(entry: SidebarGroup, repos: readonly Repo[]): number {
-  const index = repos.findIndex((repo) => repo.id === entry.key)
-  return index === -1 ? repos.length : index
+/** What the sidebar remembers between visits (localStorage): folded sections, and projects opened to show their tasks. */
+export interface SidebarMemory {
+  /** Section keys (`projects`, `recent`) the owner folded. Both start open. */
+  collapsed: ReadonlySet<string>
+  /** Ids of the projects whose tasks are shown. Every project starts closed. */
+  open: ReadonlySet<string>
 }
 
-export const COLLAPSED_GROUPS_KEY = 'joy.sidebar.collapsed.v1'
+export const SIDEBAR_MEMORY_KEY = 'joy.sidebar.v2'
+export const PROJECTS_SECTION = 'projects'
+export const RECENT_SECTION = 'recent'
 
-/** The group keys remembered as collapsed; anything that is not a list of strings means none are. */
-export function parseCollapsedGroups(raw: string | null): Set<string> {
+export const EMPTY_MEMORY: SidebarMemory = { collapsed: new Set(), open: new Set() }
+
+function strings(value: unknown): Set<string> {
+  return Array.isArray(value)
+    ? new Set(value.filter((item): item is string => typeof item === 'string' && item.length <= 200))
+    : new Set()
+}
+
+/** Anything that is not the saved shape (missing, hand-edited, another version) means nothing is remembered. */
+export function parseSidebarMemory(raw: string | null): SidebarMemory {
   try {
-    const value: unknown = JSON.parse(raw ?? '[]')
-    if (!Array.isArray(value)) return new Set()
-    return new Set(value.filter((item): item is string => typeof item === 'string' && item.length <= 200))
+    const value: unknown = JSON.parse(raw ?? 'null')
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return EMPTY_MEMORY
+    const record = value as Record<string, unknown>
+    return { collapsed: strings(record.collapsed), open: strings(record.open) }
   } catch {
-    return new Set()
+    return EMPTY_MEMORY
   }
 }
 
-export function serializeCollapsedGroups(keys: ReadonlySet<string>): string {
-  return JSON.stringify([...keys])
+export function serializeSidebarMemory(memory: SidebarMemory): string {
+  return JSON.stringify({ collapsed: [...memory.collapsed], open: [...memory.open] })
 }
 
-/** A copy of `keys` with `key` collapsed when it was open, or opened when it was collapsed. */
-export function toggleCollapsed(keys: ReadonlySet<string>, key: string): Set<string> {
+/** A copy of `keys` without `key` when it was in, with it when it was not. */
+export function toggleKey(keys: ReadonlySet<string>, key: string): Set<string> {
   const next = new Set(keys)
   if (!next.delete(key)) next.add(key)
   return next

@@ -2,12 +2,25 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-15（專案設定：專案指示、安裝指令、新任務預設、側邊欄依專案分組，分支 `project-settings`，基於 `composer-switch`）；2026-11-15（輸入框自動長高；任務中用首頁的選單切換模型、做法與權限模式，分支 `composer-switch`，基於 `permission-modes`）；2026-11-15（每個任務的權限模式：要求核准／自動／完整存取，分支 `permission-modes`，core 與 policy 待擁有者審）；2026-11-15（修正：review loop／compete 的 Claude 實作者沒有核准管道，`pnpm check` 被 CLI 自動拒絕）；2026-11-14（附件：輸入框附加檔案與貼上圖片；介面減量：側邊欄單一清單、設定返回鍵、移除說明文字；品牌角色、配色與專案色；2026-11-13：不用終端機：單一程式＋背景服務、上限停下後排隊訊息不自動接續；擁有者已審即時補充的 core 介面）
+- 最後更新：2026-11-16（側邊欄改成已釘選／專案／最近項目，加入專案改用資料夾選擇器，分支 `sidebar-projects`，基於 `main`）；2026-11-15（專案設定：專案指示、安裝指令、新任務預設、側邊欄依專案分組，分支 `project-settings`，基於 `composer-switch`）；2026-11-15（輸入框自動長高；任務中用首頁的選單切換模型、做法與權限模式，分支 `composer-switch`，基於 `permission-modes`）；2026-11-15（每個任務的權限模式：要求核准／自動／完整存取，分支 `permission-modes`，core 與 policy 待擁有者審）；2026-11-15（修正：review loop／compete 的 Claude 實作者沒有核准管道，`pnpm check` 被 CLI 自動拒絕）；2026-11-14（附件：輸入框附加檔案與貼上圖片；介面減量：側邊欄單一清單、設定返回鍵、移除說明文字；品牌角色、配色與專案色；2026-11-13：不用終端機：單一程式＋背景服務、上限停下後排隊訊息不自動接續；擁有者已審即時補充的 core 介面）
 - 最後更新：2026-11-15（任務頁整理：短標題、標題列只留點＋標題＋變更＋⋯、完成後過程預設收合、去掉色塊與光暈；2026-11-14：附件：輸入框附加檔案與貼上圖片；介面減量：側邊欄單一清單、設定返回鍵、移除說明文字；品牌角色、配色與專案色；2026-11-13：不用終端機：單一程式＋背景服務、上限停下後排隊訊息不自動接續；擁有者已審即時補充的 core 介面）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
 ## 驗證結果
+
+### 側邊欄：已釘選／專案／最近項目，加入專案選資料夾（2026-11-16，分支 `sidebar-projects`，基於 `main`）
+
+- **側邊欄由上而下**：新任務（鉛筆圖示，回首頁輸入框）與聊聊、搜尋、「已釘選」（沒有釘選就不顯示）、「專案 ›」（可收合，標題右側「＋」加入專案）、「最近項目 ›」（可收合，標題右側篩選與新對話圖示）、設定。專案列點一下展開它的任務（預設全部收合，有任務在等你時收合的專案列顯示小點），列尾 ⋯ → 設定，直接開設定頁「專案」且只顯示這個專案（有「所有專案」按鈕回到全部）。取代 #146 的依專案分組（`groupByProject` 與 `joy.sidebar.collapsed.v1` 移除）。搜尋、等你的標示、封存在設定裡都保留；搜尋時各區塊都展開，沒有符合的專案不顯示。收合與展開的狀態存 localStorage 的 `joy.sidebar.v2`（`{collapsed, open}`，每次讀寫都 try/catch，壞掉的值視為沒有記憶）。
+- **釘選存在 server**：migration 24（只新增）：`tasks.pinned_at`、`conversations.pinned_at`（TEXT，NULL＝沒釘，CHECK 不可為空字串）。`PATCH /api/tasks/:id` 多收 `pinned: boolean`（至少要給 title、archived、pinned 其中一個）；新增 `PATCH /api/conversations/:id` `{pinned}`。釘選**不動 `updated_at`**（最近項目的排序依它）；重複釘選保留第一次的時間；封存會取消釘選，已封存的任務不能釘（409），取消封存不會恢復釘選。回應與列表多 `pinnedAt`（沒釘就沒有這欄）。已釘選區依釘選時間新到舊，釘選的項目不再出現在「最近項目」（專案展開裡還是會有）。每一列的 ⋯ 選單：釘選／取消釘選、封存（取代原本 hover 的封存按鈕，名稱 `更多：標題`）。
+- **最近項目篩選**：狀態（全部／等你的／進行中／已完成／沒完成＝失敗與取消）與專案；有篩選時對話不顯示（它沒有狀態與專案），篩選圖示亮點。篩選只存在畫面，不存起來。
+- **資料夾選擇器**（`packages/server/src/folders.ts`）：`GET /api/fs/folders?path=`（預設家目錄，支援 `~`）回 `{path, parent, home, isGit, crumbs, folders: [{name, path, isGit}], truncated}`；**只列資料夾名稱**，不列檔案、不讀內容、隱藏所有 `.` 開頭的資料夾，最多 500 筆。不能瀏覽（403）：Joy 資料夾（`JOY_HOME`，不管在哪）、家目錄底下 `.` 開頭的資料夾、`~/Library`、`~/AppData`、任何位置的 `.ssh`／`.gnupg`／`.aws`／`Keychains`。路徑先 `resolve`（收掉 `..`）再 `realpath`（跟著連結走），兩者都要過，所以 `x/../.ssh` 和指向 `.ssh` 的連結都擋得住，列表裡指向禁區的連結也不列；比對不分大小寫（macOS／Windows）。相對路徑、含 NUL、超過 4096 字、不是資料夾回 400，不存在 404。需要 api token，與其他 API 一樣。`POST /api/fs/git-init` `{path, confirm: true}`（沒有 `confirm: true` 回 400）：`git init`、分支 `main`、一個空的初始 commit（Joy 的任務要從預設分支的 commit 開始，沒有 commit 就不能用；沒有 git 身分時用 `Joy <joy@localhost>`，關掉簽章與 hook）。拒絕家目錄與磁碟根目錄（400）、已是 git（409）、禁區（403）；失敗時刪掉剛建的 `.git`。選項 `folderBrowserHome` 讓測試改家目錄。
+- **加入專案流程**（`AddProjectDialog.tsx`）：標題右側「＋」、命令面板、新任務頁與設定頁的「加入專案」都開同一個對話框：路徑輸入框（可貼上，Enter 或「前往」）、麵包屑、上一層、資料夾列表（git 專案有分支圖示與「選擇」按鈕）、「選擇這個資料夾」。選了 git 專案進到預設分支（預設 main）與容器選項再「加入專案」；不是 git 專案顯示「在這裡 git init」，要再按「確認 git init」才會送出。加入失敗的原因顯示在對話框裡（原本是對話框後面的 toast）。後端 `POST /api/repos` 沒改（仍不檢查是不是 git）。
+- **沒做**：`apps/desktop`（Tauri）這個分支上不存在，所以沒有接原生對話框；右鍵選單沒做，只有 ⋯。Windows 的磁碟機清單沒處理（路徑可以貼，但沒有「所有磁碟機」那一層）。
+- **測試**：db 6 個（`pins.test.ts`：釘選不動 updated_at、保留第一次時間、封存取消釘選、已封存不能釘、migration 前的舊資料、對話）；server `folders.test.ts` 12 個（排序與只列資料夾、git 標示含 worktree 的 `.git` 檔、`~`、禁區、`..`、連結、400／404、500 筆上限、git init 含沒有身分與強制簽章的環境、拒絕家目錄與根目錄）；`sidebar-api.test.ts` 9 個（token、403／404／400、git-init 要確認、PATCH 釘選與 409）；web `sidebar-groups.test.ts` 14 個；e2e 新增 `sidebar-projects.spec.ts` 8 個（釘選／取消、封存取消釘選、篩選與收合記憶、專案設定、選擇器各步驟、git init 確認、貼上路徑錯誤），並改了 declutter／shell／project-settings／t1.8／container／memory／stats 的相關步驟。
+- **驗證**：`pnpm check` 通過（vitest 1307 passed、4 skipped）。e2e 用不提交的暫時 harness（fake runtime 4398＋Vite 4173，proxy 都指向 4398，啟動時檢查不含 4317／5173，跑完已刪除）：全部 115 個（排除會自己開 5173 的 origin-proxy）通過；`sidebar-projects` 重複跑 12 次（96 次）全過。淺色與深色模式的側邊欄、⋯ 選單、選擇器截圖都看過；手機寬度沒看（只有 `@media (hover: none)` 讓 ⋯ 與區塊工具常駐）。
+- **沒驗證到**：沒有在真實家目錄上跑選擇器（測試都在暫存目錄），真實的 macOS 權限提示（Documents、Desktop 的隱私權限）沒遇到；Windows 路徑只靠 `node:path` 與不分大小寫比對，沒有在 Windows 跑。
+- **決策**：頂端維持「新任務」與「聊聊」兩個鈕（鉛筆圖示換給新任務），最近項目的鉛筆圖示叫「新對話」是為了不和「新任務」重名；釘選用欄位而不是另開表，這樣刪除任務時自然一起消失；選擇器用 server 端點而不是瀏覽器的 File System Access API，因為要拿到絕對路徑。
 
 ### 專案設定：專案指示、安裝指令、新任務預設、側邊欄分組（2026-11-15，分支 `project-settings`，基於 `composer-switch`）
 

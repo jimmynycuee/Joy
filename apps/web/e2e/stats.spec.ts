@@ -47,7 +47,7 @@ test('model stats can be filtered by period and repository', async ({ page }) =>
   await expect(page.getByLabel('審查者統計')).toContainText('codex-cli · gpt-6')
 
   await page.getByLabel('從').fill('2026-11-01')
-  await page.getByLabel('專案').selectOption('joy')
+  await page.getByRole('combobox', { name: '專案' }).selectOption('joy')
   await expect(implementers.locator('tbody tr td').nth(2)).toHaveText('2')
   expect(queries.at(-1)).toBe('?from=2026-11-01&repoId=joy')
 })

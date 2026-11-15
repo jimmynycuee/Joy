@@ -4,11 +4,13 @@ import { ROLES } from '@joy/core'
 import type { RoleConfig } from '@joy/core'
 import type { JoyConfig } from '@joy/config'
 import { ApiError, errorMessage, request } from './api.js'
+import { AddProjectDialog } from './components/AddProjectDialog.js'
+import type { NewProject } from './components/AddProjectDialog.js'
 import { CommandPalette } from './components/CommandPalette.js'
 import { Mascot } from './components/Mascot.js'
 import type { PaletteItem } from './components/CommandPalette.js'
 import { Sidebar } from './components/Sidebar.js'
-import { Button, IconButton, Spinner } from './components/ui.js'
+import { IconButton, Spinner } from './components/ui.js'
 import { useTaskDetails } from './hooks/useTaskDetails.js'
 import { roleModel, shortTitle } from './labels.js'
 import { AssistantPage } from './pages/AssistantPage.js'
@@ -54,6 +56,16 @@ async function migrateLegacyArchive(tasks: readonly Task[]): Promise<boolean> {
   return results.some(Boolean)
 }
 
+/**
+ * A row as the server answered it, laid over what the list had. A field the answer leaves out (the pin, after
+ * unpinning) is gone from the server, so it must not survive from the old row.
+ */
+function withAnswer<T extends { pinnedAt?: string }>(old: T, answer: T): T {
+  const merged = { ...old, ...answer }
+  if (answer.pinnedAt === undefined) delete merged.pinnedAt
+  return merged
+}
+
 function isMobile(): boolean {
   return typeof window.matchMedia === 'function' && window.matchMedia(MOBILE_QUERY).matches
 }
@@ -76,6 +88,8 @@ export function Workspace() {
   )
   const [page, setPage] = useState<Page>('tasks')
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
+  // The one project 設定 → 專案 shows (opened from the sidebar); null shows them all.
+  const [settingsRepoId, setSettingsRepoId] = useState<string | null>(null)
   const [showTaskForm, setShowTaskForm] = useState(false)
   const [showRepoForm, setShowRepoForm] = useState(false)
   const [error, setError] = useState('')
@@ -258,9 +272,15 @@ export function Workspace() {
 
   function openSettings(section?: SettingsSection) {
     if (section) setSettingsSection(section)
+    setSettingsRepoId(null)
     if (page !== 'settings') setPageBeforeSettings(page)
     setPage('settings')
     closeDrawer()
+  }
+
+  function openProjectSettings(repoId: string) {
+    openSettings('projects')
+    setSettingsRepoId(repoId)
   }
 
   /** 設定 → 返回: the task, conversation or composer that was open before; the composer when there was none. */
@@ -343,25 +363,19 @@ export function Workspace() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [drawerOpen])
 
-  async function createRepo(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const form = new FormData(event.currentTarget)
-    setError('')
-    try {
-      await request('/api/repos', {
-        method: 'POST',
-        body: JSON.stringify({
-          path: String(form.get('path') ?? '').trim(),
-          defaultBranch: String(form.get('defaultBranch') ?? 'main').trim(),
-          ...(form.get('container') ? { container: true } : {}),
-        }),
-      })
-      await refreshLists()
-      setShowRepoForm(false)
-      setNotice('已加入專案。')
-    } catch (cause) {
-      setError(errorMessage(cause, '無法加入專案'))
-    }
+  /** Adds the project the dialog picked. A failure goes back to the dialog, which shows it where the owner is looking. */
+  async function createRepo(project: NewProject) {
+    await request('/api/repos', {
+      method: 'POST',
+      body: JSON.stringify({
+        path: project.path,
+        defaultBranch: project.defaultBranch,
+        ...(project.container ? { container: true } : {}),
+      }),
+    })
+    await refreshLists()
+    setShowRepoForm(false)
+    setNotice('已加入專案。')
   }
 
   async function createTask(input: NewTaskInput): Promise<boolean> {
@@ -397,17 +411,20 @@ export function Workspace() {
     }
   }
 
-  /** Renames or (un)archives a task on the server, then mirrors the answer in the list and the open thread. */
-  async function patchTask(id: string, patch: { title?: string; archived?: boolean }): Promise<boolean> {
+  /** Renames, (un)archives or (un)pins a task on the server, then mirrors the answer in the list and the open thread. */
+  async function patchTask(
+    id: string,
+    patch: { title?: string; archived?: boolean; pinned?: boolean },
+  ): Promise<boolean> {
     setError('')
     try {
       const { task } = await request<{ task: Task }>(`/api/tasks/${encodeURIComponent(id)}`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
       })
-      setTasks((current) => current.map((item) => (item.id === id ? { ...item, ...task } : item)))
+      setTasks((current) => current.map((item) => (item.id === id ? withAnswer(item, task) : item)))
       setDetails((current) =>
-        current && current.task.id === id ? { ...current, task: { ...current.task, ...task } } : current,
+        current && current.task.id === id ? { ...current, task: withAnswer(current.task, task) } : current,
       )
       return true
     } catch (cause) {
@@ -417,6 +434,22 @@ export function Workspace() {
           : errorMessage(cause, patch.title !== undefined ? '無法重新命名' : '無法更新任務'),
       )
       return false
+    }
+  }
+
+  /** Pins or unpins a conversation on the server and mirrors the answer in the sidebar. */
+  async function pinConversation(id: string, pinned: boolean) {
+    setError('')
+    try {
+      const { conversation } = await request<{ conversation: ConversationSummary }>(
+        `/api/conversations/${encodeURIComponent(id)}`,
+        { method: 'PATCH', body: JSON.stringify({ pinned }) },
+      )
+      setConversations((current) =>
+        current.map((item) => (item.id === id ? withAnswer(item, conversation) : item)),
+      )
+    } catch (cause) {
+      setError(errorMessage(cause, '無法更新對話'))
     }
   }
 
@@ -560,6 +593,8 @@ export function Workspace() {
         doctorLoading={doctorLoading}
         onRetryDoctor={() => setDoctorRetry((retry) => retry + 1)}
         repos={repos}
+        repoId={settingsRepoId}
+        onAllRepos={() => setSettingsRepoId(null)}
         onAddRepo={() => setShowRepoForm(true)}
         onRepoSaved={(saved) =>
           // The reply is the whole repo, so a cleared field (null) must disappear instead of lingering.
@@ -624,6 +659,10 @@ export function Workspace() {
         selectedConversationId={conversationId}
         pendingPlanTaskId={details?.pendingPlan ? details.task.id : ''}
         onArchive={(id) => void archiveTask(id)}
+        onPinTask={(id, pinned) => void patchTask(id, { pinned })}
+        onPinConversation={(id, pinned) => void pinConversation(id, pinned)}
+        onAddProject={() => setShowRepoForm(true)}
+        onOpenProjectSettings={openProjectSettings}
         onNewTask={openComposer}
         onOpenTask={openTask}
         onNewConversation={newConversation}
@@ -653,53 +692,7 @@ export function Workspace() {
         {content}
       </div>
 
-      {showRepoForm && (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setShowRepoForm(false)
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') setShowRepoForm(false)
-          }}
-        >
-          <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="repo-dialog-title">
-            <div className="dialog-header">
-              <h2 id="repo-dialog-title">加入專案</h2>
-              <IconButton icon="x" label="關閉" onClick={() => setShowRepoForm(false)} />
-            </div>
-            <form className="field-stack" onSubmit={(event) => void createRepo(event)}>
-              <label>
-                專案路徑
-                <input
-                  name="path"
-                  aria-label="專案路徑"
-                  placeholder="/Users/you/project"
-                  required
-                  autoFocus
-                />
-              </label>
-              <label>
-                預設分支
-                <input name="defaultBranch" aria-label="預設分支" defaultValue="main" required />
-              </label>
-              <label className="checkbox-row">
-                <input type="checkbox" name="container" aria-label="在容器裡執行 agent" />
-                在容器裡執行 agent（需要 Docker）
-              </label>
-              <div className="dialog-actions">
-                <Button variant="ghost" onClick={() => setShowRepoForm(false)}>
-                  取消
-                </Button>
-                <Button variant="primary" type="submit">
-                  加入專案
-                </Button>
-              </div>
-            </form>
-          </section>
-        </div>
-      )}
+      {showRepoForm && <AddProjectDialog onClose={() => setShowRepoForm(false)} onAdd={createRepo} />}
 
       {paletteOpen && <CommandPalette items={paletteItems} onClose={() => setPaletteOpen(false)} />}
     </div>
