@@ -69,3 +69,17 @@ describe('permission modes in policy events', () => {
     ).toBe('權限：需要確認的動作 — 允許（完整存取）')
   })
 })
+
+describe('task allows in policy events', () => {
+  it('says when an action ran because the owner allowed it for the task, and keeps that visible', () => {
+    const payload = { kind: 'run_outside_worktree', tier: 'auto', grant: 'task' }
+    expect(policyEventTitle('policy.action', payload)).toBe(
+      '權限：需要確認的動作 — 允許（因任務內允許而放行）',
+    )
+    expect(policyEventIsNoise('policy.action', payload)).toBe(false)
+    expect(policyEventTitle('task_allow.created', { target: 'pnpm install' })).toBe(
+      '這個任務內一律允許：pnpm install',
+    )
+    expect(policyEventTitle('task_allow.revoked', { allowId: 'x' })).toBe('已撤銷一項允許')
+  })
+})

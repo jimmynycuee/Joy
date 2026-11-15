@@ -517,7 +517,10 @@ interface Context {
 class Verdict {
   verdict: ShellVerdict = 'inside'
   reason = ''
+  /** Every reason raised, not only the one reported (`analyzeShellConcerns`). */
+  readonly raised = new Set<string>()
   raise(verdict: Exclude<ShellVerdict, 'inside'>, reason: string) {
+    this.raised.add(reason)
     if (this.verdict === 'forbidden') return
     if (verdict === 'forbidden' || this.verdict === 'inside') {
       this.verdict = verdict
@@ -548,14 +551,10 @@ function within(path: typeof posix, root: string, target: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
 }
 
-/**
- * Judges one shell command run with `cwd` (inside `worktree`). `mode` only changes how unknown expansions are
- * treated: `auto` asks, `full` lets them through unless they name a secret.
- */
-export function analyzeShellCommand(
+function runAnalysis(
   command: string,
   options: { cwd: string; worktree: string; mode: 'auto' | 'full'; env?: ClassifyEnvironment },
-): ShellAnalysis {
+): Verdict {
   const path = pathFor(options.worktree)
   const ctx: Context = {
     worktree: path.resolve(options.worktree),
@@ -569,7 +568,35 @@ export function analyzeShellCommand(
   const result = new Verdict()
   if (command.trim() === '') result.raise('outside', REASONS.unparseable)
   else analyzeScript(command, ctx, options.mode, result)
+  return result
+}
+
+/**
+ * Judges one shell command run with `cwd` (inside `worktree`). `mode` only changes how unknown expansions are
+ * treated: `auto` asks, `full` lets them through unless they name a secret.
+ */
+export function analyzeShellCommand(
+  command: string,
+  options: { cwd: string; worktree: string; mode: 'auto' | 'full'; env?: ClassifyEnvironment },
+): ShellAnalysis {
+  const result = runAnalysis(command, options)
   return { verdict: result.verdict, reason: result.reason }
+}
+
+/** Why a command may leave the worktree. Every concern found is listed, not only the first one. */
+export type ShellConcern = keyof typeof REASONS
+
+/**
+ * Like `analyzeShellCommand`, plus every concern the command raised. The verdict reports one reason; a command such as
+ * `rm ../x && git push` has two, and a caller deciding whether an approval may be remembered needs to see both.
+ */
+export function analyzeShellConcerns(
+  command: string,
+  options: { cwd: string; worktree: string; mode: 'auto' | 'full'; env?: ClassifyEnvironment },
+): ShellAnalysis & { concerns: ShellConcern[] } {
+  const result = runAnalysis(command, options)
+  const concerns = (Object.keys(REASONS) as ShellConcern[]).filter((key) => result.raised.has(REASONS[key]))
+  return { verdict: result.verdict, reason: result.reason, concerns }
 }
 
 function analyzeScript(source: string, ctx: Context, mode: 'auto' | 'full', result: Verdict): void {

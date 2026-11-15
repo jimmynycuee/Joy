@@ -524,6 +524,26 @@ export const MIGRATIONS: readonly Migration[] = [
         CHECK (defaults IS NULL OR (json_valid(defaults) AND json_type(defaults) = 'object'));
     `,
   },
+  {
+    version: 24,
+    name: 'task allows',
+    sql: /* sql */ `
+      -- "Allow for the rest of this task": an action the owner approved once that the same task does not ask about
+      -- again. fingerprint is the SHA-256 (hex) of the action's fingerprint from @joy/policy (task-allow.ts), so raw
+      -- commands are not stored twice; target is the redacted text the owner saw. Rows go when the task finishes,
+      -- is archived or discarded (repositories.ts), or is deleted (cascade). Keep kind equal to TASK_ALLOW_KINDS.
+      CREATE TABLE task_allows (
+        id          TEXT PRIMARY KEY CHECK (length(id) = 36),
+        task_id     TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        kind        TEXT NOT NULL CHECK (kind IN ('shell', 'file_write', 'file_read', 'network', 'mcp')),
+        fingerprint TEXT NOT NULL CHECK (length(fingerprint) = 64 AND fingerprint NOT GLOB '*[^0-9a-f]*'),
+        target      TEXT NOT NULL CHECK (length(target) BETWEEN 1 AND 4000),
+        approval_id TEXT NOT NULL REFERENCES approvals(id) ON DELETE CASCADE,
+        created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        UNIQUE (task_id, fingerprint)
+      ) STRICT;
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

@@ -233,14 +233,15 @@ test('a done task opens its changes by itself with a file tree and coloured line
   await page.goto(`/?task=${task.id}`)
   const pane = page.getByRole('complementary', { name: '檔案變更' })
   await expect(pane).toBeVisible()
-  await expect(pane.getByRole('group', { name: '變更的檔案' })).toContainText('src/ui')
-  await expect(pane.getByRole('button', { name: /login\.ts/ })).toBeVisible()
+  const tree = pane.getByRole('group', { name: '變更的檔案' })
+  await expect(tree).toContainText('src/ui')
+  await expect(tree.getByRole('button', { name: /login\.ts/ })).toBeVisible()
   await expect(pane.locator('.diff-line.added').first()).toContainText('+new line')
   await expect(pane.locator('.diff-line.removed').first()).toContainText('-old line')
-  await pane.getByRole('button', { name: /README\.md/ }).click()
+  await tree.getByRole('button', { name: /README\.md/ }).click()
   await expect(page.getByTestId('diff-patch')).toContainText('+readme line')
 
-  // A published task links to its PR.
-  const pr = page.getByTestId('publish-panel').getByRole('link', { name: '查看 PR' })
+  // A published task links to its PR above the diff.
+  const pr = pane.getByTestId('pr-bar').getByRole('link', { name: 'PR #7' })
   await expect(pr).toHaveAttribute('href', 'https://github.com/owner/repo/pull/7')
 })

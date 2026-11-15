@@ -68,6 +68,15 @@ export {
 } from './approvals.js'
 export type { ApprovalRecord, ApprovalStatus, NewApproval } from './approvals.js'
 export {
+  clearTaskAllows,
+  createTaskAllow,
+  deleteTaskAllow,
+  findTaskAllow,
+  listTaskAllows,
+  TASK_ALLOW_KINDS,
+} from './task-allows.js'
+export type { NewTaskAllow, TaskAllowKind, TaskAllowRecord } from './task-allows.js'
+export {
   appendMessage,
   createConversation,
   getConversation,

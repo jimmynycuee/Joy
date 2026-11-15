@@ -9,8 +9,15 @@ import { PrStatusCard } from '../components/PrStatusCard.js'
 import { RunningIndicator, TimelineView, UserBubble } from '../components/Thread.js'
 import { ThreadComposer } from '../components/ThreadComposer.js'
 import { TitleEditor } from '../components/TitleEditor.js'
+import { TaskAllowsPanel } from '../components/TaskAllowsPanel.js'
 import { UsagePanel } from '../components/UsagePanel.js'
-import { ApprovalsPanel, ComparePanel, DiscardButton, PublishPanel } from '../components/task-panels.js'
+import {
+  ApprovalsPanel,
+  ComparePanel,
+  DiscardButton,
+  PublishPanel,
+  PullRequestBar,
+} from '../components/task-panels.js'
 import { Button, Icon, IconButton } from '../components/ui.js'
 import { diffTotals } from '../diff.js'
 import { modeLabel, statusLabel } from '../labels.js'
@@ -85,6 +92,7 @@ export function TaskPage({
   )
   const usage = useMemo(() => parseUsage(details.usage), [details.usage])
   const checkpointCount = details.events.filter((event) => event.type === 'checkpoint.created').length
+  const taskAllows = details.taskAllows ?? []
   const published = details.events.some((event) => event.type === 'publish.done')
   const canAskAgent = !followUpState({
     mode: task.mode,
@@ -214,7 +222,12 @@ export function TaskPage({
               />
             </SubMenu>
           ) : null}
-          {usage || checkpointCount > 0 ? <MenuSeparator /> : null}
+          {taskAllows.length > 0 ? (
+            <SubMenu label="允許" value={String(taskAllows.length)} kind="dialog" className="menu-panel-wide">
+              <TaskAllowsPanel taskId={task.id} allows={taskAllows} onChanged={onChanged} />
+            </SubMenu>
+          ) : null}
+          {usage || checkpointCount > 0 || taskAllows.length > 0 ? <MenuSeparator /> : null}
           <MenuItem icon="pencil" onSelect={() => setRenaming(true)}>
             改名
           </MenuItem>
@@ -325,7 +338,14 @@ export function TaskPage({
               <h2>變更</h2>
               <IconButton icon="x" label="關閉變更面板" onClick={() => onToggleChanges(false)} />
             </div>
-            {diff && hasDiff ? <DiffBrowser diff={diff} /> : <p className="pane-empty">還沒有變更</p>}
+            {diff && hasDiff ? (
+              <DiffBrowser diff={diff} actions={<PullRequestBar details={details} onChanged={onChanged} />} />
+            ) : (
+              <>
+                <PullRequestBar details={details} onChanged={onChanged} />
+                <p className="pane-empty">還沒有變更</p>
+              </>
+            )}
           </aside>
         ) : null}
       </div>

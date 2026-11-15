@@ -120,6 +120,11 @@ import {
   updateRepoContainer,
   updateRepoGithubRemote,
   updateRepoMaxPermissionMode,
+  clearTaskAllows,
+  createTaskAllow,
+  deleteTaskAllow,
+  findTaskAllow,
+  listTaskAllows,
 } from '@joy/db'
 import type {
   ApprovalRecord,
@@ -129,9 +134,11 @@ import type {
   ProjectNoteRecord,
   RepoRecord,
   StoredTask,
+  TaskAllowRecord,
   TaskEventRecord,
 } from '@joy/db'
 import { ApprovalBroker } from './approvals.js'
+import type { TaskAllowOffer } from './approvals.js'
 import { runAssistantTurn, toApiTools } from './assistant.js'
 import { switchHandoffPrompt } from './handoff.js'
 import { ExternalMcpServers, classifyExternalTool } from './external-mcp.js'
@@ -244,8 +251,15 @@ import {
   classifyCodexApproval,
   defaultClassifyEnvironment,
   evaluateAction,
+  taskAllowForClaudeTool,
+  taskAllowForCodexApproval,
 } from '@joy/policy'
-import type { ClassifiedAction, ClassifyEnvironment } from '@joy/policy'
+import type {
+  ClassifiedAction,
+  ClassifyEnvironment,
+  CodexApprovalInput,
+  TaskAllowJudgement,
+} from '@joy/policy'
 import { checkCommandKind, checkEnvironment } from './checks.js'
 import {
   AttachmentError,
@@ -431,6 +445,17 @@ function withMonthlyBudget(inner: AgentProvider, check: () => Promise<void>): Ag
 }
 
 /** Identifies an action for one-time grants; computed from the redacted action, as stored in approvals. */
+/** What the UI gets for an allowed action (the fingerprint hash stays on the server). */
+function taskAllowInfo(allow: TaskAllowRecord) {
+  return {
+    id: allow.id,
+    kind: allow.kind,
+    target: allow.target,
+    approvalId: allow.approvalId,
+    createdAt: allow.createdAt,
+  }
+}
+
 function actionFingerprint(action: { kind: string; detail: unknown }): string {
   return JSON.stringify({ kind: action.kind, detail: action.detail })
 }
@@ -499,7 +524,11 @@ const assistantCallSchema = z.discriminatedUnion('op', [
     arguments: z.unknown().optional(),
   }),
 ])
-const approvalDecisionSchema = z.strictObject({ note: z.string().max(2_000).optional() })
+const approvalDecisionSchema = z.strictObject({
+  note: z.string().max(2_000).optional(),
+  // `task`: also allow the same action for the rest of the task (only when the policy offered it).
+  scope: z.enum(['once', 'task']).optional(),
+})
 const approvalStatusSchema = z.enum(['pending', 'approved', 'denied', 'expired']).optional()
 const toolHubCallSchema = z.strictObject({ name: z.enum(TOOL_HUB_TOOL_NAMES), arguments: z.unknown() })
 const MAX_BODY_BYTES = 1_000_000
@@ -1076,6 +1105,37 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   expirePendingApprovals(db)
   /** One-time permissions created by late approvals, keyed by task, holding action fingerprints. */
   const approvalGrants = new Map<TaskId, Set<string>>()
+
+  /**
+   * What "allow for the rest of this task" would remember for an approval, when the policy offered it and the task can
+   * still use it (not external content, not finished or archived).
+   */
+  function taskAllowOffer(approval: ApprovalRecord): TaskAllowOffer | undefined {
+    const offer = approvals.allowOffer(approval.id)
+    if (!offer || approval.action.provenance === 'external_content') return undefined
+    const task = getTask(db, approval.taskId)
+    if (!task || task.provenance === 'external_content' || task.archived) return undefined
+    if (task.status === 'done' || task.status === 'review_ready') return undefined
+    return offer
+  }
+
+  function rememberTaskAllow(approval: ApprovalRecord, offer: TaskAllowOffer) {
+    const allow = createTaskAllow(db, {
+      id: randomUUID(),
+      taskId: approval.taskId,
+      kind: offer.kind,
+      fingerprint: offer.fingerprint,
+      target: offer.target,
+      approvalId: approval.id,
+    })
+    publish(approval.taskId, approval.attemptId, 'task_allow.created', {
+      allowId: allow.id,
+      approvalId: approval.id,
+      kind: allow.kind,
+      target: allow.target,
+    })
+    return taskAllowInfo(allow)
+  }
 
   /**
    * Answers an approval from any channel. A pending one is decided directly. One that timed out and paused its task
@@ -1740,7 +1800,19 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         steerable: !queuedMessages.get(task.id)?.length && canSteer(task),
         // Whether `interrupt: true` would stop the agent's current step now.
         interruptible: canInterrupt(task),
+        // Actions the owner allowed for the rest of this task.
+        taskAllows: listTaskAllows(db, task.id).map(taskAllowInfo),
       })
+      return
+    }
+    const allowMatch = /^\/api\/tasks\/([^/]+)\/allows\/([^/]+)$/.exec(url.pathname)
+    if (allowMatch && method === 'DELETE') {
+      const task = requireTask(decodePathSegment(allowMatch[1] ?? ''))
+      const allowId = decodePathSegment(allowMatch[2] ?? '')
+      if (!deleteTaskAllow(db, task.id, allowId))
+        throw new HttpError(404, `Task ${task.id} has no allowed action ${allowId}`)
+      publishTaskLevel(task.id, 'task_allow.revoked', { allowId })
+      json(res, 200, { revoked: allowId })
       return
     }
     if (taskMatch && method === 'PATCH') {
@@ -1771,7 +1843,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         approvals: listApprovals(db, {
           ...(status ? { status } : {}),
           ...(taskId ? { taskId: taskId as TaskId } : {}),
-        }),
+        }).map((approval) => (taskAllowOffer(approval) ? { ...approval, allowInTask: true } : approval)),
       })
       return
     }
@@ -1779,14 +1851,23 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     if (decisionMatch && method === 'POST') {
       const body = approvalDecisionSchema.parse(await readJson(req))
       const id = decodePathSegment(decisionMatch[1] ?? '')
-      const answered = await answerApproval(
-        id,
-        decisionMatch[2] === 'approve' ? 'approved' : 'denied',
-        'web',
-        body.note,
-      )
+      const approve = decisionMatch[2] === 'approve'
+      if (body.scope === 'task' && !approve)
+        throw new HttpError(400, 'Only an approval can be remembered for the task')
+      const existing = getApproval(db, id)
+      const offer = body.scope === 'task' && existing ? taskAllowOffer(existing) : undefined
+      if (body.scope === 'task' && existing && !offer)
+        throw new HttpError(
+          422,
+          'This action cannot be allowed for the rest of the task; approve it once instead',
+        )
+      const answered = await answerApproval(id, approve ? 'approved' : 'denied', 'web', body.note)
       if (!answered) throw new HttpError(409, 'Approval does not exist or was already decided')
-      json(res, 200, answered)
+      const remembered =
+        offer && answered.approval.status === 'approved'
+          ? rememberTaskAllow(answered.approval, offer)
+          : undefined
+      json(res, 200, { ...answered, ...(remembered ? { taskAllow: remembered } : {}) })
       return
     }
     const publishMatch = /^\/api\/tasks\/([^/]+)\/publish$/.exec(url.pathname)
@@ -2060,6 +2141,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         ),
       )
       publishTaskLevel(task.id, 'worktree.removed', { attemptIds: removed, discarded: true })
+      // A discarded task is over; what was allowed for it ends too.
+      if (clearTaskAllows(db, task.id)) publishTaskLevel(task.id, 'task_allow.revoked', { all: true })
       if (removed.length) forgetQueuedMessages(task.id, 'The worktree was discarded')
       json(res, 200, { removed })
       return
@@ -4477,6 +4560,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const askOwner = async (
       action: ProposedAction,
       assessed: Awaited<ReturnType<typeof assessAction>>,
+      allowInTask?: TaskAllowOffer,
     ): Promise<ApprovalStatus | undefined> => {
       if (!(options.ownerApprovalChannel ?? true)) return undefined
       // A late approval of this exact action resumed the task: let it through once.
@@ -4495,6 +4579,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
             attemptId: attempt.id,
             action,
             tier: 'approve',
+            ...(allowInTask ? { allowInTask } : {}),
             ...(assessed.review
               ? {
                   preReview: {
@@ -4530,6 +4615,39 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         if (!stillWaiting && getTask(db, task.id)?.status === 'awaiting_approval')
           setTaskStatus(db, task.id, 'running')
       }
+    }
+    /** The policy's judgement as an offer the owner may accept; never for external content. */
+    const offerFor = (judged: TaskAllowJudgement): TaskAllowOffer | undefined => {
+      const current = getTask(db, task.id) ?? task
+      if (!judged.offer || current.provenance === 'external_content') return undefined
+      return {
+        kind: judged.kind,
+        target: redactor.redact(judged.target).slice(0, 4000) || judged.kind,
+        fingerprint: createHash('sha256').update(judged.fingerprint).digest('hex'),
+      }
+    }
+    /**
+     * Forbidden actions never get an offer, so they are checked first; then an action the owner allowed for this task
+     * runs without asking; everything else goes on to the permission mode. Returns true when the allow applied.
+     */
+    const allowedInTask = (action: ClassifiedAction, offer: TaskAllowOffer | undefined): boolean => {
+      if (!offer || action.provenance === 'external_content') return false
+      // Only an action that would otherwise wait for the owner is the allow's business.
+      if (evaluateAction(action, config.autonomy_mode).tier !== 'approve') return false
+      const allow = findTaskAllow(db, task.id, offer.fingerprint)
+      if (!allow) return false
+      publish(task.id, attempt.id, 'policy.action', {
+        kind: action.kind,
+        summary: redactor.redact(action.summary),
+        provenance: action.provenance,
+        mode: config.autonomy_mode,
+        permissionMode: effectivePermissionMode(task),
+        grant: 'task',
+        allowId: allow.id,
+        tier: 'auto',
+        outcome: 'allow',
+      })
+      return true
     }
     const dispatch = createToolHubDispatcher({
       taskId: task.id,
@@ -4581,9 +4699,13 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           task.provenance === 'external_content'
             ? { ...classified, provenance: 'external_content' as const }
             : classified
+        const offer = offerFor(
+          taskAllowForClaudeTool(input.tool_name, input.input, workspace.path, classifyEnvironment),
+        )
+        if (allowedInTask(action, offer)) return { behavior: 'allow' as const, updatedInput: input.input }
         const assessed = await assessAction(action)
         if (assessed.decision.tier === 'approve') {
-          const status = await askOwner(action, assessed)
+          const status = await askOwner(action, assessed, offer)
           if (status === 'approved') return { behavior: 'allow' as const, updatedInput: input.input }
           const reviewText = assessed.review
             ? ` Cross-model pre-review (${assessed.review.provider}) recommended ${assessed.review.approve ? 'allow' : 'deny'}: ${assessed.review.summary}`
@@ -4662,7 +4784,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const endpoint = `http://127.0.0.1:${address.port}/internal/tool-hub/${sessionId}`
     toolHubSessions.set(sessionId, { token, dispatch })
     const codexApproval = async (request: CodexApprovalRequest): Promise<CodexApprovalDecision> => {
-      const classified = classifyCodexApproval(
+      const codexInput: CodexApprovalInput =
         request.method === 'item/commandExecution/requestApproval'
           ? {
               method: request.method,
@@ -4670,7 +4792,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
               command: request.params.command ?? null,
               cwd: request.params.cwd ?? null,
             }
-          : { method: request.method, grantRoot: request.params.grantRoot ?? null },
+          : { method: request.method, grantRoot: request.params.grantRoot ?? null }
+      const classified = classifyCodexApproval(
+        codexInput,
         workspace.path,
         // Codex only asks to step outside its workspace-write sandbox, which is the real boundary.
         effectivePermissionMode(task),
@@ -4680,10 +4804,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         task.provenance === 'external_content'
           ? { ...classified, provenance: 'external_content' as const }
           : classified
+      // Joy remembers task allows itself (never acceptForSession), so each request is still judged on its own.
+      const offer = offerFor(taskAllowForCodexApproval(codexInput, workspace.path, classifyEnvironment))
+      if (allowedInTask(action, offer)) return 'accept'
       const assessed = await assessAction(action)
       if (assessed.decision.tier !== 'approve') return 'accept'
-      // Re-ask every time (never acceptForSession) so each request is judged on its own.
-      return (await askOwner(action, assessed)) === 'approved' ? 'accept' : 'decline'
+      return (await askOwner(action, assessed, offer)) === 'approved' ? 'accept' : 'decline'
     }
     return {
       codexApproval,

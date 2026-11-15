@@ -37,7 +37,8 @@ export function policyEventTitle(type: string, payload: Payload): string | undef
     const kind = text(payload?.kind) ?? 'unknown'
     const tier = text(payload?.tier) ?? 'approve'
     const external = payload?.provenance === 'external_content' ? '（來自外部內容）' : ''
-    const granted = payload?.grant === 'full' ? '（完整存取）' : ''
+    const granted =
+      payload?.grant === 'full' ? '（完整存取）' : payload?.grant === 'task' ? '（因任務內允許而放行）' : ''
     return `權限：${KIND_LABELS[kind] ?? kind}${external} — ${TIER_LABELS[tier] ?? tier}${granted}`
   }
   if (type === 'policy.pre_review') {
@@ -61,6 +62,8 @@ export function policyEventTitle(type: string, payload: Payload): string | undef
   }
   if (type === 'task.paused') return '已暫停：時間內沒有回覆。你同意後會接著原本的進度繼續。'
   if (type === 'approval.granted') return `你稍後同意了，允許這一次：${text(payload?.summary) ?? ''}`.trim()
+  if (type === 'task_allow.created') return `這個任務內一律允許：${text(payload?.target) ?? ''}`.trim()
+  if (type === 'task_allow.revoked') return payload?.all === true ? '已撤銷這個任務的允許' : '已撤銷一項允許'
   if (type === 'approval.decided') {
     const status = text(payload?.status) ?? 'decided'
     const via = text(payload?.via)
@@ -75,7 +78,8 @@ export function policyEventKind(type: string, payload: Payload): string | undefi
   if (type === 'policy.action') return `policy-${text(payload?.tier) ?? 'approve'}`
   if (type === 'policy.pre_review') return 'policy-review'
   if (type === 'approval.requested' || type === 'task.paused') return 'policy-approve'
-  if (type === 'approval.granted') return 'policy-auto'
+  if (type === 'approval.granted' || type === 'task_allow.created') return 'policy-auto'
+  if (type === 'task_allow.revoked') return 'policy-notify'
   if (type === 'quota.handoff' || type === 'quota.queued') return 'policy-notify'
   if (type === 'approval.decided') return payload?.status === 'approved' ? 'policy-auto' : 'policy-approve'
   return undefined
@@ -86,5 +90,7 @@ export function policyEventKind(type: string, payload: Payload): string | undefi
  * Notices, approval requests and denials stay visible.
  */
 export function policyEventIsNoise(type: string, payload: Payload): boolean {
+  // An action let through because the owner allowed it for the task would otherwise have asked: keep it visible.
+  if (type === 'policy.action' && payload?.grant === 'task') return false
   return type === 'policy.action' && (text(payload?.tier) ?? 'approve') === 'auto'
 }
