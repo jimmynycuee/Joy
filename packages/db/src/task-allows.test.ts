@@ -123,7 +123,7 @@ describe('task allows', () => {
     expect(() => createTaskAllow(db, { ...allowInput(5), target: '' })).toThrow()
   })
 
-  it('ends with the task: finished or archived, but not when it fails, is cancelled or Joy restarts', () => {
+  it('ends when the task is archived, not when it finishes, fails, is cancelled or Joy restarts', () => {
     const db = open()
     seed(db)
     allow(db, 1, 't1')
@@ -131,11 +131,12 @@ describe('task allows', () => {
     interruptRunningWork(db)
     setTaskStatus(db, 't1' as TaskId, 'cancelled')
     expect(listTaskAllows(db, 't1' as TaskId)).toHaveLength(1)
+    // A follow-up after the task finished keeps what the owner allowed.
     setTaskStatus(db, 't1' as TaskId, 'done')
-    expect(listTaskAllows(db, 't1' as TaskId)).toHaveLength(0)
-
-    allow(db, 2, 't1')
+    expect(listTaskAllows(db, 't1' as TaskId)).toHaveLength(1)
     setTaskStatus(db, 't1' as TaskId, 'review_ready')
+    expect(listTaskAllows(db, 't1' as TaskId)).toHaveLength(1)
+    updateTask(db, 't1' as TaskId, { archived: true })
     expect(listTaskAllows(db, 't1' as TaskId)).toHaveLength(0)
 
     allow(db, 3, 't2')

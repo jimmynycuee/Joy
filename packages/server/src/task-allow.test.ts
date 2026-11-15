@@ -196,7 +196,7 @@ async function ask(options: RunOptions, tool: string, input: unknown): Promise<s
 const bash = (options: RunOptions, command: string) => ask(options, 'Bash', { command })
 
 describe('allow for the rest of this task', () => {
-  it('does not ask again for the same action, still asks for a different one, and ends with the task', async () => {
+  it('does not ask again for the same action, still asks for a different one, lasts into a follow-up and ends when archived', async () => {
     const { call, claude, newTask } = await setup()
     const answers: string[] = []
     const asked: Approval[] = []
@@ -243,8 +243,26 @@ describe('allow for the rest of this task', () => {
       allowId: snapshot?.taskAllows[0]?.id,
     })
     expect(done.events.some((e) => e.type === 'task_allow.created')).toBe(true)
-    // Finished: the allow is gone.
-    expect(done.taskAllows).toEqual([])
+    // Finished, the allow stays: a follow-up runs the same command without asking.
+    expect(done.taskAllows).toHaveLength(1)
+    const followUp: string[] = []
+    claude.hooks.implement = async (options) => {
+      followUp.push(await bash(options, 'rm -rf ../shared-cache'))
+    }
+    expect((await call('POST', `/api/tasks/${taskId}/messages`, { text: 'once more' })).status).toBe(202)
+    const again = await until(
+      () => details(call, taskId),
+      (d) => settled(d) && followUp.length === 1,
+      'the follow-up',
+    )
+    expect(followUp).toEqual(['allow'])
+    expect((await call('GET', `/api/approvals?taskId=${taskId}`)).body.approvals).toHaveLength(2)
+    expect(again.events.filter((e) => e.type === 'policy.action' && e.payload.grant === 'task')).toHaveLength(
+      3,
+    )
+    // Archived: the allow is gone.
+    expect((await call('PATCH', `/api/tasks/${taskId}`, { archived: true })).status).toBe(200)
+    expect((await details(call, taskId)).taskAllows).toEqual([])
   })
 
   it('is not offered for secrets or for actions that reach other people, and the API refuses it', async () => {

@@ -11,15 +11,15 @@ import { analyzeShellConcerns, defaultClassifyEnvironment } from './shell.js'
  * - `shell`: the whole command, only trimmed and with line endings unified (never just the program name: allowing
  *   `rm -rf build` must not allow `rm -rf ..`), plus its working directory relative to the worktree (Codex);
  * - `file_write` / `file_read`: the resolved path the tool names;
- * - `network`: the host of a URL (Claude's WebFetch);
- * - `mcp`: the server and the tool name.
+ * - `network`: the host of a URL (Claude's WebFetch).
  *
  * Never offered: anything that touches secrets, credentials or Joy's own data (the `forbidden` verdict, asked in every
  * permission mode), and actions that reach other people or machines on the owner's behalf (git remotes, network
  * programs such as `gh`, `curl` or `ssh`, package publishing or installing outside the lockfile), so a push or a pull
- * request is always the owner's own decision. Commands the analysis cannot read, MCP tools whose name does not say
- * they only read, and anything Joy does not recognise are not offered either. External content is excluded by the
- * caller (the task's provenance).
+ * request is always the owner's own decision. Commands the analysis cannot read, MCP tools (Joy cannot tell what another
+ * server's tool does, so it asks every time in every mode) and anything Joy does not recognise are not offered either.
+ * External content is excluded by the caller (the task's provenance). The `mcp` kind stays in the list only because
+ * the database's CHECK allows it; nothing creates one.
  */
 export type TaskAllowKind = 'shell' | 'file_write' | 'file_read' | 'network' | 'mcp'
 
@@ -53,11 +53,6 @@ const EXTERNAL_CONCERNS: ReadonlySet<ShellConcern> = new Set<ShellConcern>([
 
 const READ_TOOLS = new Set(['read', 'glob', 'grep', 'listdirectory', 'ls'])
 const WRITE_TOOLS = new Set(['edit', 'multiedit', 'write', 'notebookedit'])
-/** An MCP tool whose name says it only reads. */
-const READ_ONLY_MCP = /^(?:list|get|search|read|find|query|fetch|show|describe|view)(?:_|-|$)/i
-/** Words that mean the tool acts, even when the name starts like a read (`get_and_send`). */
-const ACTING_MCP =
-  /send|post|publish|push|merge|create|update|delete|remove|write|reply|forward|invite|share|upload|pay|buy|transfer/i
 
 const no = (reason: string): TaskAllowJudgement => ({ offer: false, reason })
 
@@ -123,22 +118,8 @@ export function taskAllowForClaudeTool(
   cwd: string,
   env: ClassifyEnvironment = defaultClassifyEnvironment(),
 ): TaskAllowJudgement {
-  if (toolName.startsWith('mcp__')) {
-    const rest = toolName.slice('mcp__'.length)
-    const split = rest.indexOf('__')
-    if (split <= 0) return no('unknown')
-    const server = rest.slice(0, split)
-    const tool = rest.slice(split + 2)
-    // Joy's own tools are judged by their own rules (and approved before this point).
-    if (server === 'joy' || !tool) return no('unknown')
-    if (!READ_ONLY_MCP.test(tool) || ACTING_MCP.test(tool)) return no('external')
-    return {
-      offer: true,
-      kind: 'mcp',
-      target: `${server} · ${tool}`,
-      fingerprint: fingerprintOf('mcp', server, tool),
-    }
-  }
+  // MCP tools are never remembered: a tool's name does not say what it does (Joy's own are approved before this).
+  if (toolName.startsWith('mcp__')) return no('unknown')
   const name = toolName.toLowerCase()
   const record = asRecord(input)
   if (READ_TOOLS.has(name) || WRITE_TOOLS.has(name)) {

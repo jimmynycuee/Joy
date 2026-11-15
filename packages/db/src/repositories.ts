@@ -408,7 +408,8 @@ export function updateTask(db: Database, id: TaskId, update: TaskUpdate): Stored
     sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")
     db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...values, id)
   }
-  // An archived task is over: what the owner allowed for it does not carry into a later follow-up.
+  // An archived task is over: what the owner allowed for it ends with it (finishing alone does not; a follow-up keeps
+  // them).
   if (update.archived) clearTaskAllows(db, id)
   return getTask(db, id)
 }
@@ -459,9 +460,6 @@ export function setTaskStatus(db: Database, id: TaskId, status: TaskStatus): voi
   db.prepare(
     "UPDATE tasks SET status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
   ).run(status, id)
-  // A finished task's allows end with it; a follow-up asks again. Failed and cancelled tasks keep them: they resume
-  // the same run (a restart marks running work failed, and its allows must survive that).
-  if (status === 'done' || status === 'review_ready') clearTaskAllows(db, id)
 }
 
 export interface NewAttempt {

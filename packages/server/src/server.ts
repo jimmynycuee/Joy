@@ -1108,14 +1108,13 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   /**
    * What "allow for the rest of this task" would remember for an approval, when the policy offered it and the task can
-   * still use it (not external content, not finished or archived).
+   * still use it (not external content, not archived).
    */
   function taskAllowOffer(approval: ApprovalRecord): TaskAllowOffer | undefined {
     const offer = approvals.allowOffer(approval.id)
     if (!offer || approval.action.provenance === 'external_content') return undefined
     const task = getTask(db, approval.taskId)
     if (!task || task.provenance === 'external_content' || task.archived) return undefined
-    if (task.status === 'done' || task.status === 'review_ready') return undefined
     return offer
   }
 

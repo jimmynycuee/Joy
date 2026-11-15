@@ -530,8 +530,8 @@ export const MIGRATIONS: readonly Migration[] = [
     sql: /* sql */ `
       -- "Allow for the rest of this task": an action the owner approved once that the same task does not ask about
       -- again. fingerprint is the SHA-256 (hex) of the action's fingerprint from @joy/policy (task-allow.ts), so raw
-      -- commands are not stored twice; target is the redacted text the owner saw. Rows go when the task finishes,
-      -- is archived or discarded (repositories.ts), or is deleted (cascade). Keep kind equal to TASK_ALLOW_KINDS.
+      -- commands are not stored twice; target is the redacted text the owner saw. Rows go when the task is archived
+      -- (repositories.ts) or its worktree discarded (server), or when it is deleted (cascade). Keep kind equal to TASK_ALLOW_KINDS.
       CREATE TABLE task_allows (
         id          TEXT PRIMARY KEY CHECK (length(id) = 36),
         task_id     TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,

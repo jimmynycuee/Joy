@@ -79,18 +79,16 @@ describe('which approvals may be remembered for the task', () => {
     expect(claude('WebSearch', { query: 'x' })).toEqual({ offer: false, reason: 'unknown' })
   })
 
-  it('fingerprints MCP tools by server and tool, and only offers tools that only read', () => {
-    const list = claude('mcp__linear__list_issues', { team: 'a' })
-    expect(list).toMatchObject({ offer: true, kind: 'mcp', target: 'linear · list_issues' })
-    expect(fingerprint(claude('mcp__linear__list_issues', { team: 'b' }))).toBe(fingerprint(list))
-    expect(fingerprint(claude('mcp__other__list_issues', {}))).not.toBe(fingerprint(list))
+  it('never offers MCP tools, not even ones whose name looks read-only', () => {
     for (const tool of [
+      'mcp__linear__list_issues',
+      'mcp__docs__get_page',
       'mcp__gmail__send_message',
       'mcp__github__create_pull_request',
-      'mcp__x__get_and_send',
+      'mcp__joy__approve',
+      'mcp__broken',
     ])
-      expect(claude(tool, {})).toEqual({ offer: false, reason: 'external' })
-    expect(claude('mcp__joy__approve', {})).toEqual({ offer: false, reason: 'unknown' })
+      expect(claude(tool, { team: 'a' })).toEqual({ offer: false, reason: 'unknown' })
     expect(claude('SomeNewTool', {})).toEqual({ offer: false, reason: 'unknown' })
   })
 
