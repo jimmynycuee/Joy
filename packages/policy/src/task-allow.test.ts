@@ -161,6 +161,8 @@ describe('which approvals may be remembered for the task', () => {
     const write = (path: string) =>
       taskAllowForClaudeTool('Write', { file_path: path }, '/fake/worktree', winEnv)
     expect(fingerprint(write('C:\\Work\\Other\\A.md'))).toBe(fingerprint(write('c:\\work\\other\\a.md')))
+    // The owner sees the path with its own case; only the comparison ignores it.
+    expect(write('C:\\Work\\Other\\A.md')).toMatchObject({ target: 'C:\\Work\\Other\\A.md' })
     expect(write('C:\\Users\\me\\.joy\\config.yaml')).toEqual({ offer: false, reason: 'forbidden' })
     // Git Bash drops `\` as an escape: `cu\rl` is curl and `cmd\key` is cmdkey.
     const winBash = (command: string) =>
