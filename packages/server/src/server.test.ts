@@ -1380,6 +1380,8 @@ describe('Joy local server', () => {
       title: 'Use the Tool Hub',
       prompt: 'Implement the requested change',
       mode: 'single',
+      // The ask mode's allowlist: a shell command outside it is red.
+      permissionMode: 'ask',
     })
     const { task } = (await taskResponse.json()) as { task: { id: string } }
     const responses: Array<{ status: number; body: unknown }> = []
@@ -1564,6 +1566,7 @@ describe('Joy local server', () => {
       title: 'Policy without an approval channel',
       prompt: 'Run the tests',
       mode: 'single',
+      permissionMode: 'ask',
     })
     const { task } = (await taskResponse.json()) as { task: { id: string } }
     const decisions: unknown[] = []
@@ -1654,6 +1657,54 @@ describe('Joy local server', () => {
         expect.objectContaining({ kind: 'run_in_worktree', tier: 'auto' }),
         expect.objectContaining({ kind: 'run_outside_worktree', tier: 'approve' }),
       ])
+    },
+  )
+
+  it(
+    "judges Codex app-server escalations with the task's permission mode (auto accepts an install, ask declines it)",
+    { timeout: 30_000 },
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'joy-codex-modes-'))
+      dirs.push(dir)
+      const decisionsFor = async (permissionMode: 'ask' | 'auto') => {
+        const approvalsPath = join(dir, `approvals-${permissionMode}.jsonl`)
+        const fixtureData = structuredClone(syntheticCodexAppServerFixture)
+        // What Codex asks for when its sandbox blocks the network that `pnpm install` needs.
+        fixtureData.commandApproval.params.command = "bash -lc 'pnpm install 2>&1 | tail -15 && pnpm check'"
+        fixtureData.commandApproval.params.cwd = dir
+        const { serverPromise } = fixture({
+          worktreePath: dir,
+          codexAppServer: {
+            command: process.execPath,
+            argsPrefix: [fakeCodexAppServer],
+            env: { FAKE_APP_SERVER_FIXTURE: JSON.stringify(fixtureData), FAKE_APPROVALS_OUT: approvalsPath },
+            timeoutMs: 10_000,
+          },
+        })
+        const { origin } = await start(serverPromise)
+        const repoResponse = await postJson(`${origin}/api/repos`, {
+          path: `/tmp/codex-modes-${permissionMode}`,
+          defaultBranch: 'main',
+        })
+        const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+        const taskResponse = await postJson(`${origin}/api/tasks`, {
+          repoId: repo.id,
+          title: 'Codex install',
+          prompt: 'Install and check',
+          mode: 'single',
+          permissionMode,
+          roleOverrides: { implementer: { provider: 'codex-cli', model: 'gpt-6-luna', effort: 'low' } },
+        })
+        const { task } = (await taskResponse.json()) as { task: { id: string } }
+        await waitForStatus(origin, task.id, 'done', 15_000)
+        return readFileSync(approvalsPath, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => (JSON.parse(line) as { result: { decision: string } }).result.decision)
+      }
+      // The file write names no root, so it stays red in both modes.
+      expect(await decisionsFor('auto')).toEqual(['accept', 'decline'])
+      expect(await decisionsFor('ask')).toEqual(['decline', 'decline'])
     },
   )
 
@@ -2597,9 +2648,14 @@ describe('Joy local server', () => {
     expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'assistant'])
     expect(messages[2]?.content).toContain('Task "Fix add" finished')
     const task = (await (await fetch(`${origin}/api/tasks/${created?.id}`)).json()) as {
-      task: { originConversationId: string; mode: string }
+      task: { originConversationId: string; mode: string; permissionMode: string }
     }
-    expect(task.task).toMatchObject({ originConversationId: conversation.id, mode: 'single' })
+    // The assistant cannot choose a permission mode: its tasks always ask.
+    expect(task.task).toMatchObject({
+      originConversationId: conversation.id,
+      mode: 'single',
+      permissionMode: 'ask',
+    })
   })
 
   it('lets the assistant cancel a task and rejects bad task input', async () => {

@@ -1,4 +1,5 @@
-import type { ProviderKind } from '@joy/core'
+import { PERMISSION_MODES, clampPermissionMode } from '@joy/core'
+import type { PermissionMode, ProviderKind } from '@joy/core'
 import {
   applyPreset,
   comboSummary,
@@ -7,6 +8,7 @@ import {
   modelButtonText,
   normalizeModels,
   pickEffort,
+  permissionBlockedReason,
   pickModel,
   planFirstDisabledReason,
   providerBlockedReason,
@@ -16,7 +18,7 @@ import {
 } from '../composer-choice.js'
 import type { ComposerChoice, RoleDefaults } from '../composer-choice.js'
 import { effortLabel, supportedEfforts } from '../effort.js'
-import { MODE_HINTS, modeLabel, repoName } from '../labels.js'
+import { MODE_HINTS, PERMISSION_HINTS, PERMISSION_LABELS, modeLabel, repoName } from '../labels.js'
 import { IMPLEMENTER_MODELS, MODEL_CATALOG, modelLabel, sameModelName } from '../models.js'
 import { MODEL_PRESETS } from '../presets.js'
 import { repoColor } from '../repo-colors.js'
@@ -153,6 +155,58 @@ export function ApproachMenu({
       <MenuItem icon="settings" onSelect={onAdvanced}>
         進階
       </MenuItem>
+    </Menu>
+  )
+}
+
+/** 權限: how much the agent may do without asking. 完整存取 is orange so it is never picked by accident. */
+export function PermissionMenu({
+  value,
+  max,
+  onChange,
+}: {
+  value: PermissionMode
+  /** The repository's maximum; higher modes are disabled. */
+  max: PermissionMode | undefined
+  onChange: (mode: PermissionMode) => void
+}) {
+  const current = max ? clampPermissionMode(value, max) : value
+  const full = current === 'full'
+  return (
+    <Menu
+      label="權限"
+      triggerLabel={`權限：${PERMISSION_LABELS[current]}`}
+      triggerClassName={`btn btn-ghost composer-trigger composer-permission${full ? ' permission-full' : ''}`}
+      side="top"
+      align="end"
+      trigger={
+        <>
+          <Icon name="shield" size={14} />
+          <span className="trigger-text hide-narrow">{PERMISSION_LABELS[current]}</span>
+          <Icon name="chevron-down" size={12} />
+        </>
+      }
+    >
+      <MenuGroup label="權限" hideLabel>
+        {PERMISSION_MODES.map((mode, index) => {
+          const blocked = permissionBlockedReason(mode, max)
+          return (
+            <MenuItem
+              key={mode}
+              role="menuitemradio"
+              checked={mode === current}
+              shortcut={String(index + 1)}
+              description={blocked ?? PERMISSION_HINTS[mode]}
+              disabled={blocked !== undefined}
+              disabledReason={blocked}
+              className={mode === 'full' ? 'permission-full' : undefined}
+              onSelect={() => onChange(mode)}
+            >
+              {PERMISSION_LABELS[mode]}
+            </MenuItem>
+          )
+        })}
+      </MenuGroup>
     </Menu>
   )
 }

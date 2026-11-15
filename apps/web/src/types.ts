@@ -1,4 +1,4 @@
-import type { ProviderKind, RoleConfig } from '@joy/core'
+import type { PermissionMode, ProviderKind, RoleConfig } from '@joy/core'
 import type { RepoColorId } from './repo-colors.js'
 
 export type Repo = {
@@ -11,6 +11,8 @@ export type Repo = {
   checkCommand?: string[]
   /** The colour the owner picked; missing means Joy hands one out by order (see repo-colors.ts). */
   color?: RepoColorId
+  /** The highest permission mode a task here may use; missing means no limit. */
+  maxPermissionMode?: PermissionMode
 }
 export type Task = {
   id: string
@@ -19,6 +21,8 @@ export type Task = {
   prompt: string
   provenance?: 'user' | 'agent' | 'external_content'
   mode: string
+  /** Missing on servers from before permission modes. */
+  permissionMode?: PermissionMode
   status: string
   roleOverrides?: Partial<RoleConfig>
   createdAt: string

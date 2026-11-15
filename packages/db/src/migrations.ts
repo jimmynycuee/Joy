@@ -494,6 +494,19 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX attachments_task ON attachments (task_id);
     `,
   },
+  {
+    version: 22,
+    name: 'permission modes',
+    sql: /* sql */ `
+      -- How much a task's agent may do without asking (ask, auto, full). Tasks created before this migration keep
+      -- the behaviour they were started with: ask. Keep the values equal to PERMISSION_MODES in @joy/core.
+      ALTER TABLE tasks ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'ask'
+        CHECK (permission_mode IN ('ask', 'auto', 'full'));
+      -- The highest mode a task in this repository may use; NULL means no limit. The server clamps to it.
+      ALTER TABLE repos ADD COLUMN max_permission_mode TEXT
+        CHECK (max_permission_mode IS NULL OR max_permission_mode IN ('ask', 'auto', 'full'));
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

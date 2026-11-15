@@ -8,11 +8,12 @@ import type {
   ReviewFinding,
   RoleConfig,
   Task,
+  PermissionMode,
   TaskId,
   TaskMode,
   TaskStatus,
 } from '@joy/core'
-import { isProviderKind, PROVIDER_KINDS } from '@joy/core'
+import { isPermissionMode, isProviderKind, PROVIDER_KINDS } from '@joy/core'
 import type { Database } from './database.js'
 
 /** The ids of the six project colours; the web UI owns the hex values. */
@@ -31,6 +32,8 @@ export interface RepoRecord extends RepoRef {
   checkCommand?: string[]
   /** Picked by the owner; absent means the UI assigns one by the project's order. */
   color?: RepoColor
+  /** The highest permission mode a task here may use; absent means no limit. */
+  maxPermissionMode?: PermissionMode
   createdAt: string
 }
 
@@ -116,6 +119,7 @@ interface RepoRow {
   container: number
   check_command: string | null
   color: string | null
+  max_permission_mode: string | null
   created_at: string
 }
 
@@ -125,6 +129,7 @@ interface TaskRow {
   title: string
   prompt: string
   mode: TaskMode
+  permission_mode: string
   provenance: TaskProvenance
   role_overrides: string
   plan_first: number
@@ -238,6 +243,17 @@ export function updateRepoColor(db: Database, id: RepoId, color: RepoColor | nul
   return getRepo(db, id)
 }
 
+/** Sets the highest permission mode a task in this repository may use, or clears it (null: no limit). */
+export function updateRepoMaxPermissionMode(
+  db: Database,
+  id: RepoId,
+  mode: PermissionMode | null,
+): RepoRecord | undefined {
+  if (mode !== null && !isPermissionMode(mode)) throw new Error(`Invalid permission mode: ${String(mode)}`)
+  db.prepare('UPDATE repos SET max_permission_mode = ? WHERE id = ?').run(mode, id)
+  return getRepo(db, id)
+}
+
 /** Sets or clears the GitHub remote the publisher pushes to and opens pull requests against. */
 export function updateRepoGithubRemote(
   db: Database,
@@ -254,6 +270,8 @@ export interface NewTask {
   title: string
   prompt: string
   mode: TaskMode
+  /** Defaults to `ask`, the behaviour before permission modes existed. */
+  permissionMode?: PermissionMode
   provenance?: TaskProvenance
   roleOverrides?: Partial<RoleConfig>
   planFirst?: boolean
@@ -264,15 +282,16 @@ export interface NewTask {
 
 export function createTask(db: Database, input: NewTask): StoredTask {
   db.prepare(
-    `INSERT INTO tasks (id, repo_id, title, prompt, mode, provenance, role_overrides, plan_first, max_rounds,
-       origin_conversation_id, workflow, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`,
+    `INSERT INTO tasks (id, repo_id, title, prompt, mode, permission_mode, provenance, role_overrides, plan_first,
+       max_rounds, origin_conversation_id, workflow, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`,
   ).run(
     input.id,
     input.repoId,
     input.title,
     input.prompt,
     input.mode,
+    input.permissionMode ?? 'ask',
     input.provenance ?? 'user',
     JSON.stringify(input.roleOverrides ?? {}),
     input.planFirst ? 1 : 0,
@@ -628,6 +647,7 @@ function mapRepo(row: RepoRow): RepoRecord {
     ...(row.container === 1 ? { container: true as const } : {}),
     ...(row.check_command ? { checkCommand: validateCheckCommand(JSON.parse(row.check_command)) } : {}),
     ...(isRepoColor(row.color) ? { color: row.color } : {}),
+    ...(isPermissionMode(row.max_permission_mode) ? { maxPermissionMode: row.max_permission_mode } : {}),
     createdAt: row.created_at,
   }
 }
@@ -667,6 +687,8 @@ function mapTask(row: TaskRow): StoredTask {
     title: row.title,
     prompt: row.prompt,
     mode: row.mode,
+    // The column's CHECK allows only these; anything else would be a corrupted row, so fall back to the strictest.
+    permissionMode: isPermissionMode(row.permission_mode) ? row.permission_mode : 'ask',
     provenance: row.provenance,
     roleOverrides: JSON.parse(row.role_overrides) as Partial<RoleConfig>,
     planFirst: row.plan_first === 1,

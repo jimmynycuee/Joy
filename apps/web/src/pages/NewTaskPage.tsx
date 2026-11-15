@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { EFFORTS } from '@joy/core'
-import type { ModelRef, ProviderKind, Role } from '@joy/core'
+import type { ModelRef, PermissionMode, ProviderKind, Role } from '@joy/core'
 import type { JoyConfig } from '@joy/config'
-import { ApproachMenu, ModelMenu, ProjectMenu } from '../components/ComposerMenus.js'
+import { ApproachMenu, ModelMenu, PermissionMenu, ProjectMenu } from '../components/ComposerMenus.js'
 import { Composer } from '../components/Composer.js'
 import { Mascot } from '../components/Mascot.js'
 import { Button, Icon } from '../components/ui.js'
@@ -10,6 +10,7 @@ import {
   COMPOSER_STORAGE_KEY,
   applyAllowlist,
   buildRoleOverrides,
+  effectivePermissionMode,
   parseStoredChoice,
   planFirstDisabledReason,
   resolveModels,
@@ -45,6 +46,8 @@ export interface NewTaskInput {
   planFirst: boolean
   /** Ids of files uploaded with `POST /api/attachments`. */
   attachments?: string[]
+  /** 要求核准 / 自動 / 完整存取, already lowered to the repository's maximum. */
+  permissionMode: PermissionMode
 }
 
 const ROLE_KEYS: Array<Extract<Role, 'implementer' | 'reviewer'>> = ['implementer', 'reviewer']
@@ -120,6 +123,7 @@ export function NewTaskPage({
         mode,
         ...(roleOverrides ? { roleOverrides } : {}),
         planFirst: planFirstOn,
+        permissionMode: effectivePermissionMode(choice, activeRepo?.maxPermissionMode),
       })
       if (ok) {
         clearPrompt()
@@ -192,13 +196,20 @@ export function NewTaskPage({
                 </>
               }
               trailing={
-                <ModelMenu
-                  choice={effective}
-                  defaults={defaults}
-                  allowed={allowedProviders}
-                  mode={mode}
-                  onChange={setChoice}
-                />
+                <>
+                  <PermissionMenu
+                    value={choice.permissionMode}
+                    max={activeRepo?.maxPermissionMode}
+                    onChange={(value) => setChoice((current) => ({ ...current, permissionMode: value }))}
+                  />
+                  <ModelMenu
+                    choice={effective}
+                    defaults={defaults}
+                    allowed={allowedProviders}
+                    mode={mode}
+                    onChange={setChoice}
+                  />
+                </>
               }
               advanced={
                 <div className="composer-advanced" hidden={!showAdvanced}>

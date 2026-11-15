@@ -61,3 +61,11 @@ describe('policy event labels', () => {
     expect(policyEventIsNoise('approval.granted', {})).toBe(false)
   })
 })
+
+describe('permission modes in policy events', () => {
+  it('says when the full mode let an action through', () => {
+    expect(
+      policyEventTitle('policy.action', { kind: 'run_outside_worktree', tier: 'auto', grant: 'full' }),
+    ).toBe('權限：需要確認的動作 — 允許（完整存取）')
+  })
+})

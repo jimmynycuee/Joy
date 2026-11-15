@@ -469,3 +469,29 @@ describe('phase entries', () => {
     expect(entry).toMatchObject({ kind: 'phase', text: '審查中' })
   })
 })
+
+describe('dependency install events', () => {
+  it('keeps a normal install behind the details, and shows a failure with its output', () => {
+    const entries = buildTimeline([
+      event('workspace.dependencies', {
+        status: 'installed',
+        command: 'pnpm install --frozen-lockfile',
+        exitCode: 0,
+      }),
+      event('workspace.dependencies', {
+        status: 'failed',
+        command: 'npm ci',
+        exitCode: 1,
+        outputTail: 'npm ERR! missing lockfile entry',
+      }),
+      event('workspace.dependencies', { status: 'skipped', reason: 'container' }),
+    ])
+    expect(entries.map((entry) => entry.kind)).toEqual(['noise', 'step', 'noise'])
+    expect(entries[0]).toMatchObject({ text: '已安裝相依套件：pnpm install --frozen-lockfile' })
+    expect(entries[1]).toMatchObject({
+      text: '安裝相依套件失敗：npm ci（agent 仍會繼續）',
+      tone: 'bad',
+      detail: 'npm ERR! missing lockfile entry',
+    })
+  })
+})

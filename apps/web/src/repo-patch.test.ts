@@ -71,4 +71,13 @@ describe('repoPatch', () => {
     expect(repoPatch(repo, { ...same, color: 'blue' })).toEqual({ color: 'blue' })
     expect(repoPatch(repo, { ...same, color: null })).toEqual({})
   })
+
+  it('sends the maximum permission mode only when it changes, and null to remove the limit', () => {
+    expect(repoPatch(repo, { ...same, maxPermissionMode: null })).toEqual({})
+    expect(repoPatch(repo, { ...same, maxPermissionMode: 'auto' })).toEqual({ maxPermissionMode: 'auto' })
+    const limited: Repo = { ...repo, maxPermissionMode: 'auto' }
+    expect(repoPatch(limited, { ...same, maxPermissionMode: 'auto' })).toEqual({})
+    expect(repoPatch(limited, { ...same, maxPermissionMode: null })).toEqual({ maxPermissionMode: null })
+    expect(repoPatch(limited, { ...same })).toEqual({})
+  })
 })

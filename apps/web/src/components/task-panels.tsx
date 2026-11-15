@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { errorMessage, removeWithConfirmation, request } from '../api.js'
+import { approvalTarget } from '../approval-detail.js'
 import { safeHref } from '../markdown.js'
 import { hasUnpublishedChanges, worktreeRemoved } from '../task-info.js'
 import { policyEventTitle } from '../policy-events.js'
@@ -16,7 +17,7 @@ interface PendingApproval {
   createdAt: string
   status: string
   decidedVia?: string
-  action: { kind: string; summary: string; provenance: string }
+  action: { kind: string; summary: string; provenance: string; detail?: unknown }
 }
 
 /** Red actions waiting for the owner in this task, with Approve / Deny. Refreshes on approval events. */
@@ -91,6 +92,7 @@ export function ApprovalsPanel({
               })}
             </strong>
             <p>{approval.action.summary}</p>
+            <ApprovalTargetView detail={approval.action.detail} />
           </div>
           <div className="button-row">
             <Button
@@ -111,6 +113,21 @@ export function ApprovalsPanel({
         </div>
       ))}
     </section>
+  )
+}
+
+/** The exact command, file or address, so the owner decides on what will run, not on a tool name. */
+function ApprovalTargetView({ detail }: { detail: unknown }) {
+  const target = approvalTarget(detail)
+  if (!target) return null
+  return (
+    <div className="approval-target" data-testid="approval-target">
+      <span className="approval-target-label">{target.label}</span>
+      <pre>
+        <code>{target.text}</code>
+      </pre>
+      {target.cwd ? <span className="approval-target-cwd">在 {target.cwd}</span> : null}
+    </div>
   )
 }
 

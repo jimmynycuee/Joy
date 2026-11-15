@@ -288,6 +288,8 @@ describe('approval surface for implementer runs', () => {
       const { call, newTask } = await setup({ providers: { 'claude-cli': claude }, worktree })
       const id = await newTask({
         mode: 'review_loop',
+        // The temp worktree's parent is the OS temp dir, which `auto` treats as scratch space; `ask` keeps both red.
+        permissionMode: 'ask',
         roleOverrides: {
           implementer: { provider: 'claude-cli', model: 'haiku' },
           reviewer: { provider: 'codex-cli', model: 'gpt-6-luna' },

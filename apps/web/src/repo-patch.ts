@@ -1,5 +1,5 @@
 import { PROVIDER_KINDS } from '@joy/core'
-import type { ProviderKind } from '@joy/core'
+import type { PermissionMode, ProviderKind } from '@joy/core'
 import { formatCheckCommand, parseCheckCommand } from './check-command.js'
 import type { RepoColorId } from './repo-colors.js'
 import type { Repo } from './types.js'
@@ -13,6 +13,8 @@ export function repoPatch(
     checkCommand: string
     /** null is "automatic". */
     color: RepoColorId | null
+    /** null is "no limit"; left out, the field is not part of the form. */
+    maxPermissionMode?: PermissionMode | null
   },
 ): Record<string, unknown> {
   const patch: Record<string, unknown> = {}
@@ -25,5 +27,7 @@ export function repoPatch(
   const argv = parseCheckCommand(form.checkCommand)
   if ((argv?.join(' ') ?? '') !== formatCheckCommand(repo.checkCommand)) patch.checkCommand = argv
   if (form.color !== (repo.color ?? null)) patch.color = form.color
+  if (form.maxPermissionMode !== undefined && form.maxPermissionMode !== (repo.maxPermissionMode ?? null))
+    patch.maxPermissionMode = form.maxPermissionMode
   return patch
 }

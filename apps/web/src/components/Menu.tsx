@@ -391,6 +391,7 @@ export function MenuItem({
   disabled = false,
   disabledReason,
   keepOpen,
+  className,
   onSelect,
 }: {
   children: ReactNode
@@ -407,6 +408,8 @@ export function MenuItem({
   disabledReason?: string | undefined
   /** Stay open after picking; the default for a checkbox. */
   keepOpen?: boolean | undefined
+  /** Extra class on the row (e.g. a warning colour). */
+  className?: string | undefined
   onSelect?: (() => void) | undefined
 }) {
   const root = useContext(RootContext)
@@ -421,7 +424,7 @@ export function MenuItem({
       title={disabled ? disabledReason : undefined}
       tabIndex={-1}
       data-shortcut={shortcut}
-      className="menu-item"
+      className={className ? `menu-item ${className}` : 'menu-item'}
       onMouseEnter={(event) => event.currentTarget.focus({ preventScroll: true })}
       onClick={() => {
         if (disabled) return
