@@ -16,7 +16,7 @@ function fresh(): Database {
 }
 afterEach(() => {
   for (const db of open.splice(0)) if (db.isOpen) db.close()
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 const tables = (db: Database) =>

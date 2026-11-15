@@ -354,6 +354,7 @@
 
 ## 已確認決策
 
+- 2026-11-15 Windows CI 偶發逾時（agent 決定）：`db`、`executor`、`server` 會跑真實 git／SQLite 的測試，`testTimeout` 拉到 30 s、`hookTimeout` 60 s；測試暫存目錄用 `rmSync(..., { maxRetries: 5, retryDelay: 100 })` 清理，避開 Windows `EBUSY`。不跳過、不弱化測試。
 - 2026-11-15 實作者的核准管道（agent 決定）：所有會寫程式的實作者 run（single、review loop、compete、合併版）都接 Tool Hub 與 approval tool；計畫與審查（唯讀）不接。Codex app-server 的核准處理器只在實作者回合掛上。orchestrator 的 `ReviewLoopInput.mcpServers／approvalTool`（未使用、且會連審查者一起給）改為 `implementerTools(ws)`。
 - 2026-11-15 任務頁整理（擁有者原則，實作細節為 agent 決定）：任務完成（`done`／`review_ready`）或失敗／取消後，時間軸預設只留使用者訊息、agent 最後一則訊息、最後一個審查卡與錯誤，其餘收進「過程」；執行中、等核准計畫與比賽任務維持展開。標題列只有狀態點、單行標題、「變更」與「⋯」；任務標題顯示一律用 `shortTitle()`（約 24 全形或 48 半形字元）。選中、聚焦、卡片一律中性（不用 accent 色塊、外框或光暈）。
 - 2026-11-14 擁有者決定：通過本機 listener 接受自身 Origin（#134）、附件的 core 介面 `RunOptions.images`／`ImageInput`／`Steer` 第二參數（#138）、文字附件定位為參考資料而非擁有者指示，以及附件上限（圖片 3.75 MiB、文字 256 KB、每則 10 個、每任務 40 個／100 MB、每次 run 最多 8 張圖與 256 KB 文字）。
