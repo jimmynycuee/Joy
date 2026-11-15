@@ -1,7 +1,15 @@
-import { useMemo, useState } from 'react'
-import { buildFileTree, classifyDiffLine, diffTotals, splitDiff } from '../diff.js'
-import type { FileTreeNode } from '../diff.js'
-import type { DiffFile, WorkspaceDiff } from '../types.js'
+import { useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
+import {
+  buildFileTree,
+  classifyDiffLine,
+  diffTotals,
+  FILE_PAGE_LINES,
+  formatSize,
+  planDiff,
+} from '../diff.js'
+import type { DiffFileView, FileTreeNode } from '../diff.js'
+import type { WorkspaceDiff } from '../types.js'
 import { Icon } from './ui.js'
 
 /** A unified diff with added, removed, hunk and header lines coloured. */
@@ -95,33 +103,116 @@ function TreeNode({
   )
 }
 
-/** The changed files grouped by directory, above the patch of the selected file. */
-export function DiffBrowser({ diff }: { diff: WorkspaceDiff }) {
-  const [selected, setSelected] = useState('')
-  const chunks = useMemo(() => splitDiff(diff.patch), [diff.patch])
+/** One file's diff: a header that folds it, and its lines drawn a page at a time. */
+function DiffFileSection({
+  view,
+  open,
+  active,
+  onToggle,
+  sectionRef,
+}: {
+  view: DiffFileView
+  open: boolean
+  active: boolean
+  onToggle: () => void
+  sectionRef: (element: HTMLElement | null) => void
+}) {
+  const [shown, setShown] = useState(FILE_PAGE_LINES)
+  const { file, lines } = view
+  const rest = lines.length - shown
+  return (
+    <section className={`diff-file${active ? ' active' : ''}`} ref={sectionRef} aria-label={file.path}>
+      <button type="button" className="diff-file-header" aria-expanded={open} onClick={onToggle}>
+        <Icon name={open ? 'chevron-down' : 'chevron-right'} size={14} />
+        <span className="diff-file-path" title={file.path}>
+          {file.oldPath && file.oldPath !== file.path ? `${file.oldPath} → ${file.path}` : file.path}
+        </span>
+        <DiffStat additions={file.additions} deletions={file.deletions} />
+      </button>
+      {open && lines.length > 0 ? (
+        <pre className="diff-code diff-file-code">
+          {lines.slice(0, shown).map((line, index) => (
+            <span className={`diff-line ${classifyDiffLine(line)}`} key={index}>
+              {line || ' '}
+            </span>
+          ))}
+        </pre>
+      ) : null}
+      {open && rest > 0 ? (
+        <button
+          type="button"
+          className="diff-more"
+          onClick={() => setShown((current) => current + FILE_PAGE_LINES * 4)}
+        >
+          顯示其餘 {rest} 行
+        </button>
+      ) : null}
+    </section>
+  )
+}
+
+/** The changed files grouped by directory, then every file's diff, each one foldable. */
+export function DiffBrowser({ diff, actions }: { diff: WorkspaceDiff; actions?: ReactNode }) {
+  const plan = useMemo(() => planDiff(diff), [diff])
   const tree = useMemo(() => buildFileTree(diff.files), [diff.files])
-  const files: DiffFile[] = diff.files
-  const active = chunks.has(selected) ? selected : (files[0]?.path ?? '')
-  const patch = chunks.get(active) ?? chunks.values().next().value ?? ''
-  const totals = diffTotals(files)
+  // The owner's own folding wins over the default; it survives new events re-planning the same files.
+  const [toggled, setToggled] = useState<Map<string, boolean>>(() => new Map())
+  const [active, setActive] = useState('')
+  const sections = useRef(new Map<string, HTMLElement>())
+  const totals = diffTotals(diff.files)
+  const isOpen = (view: DiffFileView) => !plan.tooLarge && (toggled.get(view.file.path) ?? view.open)
+  const setOpen = (path: string, open: boolean) => setToggled((current) => new Map(current).set(path, open))
+  const allOpen = plan.files.every((view) => view.lines.length === 0 || isOpen(view))
+
+  function select(path: string) {
+    setActive(path)
+    if (!plan.tooLarge) setOpen(path, true)
+    sections.current.get(path)?.scrollIntoView?.({ block: 'start', behavior: 'smooth' })
+  }
+
   return (
     <>
+      {actions}
       <div className="diff-summary">
-        <span>{files.length} 個檔案</span>
+        <span>{diff.files.length} 個檔案</span>
         <DiffStat {...totals} />
+        {plan.tooLarge ? null : (
+          <button
+            type="button"
+            className="diff-fold-all"
+            onClick={() => setToggled(new Map(plan.files.map((view) => [view.file.path, !allOpen] as const)))}
+          >
+            {allOpen ? '全部收合' : '全部展開'}
+          </button>
+        )}
       </div>
+      {plan.tooLarge ? (
+        <p className="notice-line" role="status">
+          diff 太大（{formatSize(diff.patch.length)}），只列出檔案
+        </p>
+      ) : null}
       <div className="file-tree" role="group" aria-label="變更的檔案">
         {tree.map((node) => (
-          <TreeNode
-            key={node.path + node.name}
-            node={node}
-            depth={0}
-            active={active}
-            onSelect={setSelected}
-          />
+          <TreeNode key={node.path + node.name} node={node} depth={0} active={active} onSelect={select} />
         ))}
       </div>
-      <DiffCode patch={String(patch)} testId="diff-patch" />
+      {plan.tooLarge ? null : (
+        <div className="diff-files" data-testid="diff-patch">
+          {plan.files.map((view) => (
+            <DiffFileSection
+              key={view.file.path}
+              view={view}
+              open={isOpen(view)}
+              active={active === view.file.path}
+              onToggle={() => setOpen(view.file.path, !isOpen(view))}
+              sectionRef={(element) => {
+                if (element) sections.current.set(view.file.path, element)
+                else sections.current.delete(view.file.path)
+              }}
+            />
+          ))}
+        </div>
+      )}
     </>
   )
 }

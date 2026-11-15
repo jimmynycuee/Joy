@@ -9,7 +9,9 @@ import { record } from '../types.js'
 import type { TaskDetails, WorkspaceDiff } from '../types.js'
 import { DiffCode } from './DiffView.js'
 import { Mascot } from './Mascot.js'
-import { Button, ButtonLink } from './ui.js'
+import { usePrStatus } from '../hooks/usePrStatus.js'
+import { checksSummary, prStateLabel, prTone } from '../pr-status.js'
+import { Button, Icon } from './ui.js'
 
 interface PendingApproval {
   id: string
@@ -18,6 +20,10 @@ interface PendingApproval {
   status: string
   decidedVia?: string
   action: { kind: string; summary: string; provenance: string; detail?: unknown }
+  /** The policy lets the owner allow this action for the rest of the task. */
+  allowInTask?: boolean
+  /** For a fetch: the host the allow would cover (all of it, not just this URL). */
+  allowInTaskHost?: string
 }
 
 /** Red actions waiting for the owner in this task, with Approve / Deny. Refreshes on approval events. */
@@ -60,11 +66,14 @@ export function ApprovalsPanel({
     }
   }, [taskId, taskStatus, approvalEvents])
 
-  async function decide(id: string, decision: 'approve' | 'deny') {
+  async function decide(id: string, decision: 'approve' | 'deny', scope?: 'task') {
     setBusy(id)
     setFailure('')
     try {
-      await request(`/api/approvals/${encodeURIComponent(id)}/${decision}`, { method: 'POST', body: '{}' })
+      await request(`/api/approvals/${encodeURIComponent(id)}/${decision}`, {
+        method: 'POST',
+        body: JSON.stringify(scope ? { scope } : {}),
+      })
       setPending((current) => current.filter((approval) => approval.id !== id))
     } catch (error) {
       setFailure(errorMessage(error, '無法記錄你的決定'))
@@ -102,6 +111,16 @@ export function ApprovalsPanel({
             >
               {approval.status === 'expired' ? '同意並繼續' : '同意'}
             </Button>
+            {approval.allowInTask === true ? (
+              <Button
+                disabled={busy === approval.id}
+                onClick={() => void decide(approval.id, 'approve', 'task')}
+              >
+                {approval.allowInTaskHost
+                  ? `這個任務內一律允許 ${approval.allowInTaskHost}`
+                  : '這個任務內一律允許'}
+              </Button>
+            ) : null}
             <Button
               variant="danger"
               disabled={busy === approval.id}
@@ -300,34 +319,35 @@ export function DiscardButton({ details, onChanged }: { details: TaskDetails; on
   )
 }
 
-export function PublishPanel({ details, onChanged }: { details: TaskDetails; onChanged: () => void }) {
-  const [busy, setBusy] = useState(false)
-  const [failure, setFailure] = useState('')
+/** The pull request a task opened, when it has one (only http(s) links; the URL comes from the GitHub CLI). */
+function publishedPrUrl(details: TaskDetails): string | undefined {
   const published = [...details.events].reverse().find((event) => event.type === 'publish.done')
   const prPayload = record(published?.payload)?.pullRequestUrl
-  // Only open links that are http(s); the URL comes from the GitHub CLI's output.
-  const prUrl = typeof prPayload === 'string' ? safeHref(prPayload) : undefined
-  const remote = details.repo?.githubRemote
+  return typeof prPayload === 'string' ? safeHref(prPayload) : undefined
+}
+
+function prNumber(url: string): string {
+  const match = /\/pull\/(\d+)/.exec(url)
+  return match ? `PR #${match[1]}` : 'PR'
+}
+
+/**
+ * Above the diff: open a draft PR for a finished task of a project with a GitHub remote, or, once it is open, its link,
+ * state and CI. Only the owner's click publishes; nothing an agent does can reach this.
+ */
+export function PullRequestBar({ details, onChanged }: { details: TaskDetails; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [failure, setFailure] = useState('')
+  const prUrl = publishedPrUrl(details)
+  const { status } = usePrStatus(details.task.id, Boolean(prUrl))
+  const canOpen = details.task.status === 'done' && Boolean(details.repo?.githubRemote)
   const canPushUpdate =
-    Boolean(prUrl) && !worktreeRemoved(details.events) && hasUnpublishedChanges(details.events)
+    Boolean(prUrl) &&
+    details.task.status === 'done' &&
+    !worktreeRemoved(details.events) &&
+    hasUnpublishedChanges(details.events)
 
-  if (details.task.status !== 'done' || !details.repo) return null
-
-  async function setRemote(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const value = String(new FormData(event.currentTarget).get('github-remote') ?? '').trim()
-    if (!value || !details.repo) return
-    setFailure('')
-    try {
-      await request(`/api/repos/${encodeURIComponent(details.repo.id)}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ githubRemote: value }),
-      })
-      onChanged()
-    } catch (error) {
-      setFailure(errorMessage(error, '無法儲存 GitHub 網址'))
-    }
-  }
+  if (!prUrl && !canOpen) return null
 
   async function publishTask() {
     setBusy(true)
@@ -345,42 +365,80 @@ export function PublishPanel({ details, onChanged }: { details: TaskDetails; onC
     }
   }
 
+  const summary = status ? checksSummary(status.checks) : ''
   return (
-    <div className="publish-panel" data-testid="publish-panel">
+    <div className="pr-bar" data-testid="pr-bar">
       {prUrl ? (
-        <div className="pr-row">
+        <>
+          <Icon name="git-pr" size={14} />
           <a href={prUrl} target="_blank" rel="noreferrer noopener" className="pr-link">
-            已開 PR
+            {prNumber(prUrl)}
           </a>
+          {status ? (
+            <span className={`chip pr-chip pr-${prTone(status)}`}>{prStateLabel(status)}</span>
+          ) : null}
+          {summary ? (
+            <span
+              className={status && status.checks.failing > 0 ? 'pr-checks pr-checks-failing' : 'pr-checks'}
+              aria-label="CI"
+            >
+              {summary}
+            </span>
+          ) : null}
           {canPushUpdate ? (
-            <Button variant="primary" icon="git-pr" disabled={busy} onClick={() => void publishTask()}>
-              {busy ? '正在推送…' : '推送更新到 PR'}
+            <Button icon="git-pr" disabled={busy} onClick={() => void publishTask()}>
+              {busy ? '正在推送…' : '推送更新'}
             </Button>
           ) : null}
-          <ButtonLink href={prUrl} variant="secondary" icon="external">
-            查看 PR
-          </ButtonLink>
-        </div>
-      ) : remote ? (
-        <Button variant="primary" icon="git-pr" disabled={busy} onClick={() => void publishTask()}>
-          {busy ? '正在開 draft PR…' : '開 draft PR'}
-        </Button>
+        </>
       ) : (
-        <form className="field-stack" onSubmit={(event) => void setRemote(event)}>
-          <label htmlFor="github-remote">第一次開 PR：填入 GitHub repo 網址</label>
-          <div className="input-row">
-            <input
-              id="github-remote"
-              name="github-remote"
-              placeholder="https://github.com/owner/repo.git"
-              required
-            />
-            <Button variant="secondary" type="submit">
-              儲存
-            </Button>
-          </div>
-        </form>
+        <Button variant="primary" icon="git-pr" disabled={busy} onClick={() => void publishTask()}>
+          {busy ? '正在開 PR…' : '開 PR'}
+        </Button>
       )}
+      {failure ? <p className="form-error">{failure}</p> : null}
+    </div>
+  )
+}
+
+/** A finished task of a project without a GitHub remote: where to set one, so the diff gets its 開 PR button. */
+export function PublishPanel({ details, onChanged }: { details: TaskDetails; onChanged: () => void }) {
+  const [failure, setFailure] = useState('')
+  if (details.task.status !== 'done' || !details.repo || details.repo.githubRemote) return null
+  if (publishedPrUrl(details)) return null
+
+  async function setRemote(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const value = String(new FormData(event.currentTarget).get('github-remote') ?? '').trim()
+    if (!value || !details.repo) return
+    setFailure('')
+    try {
+      await request(`/api/repos/${encodeURIComponent(details.repo.id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ githubRemote: value }),
+      })
+      onChanged()
+    } catch (error) {
+      setFailure(errorMessage(error, '無法儲存 GitHub 網址'))
+    }
+  }
+
+  return (
+    <div className="publish-panel" data-testid="publish-panel">
+      <form className="field-stack" onSubmit={(event) => void setRemote(event)}>
+        <label htmlFor="github-remote">GitHub repo 網址</label>
+        <div className="input-row">
+          <input
+            id="github-remote"
+            name="github-remote"
+            placeholder="https://github.com/owner/repo.git"
+            required
+          />
+          <Button variant="secondary" type="submit">
+            儲存
+          </Button>
+        </div>
+      </form>
       {failure ? <p className="form-error">{failure}</p> : null}
     </div>
   )

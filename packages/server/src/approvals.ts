@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { AttemptId, ProposedAction, TaskId, Tier } from '@joy/core'
-import type { ApprovalRecord, ApprovalStatus, Database } from '@joy/db'
+import type { ApprovalRecord, ApprovalStatus, Database, TaskAllowKind } from '@joy/db'
 import { createApproval, decideApproval, getApproval, listApprovals } from '@joy/db'
 import type { Redactor } from '@joy/secrets'
 
@@ -11,6 +11,16 @@ export interface ApprovalRequestInput {
   tier: Tier
   /** Cross-model pre-review shown next to the request, when one ran. */
   preReview?: { provider: string; approve: boolean; summary: string }
+  /** Set when the owner may allow this action for the rest of the task (decided by the policy, never by the agent). */
+  allowInTask?: TaskAllowOffer
+}
+
+/** What "allow for the rest of this task" would remember: the hashed fingerprint and the redacted target. */
+export interface TaskAllowOffer {
+  kind: TaskAllowKind
+  target: string
+  /** SHA-256 (hex) of the policy fingerprint. */
+  fingerprint: string
 }
 
 export interface ApprovalBrokerOptions {
@@ -28,6 +38,8 @@ type Listener = (approval: ApprovalRecord, preReview?: ApprovalRequestInput['pre
 export class ApprovalBroker {
   private readonly waiters = new Map<string, (status: ApprovalStatus) => void>()
   private readonly listeners = new Set<Listener>()
+  /** Offers live as long as the process: a restart expires every pending approval anyway. */
+  private readonly allowOffers = new Map<string, TaskAllowOffer>()
 
   constructor(private readonly options: ApprovalBrokerOptions) {}
 
@@ -55,12 +67,14 @@ export class ApprovalBroker {
       action,
       tier: input.tier,
     })
+    if (input.allowInTask) this.allowOffers.set(record.id, input.allowInTask)
     publish(input.taskId, input.attemptId, 'approval.requested', {
       approvalId: record.id,
       kind: action.kind,
       summary: action.summary,
       provenance: action.provenance,
       ...(input.preReview ? { preReview: input.preReview } : {}),
+      ...(input.allowInTask ? { allowInTask: true } : {}),
     })
     return new Promise((resolve) => {
       const finish = (status: ApprovalStatus) => {
@@ -112,6 +126,11 @@ export class ApprovalBroker {
     this.announce(decided)
     this.waiters.get(id)?.(decided.status)
     return decided
+  }
+
+  /** What allowing this approval for the rest of its task would remember, when the policy offered it. */
+  allowOffer(id: string): TaskAllowOffer | undefined {
+    return this.allowOffers.get(id)
   }
 
   pending(): ApprovalRecord[] {

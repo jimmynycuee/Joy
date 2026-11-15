@@ -55,7 +55,13 @@ export type TaskEvent = {
   payload: unknown
   ts: string
 }
-export type DiffFile = { path: string; status: string; additions: number; deletions: number }
+export type DiffFile = {
+  path: string
+  oldPath?: string
+  status: string
+  additions: number
+  deletions: number
+}
 export type WorkspaceDiff = { files: DiffFile[]; patch: string }
 export interface ProviderUsage {
   provider: string
@@ -104,6 +110,17 @@ export type TaskDetails = {
   interruptible?: boolean
   /** Models, mode or permission mode a queued message changes once the current run ends (see task-settings.ts). */
   pendingSettings?: unknown
+  /** Actions the owner allowed for the rest of this task (missing from older servers). */
+  taskAllows?: TaskAllow[]
+}
+export type TaskAllowKind = 'shell' | 'file_write' | 'file_read' | 'network' | 'mcp'
+export interface TaskAllow {
+  id: string
+  kind: TaskAllowKind
+  /** The command, path, host or MCP tool, as the owner saw it on the approval card. */
+  target: string
+  approvalId: string
+  createdAt: string
 }
 export type SecretStatus = { set: boolean; source?: 'env' | 'keychain' }
 export type DoctorStatus = 'ok' | 'missing' | 'untested'

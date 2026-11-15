@@ -534,7 +534,10 @@ interface Context {
 class Verdict {
   verdict: ShellVerdict = 'inside'
   reason = ''
+  /** Every reason raised, not only the one reported (`analyzeShellConcerns`). */
+  readonly raised = new Set<string>()
   raise(verdict: Exclude<ShellVerdict, 'inside'>, reason: string) {
+    this.raised.add(reason)
     if (this.verdict === 'forbidden') return
     if (verdict === 'forbidden' || this.verdict === 'inside') {
       this.verdict = verdict
@@ -577,14 +580,10 @@ function within(path: typeof posix, root: string, target: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
 }
 
-/**
- * Judges one shell command run with `cwd` (inside `worktree`). `mode` only changes how unknown expansions are
- * treated: `auto` asks, `full` lets them through unless they name a secret.
- */
-export function analyzeShellCommand(
+function runAnalysis(
   command: string,
   options: { cwd: string; worktree: string; mode: 'auto' | 'full'; env?: ClassifyEnvironment },
-): ShellAnalysis {
+): Verdict {
   const env = options.env ?? defaultClassifyEnvironment()
   const path = pathFor(options.worktree, env)
   const ctx: Context = {
@@ -617,6 +616,92 @@ export function analyzeShellCommand(
         options.mode,
         result,
       )
+  }
+  return result
+}
+
+/**
+ * Judges one shell command run with `cwd` (inside `worktree`). `mode` only changes how unknown expansions are
+ * treated: `auto` asks, `full` lets them through unless they name a secret.
+ */
+export function analyzeShellCommand(
+  command: string,
+  options: { cwd: string; worktree: string; mode: 'auto' | 'full'; env?: ClassifyEnvironment },
+): ShellAnalysis {
+  const result = runAnalysis(command, options)
+  return { verdict: result.verdict, reason: result.reason }
+}
+
+/** Why a command may leave the worktree. Every concern found is listed, not only the first one. */
+export type ShellConcern = keyof typeof REASONS
+
+/**
+ * Like `analyzeShellCommand`, plus every concern the command raised. The verdict reports one reason; a command such as
+ * `rm ../x && git push` has two, and a caller deciding whether an approval may be remembered needs to see both.
+ */
+export function analyzeShellConcerns(
+  command: string,
+  options: { cwd: string; worktree: string; mode: 'auto' | 'full'; env?: ClassifyEnvironment },
+): ShellAnalysis & { concerns: ShellConcern[] } {
+  const result = runAnalysis(command, options)
+  const concerns = (Object.keys(REASONS) as ShellConcern[]).filter((key) => result.raised.has(REASONS[key]))
+  return { verdict: result.verdict, reason: result.reason, concerns }
+}
+
+/** Glob characters: a directory segment with one of them can match any directory, secrets included. */
+const GLOB_CHARS = /[*?[\]{}]/
+
+/**
+ * Judges a file search (Claude's Grep and Glob), which reads many files from one call: `root` is where it starts
+ * (relative to the worktree), `patterns` the path globs it uses, `recursive` whether it descends below `root` by itself
+ * (Grep always does). Forbidden when a pattern names a secret, when a pattern resolves into one, or when the search may
+ * descend from a directory that holds a secret (the home directory, JOY_HOME's parent, `/`) into it.
+ */
+export function analyzeSearch(
+  root: string,
+  patterns: readonly string[],
+  options: { worktree: string; mode: 'auto' | 'full'; recursive: boolean; env?: ClassifyEnvironment },
+): ShellAnalysis {
+  const env = options.env ?? defaultClassifyEnvironment()
+  const path = pathFor(options.worktree, env)
+  const worktree = path.resolve(options.worktree)
+  const ctx: Context = {
+    worktree,
+    cwds: new Set([worktree]),
+    unknownCwd: false,
+    cdReplaces: false,
+    literalBackslash: path === win32,
+    env,
+    depth: 0,
+    path,
+  }
+  const result = new Verdict()
+  const start = path.resolve(worktree, root)
+  checkResolvedPath(start, ctx, options.mode, result, REASONS.outsidePath)
+  const fold = (value: string) => (path === win32 ? value.toLowerCase() : value)
+  // A secret named anywhere in a pattern (`**/.ssh/*`, `.config/gh/**`), wherever the search starts.
+  const secretSequences = [...SECRET_HOME_PATHS, ...SECRET_SEGMENTS].map((p) => p.split('/').map(fold))
+  let descends = options.recursive
+  for (const pattern of patterns) {
+    if (pattern.trim() === '') continue
+    const segments = pattern.replace(/\\/g, '/').split('/').filter(Boolean).map(fold)
+    const named = secretSequences.some((sequence) =>
+      segments.some((_, i) => sequence.every((part, j) => segments[i + j] === part)),
+    )
+    if (named) result.raise('forbidden', REASONS.secret)
+    checkResolvedPath(path.resolve(start, pattern), ctx, options.mode, result, REASONS.outsidePath)
+    if (pattern.includes('**') || segments.slice(0, -1).some((segment) => GLOB_CHARS.test(segment)))
+      descends = true
+  }
+  if (descends && !within(path, worktree, start)) {
+    const home = path.resolve(env.home)
+    const secrets = [
+      ...joyHomes(env).map((dir) => path.resolve(dir)),
+      ...SECRET_HOME_PATHS.map((p) => path.resolve(home, p)),
+      ...(path === win32 ? [] : SYSTEM_SECRET_PATHS),
+    ]
+    if (secrets.some((secret) => within(path, start, secret) && !within(path, worktree, secret)))
+      result.raise('forbidden', REASONS.secret)
   }
   return { verdict: result.verdict, reason: result.reason }
 }

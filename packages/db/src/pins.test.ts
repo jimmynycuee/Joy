@@ -72,8 +72,8 @@ describe('pinned tasks', () => {
     expect(updateTask(db, task.id, { archived: true, pinned: true })?.pinnedAt).toBeUndefined()
   })
 
-  it('leaves tasks from before migration 24 unpinned, knows no task it was not given, and rejects an empty time', () => {
-    const db = fresh(MIGRATIONS.filter((m) => m.version < 24))
+  it('leaves tasks from before migration 25 unpinned, knows no task it was not given, and rejects an empty time', () => {
+    const db = fresh(MIGRATIONS.filter((m) => m.version < 25))
     const task = seed(db)
     migrate(db, MIGRATIONS)
     expect(getTask(db, task.id)?.pinnedAt).toBeUndefined()

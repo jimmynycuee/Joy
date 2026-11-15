@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process'
 import type { Dirent } from 'node:fs'
-import { lstat, readdir, realpath, rm, stat } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { lstat, mkdtemp, readdir, realpath, rm, stat } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, parse, resolve, sep } from 'node:path'
+import { gitEnvironment } from '@joy/executor'
 
 /*
  * The folder picker behind 加入專案. It only ever lists folder names (never file names or contents) and refuses the
@@ -99,12 +100,18 @@ export function isOffLimits(path: string, roots: Roots): boolean {
   return false
 }
 
+/** A Windows network path (`\\host\share`, `//host/share`, `\\?\...`): not browsable, and nothing to put a project on. */
+export function isNetworkPath(path: string): boolean {
+  return /^[\\/]{2}/.test(path)
+}
+
 /** An absolute path from what the owner typed; `~` means the home folder. Throws a 400 for anything else. */
 function absolutePath(input: string | undefined, home: string): string {
   const text = (input ?? '').trim()
   if (text === '') return home
   if (text.includes('\0')) throw new FolderError(400, 'The path must not contain NUL')
   if (text.length > 4096) throw new FolderError(400, 'The path is too long')
+  if (isNetworkPath(text)) throw new FolderError(400, 'Network paths are not supported')
   const expanded = text === '~' ? home : /^~[\\/]/.test(text) ? join(home, text.slice(2)) : text
   if (!isAbsolute(expanded)) throw new FolderError(400, 'The path must be absolute')
   // resolve() folds `..` away; the links are followed afterwards, by realpath.
@@ -124,6 +131,7 @@ async function openFolder(input: string | undefined, found: Roots): Promise<stri
     if (code === 'EACCES' || code === 'EPERM') throw new FolderError(403, 'That folder cannot be read')
     throw cause
   }
+  if (isNetworkPath(real)) throw new FolderError(400, 'Network paths are not supported')
   // Judge the path as typed too: a link into a forbidden place must not become allowed by where it points.
   if (isOffLimits(real, found) || isOffLimits(wanted, found))
     throw new FolderError(403, 'That folder is not available')
@@ -190,7 +198,7 @@ export async function listFolders(
         continue
       }
     } else if (!entry.isDirectory()) continue
-    if (isOffLimits(target, found) || isOffLimits(child, found)) continue
+    if (isNetworkPath(target) || isOffLimits(target, found) || isOffLimits(child, found)) continue
     folders.push({ name: entry.name, path: child, isGit: false })
   }
   folders.sort((a, b) => a.name.localeCompare(b.name))
@@ -220,7 +228,13 @@ function git(cwd: string, args: string[]): Promise<string> {
     execFile(
       'git',
       args,
-      { cwd, timeout: 30_000, windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
+      {
+        cwd,
+        timeout: 30_000,
+        windowsHide: true,
+        // Not the repository or configuration the process was started with: only the folder it is run in.
+        env: gitEnvironment(process.env, { GIT_TERMINAL_PROMPT: '0' }),
+      },
       (error, stdout, stderr) => {
         if (error) fail(new Error(`git ${args[0] ?? ''} failed: ${stderr.trim() || error.message}`))
         else done(stdout)
@@ -253,9 +267,17 @@ export async function initGitRepository(
 ): Promise<{ path: string; defaultBranch: string }> {
   const found = await roots(options)
   const path = await openFolder(input, found)
-  if (lower(path) === lower(found.home) || dirname(path) === path)
-    throw new FolderError(400, 'Choose a project folder, not the home folder or the top of a drive')
+  // A repository there would swallow the home folder or Joy's data: the folders themselves and everything above them.
+  if (isInside(found.home, path) || isInside(found.joyHome, path))
+    throw new FolderError(
+      400,
+      'Choose a project folder, not the home folder, Joy data or a folder that holds them',
+    )
   if (await hasGit(path)) throw new FolderError(409, 'That folder is already a git repository')
+  // No hook may run during the commit, wherever it comes from (git's template folder, the owner's global
+  // core.hooksPath, a prepare-commit-msg or post-commit in the new repository): point git at an empty folder.
+  // Not /dev/null, which does not exist on Windows.
+  const noHooks = await mkdtemp(join(tmpdir(), 'joy-no-hooks-'))
   try {
     await git(path, ['init'])
     await git(path, ['symbolic-ref', 'HEAD', 'refs/heads/main'])
@@ -263,6 +285,8 @@ export async function initGitRepository(
     const author = (await hasIdentity(path)) ? [] : ['-c', 'user.name=Joy', '-c', 'user.email=joy@localhost']
     await git(path, [
       ...author,
+      '-c',
+      `core.hooksPath=${noHooks}`,
       '-c',
       'commit.gpgsign=false',
       'commit',
@@ -275,6 +299,8 @@ export async function initGitRepository(
     // The .git folder is the one just made above (there was none a moment ago); leave the folder as it was.
     await rm(join(path, '.git'), { recursive: true, force: true }).catch(() => undefined)
     throw new FolderError(500, cause instanceof Error ? cause.message : 'git init failed')
+  } finally {
+    await rm(noHooks, { recursive: true, force: true }).catch(() => undefined)
   }
   return { path, defaultBranch: 'main' }
 }
