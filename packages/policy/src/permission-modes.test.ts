@@ -215,9 +215,15 @@ describe('full mode: nearly everything runs', () => {
     expect(bash(command, 'full')).toBe('allow')
   })
 
-  it('grants other tools too, but not secrets', () => {
+  it('grants known tools too, but not secrets or tools Joy does not know', () => {
     expect(outcome('WebFetch', { url: 'https://x' }, 'full')).toBe('allow')
-    expect(outcome('mcp__other__tool', {}, 'full')).toBe('allow')
+    expect(outcome('mcp__other__tool', {}, 'full')).toBe('require_approval')
+    expect(outcome('mcp__joy__something_new', {}, 'full')).toBe('require_approval')
+    expect(outcome('SomethingNew', {}, 'full')).toBe('require_approval')
+    expect(classifyClaudeToolAction('mcp__other__tool', {}, worktree, 'full', env)).not.toHaveProperty(
+      'grant',
+    )
+    expect(outcome('mcp__joy__ask_peer', { question: 'q' }, 'full')).toBe('allow')
     expect(outcome('Write', { file_path: '/etc/x' }, 'full')).toBe('allow')
     expect(outcome('Read', { file_path: '/home/me/.ssh/id_rsa' }, 'full')).toBe('require_approval')
     expect(outcome('Edit', { file_path: '/home/me/.joy/config.yaml' }, 'full')).toBe('require_approval')

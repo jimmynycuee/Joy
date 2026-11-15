@@ -2648,9 +2648,14 @@ describe('Joy local server', () => {
     expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'assistant'])
     expect(messages[2]?.content).toContain('Task "Fix add" finished')
     const task = (await (await fetch(`${origin}/api/tasks/${created?.id}`)).json()) as {
-      task: { originConversationId: string; mode: string }
+      task: { originConversationId: string; mode: string; permissionMode: string }
     }
-    expect(task.task).toMatchObject({ originConversationId: conversation.id, mode: 'single' })
+    // The assistant cannot choose a permission mode: its tasks always ask.
+    expect(task.task).toMatchObject({
+      originConversationId: conversation.id,
+      mode: 'single',
+      permissionMode: 'ask',
+    })
   })
 
   it('lets the assistant cancel a task and rejects bad task input', async () => {

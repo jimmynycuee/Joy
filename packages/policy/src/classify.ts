@@ -77,6 +77,14 @@ interface Judgement {
 }
 
 const inside = (kind: ActionKind): Judgement => ({ kind, analysis: { verdict: 'inside', reason: '' } })
+/**
+ * Another MCP server's tool, or a tool Joy has never heard of: Joy cannot tell what it touches, so it asks in every
+ * mode, `full` included (no grant).
+ */
+const unknownTool: Judgement = {
+  kind: 'run_outside_worktree',
+  analysis: { verdict: 'forbidden', reason: 'uses a tool Joy does not know' },
+}
 const outside = (reason: string): Judgement => ({
   kind: 'run_outside_worktree',
   analysis: { verdict: 'outside', reason },
@@ -92,7 +100,7 @@ function judgeClaudeTool(
   if (toolName.startsWith('mcp__')) {
     // Joy's own tools keep their rules; another server's tools are unknown to Joy.
     const kind = classifyKind(toolName, input, cwd)
-    return kind === 'run_outside_worktree' ? outside('uses a tool Joy does not know') : inside(kind)
+    return kind === 'run_outside_worktree' ? unknownTool : inside(kind)
   }
   const name = toolName.toLowerCase()
   const record = asRecord(input)
@@ -116,7 +124,7 @@ function judgeClaudeTool(
   }
   if (SESSION_TOOLS.has(name)) return inside('read_file')
   if (NETWORK_TOOLS.has(name)) return outside('downloads from or uploads to the network')
-  return outside('uses a tool Joy does not know')
+  return unknownTool
 }
 
 /** A file path a tool names: inside the worktree or the OS temp dir is fine; secrets never are. */

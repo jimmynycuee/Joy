@@ -378,6 +378,10 @@ describe('follow-up messages and steering', () => {
       new Promise((resolve) => options.signal.addEventListener('abort', () => resolve(), { once: true }))
     const id = await newTask(call, await newRepo(call))
     await until(call, id, settled('running'), 'running')
+    // 'running' is set before the worktree is prepared: wait for the agent itself, or under load the message can
+    // still reach its first prompt instead of the queue.
+    for (let i = 0; i < 500 && claude.calls.length === 0; i++) await new Promise((r) => setTimeout(r, 10))
+    expect(claude.calls.length).toBeGreaterThan(0)
     await call('POST', `/api/tasks/${id}/messages`, { text: 'never mind', interrupt: false })
     await call('POST', `/api/tasks/${id}/cancel`)
     const cancelled = await until(call, id, (d) => count(d, 'user.message.discarded') === 1, 'discard')

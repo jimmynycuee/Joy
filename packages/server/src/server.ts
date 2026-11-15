@@ -323,7 +323,7 @@ const taskInputSchema = z.strictObject({
   planFirst: z.boolean().optional(),
   maxRounds: z.number().int().min(1).max(20).optional(),
   /**
-   * How much the agent may do without asking (default `auto`). Clamped to the repository's maximum; a task from
+   * How much the agent may do without asking (default `ask`; the web UI always sends its choice). Clamped to the repository's maximum; a task from
    * external content always gets `ask`.
    */
   permissionMode: z.enum(PERMISSION_MODES).optional(),
@@ -783,6 +783,21 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   async function prepareDependencies(ws: Workspace): Promise<void> {
     const dependencyOptions = options.dependencyInstall === false ? undefined : options.dependencyInstall
     const repo = getRepo(db, ws.repo.id)
+    const task = getTask(db, ws.taskId)
+    const permissionMode = task ? effectivePermissionMode(task) : 'ask'
+    if (permissionMode === 'ask' || task?.provenance === 'external_content') {
+      // Installing runs the project's lifecycle scripts and uses the network on this computer: only a task the owner
+      // let work on its own (auto or full) gets it. In ask mode Joy behaves as before permission modes existed.
+      if (dependencyInstallFor(ws.path))
+        publish(ws.taskId, ws.attemptId, 'workspace.dependencies', {
+          status: 'skipped',
+          reason:
+            task?.provenance === 'external_content'
+              ? 'external content: dependencies are not installed automatically'
+              : 'ask mode: dependencies are not installed automatically',
+        })
+      return
+    }
     if (repo?.container) {
       // An untrusted repository's install scripts must not run on this computer, and the agent image does not
       // install them in the container either; the agent installs inside its container if it needs to.
@@ -4392,7 +4407,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       permissionMode:
         input.provenance === 'external_content'
           ? 'ask'
-          : clampPermissionMode(input.permissionMode ?? 'auto', repo.maxPermissionMode ?? 'full'),
+          : // Callers that do not choose (the API without the field, the assistant, schedules) get the old behaviour.
+            clampPermissionMode(input.permissionMode ?? 'ask', repo.maxPermissionMode ?? 'full'),
       ...(input.provenance ? { provenance: input.provenance } : {}),
       ...(roleOverrides ? { roleOverrides } : {}),
       ...(input.planFirst !== undefined ? { planFirst: input.planFirst } : {}),
@@ -4545,7 +4561,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
               ? { workflow: args.workflow }
               : { mode: args.mode ?? 'review_loop' }),
           })
-          const task = await startTask(input, conversationId)
+          // The assistant cannot pick a permission mode: its tasks always ask.
+          const task = await startTask({ ...input, permissionMode: 'ask' }, conversationId)
           return { id: task.id, title: task.title, status: task.status, mode: task.mode }
         },
       },
@@ -4937,7 +4954,11 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     }
     const conversationId = reminderConversation(schedule.conversationId)
     try {
-      const task = await startTask(taskInputSchema.parse(schedule.payload), conversationId)
+      // A scheduled task runs with nobody choosing a mode: always ask, whatever the stored payload says.
+      const task = await startTask(
+        { ...taskInputSchema.parse(schedule.payload), permissionMode: 'ask' },
+        conversationId,
+      )
       appendMessage(
         db,
         conversationId,
