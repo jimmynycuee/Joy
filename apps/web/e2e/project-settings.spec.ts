@@ -193,7 +193,9 @@ test('switching project in the new task box applies that project’s defaults an
   })
 })
 
-test('opening the new task box keeps the last choice instead of the first project’s defaults', async ({ page }) => {
+test('opening the new task box keeps the last choice instead of the first project’s defaults', async ({
+  page,
+}) => {
   await mockApi(page, {
     repos: [{ ...alpha, defaults: { mode: 'single', permissionMode: 'ask' } }, beta],
   })

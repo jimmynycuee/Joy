@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { ReactNode } from 'react'
+import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react'
 import { request } from '../api.js'
 import { relativeTime } from '../dates.js'
 import { modeLabel, repoName, shortTitle, statusLabel } from '../labels.js'
@@ -149,6 +149,14 @@ function SectionHead({
   )
 }
 
+/** A right click on a row opens the same menu as its ⋯ button, instead of the browser's own. */
+function openRowMenu(event: ReactMouseEvent<HTMLElement>): void {
+  const trigger = event.currentTarget.querySelector<HTMLButtonElement>('.row-action')
+  if (!trigger || trigger.getAttribute('aria-expanded') === 'true') return
+  event.preventDefault()
+  trigger.click()
+}
+
 export function Sidebar(props: SidebarProps) {
   const [search, setSearch] = useState('')
   const query = search.trim().toLowerCase()
@@ -214,6 +222,7 @@ export function Sidebar(props: SidebarProps) {
       <div
         className={`nav-row-wrap${selected ? ' selected' : ''}${nested ? ' nested' : ''}`}
         key={`${scope}task:${task.id}`}
+        onContextMenu={openRowMenu}
       >
         <button
           type="button"
@@ -257,6 +266,7 @@ export function Sidebar(props: SidebarProps) {
       <div
         className={`nav-row-wrap${selected ? ' selected' : ''}`}
         key={`${scope}conversation:${conversation.id}`}
+        onContextMenu={openRowMenu}
       >
         <button
           type="button"
@@ -295,7 +305,7 @@ export function Sidebar(props: SidebarProps) {
     const name = repoName(repo.path)
     return (
       <div className="project-block" key={repo.id} role="group" aria-label={name}>
-        <div className="nav-row-wrap project-row-wrap">
+        <div className="nav-row-wrap project-row-wrap" onContextMenu={openRowMenu}>
           <button
             type="button"
             className="task-row project-row"
