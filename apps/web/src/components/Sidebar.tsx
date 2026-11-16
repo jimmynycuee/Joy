@@ -1,22 +1,33 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
 import { request } from '../api.js'
 import { relativeTime } from '../dates.js'
-import { modeLabel, shortTitle, statusLabel } from '../labels.js'
+import { modeLabel, repoName, shortTitle, statusLabel } from '../labels.js'
 import { NEW_CONVERSATION_TITLE, recentItems } from '../recent.js'
+import type { RecentItem } from '../recent.js'
 import { repoColor } from '../repo-colors.js'
 import { modLabel } from '../shortcuts.js'
 import {
-  COLLAPSED_GROUPS_KEY,
-  CONVERSATIONS_GROUP,
-  groupByProject,
-  parseCollapsedGroups,
-  serializeCollapsedGroups,
-  toggleCollapsed,
+  NO_FILTER,
+  PROJECTS_SECTION,
+  RECENT_SECTION,
+  SIDEBAR_MEMORY_KEY,
+  STATUS_FILTERS,
+  applyFilter,
+  isFiltering,
+  parseSidebarMemory,
+  pinnedRows,
+  serializeSidebarMemory,
+  tasksOfProject,
+  toggleKey,
+  unpinnedRows,
+  waitsForYou,
 } from '../sidebar-groups.js'
-import type { SidebarGroup } from '../sidebar-groups.js'
+import type { RecentFilter, StatusFilter } from '../sidebar-groups.js'
 import { readStorage, writeStorage } from '../storage.js'
 import type { ConversationSummary, Repo, Task } from '../types.js'
 import { MascotMark } from './Mascot.js'
+import { Menu, MenuGroup, MenuItem } from './Menu.js'
 import { Icon, IconButton, ProjectDot } from './ui.js'
 
 interface QuotaReport {
@@ -94,44 +105,116 @@ export interface SidebarProps {
   /** The task whose plan waits for approval, if the open one does: its row says so. */
   pendingPlanTaskId?: string
   onArchive: (id: string) => void
+  onPinTask: (id: string, pinned: boolean) => void
+  onPinConversation: (id: string, pinned: boolean) => void
   onNewTask: () => void
   onOpenTask: (id: string) => void
   onNewConversation: () => void
   onOpenConversation: (id: string) => void
+  onAddProject: () => void
+  /** 設定 of one project. */
+  onOpenProjectSettings: (repoId: string) => void
   onOpenSettings: () => void
   onCollapse: () => void
+}
+
+const STATUS_FILTER_LABELS: Record<StatusFilter, string> = {
+  all: '全部',
+  waiting: '等你的',
+  running: '進行中',
+  done: '已完成',
+  failed: '沒完成',
+}
+
+/** A section heading: the name and a chevron fold it; the tools on the right are the section's own. */
+function SectionHead({
+  label,
+  open,
+  onToggle,
+  children,
+}: {
+  label: string
+  open: boolean
+  onToggle: () => void
+  children?: ReactNode
+}) {
+  return (
+    <div className="section-head">
+      <button type="button" className="section-toggle" aria-expanded={open} onClick={onToggle}>
+        <span className="group-label">{label}</span>
+        <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} />
+      </button>
+      {children ? <div className="section-tools">{children}</div> : null}
+    </div>
+  )
 }
 
 export function Sidebar(props: SidebarProps) {
   const [search, setSearch] = useState('')
   const query = search.trim().toLowerCase()
+  const [filter, setFilter] = useState<RecentFilter>(NO_FILTER)
 
-  // One list: tasks and conversations together, the most recently active first. Archived tasks live in 設定.
+  // Tasks and conversations together, the most recently active first. Archived tasks live in 設定.
   const items = useMemo(
     () => recentItems(props.tasks, props.conversations, query),
     [props.tasks, props.conversations, query],
   )
   const nothingYet = props.tasks.every((task) => task.archived) && props.conversations.length === 0
-  // With tasks from more than one project the list is split by project; each group can be folded away.
-  const groups = useMemo(
-    () => groupByProject(items, props.repos, props.tasks),
-    [items, props.repos, props.tasks],
+  const pinned = useMemo(() => pinnedRows(items), [items])
+  // A project that was removed cannot filter anything any more.
+  const activeFilter = useMemo<RecentFilter>(
+    () =>
+      filter.repoId !== null && !props.repos.some((repo) => repo.id === filter.repoId)
+        ? { ...filter, repoId: null }
+        : filter,
+    [filter, props.repos],
   )
-  const [collapsed, setCollapsed] = useState(() => parseCollapsedGroups(readStorage(COLLAPSED_GROUPS_KEY)))
-  function toggleGroup(key: string) {
-    const next = toggleCollapsed(collapsed, key)
-    setCollapsed(next)
-    writeStorage(COLLAPSED_GROUPS_KEY, serializeCollapsedGroups(next))
+  const recent = useMemo(() => applyFilter(unpinnedRows(items), activeFilter), [items, activeFilter])
+
+  const [memory, setMemory] = useState(() => parseSidebarMemory(readStorage(SIDEBAR_MEMORY_KEY)))
+  function remember(next: typeof memory) {
+    setMemory(next)
+    writeStorage(SIDEBAR_MEMORY_KEY, serializeSidebarMemory(next))
+  }
+  const toggleSection = (key: string) => remember({ ...memory, collapsed: toggleKey(memory.collapsed, key) })
+  const toggleProject = (id: string) => remember({ ...memory, open: toggleKey(memory.open, id) })
+  // A search shows every match, folded or not.
+  const searching = query !== ''
+  const projectsOpen = searching || !memory.collapsed.has(PROJECTS_SECTION)
+  const recentOpen = searching || !memory.collapsed.has(RECENT_SECTION)
+
+  function rowMenu(label: string, pinnedNow: boolean, onPin: () => void, onArchive?: () => void) {
+    return (
+      <Menu
+        label={`更多：${label}`}
+        triggerLabel={`更多：${label}`}
+        triggerClassName="icon-btn row-action"
+        trigger={<Icon name="more" size={16} />}
+        align="end"
+      >
+        <MenuItem icon="pin" onSelect={onPin}>
+          {pinnedNow ? '取消釘選' : '釘選'}
+        </MenuItem>
+        {onArchive ? (
+          <MenuItem icon="archive" onSelect={onArchive}>
+            封存
+          </MenuItem>
+        ) : null}
+      </Menu>
+    )
   }
 
-  function taskRow(task: Task, time: string | undefined) {
+  function taskRow(task: Task, time: string | undefined, nested = false, scope = '') {
     const selected = props.view === 'task' && props.selectedTaskId === task.id
-    const waiting = task.status === 'awaiting_approval' || task.status === 'review_ready'
+    const waiting = waitsForYou(task)
     const working = task.status === 'running' || task.status === 'queued'
     const label = statusLabel(task.status, task.mode, props.pendingPlanTaskId === task.id)
     const title = shortTitle(task.title)
     return (
-      <div className={`nav-row-wrap${selected ? ' selected' : ''}`} key={`task:${task.id}`}>
+      <div
+        className={`nav-row-wrap${selected ? ' selected' : ''}${nested ? ' nested' : ''}`}
+        key={`${scope}task:${task.id}`}
+      >
         <button
           type="button"
           className="task-row"
@@ -139,9 +222,11 @@ export function Sidebar(props: SidebarProps) {
           title={`${label} · ${modeLabel(task.mode)}`}
           onClick={() => props.onOpenTask(task.id)}
         >
-          <span className="row-lead">
-            <ProjectDot color={repoColor(task.repoId, props.repos)} />
-          </span>
+          {nested ? null : (
+            <span className="row-lead">
+              <ProjectDot color={repoColor(task.repoId, props.repos)} />
+            </span>
+          )}
           <span className="task-row-copy">
             <span className="task-title">{title}</span>
             {waiting ? <span className={`task-meta status-text-${task.status}`}>{label}</span> : null}
@@ -155,21 +240,24 @@ export function Sidebar(props: SidebarProps) {
           ) : null}
           <span className="task-time">{relativeTime(time)}</span>
         </button>
-        <IconButton
-          icon="archive"
-          label={`封存：${title}`}
-          className="row-action"
-          onClick={() => props.onArchive(task.id)}
-        />
+        {rowMenu(
+          title,
+          task.pinnedAt !== undefined,
+          () => props.onPinTask(task.id, task.pinnedAt === undefined),
+          () => props.onArchive(task.id),
+        )}
       </div>
     )
   }
 
-  function conversationRow(conversation: ConversationSummary, time: string | undefined) {
+  function conversationRow(conversation: ConversationSummary, time: string | undefined, scope = '') {
     const selected = props.view === 'assistant' && props.selectedConversationId === conversation.id
     const title = conversation.title ?? NEW_CONVERSATION_TITLE
     return (
-      <div className={`nav-row-wrap${selected ? ' selected' : ''}`} key={`conversation:${conversation.id}`}>
+      <div
+        className={`nav-row-wrap${selected ? ' selected' : ''}`}
+        key={`${scope}conversation:${conversation.id}`}
+      >
         <button
           type="button"
           className="task-row"
@@ -185,44 +273,64 @@ export function Sidebar(props: SidebarProps) {
           </span>
           <span className="task-time">{relativeTime(time)}</span>
         </button>
+        {rowMenu(title, conversation.pinnedAt !== undefined, () =>
+          props.onPinConversation(conversation.id, conversation.pinnedAt === undefined),
+        )}
       </div>
     )
   }
 
-  function itemRow(item: (typeof items)[number]) {
+  function itemRow(item: RecentItem, scope = '') {
     return item.kind === 'task'
-      ? taskRow(item.task, item.time)
-      : conversationRow(item.conversation, item.time)
+      ? taskRow(item.task, item.time, false, scope)
+      : conversationRow(item.conversation, item.time, scope)
   }
 
-  function groupBlock(group: SidebarGroup) {
-    // A search shows every match, folded or not.
-    const open = query !== '' || !collapsed.has(group.key)
-    const needsYou =
-      !open &&
-      group.items.some(
-        (item) =>
-          item.kind === 'task' &&
-          (item.task.status === 'awaiting_approval' || item.task.status === 'review_ready'),
-      )
+  function projectBlock(repo: Repo) {
+    const tasks = tasksOfProject(items, repo.id)
+    // While searching, a project without a match has nothing to show.
+    if (searching && tasks.length === 0) return null
+    const open = searching || memory.open.has(repo.id)
+    const needsYou = !open && tasks.some((item) => waitsForYou(item.task))
+    const name = repoName(repo.path)
     return (
-      <div className="sidebar-group" key={group.key} role="group" aria-label={group.label}>
-        <button
-          type="button"
-          className="sidebar-group-toggle"
-          aria-expanded={open}
-          onClick={() => toggleGroup(group.key)}
-        >
-          <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} />
-          {group.repoId ? (
-            <ProjectDot color={repoColor(group.repoId, props.repos)} />
-          ) : group.key === CONVERSATIONS_GROUP ? (
-            <Icon name="chat" size={12} />
-          ) : null}
-          <span className="group-label">{group.label}</span>
-          {needsYou ? <span className="task-flag" aria-label="有任務在等你" role="img" /> : null}
-        </button>
-        {open ? group.items.map(itemRow) : null}
+      <div className="project-block" key={repo.id} role="group" aria-label={name}>
+        <div className="nav-row-wrap project-row-wrap">
+          <button
+            type="button"
+            className="task-row project-row"
+            aria-expanded={open}
+            title={repo.path}
+            onClick={() => toggleProject(repo.id)}
+          >
+            <span className="row-lead">
+              <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} />
+            </span>
+            <ProjectDot color={repoColor(repo.id, props.repos)} />
+            <span className="task-row-copy">
+              <span className="task-title">{name}</span>
+            </span>
+            {needsYou ? <span className="task-flag" role="img" aria-label="有任務在等你" /> : null}
+          </button>
+          <Menu
+            label={`更多：${name}`}
+            triggerLabel={`更多：${name}`}
+            triggerClassName="icon-btn row-action"
+            trigger={<Icon name="more" size={16} />}
+            align="end"
+          >
+            <MenuItem icon="settings" onSelect={() => props.onOpenProjectSettings(repo.id)}>
+              設定
+            </MenuItem>
+          </Menu>
+        </div>
+        {open ? (
+          tasks.length > 0 ? (
+            tasks.map((item) => taskRow(item.task, item.time, true, 'project:'))
+          ) : (
+            <p className="empty-list nested">沒有任務</p>
+          )
+        ) : null}
       </div>
     )
   }
@@ -230,6 +338,10 @@ export function Sidebar(props: SidebarProps) {
   // 新任務 / 聊聊 are lit only while that very page is open: the composer, or a conversation that has no messages yet.
   const onNewTask = props.view === 'new-task'
   const onNewChat = props.view === 'assistant' && props.selectedConversationId === ''
+  const filtering = isFiltering(activeFilter)
+  const visibleProjects = props.repos.filter(
+    (repo) => !searching || tasksOfProject(items, repo.id).length > 0,
+  )
 
   return (
     <nav className="sidebar" aria-label="主選單">
@@ -253,7 +365,7 @@ export function Sidebar(props: SidebarProps) {
           aria-current={onNewTask ? 'page' : undefined}
           onClick={props.onNewTask}
         >
-          <Icon name="plus" />
+          <Icon name="pencil" />
           新任務
         </button>
         <button
@@ -280,24 +392,95 @@ export function Sidebar(props: SidebarProps) {
       </div>
 
       <div className="sidebar-scroll">
-        {groups && items.length > 0 ? (
-          <div className="task-list">{groups.map(groupBlock)}</div>
-        ) : (
-          <div className="sidebar-group task-list" aria-label="最近">
-            {nothingYet ? null : (
-              <div className="sidebar-group-head">
-                <span className="group-label">最近</span>
+        {pinned.length > 0 ? (
+          <section className="sidebar-section" aria-label="已釘選">
+            <div className="section-head">
+              <span className="group-label section-label">已釘選</span>
+            </div>
+            <div className="task-list">{pinned.map((item) => itemRow(item, 'pinned:'))}</div>
+          </section>
+        ) : null}
+
+        {visibleProjects.length > 0 || !searching ? (
+          <section className="sidebar-section" aria-label="專案">
+            <SectionHead label="專案" open={projectsOpen} onToggle={() => toggleSection(PROJECTS_SECTION)}>
+              <IconButton icon="plus" label="加入專案" className="icon-btn-sm" onClick={props.onAddProject} />
+            </SectionHead>
+            {projectsOpen ? (
+              <div className="task-list">
+                {props.repos.length === 0 ? (
+                  <p className="empty-list">還沒有專案</p>
+                ) : (
+                  visibleProjects.map(projectBlock)
+                )}
               </div>
-            )}
-            {nothingYet ? (
-              <p className="empty-list">還沒有任何工作</p>
-            ) : items.length === 0 ? (
-              <p className="empty-list">沒有符合的項目</p>
-            ) : (
-              items.map(itemRow)
-            )}
-          </div>
-        )}
+            ) : null}
+          </section>
+        ) : null}
+
+        <section className="sidebar-section" aria-label="最近項目">
+          <SectionHead label="最近項目" open={recentOpen} onToggle={() => toggleSection(RECENT_SECTION)}>
+            <Menu
+              label="篩選"
+              triggerLabel="篩選"
+              triggerClassName={`icon-btn icon-btn-sm${filtering ? ' filter-on' : ''}`}
+              trigger={<Icon name="filter" size={14} />}
+              align="end"
+            >
+              <MenuGroup label="狀態">
+                {STATUS_FILTERS.map((status) => (
+                  <MenuItem
+                    key={status}
+                    role="menuitemradio"
+                    keepOpen
+                    checked={activeFilter.status === status}
+                    onSelect={() => setFilter({ ...activeFilter, status })}
+                  >
+                    {STATUS_FILTER_LABELS[status]}
+                  </MenuItem>
+                ))}
+              </MenuGroup>
+              {props.repos.length > 0 ? (
+                <MenuGroup label="專案">
+                  <MenuItem
+                    role="menuitemradio"
+                    keepOpen
+                    checked={activeFilter.repoId === null}
+                    onSelect={() => setFilter({ ...activeFilter, repoId: null })}
+                  >
+                    全部
+                  </MenuItem>
+                  {props.repos.map((repo) => (
+                    <MenuItem
+                      key={repo.id}
+                      role="menuitemradio"
+                      keepOpen
+                      checked={activeFilter.repoId === repo.id}
+                      onSelect={() => setFilter({ ...activeFilter, repoId: repo.id })}
+                    >
+                      {repoName(repo.path)}
+                    </MenuItem>
+                  ))}
+                </MenuGroup>
+              ) : null}
+            </Menu>
+            <IconButton icon="pencil" label="新對話" className="icon-btn-sm" onClick={props.onNewTask} />
+          </SectionHead>
+          {recentOpen ? (
+            <div className="task-list">
+              {nothingYet ? (
+                <p className="empty-list">還沒有任何工作</p>
+              ) : recent.length === 0 ? (
+                // Everything may simply be pinned, or its matches may be listed above: then there is nothing to say.
+                filtering || (searching && pinned.length === 0 && visibleProjects.length === 0) ? (
+                  <p className="empty-list">沒有符合的項目</p>
+                ) : null
+              ) : (
+                recent.map((item) => itemRow(item, 'recent:'))
+              )}
+            </div>
+          ) : null}
+        </section>
       </div>
 
       <div className="sidebar-footer">

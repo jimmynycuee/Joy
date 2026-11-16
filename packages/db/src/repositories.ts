@@ -78,6 +78,8 @@ export interface StoredTask extends Task {
   workflow?: string
   /** Hidden from the default task list. */
   archived: boolean
+  /** When the owner pinned it to the top of the sidebar; absent when not pinned. */
+  pinnedAt?: string
 }
 
 export interface TaskEventRecord {
@@ -170,6 +172,7 @@ interface TaskRow {
   origin_conversation_id: string | null
   workflow: string | null
   archived: number
+  pinned_at: string | null
 }
 
 interface ReviewRow {
@@ -390,11 +393,16 @@ export function listTasks(db: Database, filter: { archived?: boolean } = {}): St
 export interface TaskUpdate {
   title?: string | undefined
   archived?: boolean | undefined
+  pinned?: boolean | undefined
   /** The owner rewrote the first message after going back to the first round. */
   prompt?: string | undefined
 }
 
-/** Renames or (un)archives a task, or replaces its prompt. Returns the updated task, or undefined when it does not exist. */
+/**
+ * Renames, (un)archives or (un)pins a task, or replaces its prompt. Returns the updated task, or undefined when it does
+ * not exist. Pinning leaves `updated_at` alone (the sidebar's order follows it); archiving drops the pin, since an
+ * archived task has no place in the sidebar to be pinned in.
+ */
 export function updateTask(db: Database, id: TaskId, update: TaskUpdate): StoredTask | undefined {
   const sets: string[] = []
   const values: (string | number)[] = []
@@ -406,6 +414,7 @@ export function updateTask(db: Database, id: TaskId, update: TaskUpdate): Stored
     sets.push('archived = ?')
     values.push(update.archived ? 1 : 0)
   }
+  if (update.archived === true) sets.push('pinned_at = NULL')
   if (update.prompt !== undefined) {
     sets.push('prompt = ?')
     values.push(update.prompt)
@@ -413,6 +422,15 @@ export function updateTask(db: Database, id: TaskId, update: TaskUpdate): Stored
   if (sets.length) {
     sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")
     db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...values, id)
+  }
+  // Pinning twice keeps the first time; an archived task cannot be pinned.
+  if (update.pinned === true && update.archived !== true) {
+    db.prepare(
+      `UPDATE tasks SET pinned_at = COALESCE(pinned_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+       WHERE id = ? AND archived = 0`,
+    ).run(id)
+  } else if (update.pinned === false) {
+    db.prepare('UPDATE tasks SET pinned_at = NULL WHERE id = ?').run(id)
   }
   // An archived task is over: what the owner allowed for it ends with it (finishing alone does not; a follow-up keeps
   // them).
@@ -874,6 +892,7 @@ function mapTask(row: TaskRow): StoredTask {
     ...(row.origin_conversation_id ? { originConversationId: row.origin_conversation_id } : {}),
     ...(row.workflow ? { workflow: row.workflow } : {}),
     archived: row.archived === 1,
+    ...(row.pinned_at ? { pinnedAt: row.pinned_at } : {}),
   }
 }
 

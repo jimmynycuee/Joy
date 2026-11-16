@@ -18,6 +18,8 @@ export interface ConversationRecord {
   summaryThrough?: number
   createdAt: string
   updatedAt?: string
+  /** When the owner pinned it to the top of the sidebar; absent when not pinned. */
+  pinnedAt?: string
 }
 
 export interface MessageRecord {
@@ -42,6 +44,7 @@ interface ConversationRow {
   summary_through: number | null
   created_at: string
   updated_at: string | null
+  pinned_at: string | null
 }
 
 interface MessageRow {
@@ -112,6 +115,19 @@ export function resetSessionsUsingMemory(db: Database, memoryId: string): number
       )
       .run(memoryId).changes,
   )
+}
+
+/** Pins or unpins a conversation without touching `updated_at`. Returns false when it does not exist. */
+export function setConversationPinned(db: Database, id: string, pinned: boolean): boolean {
+  const result = pinned
+    ? db
+        .prepare(
+          `UPDATE conversations SET pinned_at = COALESCE(pinned_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+           WHERE id = ?`,
+        )
+        .run(id)
+    : db.prepare('UPDATE conversations SET pinned_at = NULL WHERE id = ?').run(id)
+  return Number(result.changes) > 0
 }
 
 export function setConversationTitle(db: Database, id: string, title: string): void {
@@ -252,6 +268,7 @@ function mapConversation(row: ConversationRow): ConversationRecord {
     ...(row.summary_through !== null ? { summaryThrough: row.summary_through } : {}),
     createdAt: row.created_at,
     ...(row.updated_at ? { updatedAt: row.updated_at } : {}),
+    ...(row.pinned_at ? { pinnedAt: row.pinned_at } : {}),
   }
 }
 

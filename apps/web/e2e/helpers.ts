@@ -27,3 +27,13 @@ export async function openTaskMenu(page: Page, item?: string | RegExp): Promise<
   await page.getByRole('button', { name: '更多', exact: true }).click()
   if (item) await page.getByRole('menuitem', { name: item }).click()
 }
+
+/** Opens a sidebar row's ⋯ menu, then one of its rows (釘選, 取消釘選, 封存). */
+export async function rowMenu(page: Page, title: string, item: string): Promise<void> {
+  await page
+    .getByRole('navigation', { name: '主選單' })
+    .getByRole('button', { name: `更多：${title}` })
+    .first()
+    .click()
+  await page.getByRole('menuitem', { name: item }).click()
+}
