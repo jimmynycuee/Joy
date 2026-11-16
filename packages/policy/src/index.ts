@@ -11,8 +11,15 @@ export {
   isSafeWorktreeCommand,
 } from './classify.js'
 export type { ClassifiedAction, CodexApprovalInput } from './classify.js'
-export { analyzeShellCommand, defaultClassifyEnvironment } from './shell.js'
-export type { ClassifyEnvironment, ShellAnalysis, ShellVerdict } from './shell.js'
+export { analyzeShellCommand, analyzeShellConcerns, defaultClassifyEnvironment } from './shell.js'
+export type { ClassifyEnvironment, ShellAnalysis, ShellConcern, ShellVerdict } from './shell.js'
+export {
+  normalizeCommand,
+  TASK_ALLOW_KINDS,
+  taskAllowForClaudeTool,
+  taskAllowForCodexApproval,
+} from './task-allow.js'
+export type { TaskAllowJudgement, TaskAllowKind } from './task-allow.js'
 
 /** The baseline tier for each operation. High-impact operations require a person regardless of mode. */
 export const ACTION_TIERS = {

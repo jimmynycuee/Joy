@@ -16,6 +16,7 @@ import type {
 } from '@joy/core'
 import { EFFORTS, isPermissionMode, isProviderKind, PROVIDER_KINDS, TASK_MODES } from '@joy/core'
 import type { Database } from './database.js'
+import { clearTaskAllows } from './task-allows.js'
 
 /** The ids of the six project colours; the web UI owns the hex values. */
 export const REPO_COLORS = ['blue', 'green', 'purple', 'orange', 'pink', 'teal'] as const
@@ -407,6 +408,9 @@ export function updateTask(db: Database, id: TaskId, update: TaskUpdate): Stored
     sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")
     db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...values, id)
   }
+  // An archived task is over: what the owner allowed for it ends with it (finishing alone does not; a follow-up keeps
+  // them).
+  if (update.archived) clearTaskAllows(db, id)
   return getTask(db, id)
 }
 
