@@ -268,7 +268,8 @@ export async function initGitRepository(
   const found = await roots(options)
   const path = await openFolder(input, found)
   // A repository there would swallow the home folder or Joy's data: the folders themselves and everything above them.
-  if (isInside(found.home, path) || isInside(found.joyHome, path))
+  // The top of any drive too: on Windows `/` means the current drive, which need not hold the home folder.
+  if (dirname(path) === path || isInside(found.home, path) || isInside(found.joyHome, path))
     throw new FolderError(
       400,
       'Choose a project folder, not the home folder, Joy data or a folder that holds them',

@@ -11,8 +11,9 @@ let joyHome: string
 let options: { home: string; joyHome: string }
 
 beforeEach(() => {
-  // realpath: the temp folder on macOS sits behind a /var -> /private/var link.
-  root = realpathSync(mkdtempSync(join(tmpdir(), 'joy-folders-')))
+  // realpath: the temp folder on macOS sits behind a /var -> /private/var link; .native also expands Windows
+  // short names (RUNNER~1), as the server's realpath does.
+  root = realpathSync.native(mkdtempSync(join(tmpdir(), 'joy-folders-')))
   home = join(root, 'home')
   joyHome = join(home, '.joy')
   mkdirSync(joyHome, { recursive: true })
@@ -28,6 +29,8 @@ const dir = (...parts: string[]) => {
   return path
 }
 const names = async (path?: string) => (await listFolders(path, options)).folders.map((folder) => folder.name)
+/** git config files treat `\\` as an escape: write Windows paths with `/`. */
+const gitPath = (path: string) => path.replace(/\\/g, '/')
 const failure = async (work: Promise<unknown>) => {
   try {
     await work
@@ -161,7 +164,10 @@ describe('listFolders', () => {
     expect((await failure(listFolders(`${home}/a\0b`, options))).status).toBe(400)
     expect((await failure(listFolders('x'.repeat(5000), options))).status).toBe(400)
     expect((await failure(listFolders(join(home, 'a-file'), options))).status).toBe(400)
-    expect((await failure(listFolders(join(home, 'a-file', 'inside'), options))).status).toBe(400)
+    // Windows reports a path under a file as missing, not as "not a folder".
+    expect((await failure(listFolders(join(home, 'a-file', 'inside'), options))).status).toBe(
+      process.platform === 'win32' ? 404 : 400,
+    )
     expect((await failure(listFolders(join(home, 'nope'), options))).status).toBe(404)
   })
 
@@ -234,7 +240,7 @@ describe('initGitRepository', () => {
     }
     writeFileSync(
       join(userHome, '.gitconfig'),
-      `[commit]\n\tgpgsign = true\n[core]\n\thooksPath = ${hooksDir}\n[init]\n\ttemplateDir = ${template}\n`,
+      `[commit]\n\tgpgsign = true\n[core]\n\thooksPath = ${gitPath(hooksDir)}\n[init]\n\ttemplateDir = ${gitPath(template)}\n`,
     )
     process.env.HOME = userHome
     process.env.XDG_CONFIG_HOME = join(userHome, '.config')

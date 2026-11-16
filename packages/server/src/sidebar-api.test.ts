@@ -39,7 +39,7 @@ interface Body {
 }
 
 async function setup() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'joy-sidebar-api-')))
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'joy-sidebar-api-')))
   dirs.push(root)
   const home = join(root, 'joy-data')
   const browseHome = join(root, 'home')
