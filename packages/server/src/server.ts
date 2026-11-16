@@ -140,7 +140,8 @@ import type {
 import { ApprovalBroker } from './approvals.js'
 import type { TaskAllowOffer } from './approvals.js'
 import { runAssistantTurn, toApiTools } from './assistant.js'
-import { switchHandoffPrompt } from './handoff.js'
+import { rewindHandoffPrompt, switchHandoffPrompt } from './handoff.js'
+import { TASK_ROUND, effectiveEvents, pendingMessages, rewindPoints } from './turns.js'
 import { ExternalMcpServers, classifyExternalTool } from './external-mcp.js'
 import { sendPush, vapidKeys } from './push.js'
 import type { PushMessage } from './push.js'
@@ -187,6 +188,7 @@ import { TelegramChannel } from '@joy/channels'
 import type { WorktreeCleanupOptions, WorktreeInfo } from '@joy/executor'
 import {
   CheckpointCommitsError,
+  CheckpointRestoreIncompleteError,
   UnpushedCommitsError,
   WorktreeExecutor,
   checkpointRef,
@@ -472,6 +474,11 @@ const messageInputSchema = z
      */
     interrupt: z.boolean().optional(),
     /**
+     * true: a running task keeps the message in its queue until the agent's current turn ends (the owner can still edit,
+     * reorder or delete it there), instead of handing it to the agent at once.
+     */
+    queue: z.boolean().optional(),
+    /**
      * From the next run on: other models, single ↔ review loop (never compete) and another permission mode. A running
      * task applies them once its current run ends, with the message.
      */
@@ -482,6 +489,19 @@ const messageInputSchema = z
   .refine((input) => input.text !== '' || (input.attachments?.length ?? 0) > 0, {
     message: 'Send text or attachments',
   })
+  .refine((input) => !(input.queue && input.interrupt), {
+    message: 'A message cannot both queue and interrupt',
+  })
+const queuedEditSchema = z.strictObject({ text: z.string().trim().min(1).max(20_000) })
+const queuedOrderSchema = z.strictObject({ ids: z.array(z.string().min(1).max(64)).min(1).max(20) })
+const rewindSchema = z.strictObject({
+  /** `task` for the first round, else an owner message that started a round. */
+  messageId: z.string().min(1).max(64),
+  /** The round's message as the owner edited it; it is sent again from the restored worktree. */
+  text: z.string().trim().min(1).max(20_000),
+  /** Go ahead although the task has a pull request or the restore drops commits on its branch. */
+  confirm: z.boolean().optional(),
+})
 /** The assistant chat takes words only (attachments are for tasks); `interrupt` is accepted and ignored as before. */
 const conversationMessageSchema = z.strictObject({
   text: z.string().trim().min(1).max(20_000),
@@ -1791,7 +1811,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           ...(record.messageId ? { messageId: record.messageId } : {}),
           ...(record.disabled ? { disabled: true } : {}),
         })),
-        queuedMessages: (queuedMessages.get(task.id) ?? []).map(({ id, text }) => ({ id, text })),
+        queuedMessages: queuedView(task.id),
+        // Rounds the owner can go back to (none while it runs or for a compete task).
+        rewindPoints: rewindView(task, events),
         // Models, mode or permission mode a queued message changes once the current run ends.
         pendingSettings: queuedSettings(task.id) ?? null,
         // Whether a message sent now reaches the running agent at once (else it waits for the agent's next turn).
@@ -1940,9 +1962,8 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const messagesMatch = /^\/api\/tasks\/([^/]+)\/messages$/.exec(url.pathname)
     if (messagesMatch && method === 'POST') {
       assertJsonContentType(req)
-      const { text, interrupt, attachments, roleOverrides, mode, permissionMode } = messageInputSchema.parse(
-        await readJson(req),
-      )
+      const { text, interrupt, queue, attachments, roleOverrides, mode, permissionMode } =
+        messageInputSchema.parse(await readJson(req))
       const task = requireTask(decodePathSegment(messagesMatch[1] ?? ''))
       const requested: TaskSettingsChange | undefined =
         roleOverrides || mode || permissionMode
@@ -1956,11 +1977,46 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         res,
         202,
         await exclusive(task.id, () =>
-          postTaskMessage(task, text, interrupt ?? false, attachments ?? [], requested),
+          postTaskMessage(
+            task,
+            text,
+            interrupt ? 'interrupt' : queue ? 'queue' : 'auto',
+            attachments ?? [],
+            requested,
+          ),
         ),
       )
       // A message queued while the run was ending (the run's own check may have found the task busy with this one).
       void continueWithQueuedMessages(task.id)
+      return
+    }
+    const queuedMatch = /^\/api\/tasks\/([^/]+)\/queued(?:\/([^/]+))?$/.exec(url.pathname)
+    if (queuedMatch && (method === 'PATCH' || method === 'DELETE' || method === 'PUT')) {
+      const task = requireTask(decodePathSegment(queuedMatch[1] ?? ''))
+      const messageId = queuedMatch[2] === undefined ? undefined : decodePathSegment(queuedMatch[2])
+      if (method === 'PUT' && messageId === undefined) {
+        assertJsonContentType(req)
+        const { ids } = queuedOrderSchema.parse(await readJson(req))
+        json(res, 200, { queuedMessages: reorderQueuedMessages(task.id, ids) })
+        return
+      }
+      if (method === 'PATCH' && messageId !== undefined) {
+        assertJsonContentType(req)
+        const { text } = queuedEditSchema.parse(await readJson(req))
+        json(res, 200, { queuedMessages: editQueuedMessage(task.id, messageId, text) })
+        return
+      }
+      if (method === 'DELETE' && messageId !== undefined) {
+        json(res, 200, { queuedMessages: deleteQueuedMessage(task.id, messageId) })
+        return
+      }
+    }
+    const rewindMatch = /^\/api\/tasks\/([^/]+)\/rewind$/.exec(url.pathname)
+    if (rewindMatch && method === 'POST') {
+      assertJsonContentType(req)
+      const input = rewindSchema.parse(await readJson(req))
+      const task = requireTask(decodePathSegment(rewindMatch[1] ?? ''))
+      json(res, 202, await exclusive(task.id, () => rewindTask(task, input)))
       return
     }
     const planMatch = /^\/api\/tasks\/([^/]+)\/plan\/(approve|reject)$/.exec(url.pathname)
@@ -2840,8 +2896,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   /** The owner's messages on a task, oldest first, as recorded in its events. */
   function ownerMessages(
-    events: TaskEventRecord[],
+    allEvents: TaskEventRecord[],
   ): Array<{ text: string; files: Array<{ id: string; name: string }> }> {
+    // Rounds the owner went back over are not part of the task any more; edited messages count as edited.
+    const events = effectiveEvents(allEvents)
     const idsOf = (type: string) =>
       new Set(
         events
@@ -2942,7 +3000,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   /** Plan-first tasks write no code until the owner approved a plan. */
   function planApproved(task: StoredTask, events = listTaskEvents(db, task.id)): boolean {
-    return !task.planFirst || events.some((event) => event.type === 'plan.approved')
+    return !task.planFirst || effectiveEvents(events).some((event) => event.type === 'plan.approved')
   }
 
   /** The plan waiting for the owner, when the task stopped after planning and is not busy. */
@@ -2952,7 +3010,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   ): { plan: string; review?: ReviewVerdict } | undefined {
     if (running.has(task.id) || ACTIVE_TASK_STATUSES.has(task.status)) return undefined
     if (planApproved(task, events)) return undefined
-    const last = events.filter((event) => PLAN_EVENTS.has(event.type)).at(-1)
+    const last = effectiveEvents(events)
+      .filter((event) => PLAN_EVENTS.has(event.type))
+      .at(-1)
     if (last?.type !== 'plan.awaiting_approval') return undefined
     const payload = last.payload as { plan?: unknown; review?: ReviewVerdict }
     return {
@@ -3110,7 +3170,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           from,
           to: implementer,
           task: agentPrompt(updated),
-          events: listTaskEvents(db, task.id),
+          events: effectiveEvents(listTaskEvents(db, task.id)),
           diff,
           next: prompt,
           skipMessageIds: new Set(deliveredIds),
@@ -3131,6 +3191,60 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         : {}),
     })
     return { task: updated, state: next, prompt: nextPrompt }
+  }
+
+  /** The queue as the page shows it: words, files and whether the message changes settings. */
+  function queuedView(taskId: TaskId) {
+    return (queuedMessages.get(taskId) ?? []).map(({ id, text, attachments, settings }) => ({
+      id,
+      text,
+      ...(attachments?.length ? { attachments: attachments.length } : {}),
+      ...(settings ? { settings: true } : {}),
+    }))
+  }
+
+  function queuedMessage(taskId: TaskId, messageId: string): QueuedMessage {
+    const message = queuedMessages.get(taskId)?.find((candidate) => candidate.id === messageId)
+    // Gone from the queue: the agent already got it, or the task dropped it.
+    if (!message) throw new HttpError(409, 'This message is no longer waiting; the agent may already have it')
+    return message
+  }
+
+  /** The owner rewrites a message still waiting in the queue. */
+  function editQueuedMessage(taskId: TaskId, messageId: string, text: string) {
+    const message = queuedMessage(taskId, messageId)
+    if (message.text !== text) {
+      message.text = text
+      publishTaskLevel(taskId, 'user.message.edited', { id: messageId, text })
+    }
+    return queuedView(taskId)
+  }
+
+  /** The owner takes a waiting message back; the agent never gets it. */
+  function deleteQueuedMessage(taskId: TaskId, messageId: string) {
+    queuedMessage(taskId, messageId)
+    const rest = (queuedMessages.get(taskId) ?? []).filter((message) => message.id !== messageId)
+    if (rest.length) queuedMessages.set(taskId, rest)
+    else {
+      queuedMessages.delete(taskId)
+      heldTasks.delete(taskId)
+    }
+    publishTaskLevel(taskId, 'user.message.discarded', { ids: [messageId], reason: 'owner' })
+    return queuedView(taskId)
+  }
+
+  /** The owner puts the waiting messages in another order; `ids` must name each of them once. */
+  function reorderQueuedMessages(taskId: TaskId, ids: readonly string[]) {
+    const queue = queuedMessages.get(taskId) ?? []
+    const byId = new Map(queue.map((message) => [message.id, message]))
+    if (new Set(ids).size !== ids.length || ids.length !== queue.length || ids.some((id) => !byId.has(id)))
+      throw new HttpError(409, 'The queue changed meanwhile; reload and try again')
+    queuedMessages.set(
+      taskId,
+      ids.map((id) => byId.get(id) as QueuedMessage),
+    )
+    publishTaskLevel(taskId, 'user.message.reordered', { ids })
+    return queuedView(taskId)
   }
 
   /** The task's worktree is gone: its queued and held messages can never be delivered. */
@@ -3210,10 +3324,12 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
   async function postTaskMessage(
     task: StoredTask,
     text: string,
-    interrupt = false,
+    /** `auto`: hand it to the running agent when it can take it, else queue; `queue`: wait for the turn to end. */
+    how: 'auto' | 'queue' | 'interrupt' = 'auto',
     attachmentIds: readonly string[] = [],
     requested?: TaskSettingsChange,
   ) {
+    const interrupt = how === 'interrupt'
     if (task.mode === 'compete')
       throw new HttpError(409, 'Compete tasks cannot take messages; choose an attempt or start a new task')
     const id = randomUUID()
@@ -3260,6 +3376,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         provenance: 'user',
         delivery,
         ...(files.length ? { attachments: files.map(attachmentInfo) } : {}),
+        // Recorded so a queued message keeps its settings across a restart.
+        ...(settings ? { settings } : {}),
+        // A waiting message this version can rebuild after a restart; older versions kept the queue in memory only.
+        ...(PENDING_DELIVERIES.has(delivery) ? { persisted: true } : {}),
       })
     }
     if (running.has(task.id) || ACTIVE_TASK_STATUSES.has(task.status)) {
@@ -3275,7 +3395,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       // out, the new one follows them through the lane (and is queued there if the run cannot take it any more).
       // A message that changes the models, mode or permission mode is never steered or used to interrupt: it waits
       // for the run to end, and the next run starts with the new settings.
-      if (!settings && !interrupt && queue.length === 0 && (canSteer(task) || steerLanes.has(task.id))) {
+      if (!settings && how === 'auto' && queue.length === 0 && (canSteer(task) || steerLanes.has(task.id))) {
         linkFiles()
         userMessage('steer')
         enqueueSteer(task.id, message)
@@ -3573,13 +3693,23 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     ws: Workspace,
     round: number,
     label: string,
+    /** Taken as a run starts, before the agent works: the point the owner can go back to (rewind). */
+    turnStart = false,
   ): Promise<number | undefined> {
     if (!checkpointer || task.mode === 'compete') return undefined
     const n = Math.max(0, ...listCheckpoints(task).map((checkpoint) => checkpoint.n)) + 1
     try {
       const ref = checkpointRef(task.id, n)
       const { commit, head } = await checkpointer.checkpoint(ws, ref, `Joy checkpoint ${n}: ${label}`)
-      publish(task.id, attempt.id, 'checkpoint.created', { n, ref, commit, head, round, label })
+      publish(task.id, attempt.id, 'checkpoint.created', {
+        n,
+        ref,
+        commit,
+        head,
+        round,
+        label,
+        ...(turnStart ? { turnStart: true } : {}),
+      })
       return n
     } catch (error) {
       log.warn(
@@ -3637,9 +3767,205 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       })
       return { restored: n, savedAs: saved, discardedCommits: restored.discardedCommits }
     } catch (error) {
-      if (error instanceof CheckpointCommitsError)
-        throw new HttpError(409, `${error.message} (send {"confirm": true})`)
-      throw new HttpError(409, redactor.redact(error instanceof Error ? error.message : 'Restore failed'))
+      throw restoreError(task, attempt, n, saved, error)
+    }
+  }
+
+  /**
+   * What the owner hears when a restore failed. Before the worktree was touched it is a plain refusal; half way through,
+   * the thread says so and the answer names the checkpoint saved just before, which puts everything back.
+   */
+  function restoreError(task: StoredTask, attempt: AttemptRecord, n: number, saved: number, error: unknown) {
+    if (error instanceof CheckpointCommitsError)
+      return new HttpError(409, `${error.message} (send {"confirm": true})`)
+    const message = redactor.redact(error instanceof Error ? error.message : 'Restore failed')
+    if (!(error instanceof CheckpointRestoreIncompleteError)) return new HttpError(409, message)
+    publish(task.id, attempt.id, 'checkpoint.restore_failed', { n, savedAs: saved, message })
+    return new HttpError(
+      500,
+      `${message}. The worktree may be half restored; restore checkpoint ${saved} to get back the state from before`,
+    )
+  }
+
+  /** The rounds the owner can go back to, with whether their worktree is still there. */
+  function rewindView(task: StoredTask, events: TaskEventRecord[]) {
+    if (task.mode === 'compete' || !checkpointer) return []
+    const available = new Map(listCheckpoints(task).map((checkpoint) => [checkpoint.n, checkpoint.available]))
+    return rewindPoints(events)
+      .filter((point) => available.get(point.checkpoint))
+      .map(({ messageId, ids, checkpoint }) => ({ messageId, ids, checkpoint }))
+  }
+
+  /**
+   * Goes back to an earlier round: the worktree returns to the checkpoint taken when that round started (after the
+   * current state is saved as a checkpoint), the rounds after it are marked as discarded (nothing is deleted), and the
+   * round's message, as the owner edited it, starts a new session. The old session remembers what was thrown away, so
+   * it is never resumed; the new one gets the conversation up to that round.
+   */
+  async function rewindTask(
+    task: StoredTask,
+    input: { messageId: string; text: string; confirm?: boolean | undefined },
+  ) {
+    if (task.mode === 'compete')
+      throw new HttpError(409, 'Compete tasks cannot go back to an earlier round; start a new task')
+    if (running.has(task.id) || ACTIVE_TASK_STATUSES.has(task.status))
+      throw new HttpError(409, `Task is ${task.status}; stop it before going back to an earlier round`)
+    if (!checkpointer) throw new HttpError(409, 'Checkpoints are not available with this executor')
+    const events = listTaskEvents(db, task.id)
+    const point = rewindPoints(events).find(
+      (candidate) => candidate.messageId === input.messageId || candidate.ids.includes(input.messageId),
+    )
+    if (!point)
+      throw new HttpError(
+        404,
+        'That round cannot be gone back to: Joy kept no checkpoint from when it started',
+      )
+    const checkpoint = listCheckpoints(task).find((candidate) => candidate.n === point.checkpoint)
+    if (!checkpoint?.available || !checkpoint.attemptId)
+      throw new HttpError(409, 'The worktree of that round was already removed')
+    const live = effectiveEvents(events)
+    if (!input.confirm && live.some((event) => event.type === 'publish.done'))
+      throw new HttpError(
+        409,
+        'This task has a pull request; going back changes the branch here only, and the pull request keeps what was pushed until you publish again (send {"confirm": true})',
+      )
+    const repo = getRepo(db, task.repoId)
+    const latest = latestAttempt(db, task.id)
+    const source = getAttempt(db, checkpoint.attemptId)
+    if (!repo || !latest?.worktreePath || !latest.branch || !latest.baseCommit || !source?.worktreePath)
+      throw new HttpError(409, 'This task has no worktree to go back in')
+    if (removedWorktrees(task.id).has(latest.id))
+      throw new HttpError(409, 'This worktree was already removed (published or discarded); start a new task')
+    if (!samePath(latest.worktreePath, source.worktreePath))
+      throw new HttpError(409, 'That round ran in another worktree; start a new task')
+    if (samePath(latest.worktreePath, repo.path))
+      throw new HttpError(409, 'Refusing to restore into the repository main checkout')
+    // The new session uses the task's implementer as it is set now; checked before anything changes.
+    const config = await configStore.get()
+    const roles = config.roles as RoleConfig
+    const implementer = resolveRole('implementer', roles, task.roleOverrides)
+    const disallowed = findDisallowedRoleProviders(
+      selectActiveRoles(task.mode, roles, task.roleOverrides, implementer),
+      repo.allowedProviders,
+    )[0]
+    if (disallowed) throw new HttpError(422, describeDisallowedRoleProvider(disallowed))
+    if (!providers[implementer.provider]?.capabilities.codeEdit)
+      throw new HttpError(422, `${implementer.provider} cannot edit code, so it cannot be the implementer`)
+    const ws: Workspace = {
+      repo,
+      taskId: task.id,
+      attemptId: latest.id,
+      path: latest.worktreePath,
+      branch: latest.branch,
+      baseCommit: latest.baseCommit,
+    }
+    // Nothing is lost: the current state becomes a checkpoint the owner can restore again.
+    const saved = await createCheckpoint(
+      task,
+      latest,
+      ws,
+      checkpoint.round,
+      `before restoring checkpoint ${checkpoint.n}`,
+    )
+    if (saved === undefined) throw new HttpError(500, 'Could not save the current state before going back')
+    let restored: { commit: string; discardedCommits: number }
+    try {
+      // Checks the checkpoint ref and the commits it would drop before it touches a file.
+      restored = await checkpointer.restoreCheckpoint(ws, checkpoint.ref, {
+        confirmDiscardCommits: input.confirm ?? false,
+        expectedCommit: checkpoint.commit,
+      })
+    } catch (error) {
+      throw restoreError(task, latest, checkpoint.n, saved, error)
+    }
+    const diff = await executor.diff(ws)
+    const attempt = createAttempt(db, {
+      id: randomUUID() as AttemptId,
+      taskId: task.id,
+      provider: implementer.provider,
+      model: implementer.model,
+      status: 'preparing',
+    })
+    updateAttempt(db, attempt.id, {
+      worktreePath: ws.path,
+      branch: ws.branch,
+      baseCommit: ws.baseCommit,
+      diffStats: summarizeDiff(diff),
+    })
+    updateAttempt(db, latest.id, { diffStats: summarizeDiff(diff) })
+    const discardedIds = [
+      ...new Set([
+        ...point.ids,
+        ...live
+          .filter((event) => event.type === 'user.message' && event.seq >= point.fromSeq)
+          .map((event) => (event.payload as { id?: unknown }).id)
+          .filter((id): id is string => typeof id === 'string'),
+        ...queuedMessageIds(task.id),
+      ]),
+    ]
+    queuedMessages.delete(task.id)
+    heldTasks.delete(task.id)
+    // The round's files go out again with its message (the first round's files stay on the task itself).
+    const files =
+      point.messageId === TASK_ROUND
+        ? []
+        : listTaskAttachments(db, task.id).filter(
+            (record) => !record.disabled && record.messageId && point.ids.includes(record.messageId),
+          )
+    publish(task.id, attempt.id, 'task.rewound', {
+      messageId: point.messageId,
+      fromSeq: point.fromSeq,
+      checkpoint: checkpoint.n,
+      savedAs: saved,
+      discardedIds,
+      discardedCommits: restored.discardedCommits,
+      ...(point.messageId === TASK_ROUND ? { previousPrompt: task.prompt } : {}),
+      diff,
+    })
+    if (getTask(db, task.id)?.archived) {
+      updateTask(db, task.id, { archived: false })
+      publishTaskLevel(task.id, 'task.updated', { archived: false })
+    }
+    const state: ResumeState = {
+      attempt: getAttempt(db, attempt.id) ?? attempt,
+      workspace: { ...ws, attemptId: attempt.id },
+    }
+    if (point.messageId === TASK_ROUND) {
+      // The first round is the task's own prompt: the rewritten one replaces it (the old one is in the event).
+      const updated = updateTask(db, task.id, { prompt: input.text }) ?? task
+      publishTaskLevel(task.id, 'task.updated', { prompt: input.text })
+      setTaskStatus(db, task.id, 'queued')
+      scheduleTask({ ...updated, status: 'queued' }, state)
+      return {
+        task: getTask(db, task.id),
+        rewound: { checkpoint: checkpoint.n, savedAs: saved, discardedIds },
+      }
+    }
+    const kind: ContinuationKind = planApproved(task) ? 'follow_up' : 'replan'
+    const id = randomUUID()
+    publishTaskLevel(task.id, 'user.message', {
+      id,
+      text: input.text,
+      provenance: 'user',
+      delivery: kind,
+      rewoundFrom: point.messageId,
+      ...(files.length ? { attachments: files.map(attachmentInfo) } : {}),
+    })
+    const message = attachmentStore.withMarkers(
+      input.text,
+      files.map((record) => record.id),
+    )
+    const prompt = rewindHandoffPrompt({
+      task: agentPrompt(task),
+      events: effectiveEvents(listTaskEvents(db, task.id)),
+      diff,
+      next: kind === 'replan' ? revisePlanPrompt([message]) : followUpPrompt([message]),
+      skipMessageIds: new Set([id]),
+    })
+    return {
+      task: continueTask(task, state, kind, prompt),
+      message: { id, delivery: kind },
+      rewound: { checkpoint: checkpoint.n, savedAs: saved, discardedIds },
     }
   }
 
@@ -4351,7 +4677,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           continue
         }
         recordLoopEvent(attempt, implementer, reviewer, event)
-        if (event.type === 'workspace') workspace = event.workspace
+        if (event.type === 'workspace') {
+          workspace = event.workspace
+          await createCheckpoint(task, attempt, workspace, 0, 'before turn', true)
+        }
         if (event.type === 'result') {
           setImplementerTurn(task.id, false)
           finished = true
@@ -5977,6 +6306,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       baseCommit: workspace.baseCommit,
     })
     publish(task.id, attempt.id, 'workspace', workspace)
+    await createCheckpoint(task, attempt, workspace, 0, 'before turn', true)
     const config = await configStore.get()
     const toolHub =
       provider.kind === 'claude-cli' || provider.kind === 'codex-cli'
@@ -6093,6 +6423,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       baseCommit: workspace.baseCommit,
     })
     publish(task.id, attempt.id, 'workspace', workspace)
+    await createCheckpoint(task, attempt, workspace, 0, 'before turn', true)
     publish(task.id, attempt.id, 'phase', {
       type: 'phase',
       phase: 'planning',
@@ -6173,6 +6504,44 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         attempt,
         'Joy restarted before the merge finished. You can choose one of the attempts or merge again.',
       )
+  }
+  // Messages the owner queued survive a restart. They wait for the owner to continue the task (or send another
+  // message): nothing starts a run on its own when Joy starts. A cancel by the owner already withdrew its messages, so
+  // a cancelled task with messages left was stopped by Joy shutting down.
+  for (const task of listTasks(db)) {
+    if (task.mode === 'compete') continue
+    const events = listTaskEvents(db, task.id)
+    const waiting = pendingMessages(events)
+    if (!waiting.length) continue
+    // A finished or archived task has nothing waiting for it: whatever is left there was lost, so the thread stops
+    // showing it as waiting.
+    if (task.archived || task.status === 'done' || task.status === 'review_ready') {
+      publishTaskLevel(task.id, 'user.message.discarded', {
+        ids: waiting.map((message) => message.id),
+        reason: 'Joy restarted after the task had finished; the message was never sent',
+      })
+      continue
+    }
+    queuedMessages.set(
+      task.id,
+      waiting.map((message) => ({
+        id: message.id,
+        text: message.text,
+        ...(message.attachments ? { attachments: message.attachments } : {}),
+        // Written by this server with the message (`settingsChange`), so it has that shape.
+        ...(message.settings ? { settings: message.settings as TaskSettingsChange } : {}),
+      })),
+    )
+    const announced = new Set(
+      events
+        .filter((event) => event.type === 'user.message.held')
+        .flatMap((event) => {
+          const ids = (event.payload as { ids?: unknown }).ids
+          return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : []
+        }),
+    )
+    heldTasks.set(task.id, { reason: 'Joy restarted', announced })
+    if (!ACTIVE_TASK_STATUSES.has(task.status)) announceHeldMessages(task.id)
   }
   // Tasks waiting for a quota reset keep their resume time in the event log.
   for (const task of listTasks(db)) {

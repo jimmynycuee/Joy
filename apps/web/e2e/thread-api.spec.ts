@@ -25,6 +25,7 @@ interface ThreadState {
   interruptible?: boolean
   pr?: { status: number; json: unknown }
   checkpoints?: unknown[]
+  rewindPoints?: unknown[]
   /** Answers a POST under /api/tasks/:id/; the default is 202 with the task. */
   post?: (path: string, body: unknown, route: Route) => Promise<boolean | undefined>
 }
@@ -57,7 +58,10 @@ async function mockThread(page: Page, state: ThreadState, calls: Call[]) {
     const request = route.request()
     const path = new URL(request.url()).pathname
     const method = request.method()
-    if (method === 'POST' && path.startsWith(`/api/tasks/${id}/`)) {
+    if (method !== 'GET' && method !== 'POST' && path.startsWith(`/api/tasks/${id}/`)) {
+      calls.push({ method, path, body: request.postData() ? (request.postDataJSON() as unknown) : undefined })
+      await route.fulfill({ json: { queuedMessages: state.queuedMessages ?? [] } })
+    } else if (method === 'POST' && path.startsWith(`/api/tasks/${id}/`)) {
       const body: unknown = request.postDataJSON()
       calls.push({ method, path, body })
       if ((await state.post?.(path, body, route)) === true) return
@@ -79,6 +83,7 @@ async function mockThread(page: Page, state: ThreadState, calls: Call[]) {
           usage: state.usage,
           pendingPlan: state.pendingPlan ?? null,
           queuedMessages: state.queuedMessages ?? [],
+          rewindPoints: state.rewindPoints ?? [],
           ...(state.steerable !== undefined ? { steerable: state.steerable } : {}),
           ...(state.interruptible !== undefined ? { interruptible: state.interruptible } : {}),
         },
@@ -152,9 +157,10 @@ test('a message to a running agent reaches it while it keeps working', async ({ 
   const composer = page.getByLabel('傳訊息給任務')
   await expect(composer).toHaveAttribute('placeholder', '傳訊息給 Joy')
   await composer.fill('Use the existing helper; why did you add a new one?')
-  await composer.press('Enter')
+  // Enter would queue it for the end of the turn; ⌘/Ctrl+Enter hands it to the working agent now.
+  await composer.press('Control+Enter')
 
-  // The web app does not ask to interrupt: the default hands the message to the working agent.
+  // The web app does not ask to interrupt: sending now hands the message to the working agent.
   await expect
     .poll(() => calls.map((call) => call.body))
     .toEqual([{ text: 'Use the existing helper; why did you add a new one?' }])
@@ -170,12 +176,15 @@ test('a message to a running agent reaches it while it keeps working', async ({ 
   await expect(page.getByRole('button', { name: '停止任務' })).toBeVisible()
 })
 
-test('a message during a review is queued until the next turn', async ({ page }) => {
+test('Enter queues a message for the end of the turn, listed above the box until the agent takes it', async ({
+  page,
+}) => {
   const state: ThreadState = {
     task: taskOf('running', 'queue-task'),
-    steerable: false,
+    steerable: true,
     events: [event('queue-task', 'started', {})],
   }
+  const calls: Call[] = []
   state.post = async (_path, body) => {
     const text = (body as { text: string }).text
     state.queuedMessages = [{ id: 'q1', text }]
@@ -183,7 +192,7 @@ test('a message during a review is queued until the next turn', async ({ page })
       event('queue-task', 'user.message', { id: 'q1', text, provenance: 'user', delivery: 'queued' }, 1),
     )
   }
-  await mockThread(page, state, [])
+  await mockThread(page, state, calls)
 
   await page.goto('/?task=queue-task')
   const composer = page.getByLabel('傳訊息給任務')
@@ -191,9 +200,14 @@ test('a message during a review is queued until the next turn', async ({ page })
   await composer.fill('Use the existing helper')
   await composer.press('Enter')
 
-  const bubble = page.locator('.user-column', { hasText: 'Use the existing helper' })
-  await expect(bubble.getByTestId('message-tag')).toHaveText('排隊中')
-  await expect(page.getByTestId('queued-messages')).toContainText('1 則訊息排隊中')
+  await expect
+    .poll(() => calls.map((call) => call.body))
+    .toEqual([{ text: 'Use the existing helper', queue: true }])
+  const list = page.getByTestId('queued-list')
+  await expect(list).toContainText('Use the existing helper')
+  // While it waits it is in the list, not in the thread.
+  await expect(page.locator('.user-column', { hasText: 'Use the existing helper' })).toHaveCount(0)
+  await expect(page.getByTestId('queued-messages')).toHaveCount(0)
 
   // The agent picks it up: the tag goes away (the details refetch brings the delivered event and an empty queue).
   state.queuedMessages = []
@@ -201,7 +215,131 @@ test('a message during a review is queued until the next turn', async ({ page })
   await page.reload()
   const delivered = page.locator('.user-column', { hasText: 'Use the existing helper' })
   await expect(delivered.getByTestId('message-tag')).toHaveText('已交給 agent')
-  await expect(page.getByTestId('queued-messages')).toHaveCount(0)
+  await expect(page.getByTestId('queued-list')).toHaveCount(0)
+})
+
+test('the owner rewrites, moves and drops queued messages before the agent gets them', async ({ page }) => {
+  const id = 'reorder-task'
+  const state: ThreadState = {
+    task: taskOf('running', id),
+    events: [
+      event(id, 'started', {}),
+      event(id, 'user.message', { id: 'a', text: 'first idea', delivery: 'queued' }, 5),
+      event(id, 'user.message', { id: 'b', text: 'second idea', delivery: 'queued' }, 4),
+    ],
+    queuedMessages: [
+      { id: 'a', text: 'first idea' },
+      { id: 'b', text: 'second idea' },
+    ],
+  }
+  const calls: Call[] = []
+  await mockThread(page, state, calls)
+  await page.goto(`/?task=${id}`)
+  const items = page.getByTestId('queued-item')
+  await expect(items).toHaveCount(2)
+  await expect(items.first().getByRole('button', { name: '往前' })).toBeDisabled()
+
+  await items.nth(1).getByRole('button', { name: '往前' }).click()
+  await expect
+    .poll(() => calls.map((call) => [call.method, call.path, call.body]))
+    .toEqual([['PUT', `/api/tasks/${id}/queued`, { ids: ['b', 'a'] }]])
+
+  await items.first().getByRole('button', { name: '修改' }).click()
+  const edit = page.getByLabel('修改排隊中的訊息')
+  await expect(edit).toHaveValue('first idea')
+  await edit.fill('first idea, smaller')
+  await edit.press('Enter')
+  await expect
+    .poll(() => calls.at(-1))
+    .toEqual({ method: 'PATCH', path: `/api/tasks/${id}/queued/a`, body: { text: 'first idea, smaller' } })
+
+  await items.nth(1).getByRole('button', { name: '刪除' }).click()
+  await expect.poll(() => calls.at(-1)).toMatchObject({ method: 'DELETE', path: `/api/tasks/${id}/queued/b` })
+})
+
+test('going back to an earlier round: edit the message, confirm the PR warning in the page, see the rest folded', async ({
+  page,
+}) => {
+  const id = 'rewind-task'
+  const state: ThreadState = {
+    task: taskOf('done', id, { mode: 'single' }),
+    events: [
+      event(id, 'started', {}, 50),
+      event(id, 'user.message', { id: 'm2', text: 'make it faster', delivery: 'follow_up' }, 40),
+      event(id, 'started', {}, 39),
+      event(id, 'agent', { role: 'implementer', event: { type: 'message', text: 'Added a cache.' } }, 30),
+    ],
+    rewindPoints: [
+      { messageId: 'task', ids: [], checkpoint: 1 },
+      { messageId: 'm2', ids: ['m2'], checkpoint: 3 },
+    ],
+  }
+  const calls: Call[] = []
+  state.post = async (path, body, route) => {
+    if (!path.endsWith('/rewind')) return undefined
+    if ((body as { confirm?: boolean }).confirm !== true) {
+      await route.fulfill({
+        status: 409,
+        json: {
+          error:
+            'This task has a pull request; going back changes the branch here only (send {"confirm": true})',
+        },
+      })
+      return true
+    }
+    const fromSeq = (state.events[1] as { seq: number }).seq
+    state.rewindPoints = [{ messageId: 'task', ids: [], checkpoint: 1 }]
+    state.events.push(
+      event(id, 'task.rewound', { messageId: 'm2', fromSeq, discardedIds: ['m2'] }, 2),
+      event(id, 'user.message', { id: 'm3', text: 'make it faster, no cache', delivery: 'follow_up' }, 1),
+    )
+    return undefined
+  }
+  page.on('dialog', (dialog) => {
+    throw new Error(`unexpected browser dialog: ${dialog.message()}`)
+  })
+  await mockThread(page, state, calls)
+  await page.goto(`/?task=${id}`)
+
+  const row = page.locator('.msg-row-user', { hasText: 'make it faster' })
+  await row.hover()
+  await row.getByRole('button', { name: '從這裡重做' }).click()
+  const editor = page.getByTestId('rewind-editor')
+  const box = editor.getByLabel('修改後重做')
+  await expect(box).toHaveValue('make it faster')
+  await box.fill('make it faster, no cache')
+  await editor.getByRole('button', { name: '重做' }).click()
+  await expect(editor.getByRole('alert')).toContainText('已經開了 PR')
+  await editor.getByRole('button', { name: '仍要重做' }).click()
+  await expect
+    .poll(() => calls.filter((call) => call.path.endsWith('/rewind')).map((call) => call.body))
+    .toEqual([
+      { messageId: 'm2', text: 'make it faster, no cache' },
+      { messageId: 'm2', text: 'make it faster, no cache', confirm: true },
+    ])
+  await page.reload()
+  const stream = page.getByTestId('event-stream')
+  await expect(stream.getByTestId('rewound-fold')).toContainText('已捨棄（1 則訊息）')
+  await expect(stream.getByText('Added a cache.')).toHaveCount(0)
+  await expect(stream.locator('.user-bubble', { hasText: 'make it faster, no cache' })).toBeVisible()
+  // The first round can still be gone back to; the discarded one cannot.
+  await expect(page.getByRole('button', { name: '從這裡重做' })).toHaveCount(1)
+})
+
+test('there is no going back while the task runs', async ({ page }) => {
+  const id = 'rewind-running'
+  await mockThread(
+    page,
+    {
+      task: taskOf('running', id, { mode: 'single' }),
+      events: [event(id, 'user.message', { id: 'm2', text: 'make it faster', delivery: 'follow_up' }, 40)],
+      rewindPoints: [{ messageId: 'm2', ids: ['m2'], checkpoint: 3 }],
+    },
+    [],
+  )
+  await page.goto(`/?task=${id}`)
+  await expect(page.locator('.user-bubble', { hasText: 'make it faster' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '從這裡重做' })).toHaveCount(0)
 })
 
 test('a busy task answers 409: a toast explains and the draft stays', async ({ page }) => {

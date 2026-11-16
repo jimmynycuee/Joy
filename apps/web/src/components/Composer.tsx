@@ -17,7 +17,7 @@ export interface ComposerAttachments {
 
 /**
  * The one message box: used for starting a task and for chatting with the assistant.
- * Enter sends, Shift+Enter adds a line. While an input method (注音, 拼音, 日文…) is composing, Enter belongs to it.
+ * Enter sends, Shift+Enter adds a line, ⌘/Ctrl+Enter sends now (`onSubmitNow`, when the box has that second way). While an input method (注音, 拼音, 日文…) is composing, Enter belongs to it.
  */
 export function Composer({
   className,
@@ -39,6 +39,8 @@ export function Composer({
   stopLabel = '停止',
   stopping = false,
   attachments,
+  onSubmitNow,
+  nowLabel = '立即送出',
 }: {
   className?: string
   value: string
@@ -65,6 +67,9 @@ export function Composer({
   stopLabel?: string
   stopping?: boolean
   attachments?: ComposerAttachments
+  /** A second way to send (⌘/Ctrl+Enter and a small button), e.g. straight to a working agent instead of queuing. */
+  onSubmitNow?: () => void | Promise<void>
+  nowLabel?: string
 }) {
   const ownRef = useRef<HTMLTextAreaElement | null>(null)
   const ref = textareaRef ?? ownRef
@@ -104,6 +109,10 @@ export function Composer({
     if (event.nativeEvent.isComposing || event.keyCode === 229) return
     event.preventDefault()
     if (busy || disabled || !canSend) return
+    if (onSubmitNow && (event.metaKey || event.ctrlKey)) {
+      void onSubmitNow()
+      return
+    }
     event.currentTarget.form?.requestSubmit()
   }
 
@@ -190,6 +199,18 @@ export function Composer({
         {bar}
         <span className="composer-spacer" />
         {trailing}
+        {onSubmitNow && canSend ? (
+          <button
+            type="button"
+            className="icon-btn send-now-btn"
+            aria-label={nowLabel}
+            title={`${nowLabel}（⌘/Ctrl+Enter）`}
+            disabled={busy || disabled}
+            onClick={() => void onSubmitNow()}
+          >
+            <Icon name="bolt" size={16} />
+          </button>
+        ) : null}
         {onStop && !hasContent && !attachments?.items.length ? (
           <button
             type="button"

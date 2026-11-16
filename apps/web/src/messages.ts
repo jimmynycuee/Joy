@@ -85,14 +85,12 @@ export function deliveryTag(state: DeliveryState): string | undefined {
 
 /** The line above the composer about messages the agent has not read yet, if any. */
 export function pendingMessagesNote(states: ReadonlyMap<string, DeliveryState>): string | undefined {
+  // Queued messages are listed above the composer, so they need no line of their own.
   const values = [...states.values()]
   const interrupting = values.filter((state) => state === 'interrupting').length
-  const queued = values.filter((state) => state === 'queued').length
   if (values.includes('held')) return HELD_MESSAGES_NOTE
   if (interrupting > 0) return '正在打斷 agent 目前這一步，停下來後會帶著你的訊息繼續'
   if (values.includes('steering')) return '正在把訊息交給 agent，它不會停下來'
-  if (queued > 0)
-    return `${queued} 則訊息排隊中，agent 下一次動手時會帶給它（審查、檢查與等待核准時不能即時補充）`
   return undefined
 }
 
@@ -124,6 +122,9 @@ export function followUpState(input: { mode: string; worktreeRemoved: boolean })
 export function ownerActionError(status: number | undefined, message: string, fallback: string): string {
   if (status === 404) return '找不到這個項目，可能已經被移除'
   if (status === 429) return '排隊中的訊息太多了，等 agent 讀完再送'
+  const halfRestored = /restore checkpoint (\d+) to get back/.exec(message)
+  if (halfRestored)
+    return `還原到一半失敗，工作副本可能只還原了一部分；還原檢查點 ${halfRestored[1]} 可以回到之前的狀態`
   if (status === 409) {
     if (/Another action on this task/i.test(message)) return '這個任務正在處理另一個動作，請稍後再送'
     if (/worktree was already removed/i.test(message)) return '工作副本已經移除，不能再接續；請開一個新任務'

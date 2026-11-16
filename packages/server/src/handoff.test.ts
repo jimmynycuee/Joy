@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { conversationTurns, formatTurns, switchHandoffPrompt } from './handoff.js'
+import { conversationTurns, formatTurns, rewindHandoffPrompt, switchHandoffPrompt } from './handoff.js'
 import type { HandoffEvent } from './handoff.js'
 
 const agent = (role: string, round: number, event: unknown): HandoffEvent => ({
@@ -124,5 +124,28 @@ describe('switchHandoffPrompt', () => {
     })
     expect(long).toContain('… (diff truncated)')
     expect(long.length).toBeLessThan(21_000)
+  })
+})
+
+describe('rewindHandoffPrompt', () => {
+  it('tells a new session that the owner went back, with the conversation up to there and the restored diff', () => {
+    const prompt = rewindHandoffPrompt({
+      task: 'Fix add()',
+      events: [
+        { type: 'user.message', payload: { id: 'old', text: 'earlier note' } },
+        agent('implementer', 1, { type: 'done', finalMessage: 'Fixed it.' }),
+        { type: 'user.message', payload: { id: 'new', text: 'try again' } },
+      ],
+      diff: { files: [{ path: 'add.js' }], patch: '+turn 1\n' },
+      next: 'FOLLOW UP: try again',
+      skipMessageIds: new Set(['new']),
+    })
+    expect(prompt).toContain('went back to an earlier point')
+    expect(prompt).toContain('Task:\nFix add()')
+    expect(prompt).toContain('Owner: earlier note')
+    expect(prompt).toContain('Previous agent: Fixed it.')
+    expect(prompt).not.toContain('Owner: try again')
+    expect(prompt).toContain('files: add.js')
+    expect(prompt.endsWith('FOLLOW UP: try again')).toBe(true)
   })
 })

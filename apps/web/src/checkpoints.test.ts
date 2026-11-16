@@ -36,6 +36,7 @@ describe('mapCheckpoints', () => {
 describe('checkpointLabel', () => {
   it('translates the labels the server writes and keeps unknown ones', () => {
     expect(checkpointLabel('implementer turn')).toBe('實作者完成一輪')
+    expect(checkpointLabel('before turn')).toBe('這一輪開始前')
     expect(checkpointLabel('something else')).toBe('something else')
   })
 })

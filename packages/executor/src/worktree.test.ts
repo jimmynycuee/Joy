@@ -17,6 +17,7 @@ import type { AttemptId, RepoId, RepoRef, TaskId } from '@joy/core'
 import { afterEach, describe, expect, it } from 'vitest'
 import { git } from './git.js'
 import {
+  CheckpointRestoreIncompleteError,
   WorktreeExecutor,
   assertSafeId,
   parseNameStatus,
@@ -394,5 +395,21 @@ describe('WorktreeExecutor checks and checkpoints', () => {
 
     await executor.cleanup(ws, { confirmedUnpushedCommits: true })
     expect((await git(repo.path, ['for-each-ref', 'refs/joy/'])).trim()).toBe('')
+  })
+
+  it('reports a restore whose reset failed as half way, so the caller can point at the saved state', async () => {
+    const { repo, executor } = await setup()
+    const ws = await executor.prepare(repo, tid('t1'), aid('a1'))
+    writeFileSync(join(ws.path, 'a.txt'), 'checkpoint one\n')
+    await executor.checkpoint(ws, 'refs/joy/checkpoints/t1/1', 'Joy checkpoint 1')
+    writeFileSync(join(ws.path, 'a.txt'), 'later\n')
+    // Another git process holding the index makes `reset --hard` fail.
+    const lock = join((await git(ws.path, ['rev-parse', '--absolute-git-dir'])).trim(), 'index.lock')
+    writeFileSync(lock, '')
+    const failed = executor.restoreCheckpoint(ws, 'refs/joy/checkpoints/t1/1')
+    await expect(failed).rejects.toBeInstanceOf(CheckpointRestoreIncompleteError)
+    await expect(failed).rejects.toThrow('Restoring stopped half way')
+    unlinkSync(lock)
+    await executor.cleanup(ws, { confirmedUnpushedCommits: true })
   })
 })

@@ -32,7 +32,9 @@ export function foldTimeline(entries: readonly TimelineEntry[], outcome: 'done' 
   const lastReview = entries.findLast((entry) => entry.kind === 'review')
   // The owner's own messages and decisions (another model or mode) stay in view.
   const kept = new Set<TimelineEntry>(
-    entries.filter((entry) => entry.kind === 'user' || (entry.kind === 'step' && entry.owner)),
+    entries.filter(
+      (entry) => entry.kind === 'user' || entry.kind === 'rewound' || (entry.kind === 'step' && entry.owner),
+    ),
   )
   if (lastMessage) kept.add(lastMessage)
   if (lastReview) kept.add(lastReview)

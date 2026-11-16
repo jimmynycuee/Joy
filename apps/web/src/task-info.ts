@@ -102,7 +102,9 @@ export function hasUnpublishedChanges(events: readonly TaskEvent[]): boolean {
   if (lastPublish < 0) return false
   return events
     .slice(lastPublish + 1)
-    .some((event) => ['result', 'checkpoint.created', 'checkpoint.restored'].includes(event.type))
+    .some((event) =>
+      ['result', 'checkpoint.created', 'checkpoint.restored', 'task.rewound'].includes(event.type),
+    )
 }
 
 /**
@@ -120,7 +122,8 @@ export function diffFrom(events: readonly TaskEvent[]): WorkspaceDiff | null {
     if (diff) return diff
   }
   for (const event of newestFirst) {
-    if (event.type !== 'result' && event.type !== 'checkpoint.restored') continue
+    if (event.type !== 'result' && event.type !== 'checkpoint.restored' && event.type !== 'task.rewound')
+      continue
     const diff = asDiff(record(event.payload)?.diff)
     if (diff) return diff
   }
