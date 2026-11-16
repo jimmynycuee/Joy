@@ -57,7 +57,7 @@ test('memories used by a reply are shown and can be forgotten or corrected', asy
 
   await page.goto('/')
   // The conversation is a row of the sidebar's 最近 list.
-  await page.getByRole('navigation', { name: '主選單' }).getByRole('button', { name: /Hello/ }).click()
+  await page.getByRole('navigation', { name: '主選單' }).locator('.task-row', { hasText: 'Hello' }).click()
   const used = page.getByLabel('用到的記憶')
   await expect(used).toContainText('Likes tabs')
   await expect(used).toContainText('Works in Taipei')

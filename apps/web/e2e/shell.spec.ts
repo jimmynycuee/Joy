@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
-import { openAdvanced, openSettings, openTaskMenu } from './helpers.js'
+import { openAdvanced, openSettings, openTaskMenu, rowMenu } from './helpers.js'
 
 const repo = { id: 'shell-repo', path: '/tmp/shell-project', defaultBranch: 'main' }
 const config = {
@@ -137,11 +137,9 @@ test('the sidebar lists tasks and conversations together, filters them, and arch
   await page.goto('/')
   const sidebar = page.getByRole('navigation', { name: '主選單' })
   // One list, newest first: the waiting task is minutes old, the chore six days.
-  await expect(sidebar.locator('.task-row .task-title')).toHaveText([
-    'Waiting for you',
-    'Weekend plans',
-    'Last week chore',
-  ])
+  await expect(sidebar.getByRole('region', { name: '最近項目' }).locator('.task-row .task-title')).toHaveText(
+    ['Waiting for you', 'Weekend plans', 'Last week chore'],
+  )
   await expect(sidebar.getByText('今天', { exact: true })).toHaveCount(0)
 
   await sidebar.getByLabel('搜尋任務與對話').fill('chore')
@@ -149,7 +147,7 @@ test('the sidebar lists tasks and conversations together, filters them, and arch
   await expect(sidebar.getByRole('button', { name: /Waiting for you/ })).toHaveCount(0)
   await sidebar.getByLabel('搜尋任務與對話').fill('')
 
-  await sidebar.getByRole('button', { name: '封存：Last week chore' }).click()
+  await rowMenu(page, 'Last week chore', '封存')
   await expect(sidebar.getByRole('button', { name: /^Last week chore/ })).toHaveCount(0)
   expect(patches).toEqual([{ path: '/api/tasks/older', body: { archived: true } }])
   // The sidebar has no 已封存 group; the task is in 設定 → 已封存.

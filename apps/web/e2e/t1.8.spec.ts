@@ -1,3 +1,7 @@
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, realpathSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test, expect } from '@playwright/test'
 import type { ModelRef } from '@joy/core'
 import { E2E_API_TOKEN } from './fakes.js'
@@ -101,9 +105,17 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   await page.screenshot({ path: 'test-results/t1.8-settings.png', fullPage: true })
 
   await page.getByRole('button', { name: '新任務' }).click()
+  // A real git repository in a temp folder, picked through the folder picker (the fake runtime lists the real disk).
+  const projectPath = realpathSync(mkdtempSync(join(tmpdir(), 'joy-e2e-project-')))
+  execFileSync('git', ['init'], { cwd: projectPath })
   await page.getByRole('button', { name: '加入專案' }).first().click()
   const repoDialog = page.getByRole('dialog', { name: '加入專案' })
-  await repoDialog.getByLabel('專案路徑').fill('/tmp/joy-e2e-project')
+  await repoDialog.getByLabel('資料夾路徑').fill(projectPath)
+  await repoDialog.getByRole('button', { name: '前往' }).click()
+  await expect(repoDialog.getByRole('navigation', { name: '目前位置' })).toContainText(
+    projectPath.split('/').filter(Boolean).at(-1) ?? '',
+  )
+  await repoDialog.getByRole('button', { name: '選擇這個資料夾' }).click()
   await repoDialog.getByLabel('預設分支').fill('main')
   await repoDialog.getByRole('button', { name: '加入專案' }).click()
   await expect(page.getByRole('navigation', { name: '主選單' }).getByText('還沒有任何工作')).toBeVisible()

@@ -87,6 +87,7 @@ export {
   resetSessionsUsingMemory,
   searchHistory,
   setConversationSummary,
+  setConversationPinned,
   setConversationTitle,
   updateConversationSession,
 } from './conversations.js'

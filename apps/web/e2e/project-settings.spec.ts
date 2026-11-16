@@ -193,93 +193,83 @@ test('switching project in the new task box applies that project’s defaults an
   })
 })
 
-test('the sidebar groups tasks by project once there are two, and a group folds away and stays folded', async ({
+const projectTask = (id: string, repoId: string, title: string, minutesAgo: number, extra: Json = {}) => ({
+  id,
+  repoId,
+  title,
+  prompt: 'p',
+  mode: 'single',
+  status: 'done',
+  createdAt: iso(minutesAgo + 5),
+  updatedAt: iso(minutesAgo),
+  ...extra,
+})
+
+test('the 專案 section lists every project, opens one to show its tasks, and remembers it', async ({
   page,
 }) => {
-  const task = (id: string, repoId: string, title: string, minutesAgo: number, extra: Json = {}) => ({
-    id,
-    repoId,
-    title,
-    prompt: 'p',
-    mode: 'single',
-    status: 'done',
-    createdAt: iso(minutesAgo + 5),
-    updatedAt: iso(minutesAgo),
-    ...extra,
-  })
   await mockApi(page, {
-    repos: [alpha, beta],
+    repos: [alpha, beta, { id: 'c', path: '/work/empty', defaultBranch: 'main' }],
     tasks: [
-      task('1', 'a', 'Alpha newest', 1),
-      task('2', 'b', 'Beta task', 5),
-      task('3', 'a', 'Alpha older', 60),
-      task('4', 'b', 'Beta waiting', 90, { status: 'awaiting_approval' }),
+      projectTask('1', 'a', 'Alpha newest', 1),
+      projectTask('2', 'b', 'Beta task', 5),
+      projectTask('3', 'a', 'Alpha older', 60),
+      projectTask('4', 'b', 'Beta waiting', 90, { status: 'awaiting_approval' }),
     ],
-    conversations: [{ id: 'c1', title: 'Weekend plans', createdAt: iso(900), updatedAt: iso(30) }],
   })
   await page.goto('/')
   await page.evaluate(() => localStorage.clear())
   await page.reload()
   const sidebar = page.getByRole('navigation', { name: '主選單' })
+  const projects = sidebar.getByRole('region', { name: '專案' })
 
-  await expect(sidebar.locator('[role="group"] .group-label')).toHaveText(['alpha', 'beta', '對話'])
-  await expect(sidebar.getByRole('group', { name: 'alpha' }).locator('.task-title')).toHaveText([
+  // Every project is a row, in the order they were added, also one without tasks; all start closed.
+  await expect(projects.getByRole('group').locator('.project-row .task-title')).toHaveText([
+    'alpha',
+    'beta',
+    'empty',
+  ])
+  await expect(projects.locator('.nav-row-wrap.nested')).toHaveCount(0)
+  // A closed project with something waiting keeps a dot.
+  await expect(
+    projects.getByRole('group', { name: 'beta' }).getByRole('img', { name: '有任務在等你' }),
+  ).toBeVisible()
+
+  const alphaRow = projects.getByRole('button', { name: /^alpha/ })
+  await expect(alphaRow).toHaveAttribute('aria-expanded', 'false')
+  await alphaRow.click()
+  await expect(alphaRow).toHaveAttribute('aria-expanded', 'true')
+  await expect(projects.getByRole('group', { name: 'alpha' }).locator('.task-title')).toHaveText([
+    'alpha',
     'Alpha newest',
     'Alpha older',
   ])
-  await expect(sidebar.getByRole('group', { name: 'beta' }).locator('.task-title')).toHaveText([
+  // An open project has no dot of its own for its tasks.
+  await expect(projects.getByRole('group', { name: 'alpha' }).locator('.nested .project-dot')).toHaveCount(0)
+  await projects.getByRole('button', { name: /^empty/ }).click()
+  await expect(projects.getByText('沒有任務')).toBeVisible()
+
+  // It stays open after a reload; the section itself folds.
+  await page.reload()
+  await expect(projects.getByRole('button', { name: /^alpha/ })).toHaveAttribute('aria-expanded', 'true')
+  await expect(projects.getByRole('button', { name: /^beta/ })).toHaveAttribute('aria-expanded', 'false')
+  await sidebar.getByRole('button', { name: '專案', exact: true }).click()
+  await expect(projects.getByRole('group')).toHaveCount(0)
+  await page.reload()
+  await expect(projects.getByRole('group')).toHaveCount(0)
+  await sidebar.getByRole('button', { name: '專案', exact: true }).click()
+  await expect(projects.getByRole('group')).toHaveCount(3)
+
+  // A search opens the projects that match and hides the rest.
+  await sidebar.getByLabel('搜尋任務與對話').fill('beta')
+  await expect(projects.getByRole('group')).toHaveCount(1)
+  await expect(projects.getByRole('group', { name: 'beta' }).locator('.nested .task-title')).toHaveText([
     'Beta task',
     'Beta waiting',
   ])
-  await expect(sidebar.getByRole('group', { name: '對話' }).locator('.task-title')).toHaveText([
-    'Weekend plans',
-  ])
-  await expect(sidebar.getByText('最近', { exact: true })).toHaveCount(0)
-
-  // Folding hides the rows, says so to assistive tech, and a group with something waiting keeps a dot.
-  const toggle = sidebar.locator('.sidebar-group-toggle', { hasText: 'beta' })
-  await expect(toggle).toHaveAttribute('aria-expanded', 'true')
-  await toggle.click()
-  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
-  await expect(sidebar.getByText('Beta task')).toHaveCount(0)
-  await expect(toggle.getByRole('img', { name: '有任務在等你' })).toBeVisible()
-  await expect(sidebar.getByText('Alpha newest')).toBeVisible()
-
-  // It stays folded after a reload; a search still shows its matches.
-  await page.reload()
-  await expect(sidebar.getByText('Beta task')).toHaveCount(0)
-  await sidebar.getByLabel('搜尋任務與對話').fill('beta')
-  await expect(sidebar.getByText('Beta task')).toBeVisible()
-  await sidebar.getByLabel('搜尋任務與對話').fill('')
-  await expect(sidebar.getByText('Beta task')).toHaveCount(0)
-  await sidebar.locator('.sidebar-group-toggle', { hasText: 'beta' }).click()
-  await expect(sidebar.getByText('Beta task')).toBeVisible()
 })
 
-test('with one project the sidebar keeps its plain list and shows no group heading', async ({ page }) => {
-  await mockApi(page, {
-    repos: [alpha, beta],
-    tasks: [
-      {
-        id: '1',
-        repoId: 'a',
-        title: 'Only task',
-        prompt: 'p',
-        mode: 'single',
-        status: 'done',
-        createdAt: iso(5),
-        updatedAt: iso(1),
-      },
-    ],
-  })
-  await page.goto('/')
-  const sidebar = page.getByRole('navigation', { name: '主選單' })
-  await expect(sidebar.getByText('Only task')).toBeVisible()
-  await expect(sidebar.getByText('最近', { exact: true })).toBeVisible()
-  await expect(sidebar.locator('.sidebar-group-toggle')).toHaveCount(0)
-})
-
-test('a blocked localStorage does not break the sidebar groups', async ({ page }) => {
+test('a blocked localStorage does not break the 專案 section', async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(window, 'localStorage', {
       get() {
@@ -289,32 +279,12 @@ test('a blocked localStorage does not break the sidebar groups', async ({ page }
   })
   await mockApi(page, {
     repos: [alpha, beta],
-    tasks: [
-      {
-        id: '1',
-        repoId: 'a',
-        title: 'Alpha task',
-        prompt: 'p',
-        mode: 'single',
-        status: 'done',
-        createdAt: iso(5),
-        updatedAt: iso(1),
-      },
-      {
-        id: '2',
-        repoId: 'b',
-        title: 'Beta task',
-        prompt: 'p',
-        mode: 'single',
-        status: 'done',
-        createdAt: iso(6),
-        updatedAt: iso(2),
-      },
-    ],
+    tasks: [projectTask('1', 'a', 'Alpha task', 1), projectTask('2', 'b', 'Beta task', 2)],
   })
   await page.goto('/')
   const sidebar = page.getByRole('navigation', { name: '主選單' })
-  await expect(sidebar.locator('.sidebar-group-toggle')).toHaveCount(2)
-  await sidebar.locator('.sidebar-group-toggle', { hasText: 'beta' }).click()
-  await expect(sidebar.getByText('Beta task')).toHaveCount(0)
+  await sidebar.getByRole('button', { name: /^beta/ }).click()
+  await expect(sidebar.getByRole('group', { name: 'beta' }).locator('.nested .task-title')).toHaveText([
+    'Beta task',
+  ])
 })
