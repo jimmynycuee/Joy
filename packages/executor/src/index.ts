@@ -12,6 +12,7 @@ export type { RunCommandInput, RunCommandResult } from './run.js'
 export {
   CHECKPOINT_REF_PREFIX,
   CheckpointCommitsError,
+  CheckpointRestoreIncompleteError,
   checkpointRef,
   UnpushedCommitsError,
   WorktreeExecutor,

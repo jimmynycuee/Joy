@@ -84,6 +84,10 @@ export interface PendingPlan {
 export interface QueuedMessage {
   id: string
   text: string
+  /** How many files go with it. */
+  attachments?: number
+  /** It changes the models, mode or permission mode from the next run. */
+  settings?: boolean
 }
 /** The task as `GET /api/tasks/:id` returns it. The fields after `events` are missing from older servers. */
 export type TaskDetails = {
@@ -112,6 +116,8 @@ export type TaskDetails = {
   pendingSettings?: unknown
   /** Actions the owner allowed for the rest of this task (missing from older servers). */
   taskAllows?: TaskAllow[]
+  /** Rounds the owner can go back to (see rewind.ts; missing from older servers). */
+  rewindPoints?: unknown
 }
 export type TaskAllowKind = 'shell' | 'file_write' | 'file_read' | 'network' | 'mcp'
 export interface TaskAllow {

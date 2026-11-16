@@ -16,25 +16,52 @@ import type { AttachmentControls } from './Attachments.js'
 import { MessageAttachments } from './Attachments.js'
 import { Markdown } from './Markdown.js'
 import { Mascot } from './Mascot.js'
-import { Icon } from './ui.js'
+import { Icon, Spinner } from './ui.js'
 
 // The message presentation shared by the task thread and the assistant chat:
 // the owner's words are a right-aligned bubble, the agent's words are plain prose.
+
+/**
+ * Going back to the round a message started: the owner edits the message, then it is sent again from there. The answer
+ * is `done`, `failed` (already reported) or a question to confirm in the page before trying again with `confirm`.
+ */
+export type RewindOutcome = 'done' | 'failed' | { ask: string }
+export type RewindHandler = (text: string, confirm: boolean) => Promise<RewindOutcome>
 
 export function UserBubble({
   text,
   state,
   attachments = [],
   attachmentControls,
+  onRewind,
 }: {
   text: string
   state?: DeliveryState
   attachments?: readonly AttachmentInfo[]
   attachmentControls?: AttachmentControls | undefined
+  onRewind?: RewindHandler | undefined
 }) {
   const tag = state ? deliveryTag(state) : undefined
+  const [editing, setEditing] = useState(false)
+  if (editing && onRewind)
+    return (
+      <div className="msg-row msg-row-user">
+        <RewindEditor text={text} onCancel={() => setEditing(false)} onSubmit={onRewind} />
+      </div>
+    )
   return (
     <div className="msg-row msg-row-user">
+      {onRewind ? (
+        <button
+          type="button"
+          className="icon-btn icon-btn-sm rewind-btn"
+          aria-label="從這裡重做"
+          title="從這裡重做"
+          onClick={() => setEditing(true)}
+        >
+          <Icon name="undo" size={14} />
+        </button>
+      ) : null}
       <div className="user-column">
         {attachments.length ? (
           <MessageAttachments attachments={attachments} controls={attachmentControls} />
@@ -53,6 +80,77 @@ export function UserBubble({
         ) : null}
       </div>
     </div>
+  )
+}
+
+function RewindEditor({
+  text,
+  onCancel,
+  onSubmit,
+}: {
+  text: string
+  onCancel: () => void
+  onSubmit: RewindHandler
+}) {
+  const [draft, setDraft] = useState(text)
+  const [busy, setBusy] = useState(false)
+  const [question, setQuestion] = useState<string | null>(null)
+  async function submit(confirm = false) {
+    const value = draft.trim()
+    if (!value || busy) return
+    setBusy(true)
+    const outcome = await onSubmit(value, confirm).finally(() => setBusy(false))
+    if (outcome === 'done') onCancel()
+    else if (outcome !== 'failed') setQuestion(outcome.ask)
+  }
+  return (
+    <form
+      className="rewind-editor"
+      data-testid="rewind-editor"
+      onSubmit={(event) => {
+        event.preventDefault()
+        void submit()
+      }}
+    >
+      <textarea
+        aria-label="修改後重做"
+        value={draft}
+        rows={Math.min(8, Math.max(2, draft.split('\n').length))}
+        autoFocus
+        onChange={(event) => {
+          setDraft(event.target.value)
+          setQuestion(null)
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') onCancel()
+          if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+            event.preventDefault()
+            void submit()
+          }
+        }}
+      />
+      {question ? (
+        <div className="rewind-confirm" role="alert">
+          <span>{question}</span>
+          <button type="button" className="btn btn-danger" disabled={busy} onClick={() => void submit(true)}>
+            仍要重做
+          </button>
+        </div>
+      ) : null}
+      <div className="rewind-actions">
+        <button type="button" className="btn btn-ghost" onClick={onCancel}>
+          取消
+        </button>
+        <button
+          type="submit"
+          className="btn btn-primary"
+          disabled={busy || !draft.trim() || question !== null}
+        >
+          {busy ? <Spinner /> : null}
+          重做
+        </button>
+      </div>
+    </form>
   )
 }
 
@@ -175,15 +273,60 @@ function ChecksCard({ entry }: { entry: Extract<TimelineEntry, { kind: 'checks' 
   )
 }
 
-function TimelineItem({
+/** Which owner messages can be gone back to (message id → round) and what to do then. */
+export interface RewindControls {
+  targets: ReadonlyMap<string, string>
+  onRewind: (round: string, text: string, confirm: boolean) => Promise<RewindOutcome>
+}
+
+function RewoundFold({
   entry,
   showDetails,
   attachmentControls,
 }: {
-  entry: TimelineEntry
+  entry: Extract<TimelineEntry, { kind: 'rewound' }>
   showDetails: boolean
   attachmentControls: AttachmentControls | undefined
 }) {
+  const [open, setOpen] = useState(false)
+  const messages = entry.entries.filter((inner) => inner.kind === 'user').length
+  return (
+    <div className="timeline-item timeline-rewound" data-event-seq={entry.seq} data-testid="rewound-fold">
+      <button type="button" className="process-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <Icon name={open ? 'chevron-down' : 'chevron-right'} size={14} />
+        <span>已捨棄{messages ? `（${messages} 則訊息）` : ''}</span>
+      </button>
+      {open ? (
+        <div className="process-body rewound-body">
+          {entry.entries.map((inner) => (
+            <TimelineItem
+              key={inner.key}
+              entry={inner}
+              showDetails={showDetails}
+              attachmentControls={attachmentControls}
+              rewind={undefined}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function TimelineItem({
+  entry,
+  showDetails,
+  attachmentControls,
+  rewind,
+}: {
+  entry: TimelineEntry
+  showDetails: boolean
+  attachmentControls: AttachmentControls | undefined
+  rewind: RewindControls | undefined
+}) {
+  if (entry.kind === 'rewound')
+    return <RewoundFold entry={entry} showDetails={showDetails} attachmentControls={attachmentControls} />
+  const round = entry.kind === 'user' ? rewind?.targets.get(entry.id) : undefined
   return (
     <div
       hidden={entry.kind === 'noise' && !showDetails}
@@ -206,6 +349,7 @@ function TimelineItem({
           state={entry.state}
           attachments={entry.attachments}
           attachmentControls={attachmentControls}
+          onRewind={round && rewind ? (text, confirm) => rewind.onRewind(round, text, confirm) : undefined}
         />
       ) : entry.kind === 'checks' ? (
         <ChecksCard entry={entry} />
@@ -236,11 +380,13 @@ function ProcessFold({
   showDetails,
   attachmentControls,
   detailsToggle,
+  rewind,
 }: {
   fold: Extract<FoldedItem, { kind: 'fold' }>
   showDetails: boolean
   attachmentControls: AttachmentControls | undefined
   detailsToggle: ReactNode
+  rewind: RewindControls | undefined
 }) {
   const [open, setOpen] = useState(false)
   const summary = foldSummary(fold.stats)
@@ -258,6 +404,7 @@ function ProcessFold({
               entry={entry}
               showDetails={showDetails}
               attachmentControls={attachmentControls}
+              rewind={rewind}
             />
           ))}
           {detailsToggle}
@@ -276,11 +423,14 @@ export function TimelineView({
   entries,
   collapse,
   attachmentControls,
+  rewind,
 }: {
   entries: TimelineEntry[]
   /** Fold the process because the task is over: `done` for a result, `failed` for a failure or a cancel. */
   collapse?: 'done' | 'failed' | undefined
   attachmentControls?: AttachmentControls
+  /** Set while the owner can go back to an earlier round (the task is not running). */
+  rewind?: RewindControls | undefined
 }) {
   const [showDetails, setShowDetails] = useState(false)
   const items = useMemo(() => (collapse ? foldTimeline(entries, collapse) : null), [entries, collapse])
@@ -310,6 +460,7 @@ export function TimelineView({
               showDetails={showDetails}
               attachmentControls={attachmentControls}
               detailsToggle={detailsToggle(item.entries)}
+              rewind={rewind}
             />
           ) : (
             <TimelineItem
@@ -317,6 +468,7 @@ export function TimelineView({
               entry={item.entry}
               showDetails={showDetails}
               attachmentControls={attachmentControls}
+              rewind={rewind}
             />
           ),
         )}
@@ -332,6 +484,7 @@ export function TimelineView({
             entry={entry}
             showDetails={showDetails}
             attachmentControls={attachmentControls}
+            rewind={rewind}
           />
         ))}
       </div>

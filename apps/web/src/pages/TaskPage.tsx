@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { errorMessage, request } from '../api.js'
+import { ApiError, errorMessage, request } from '../api.js'
 import { DiffBrowser, DiffStat } from '../components/DiffView.js'
 import { CheckpointsPanel } from '../components/CheckpointsPanel.js'
 import { Mascot } from '../components/Mascot.js'
@@ -7,6 +7,8 @@ import { Menu, MenuItem, MenuSeparator, SubMenu } from '../components/Menu.js'
 import { PlanCard } from '../components/PlanCard.js'
 import { PrStatusCard } from '../components/PrStatusCard.js'
 import { RunningIndicator, TimelineView, UserBubble } from '../components/Thread.js'
+import type { RewindControls } from '../components/Thread.js'
+import { TASK_ROUND, parseRewindPoints, rewindConfirmQuestion, rewindTargets } from '../rewind.js'
 import { ThreadComposer } from '../components/ThreadComposer.js'
 import { TitleEditor } from '../components/TitleEditor.js'
 import { TaskAllowsPanel } from '../components/TaskAllowsPanel.js'
@@ -21,7 +23,7 @@ import {
 import { Button, Icon, IconButton } from '../components/ui.js'
 import { diffTotals } from '../diff.js'
 import { modeLabel, statusLabel } from '../labels.js'
-import { followUpState } from '../messages.js'
+import { followUpState, ownerActionError } from '../messages.js'
 import { diffFrom, failureMessage, taskBranchInfo, worktreeRemoved } from '../task-info.js'
 import { buildTimeline } from '../timeline.js'
 import type { AttachmentControls } from '../components/Attachments.js'
@@ -118,6 +120,34 @@ export function TaskPage({
   const ended = finished || task.status === 'failed' || task.status === 'cancelled'
 
   const canResume = (task.status === 'failed' || task.status === 'cancelled') && task.mode !== 'compete'
+
+  // Going back to an earlier round: only while nothing runs (the server refuses otherwise too).
+  const idle = !working && task.status !== 'awaiting_approval'
+  const rewindPoints = useMemo(() => parseRewindPoints(details.rewindPoints), [details.rewindPoints])
+  const rewind: RewindControls | undefined = useMemo(() => {
+    if (!idle || task.mode === 'compete' || rewindPoints.length === 0) return undefined
+    return {
+      targets: rewindTargets(rewindPoints),
+      onRewind: async (round, text, confirm) => {
+        try {
+          await request(`/api/tasks/${encodeURIComponent(task.id)}/rewind`, {
+            method: 'POST',
+            body: JSON.stringify({ messageId: round, text, ...(confirm ? { confirm: true } : {}) }),
+          })
+          onChanged()
+          return 'done'
+        } catch (error) {
+          const status = error instanceof ApiError ? error.status : undefined
+          const question =
+            status === 409 && !confirm ? rewindConfirmQuestion(errorMessage(error, '')) : undefined
+          if (question) return { ask: question }
+          onError(ownerActionError(status, errorMessage(error, ''), '無法重做'))
+          return 'failed'
+        }
+      },
+    }
+  }, [idle, task.mode, task.id, rewindPoints, onChanged, onError])
+  const taskRound = rewind?.targets.get(TASK_ROUND)
 
   useEffect(() => {
     const element = scrollRef.current
@@ -256,8 +286,18 @@ export function TaskPage({
                 text={task.prompt}
                 attachments={(details.attachments ?? []).filter((attachment) => !attachment.messageId)}
                 attachmentControls={attachmentControls}
+                onRewind={
+                  taskRound && rewind
+                    ? (text, confirm) => rewind.onRewind(taskRound, text, confirm)
+                    : undefined
+                }
               />
-              <TimelineView entries={entries} collapse={collapse} attachmentControls={attachmentControls} />
+              <TimelineView
+                entries={entries}
+                collapse={collapse}
+                attachmentControls={attachmentControls}
+                rewind={rewind}
+              />
               {pendingPlan && !working ? (
                 <PlanCard taskId={task.id} plan={pendingPlan} onChanged={onChanged} onError={onError} />
               ) : null}

@@ -2486,6 +2486,102 @@ kbd {
   gap: 2px;
   max-width: 85%;
 }
+/* 從這裡重做: shows next to an owner message on hover or focus. */
+.rewind-btn {
+  align-self: center;
+  margin-right: 4px;
+  color: var(--muted);
+  opacity: 0;
+}
+.msg-row-user:hover .rewind-btn,
+.rewind-btn:focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  .rewind-btn {
+    opacity: 1;
+  }
+}
+.rewind-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(100%, 560px);
+}
+.rewind-editor textarea {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-15);
+  resize: vertical;
+}
+.rewind-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--fs-13);
+  color: var(--muted);
+}
+.rewind-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.timeline-rewound .process-body {
+  opacity: 0.6;
+}
+/* Messages waiting for the end of the agent's turn, above the composer. */
+.queued-list {
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.queued-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 4px 0 10px;
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: var(--fs-13);
+}
+.queued-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+.queued-edit {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.queued-edit input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+.send-now-btn {
+  color: var(--muted);
+}
 .user-column .user-bubble {
   max-width: 100%;
 }

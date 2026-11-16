@@ -394,12 +394,14 @@ export interface TaskUpdate {
   title?: string | undefined
   archived?: boolean | undefined
   pinned?: boolean | undefined
+  /** The owner rewrote the first message after going back to the first round. */
+  prompt?: string | undefined
 }
 
 /**
- * Renames, (un)archives or (un)pins a task. Returns the updated task, or undefined when it does not exist.
- * Pinning leaves `updated_at` alone (the sidebar's order follows it); archiving drops the pin, since an archived task
- * has no place in the sidebar to be pinned in.
+ * Renames, (un)archives or (un)pins a task, or replaces its prompt. Returns the updated task, or undefined when it does
+ * not exist. Pinning leaves `updated_at` alone (the sidebar's order follows it); archiving drops the pin, since an
+ * archived task has no place in the sidebar to be pinned in.
  */
 export function updateTask(db: Database, id: TaskId, update: TaskUpdate): StoredTask | undefined {
   const sets: string[] = []
@@ -413,6 +415,10 @@ export function updateTask(db: Database, id: TaskId, update: TaskUpdate): Stored
     values.push(update.archived ? 1 : 0)
   }
   if (update.archived === true) sets.push('pinned_at = NULL')
+  if (update.prompt !== undefined) {
+    sets.push('prompt = ?')
+    values.push(update.prompt)
+  }
   if (sets.length) {
     sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")
     db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...values, id)
