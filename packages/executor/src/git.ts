@@ -87,3 +87,23 @@ export class KeyedMutex {
     return next
   }
 }
+
+/**
+ * Files in a checkout as git sees them: tracked plus untracked ones that `.gitignore` does not exclude (so nothing in
+ * `.git`, `node_modules` or build output). At most `limit` paths, relative with `/`. Not a git checkout: empty.
+ */
+export async function listProjectFiles(cwd: string, limit = 20_000): Promise<string[]> {
+  let out: string
+  try {
+    out = await git(cwd, ['ls-files', '--cached', '--others', '--exclude-standard', '-z'])
+  } catch {
+    return []
+  }
+  const seen = new Set<string>()
+  for (const path of out.split('\0')) {
+    if (!path || seen.has(path)) continue
+    seen.add(path)
+    if (seen.size >= limit) break
+  }
+  return [...seen]
+}

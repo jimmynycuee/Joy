@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
@@ -35,6 +35,11 @@ export interface ClaudeCliOptions {
    * Without it, a provider that has `wrap` does not steer.
    */
   forwardsStdin?: (cwd: string) => boolean
+  /**
+   * Where a run's `mcp.json` is written (it holds the MCP servers' secrets). The server passes a folder under
+   * JOY_HOME, which the agent can never read without asking; the OS temp folder, the default, is one it may read.
+   */
+  configDir?: string
 }
 
 export class ClaudeCliProvider implements AgentProvider {
@@ -55,6 +60,7 @@ export class ClaudeCliProvider implements AgentProvider {
   private readonly env: NodeJS.ProcessEnv | undefined
   private readonly wrap: CommandWrapper | undefined
   private readonly forwardsStdin: ((cwd: string) => boolean) | undefined
+  private readonly configDir: string | undefined
 
   constructor(options: ClaudeCliOptions = {}) {
     this.command = options.command ?? 'claude'
@@ -63,6 +69,7 @@ export class ClaudeCliProvider implements AgentProvider {
     this.env = options.env
     this.wrap = options.wrap
     this.forwardsStdin = options.forwardsStdin
+    this.configDir = options.configDir
   }
 
   async *run(opts: RunOptions, model: ModelRef): AsyncGenerator<AgentEvent> {
@@ -87,7 +94,9 @@ export class ClaudeCliProvider implements AgentProvider {
     try {
       let mcpConfigPath: string | undefined
       if (opts.mcpServers?.length) {
-        tmp = await mkdtemp(join(tmpdir(), 'joy-claude-'))
+        const parent = this.configDir ?? tmpdir()
+        if (this.configDir) await mkdir(this.configDir, { recursive: true, mode: 0o700 })
+        tmp = await mkdtemp(join(parent, 'joy-claude-'))
         mcpConfigPath = join(tmp, 'mcp.json')
         await writeFile(mcpConfigPath, mcpConfigJson(opts.mcpServers), { mode: 0o600 })
       }

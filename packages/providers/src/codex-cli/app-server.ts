@@ -218,10 +218,18 @@ function mcpConfig(servers: McpServerConfig[] | undefined): Record<string, unkno
   const mcpServers: Record<string, unknown> = {}
   for (const server of servers) {
     if (!/^[A-Za-z0-9_-]+$/.test(server.name)) throw new Error(`Invalid MCP server name "${server.name}"`)
+    // `default_tools_approval_mode = "prompt"` (codex-cli 0.166.0 config: auto | prompt | writes | approve) makes Codex
+    // ask before every tool call of that server, through `mcpServer/elicitation/request`, which reaches Joy's policy.
+    const approval = server.approval === 'every-call' ? { default_tools_approval_mode: 'prompt' } : {}
     mcpServers[server.name] =
       server.transport === 'stdio'
-        ? { command: server.command, args: server.args, ...(server.env ? { env: server.env } : {}) }
-        : { url: server.url, ...(server.headers ? { http_headers: server.headers } : {}) }
+        ? {
+            command: server.command,
+            args: server.args,
+            ...(server.env ? { env: server.env } : {}),
+            ...approval,
+          }
+        : { url: server.url, ...(server.headers ? { http_headers: server.headers } : {}), ...approval }
   }
   return { mcp_servers: mcpServers }
 }

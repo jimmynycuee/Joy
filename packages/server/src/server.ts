@@ -4,9 +4,9 @@ import { createServer as createHttpServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { link, lstat, mkdir, open, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { extname, isAbsolute, join, resolve, sep } from 'node:path'
+import { link, lstat, mkdir, open, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
+import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WebSocket, WebSocketServer } from 'ws'
 import { z, ZodError } from 'zod'
@@ -285,6 +285,15 @@ import type { DoctorOptions } from './doctor.js'
 import { describeDisallowedRoleProvider, findDisallowedRoleProviders } from './provider-allowlist.js'
 import { withProjectInstructions } from './project-instructions.js'
 import { FolderError, initGitRepository, listFolders } from './folders.js'
+import {
+  mcpServerInputSchema,
+  mcpServerPatchSchema,
+  PluginInputError,
+  PluginService,
+  RunGrants,
+  SkillMarkers,
+  withPlugins,
+} from './plugins.js'
 
 const modelSchema = z.strictObject({
   provider: z.enum(PROVIDER_KINDS),
@@ -641,6 +650,11 @@ export interface JoyServerOptions {
   pushFetch?: typeof fetch
   /** Platform override for tests of Windows-only behavior. */
   platform?: NodeJS.Platform
+  /**
+   * The home directory whose ~/.claude and ~/.codex skill folders are listed (tests use a temp directory). Given, the
+   * CLAUDE_CONFIG_DIR and CODEX_HOME of this process are ignored too. Default the OS user's home.
+   */
+  userHome?: string
   /** The CLI inside the agent container, per CLI (tests run a fake CLI through node). Default the CLI's name. */
   containerCommands?: Partial<Record<'claude' | 'codex', string[]>>
   /** Warn at startup about CLI versions Joy was not tested with (T4.6). Default true. */
@@ -838,8 +852,13 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     string,
     (request: CodexApprovalRequest) => Promise<CodexApprovalDecision>
   >()
+  // A run's MCP config (with the servers' secrets) lives under JOY_HOME, never in the OS temp folder an agent may read.
+  // Ones left behind by a crash are removed here (only Joy's own `joy-claude-*` folders); failing to only warns.
+  const runConfigDir = join(home, 'mcp-run')
+  await removeStaleRunConfigs(runConfigDir, (message) => log.warn(redactor.redact(`[joy] ${message}`)))
   const providers: Partial<Record<ProviderKind, AgentProvider>> = {
     'claude-cli': new ClaudeCliProvider({
+      configDir: runConfigDir,
       ...(initialConfig.providers.claude.command ? { command: initialConfig.providers.claude.command } : {}),
       wrap: containerWrap,
       // A container run gets no stdin (`docker run` without `-i`); anywhere else the wrapper changes nothing.
@@ -898,29 +917,56 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     .catch((error: unknown) =>
       log.warn(`attachments: cleanup failed: ${error instanceof Error ? error.message : String(error)}`),
     )
+  const plugins = new PluginService({
+    db,
+    secretStore,
+    userHome: options.userHome ?? homedir(),
+    env: options.userHome
+      ? {}
+      : { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, CODEX_HOME: process.env.CODEX_HOME },
+    warn: (message) => log.warn(redactor.redact(`[joy] ${message}`)),
+  })
+  const skillMarkers = new SkillMarkers()
+  const runGrants = new RunGrants()
+  /** The project of the task this run belongs to, for skills and the owner's MCP servers. */
+  const pluginRunContext = () => {
+    const taskId = runningTaskId.getStore()
+    const task = taskId ? getTask(db, taskId) : undefined
+    const repo = task ? getRepo(db, task.repoId) : undefined
+    return repo ? { repoId: repo.id, projectDir: repo.path, container: Boolean(repo.container) } : undefined
+  }
   for (const kind of PROVIDER_KINDS) {
     const provider = providers[kind]
     if (provider)
-      providers[kind] = withAttachments(
-        // Inside the attachment wrapper: the owner's instructions are never searched for attachment markers.
-        withProjectInstructions(provider, () => {
-          const taskId = runningTaskId.getStore()
-          const task = taskId ? getTask(db, taskId) : undefined
-          return task ? getRepo(db, task.repoId)?.instructions : undefined
-        }),
-        attachmentStore,
-        () => runningTaskId.getStore(),
-        // A sent file gone from disk (for example a backup restored on another computer) is named as missing; the
-        // run goes on and the owner sees why.
-        (taskId, records) => {
-          // Once per task and file: every later run would report the same file again.
-          const reported = listTaskEvents(db, taskId)
-            .filter((event) => event.type === 'attachment.missing')
-            .flatMap((event) => payloadAttachments(event.payload).map((file) => file.id))
-          const fresh = records.filter((record) => !reported.includes(record.id))
-          if (fresh.length)
-            publishTaskLevel(taskId, 'attachment.missing', { attachments: fresh.map(attachmentInfo) })
-        },
+      // Outermost: it sees skill markers before attached files are quoted into the prompt, so a file can never
+      // look like an invocation.
+      providers[kind] = withPlugins(
+        withAttachments(
+          // Inside the attachment wrapper: the owner's instructions are never searched for attachment markers.
+          withProjectInstructions(provider, () => {
+            const taskId = runningTaskId.getStore()
+            const task = taskId ? getTask(db, taskId) : undefined
+            return task ? getRepo(db, task.repoId)?.instructions : undefined
+          }),
+          attachmentStore,
+          () => runningTaskId.getStore(),
+          // A sent file gone from disk (for example a backup restored on another computer) is named as missing; the
+          // run goes on and the owner sees why.
+          (taskId, records) => {
+            // Once per task and file: every later run would report the same file again.
+            const reported = listTaskEvents(db, taskId)
+              .filter((event) => event.type === 'attachment.missing')
+              .flatMap((event) => payloadAttachments(event.payload).map((file) => file.id))
+            const fresh = records.filter((record) => !reported.includes(record.id))
+            if (fresh.length)
+              publishTaskLevel(taskId, 'attachment.missing', { attachments: fresh.map(attachmentInfo) })
+          },
+        ),
+        plugins,
+        skillMarkers,
+        pluginRunContext,
+        TOOL_HUB_SERVER_NAME,
+        runGrants,
       )
   }
   const baseExecutor =
@@ -1373,9 +1419,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       ...(atRepo ? [] : [{ host: await gitCommonDir(run.cwd), readOnly: false }]),
       { host: JOY_SOURCE_ROOT },
       // Files Joy wrote for this run (MCP config, output schema).
-      ...run.args
-        .filter((arg) => isAbsolute(arg) && arg.startsWith(tmpdir()) && existsSyncFs(arg))
-        .map((arg) => ({ host: arg })),
+      ...runFileMounts(run.args, [tmpdir(), runConfigDir]),
       // Files the provider says the CLI reads (attached images for `codex exec --image`), read-only: the container
       // may look at them, never change them.
       ...(run.readFiles ?? [])
@@ -2483,6 +2527,76 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       json(res, 200, { usage: listUsage(db) })
       return
     }
+    if (url.pathname === '/api/skills' && method === 'GET') {
+      const repoId = url.searchParams.get('repoId')
+      const repo = repoId ? getRepo(db, idSchema.parse(repoId) as RepoId) : undefined
+      if (repoId && !repo) throw new HttpError(404, `Repository ${repoId} was not found`)
+      const skills = await plugins.skills(repo?.path)
+      json(res, 200, {
+        skills: skills.map(({ name, description, cli, scope, kind }) => ({
+          name,
+          ...(description ? { description } : {}),
+          cli,
+          scope,
+          kind,
+        })),
+      })
+      return
+    }
+    if (url.pathname === '/api/files' && method === 'GET') {
+      const taskId = url.searchParams.get('taskId')
+      const repoId = url.searchParams.get('repoId')
+      let dir: string | undefined
+      if (taskId) {
+        const task = getTask(db, idSchema.parse(taskId) as TaskId)
+        if (!task) throw new HttpError(404, `Task ${taskId} was not found`)
+        // The task's own copy has the files the agent added; once it is gone, the project's checkout.
+        const attempt = task.mode === 'compete' ? chosenAttempt(task) : latestAttempt(db, task.id)
+        const worktree = attempt?.worktreePath
+        dir = worktree && existsSyncFs(worktree) ? worktree : getRepo(db, task.repoId)?.path
+      } else if (repoId) {
+        dir = getRepo(db, idSchema.parse(repoId) as RepoId)?.path
+        if (!dir) throw new HttpError(404, `Repository ${repoId} was not found`)
+      } else throw new HttpError(400, 'Name a repoId or a taskId')
+      const query = z
+        .string()
+        .max(200)
+        .parse(url.searchParams.get('q') ?? '')
+      json(res, 200, { files: dir ? await plugins.files(dir, query) : [] })
+      return
+    }
+    if (url.pathname === '/api/mcp-servers' && method === 'GET') {
+      json(res, 200, { servers: plugins.listServers() })
+      return
+    }
+    if (url.pathname === '/api/mcp-servers' && method === 'POST') {
+      assertJsonContentType(req)
+      const input = mcpServerInputSchema.parse(await readJson(req))
+      assertReposExist(input.repoIds)
+      try {
+        json(res, 201, { server: await plugins.createServer(input) })
+      } catch (error) {
+        if (error instanceof PluginInputError) throw new HttpError(422, error.message)
+        throw error
+      }
+      return
+    }
+    const mcpServerMatch = /^\/api\/mcp-servers\/([^/]+)$/.exec(url.pathname)
+    if (mcpServerMatch && (method === 'PATCH' || method === 'DELETE')) {
+      const id = idSchema.parse(decodePathSegment(mcpServerMatch[1] ?? ''))
+      if (method === 'DELETE') {
+        if (!(await plugins.deleteServer(id))) throw new HttpError(404, `MCP server ${id} was not found`)
+        json(res, 200, { deleted: true })
+        return
+      }
+      assertJsonContentType(req)
+      const patch = mcpServerPatchSchema.parse(await readJson(req))
+      assertReposExist(patch.repoIds)
+      const server = plugins.updateServer(id, patch)
+      if (!server) throw new HttpError(404, `MCP server ${id} was not found`)
+      json(res, 200, { server })
+      return
+    }
     if (url.pathname === '/api/config' && method === 'GET') {
       json(res, 200, { config: await configStore.get() })
       return
@@ -2980,7 +3094,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 
   /** An owner message as the agent gets it: the owner's words, then a marker per attached file. */
   function agentText(message: QueuedMessage): string {
-    return attachmentStore.withMarkers(message.text, message.attachments ?? [])
+    return attachmentStore.withMarkers(skillMarkers.mark(message.text), message.attachments ?? [])
   }
 
   /**
@@ -3019,7 +3133,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     const ids = listTaskAttachments(db, task.id)
       .filter((record) => !record.messageId)
       .map((record) => record.id)
-    return attachmentStore.withMarkers(task.prompt, ids)
+    // An imported issue is not the owner's words: a leading `/name` in it is just text.
+    const prompt = task.provenance === 'external_content' ? task.prompt : skillMarkers.mark(task.prompt)
+    return attachmentStore.withMarkers(prompt, ids)
   }
 
   /**
@@ -3032,7 +3148,10 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     // Files go after the instructions, as reference data: an attached file is not itself an instruction.
     const files = messages.flatMap((message) => message.files)
     const named = (message: (typeof messages)[number]) =>
-      [message.text, message.files.length ? `(attached: ${message.files.map((f) => f.name).join(', ')})` : '']
+      [
+        skillMarkers.mark(message.text),
+        message.files.length ? `(attached: ${message.files.map((f) => f.name).join(', ')})` : '',
+      ]
         .filter(Boolean)
         .join(' ')
     return [
@@ -3951,7 +4070,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       ...(files.length ? { attachments: files.map(attachmentInfo) } : {}),
     })
     const message = attachmentStore.withMarkers(
-      input.text,
+      skillMarkers.mark(input.text),
       files.map((record) => record.id),
     )
     const prompt = rewindHandoffPrompt({
@@ -4795,6 +4914,25 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     joyHomeAliases: pathSpellings(home),
   }
 
+  function assertReposExist(repoIds: readonly string[] | null | undefined): void {
+    for (const id of repoIds ?? [])
+      if (!getRepo(db, id as RepoId)) throw new HttpError(422, `Repository ${id} was not found`)
+  }
+
+  /**
+   * The classifier's environment for the run in this worktree: plus what the owner granted that run (the read-only MCP
+   * servers it was handed, the skills the owner invoked). A worktree without a running grant gets neither.
+   */
+  function policyEnvironment(worktree: string): ClassifyEnvironment {
+    const grant = runGrants.for(worktree)
+    if (!grant) return classifyEnvironment
+    return {
+      ...classifyEnvironment,
+      ...(grant.readOnlyServers.length ? { readOnlyMcpServers: grant.readOnlyServers } : {}),
+      ...(grant.skills.size ? { ownerSkills: [...grant.skills] } : {}),
+    }
+  }
+
   function createRunToolHub(
     task: StoredTask,
     repo: RepoRecord,
@@ -5036,7 +5174,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           input.input,
           workspace.path,
           effectivePermissionMode(task),
-          classifyEnvironment,
+          policyEnvironment(workspace.path),
         )
         const action =
           task.provenance === 'external_content'
@@ -5135,13 +5273,15 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
               command: request.params.command ?? null,
               cwd: request.params.cwd ?? null,
             }
-          : { method: request.method, grantRoot: request.params.grantRoot ?? null }
+          : request.method === 'mcpServer/elicitation/request'
+            ? codexElicitationInput(request.params)
+            : { method: request.method, grantRoot: request.params.grantRoot ?? null }
       const classified = classifyCodexApproval(
         codexInput,
         workspace.path,
         // Codex only asks to step outside its workspace-write sandbox, which is the real boundary.
         effectivePermissionMode(task),
-        classifyEnvironment,
+        policyEnvironment(workspace.path),
       )
       const action =
         task.provenance === 'external_content'
@@ -6989,4 +7129,62 @@ function pathSpellings(dir: string): string[] {
   }
   spellings.delete(dir)
   return [...spellings]
+}
+
+/** What the policy needs from a Codex MCP elicitation; `_meta` and `message` come from the MCP server, untrusted. */
+function codexElicitationInput(params: {
+  serverName: string
+  message?: string | null
+  [key: string]: unknown
+}): CodexApprovalInput {
+  const meta =
+    params._meta !== null && typeof params._meta === 'object' && !Array.isArray(params._meta)
+      ? (params._meta as Record<string, unknown>)
+      : {}
+  const tool = typeof meta.tool_title === 'string' ? meta.tool_title : undefined
+  return {
+    method: 'mcpServer/elicitation/request',
+    server: params.serverName,
+    toolCall: meta.codex_approval_kind === 'mcp_tool_call',
+    ...(tool ? { tool } : {}),
+    ...(typeof params.message === 'string' ? { message: params.message } : {}),
+  }
+}
+
+/**
+ * The files among a CLI's arguments that Joy wrote for the run (in the OS temp folder or the MCP config folder under
+ * JOY_HOME), mounted read-only into an agent container so the CLI there can read them. Only the file itself is
+ * mounted, never its folder.
+ */
+export function runFileMounts(
+  args: readonly string[],
+  dirs: readonly string[],
+): Array<{ host: string; readOnly: true }> {
+  return args
+    .filter((arg) => isAbsolute(arg) && dirs.some((dir) => isInside(dir, arg)) && existsSyncFs(arg))
+    .map((arg) => ({ host: arg, readOnly: true as const }))
+}
+
+function isInside(dir: string, path: string): boolean {
+  const rel = relative(dir, path)
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
+}
+
+/** Removes the `joy-claude-*` folders a crashed run left in `dir`; anything else there is left alone. */
+export async function removeStaleRunConfigs(dir: string, warn: (message: string) => void): Promise<void> {
+  let names: string[]
+  try {
+    names = await readdir(dir)
+  } catch {
+    return
+  }
+  for (const name of names.filter((entry) => entry.startsWith('joy-claude-'))) {
+    try {
+      await rm(join(dir, name), { recursive: true, force: true })
+    } catch (cause) {
+      warn(
+        `Could not remove the old MCP config ${join(dir, name)}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      )
+    }
+  }
 }

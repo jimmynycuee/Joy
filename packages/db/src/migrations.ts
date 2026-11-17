@@ -554,6 +554,33 @@ export const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE conversations ADD COLUMN pinned_at TEXT CHECK (pinned_at IS NULL OR length(pinned_at) > 0);
     `,
   },
+  {
+    version: 26,
+    name: 'managed MCP servers',
+    sql: /* sql */ `
+      -- MCP servers the owner added in Settings: Joy hands the enabled ones to the implementer's CLI. vars is a JSON
+      -- array of {name, value?}: environment variables (stdio) or HTTP headers (http). An entry without value is a
+      -- secret whose value lives only in the OS keychain (packages/secrets, mcpSecretName), never here. repo_ids is
+      -- NULL for every project or a JSON array of repository ids. read_only: the owner marked the server's tools as
+      -- read-only, so a task in the auto permission mode may use them without asking (packages/policy).
+      CREATE TABLE mcp_servers (
+        id          TEXT PRIMARY KEY CHECK (length(id) = 36),
+        name        TEXT NOT NULL UNIQUE COLLATE NOCASE
+                    CHECK (length(name) BETWEEN 1 AND 64 AND name NOT GLOB '*[^A-Za-z0-9_-]*' AND name NOT GLOB '*__*'),
+        transport   TEXT NOT NULL CHECK (transport IN ('stdio', 'http')),
+        command     TEXT CHECK (command IS NULL OR length(command) BETWEEN 1 AND 4000),
+        args        TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(args) AND json_type(args) = 'array'),
+        url         TEXT CHECK (url IS NULL OR length(url) BETWEEN 1 AND 4000),
+        vars        TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(vars) AND json_type(vars) = 'array'),
+        enabled     INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        read_only   INTEGER NOT NULL DEFAULT 0 CHECK (read_only IN (0, 1)),
+        repo_ids    TEXT CHECK (repo_ids IS NULL OR (json_valid(repo_ids) AND json_type(repo_ids) = 'array')),
+        created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        CHECK ((transport = 'stdio' AND command IS NOT NULL AND url IS NULL)
+            OR (transport = 'http' AND url IS NOT NULL AND command IS NULL))
+      ) STRICT;
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

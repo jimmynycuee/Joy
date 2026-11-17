@@ -4,6 +4,7 @@ import { EFFORTS, ROLES } from '@joy/core'
 import type { ModelRef, ProviderKind, Role } from '@joy/core'
 import type { JoyConfig } from '@joy/config'
 import { ArchivedPanel } from '../components/ArchivedPanel.js'
+import { PluginsPanel } from '../components/PluginsPanel.js'
 import { RepoSettingsCard } from '../components/RepoSettings.js'
 import {
   AccessTokenPanel,
@@ -37,6 +38,7 @@ export type SettingsSection =
   | 'permissions'
   | 'notifications'
   | 'projects'
+  | 'plugins'
   | 'data'
   | 'stats'
   | 'archived'
@@ -48,6 +50,7 @@ const SECTIONS: Array<{ id: SettingsSection; label: string }> = [
   { id: 'permissions', label: '權限與自主' },
   { id: 'notifications', label: '通知' },
   { id: 'projects', label: '專案' },
+  { id: 'plugins', label: '外掛' },
   { id: 'data', label: '資料與備份' },
   { id: 'stats', label: '統計' },
   { id: 'archived', label: '已封存' },
@@ -248,6 +251,7 @@ export function SettingsPage(props: SettingsPageProps) {
         </section>
       )
     }
+    if (section === 'plugins') return <PluginsPanel repos={props.repos} />
     if (section === 'data') {
       return (
         <>

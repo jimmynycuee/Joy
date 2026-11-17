@@ -28,7 +28,24 @@ function record(path, value) {
   if (path) appendFileSync(path, `${JSON.stringify(value)}\n`)
 }
 
+const elicitations = new Set()
 function streamTurn() {
+  // 'elicit': an MCP tool approval (synthetic shape; see docs/spikes/codex.md) and one Joy cannot read come first.
+  if (process.env.FAKE_APP_SERVER_MODE === 'elicit' && elicitations.size === 0) {
+    send({
+      id: 'mcp-ok',
+      method: 'mcpServer/elicitation/request',
+      params: {
+        serverName: 'files',
+        threadId: 'thread-synthetic-1',
+        turnId: 'turn-synthetic-1',
+        message: 'Allow?',
+        _meta: { codex_approval_kind: 'mcp_tool_call', tool_title: 'search' },
+      },
+    })
+    send({ id: 'mcp-bad', method: 'mcpServer/elicitation/request', params: { message: 'no server' } })
+    return
+  }
   send({
     id: 'command-approval',
     method: fixture.commandApproval.method,
@@ -74,6 +91,12 @@ lines.on('line', (line) => {
       send({ id: message.id, error: { code: -32600, message: 'expected turn is not active' } })
     else send({ id: message.id, result: { turnId: message.params.expectedTurnId } })
     streamTurn()
+    return
+  }
+  if (message.id === 'mcp-ok' || message.id === 'mcp-bad') {
+    elicitations.add(message.id)
+    record(approvalsPath, { id: message.id, result: message.result, error: message.error })
+    if (elicitations.size === 2) streamTurn()
     return
   }
   if (message.id === 'command-approval' || message.id === 'file-approval') {

@@ -6,7 +6,7 @@ export type {
   InstallManager,
   PackageManager,
 } from './dependencies.js'
-export { GitError, KeyedMutex, git, gitEnvironment } from './git.js'
+export { GitError, KeyedMutex, git, gitEnvironment, listProjectFiles } from './git.js'
 export { runCommand } from './run.js'
 export type { RunCommandInput, RunCommandResult } from './run.js'
 export {

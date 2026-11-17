@@ -1,7 +1,7 @@
 import type { Locator, Page } from '@playwright/test'
 
 export type SettingsSection =
-  '一般' | '模型' | '權限與自主' | '通知' | '專案' | '資料與備份' | '統計' | '已封存' | '進階'
+  '一般' | '模型' | '權限與自主' | '通知' | '專案' | '外掛' | '資料與備份' | '統計' | '已封存' | '進階'
 
 /** Opens 設定 from the sidebar, then one of its sections when given. */
 export async function openSettings(page: Page, section?: SettingsSection): Promise<void> {

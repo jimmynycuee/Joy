@@ -79,6 +79,17 @@ export {
 } from './task-allows.js'
 export type { NewTaskAllow, TaskAllowKind, TaskAllowRecord } from './task-allows.js'
 export {
+  assertMcpServerShape,
+  createMcpServer,
+  deleteMcpServer,
+  getMcpServer,
+  listMcpServers,
+  mcpServersForRepo,
+  RESERVED_MCP_SERVER_NAMES,
+  updateMcpServer,
+} from './mcp-servers.js'
+export type { McpServerRecord, McpServerUpdate, McpVar, NewMcpServer } from './mcp-servers.js'
+export {
   appendMessage,
   createConversation,
   getConversation,

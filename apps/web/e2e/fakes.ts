@@ -119,6 +119,8 @@ export async function startFakeJoyRuntime(
   })
   const server = await createJoyServer({
     home,
+    // Skills are listed from here, never from the real home directory.
+    userHome: join(home, 'user-home'),
     apiToken: E2E_API_TOKEN,
     ...(options.allowPlaywrightOrigin ? { allowPlaywrightOrigin: true } : {}),
     database,

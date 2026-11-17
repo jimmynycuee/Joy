@@ -7,6 +7,8 @@ import { ApiError, errorMessage, request } from './api.js'
 import { AddProjectDialog } from './components/AddProjectDialog.js'
 import type { NewProject } from './components/AddProjectDialog.js'
 import { CommandPalette } from './components/CommandPalette.js'
+import { JoyCommandsContext } from './components/CompletionMenu.js'
+import type { JoyCommand } from './completion.js'
 import { Mascot } from './components/Mascot.js'
 import type { PaletteItem } from './components/CommandPalette.js'
 import { Sidebar } from './components/Sidebar.js'
@@ -515,6 +517,13 @@ export function Workspace() {
           ? '聊聊'
           : '設定'
 
+  // A few of the palette's commands, for `/` in a message box.
+  const joyCommands: JoyCommand[] = [
+    { name: 'new', label: '新任務', run: openComposer },
+    { name: 'chat', label: '聊聊', run: newConversation },
+    { name: 'settings', label: '設定', run: () => openSettings() },
+    { name: 'theme', label: '切換主題', run: () => changeTheme(nextTheme(theme)) },
+  ]
   const paletteItems: PaletteItem[] = [
     { id: 'cmd:new-task', label: '新任務', hint: '指令', icon: 'plus', run: openComposer },
     { id: 'cmd:chat', label: '聊聊', hint: '指令', icon: 'chat', run: newConversation },
@@ -689,7 +698,7 @@ export function Workspace() {
             {notice}
           </div>
         )}
-        {content}
+        <JoyCommandsContext.Provider value={joyCommands}>{content}</JoyCommandsContext.Provider>
       </div>
 
       {showRepoForm && <AddProjectDialog onClose={() => setShowRepoForm(false)} onAdd={createRepo} />}

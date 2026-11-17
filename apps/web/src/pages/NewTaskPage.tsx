@@ -190,6 +190,7 @@ export function NewTaskPage({
               busy={busy}
               autoFocus
               attachments={{ items: files.items, onAdd: files.add, onRemove: files.remove }}
+              completion={{ cli: models.implementer.provider, repoId: activeRepoId || undefined }}
               bar={
                 <>
                   <ProjectMenu

@@ -16,6 +16,28 @@ export interface ClassifiedAction extends ProposedAction {
 const JOY_MCP_PREFIX = 'mcp__joy__'
 
 const READ_TOOLS = new Set(['read', 'glob', 'grep', 'listdirectory', 'ls'])
+/**
+ * Loading a skill or custom command. One the owner invoked with `/name` in this run (`env.ownerSkills`) runs on its
+ * own: the owner asked for it. Any other asks, in every mode: a skill's `allowed-tools` lets the CLI run those tools
+ * without asking Joy, and a repository (or the agent itself, by editing the worktree) can bring its own skills.
+ */
+const SKILL_TOOLS = ['skill', 'slashcommand'] as const
+
+function isSkillTool(name: string): boolean {
+  return (SKILL_TOOLS as readonly string[]).includes(name)
+}
+
+/** The skill a Skill (`{skill}`) or SlashCommand (`{command: '/name args'}`) call loads, if the owner invoked it. */
+function isOwnerSkill(
+  name: string,
+  record: Record<string, unknown> | undefined,
+  env: ClassifyEnvironment,
+): boolean {
+  const raw = name === 'skill' ? record?.skill : record?.command
+  if (typeof raw !== 'string') return false
+  const skill = (name === 'skill' ? raw : raw.replace(/^\//, '')).trim().split(/\s/)[0] ?? ''
+  return skill !== '' && (env.ownerSkills ?? []).includes(skill)
+}
 const WRITE_TOOLS = new Set(['edit', 'multiedit', 'write', 'notebookedit'])
 
 /** Anything that chains commands, redirects, substitutes or expands makes a command impossible to judge by its words. */
@@ -98,6 +120,8 @@ function judgeClaudeTool(
   env: ClassifyEnvironment,
 ): Judgement {
   if (toolName.startsWith('mcp__')) {
+    // An owner-marked read-only server runs on its own in `auto` only; `full` asks for it like any other server.
+    if (mode === 'auto' && isReadOnlyMcp(mcpServerOf(toolName), env)) return inside('read_file')
     // Joy's own tools keep their rules; another server's tools are unknown to Joy.
     const kind = classifyKind(toolName, input, cwd)
     return kind === 'run_outside_worktree' ? unknownTool : inside(kind)
@@ -126,6 +150,7 @@ function judgeClaudeTool(
       ? inside('run_in_worktree')
       : { kind: 'run_outside_worktree', analysis }
   }
+  if (isSkillTool(name)) return isOwnerSkill(name, record, env) ? inside('read_file') : unknownTool
   if (SESSION_TOOLS.has(name)) return inside('read_file')
   if (NETWORK_TOOLS.has(name)) return outside('downloads from or uploads to the network')
   return unknownTool
@@ -194,6 +219,7 @@ function classifyKind(
   }
   const name = toolName.toLowerCase()
   const record = asRecord(input)
+  if (isSkillTool(name)) return isOwnerSkill(name, record, env) ? 'read_file' : 'run_outside_worktree'
   if (READ_TOOLS.has(name)) {
     // Glob and Grep default to the working directory when no path is given; Read always names a file.
     const path = pathOf(record)
@@ -263,6 +289,17 @@ export function isSafeShellCommand(command: string): boolean {
   })
 }
 
+/** `mcp__<server>__<tool>`: the server part (server names never contain `__`; Joy's are checked on input). */
+function mcpServerOf(toolName: string): string {
+  const rest = toolName.slice('mcp__'.length)
+  const end = rest.indexOf('__')
+  return end < 0 ? '' : rest.slice(0, end)
+}
+
+function isReadOnlyMcp(server: string, env: ClassifyEnvironment): boolean {
+  return server !== '' && server !== 'joy' && (env.readOnlyMcpServers ?? []).includes(server)
+}
+
 function asRecord(input: unknown): Record<string, unknown> | undefined {
   return input !== null && typeof input === 'object' && !Array.isArray(input)
     ? (input as Record<string, unknown>)
@@ -291,6 +328,17 @@ export type CodexApprovalInput =
       cwd?: string | null
     }
   | { method: 'item/fileChange/requestApproval'; grantRoot?: string | null }
+  /**
+   * Codex asks before a tool call of an MCP server Joy told it to ask about (`toolCall`: its `_meta` says so), or the
+   * server itself asks the owner something. `tool` and `message` come from the MCP server: untrusted, shown only.
+   */
+  | {
+      method: 'mcpServer/elicitation/request'
+      server: string
+      toolCall?: boolean
+      tool?: string
+      message?: string
+    }
 
 /**
  * Map a Codex app-server approval request to a policy action. Codex only asks when it wants to step outside its
@@ -302,6 +350,29 @@ export function classifyCodexApproval(
   mode: PermissionMode = 'ask',
   env?: ClassifyEnvironment,
 ): ClassifiedAction {
+  if (request.method === 'mcpServer/elicitation/request') {
+    const said = [request.tool, request.message]
+      .filter((part): part is string => typeof part === 'string' && part.trim() !== '')
+      .map((part) => part.replace(/\s+/g, ' ').trim().slice(0, 200))
+      .join(' — ')
+    const action: ProposedAction = {
+      kind: 'run_outside_worktree',
+      summary: request.toolCall
+        ? `Codex requested a tool of the ${request.server} MCP server${said ? ` (the server says: ${said})` : ''}.`
+        : `The ${request.server} MCP server asks something${said ? ` (it says: ${said})` : ''}.`,
+      detail: request,
+      provenance: 'agent',
+    }
+    // Same rule as Claude's mcp__ tools: an owner-marked read-only server runs on its own in `auto`, nowhere else,
+    // and only for a tool call: anything else the server asks goes to the owner.
+    if (
+      mode === 'auto' &&
+      request.toolCall === true &&
+      isReadOnlyMcp(request.server, env ?? defaultClassifyEnvironment())
+    )
+      return { ...action, kind: 'read_file' }
+    return mode === 'ask' ? action : withVerdict(action, unknownTool, mode)
+  }
   if (mode !== 'ask')
     return classifyCodexApprovalForMode(request, worktree, mode, env ?? defaultClassifyEnvironment())
   let kind: ActionKind = 'run_outside_worktree'
@@ -330,7 +401,7 @@ function unwrapShell(command: string): string {
  * analysis as Claude's Bash decides whether that is still the worktree's business.
  */
 function classifyCodexApprovalForMode(
-  request: CodexApprovalInput,
+  request: Exclude<CodexApprovalInput, { method: 'mcpServer/elicitation/request' }>,
   worktree: string,
   mode: 'auto' | 'full',
   env: ClassifyEnvironment,

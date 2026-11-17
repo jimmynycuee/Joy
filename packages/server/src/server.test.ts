@@ -1710,6 +1710,65 @@ describe('Joy local server', () => {
   )
 
   it(
+    "answers a Codex MCP elicitation with the policy: the owner's read-only server runs in auto, ask declines",
+    { timeout: 30_000 },
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'joy-codex-mcp-'))
+      dirs.push(dir)
+      const answersFor = async (permissionMode: 'ask' | 'auto') => {
+        const approvalsPath = join(dir, `mcp-${permissionMode}.jsonl`)
+        const fixtureData = structuredClone(syntheticCodexAppServerFixture)
+        fixtureData.commandApproval.params.command = 'pnpm test'
+        fixtureData.commandApproval.params.cwd = dir
+        const { serverPromise } = fixture({
+          worktreePath: dir,
+          codexAppServer: {
+            command: process.execPath,
+            argsPrefix: [fakeCodexAppServer],
+            env: {
+              FAKE_APP_SERVER_MODE: 'elicit',
+              FAKE_APP_SERVER_FIXTURE: JSON.stringify(fixtureData),
+              FAKE_APPROVALS_OUT: approvalsPath,
+            },
+            timeoutMs: 10_000,
+          },
+        })
+        const { origin } = await start(serverPromise)
+        // The fake app-server asks about a server named `files`.
+        const added = await postJson(`${origin}/api/mcp-servers`, {
+          name: 'files',
+          transport: 'stdio',
+          command: 'files-mcp',
+          readOnly: true,
+        })
+        expect(added.status).toBe(201)
+        const repoResponse = await postJson(`${origin}/api/repos`, {
+          path: `/tmp/codex-mcp-${permissionMode}`,
+          defaultBranch: 'main',
+        })
+        const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+        const taskResponse = await postJson(`${origin}/api/tasks`, {
+          repoId: repo.id,
+          title: 'Codex MCP',
+          prompt: 'Use the files server',
+          mode: 'single',
+          permissionMode,
+          roleOverrides: { implementer: { provider: 'codex-cli', model: 'gpt-6-luna', effort: 'low' } },
+        })
+        const { task } = (await taskResponse.json()) as { task: { id: string } }
+        await waitForStatus(origin, task.id, 'done', 15_000)
+        const answers = readFileSync(approvalsPath, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line) as { id: string; result?: unknown })
+        return answers.find((answer) => answer.id === 'mcp-ok')?.result
+      }
+      expect(await answersFor('auto')).toEqual({ action: 'accept', content: {} })
+      expect(await answersFor('ask')).toEqual({ action: 'decline', content: null })
+    },
+  )
+
+  it(
     "routes a review-loop Codex implementer's approval requests through its policy too",
     { timeout: 20_000 },
     async () => {

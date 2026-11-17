@@ -1,0 +1,262 @@
+import type { AgentEvent, AgentProvider, RepoId, RunOptions, Steer } from '@joy/core'
+import { openDatabase } from '@joy/db'
+import type { DiscoveredSkill } from '@joy/providers'
+import { MemoryBackend, SecretStore } from '@joy/secrets'
+import { createMcpServer } from '@joy/db'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import { PluginService, rankFiles, RunGrants, SkillMarkers, withPlugins } from './plugins.js'
+
+const skills: DiscoveredSkill[] = [
+  {
+    name: 'review',
+    cli: 'claude-cli',
+    scope: 'user',
+    kind: 'skill',
+    path: '/h/.claude/skills/review/SKILL.md',
+  },
+  {
+    name: 'deploy',
+    cli: 'codex-cli',
+    scope: 'project',
+    kind: 'skill',
+    path: '/p/.agents/skills/deploy/SKILL.md',
+  },
+]
+
+describe('rankFiles', () => {
+  const files = [
+    'src/auth/login.ts',
+    'docs/login-flow.md',
+    'src/logic.ts',
+    'README.md',
+    'src/legacy/old_login.ts',
+  ]
+  it('puts file-name matches first, then folder matches, then letters in order; shorter paths win ties', () => {
+    expect(rankFiles(files, 'login')).toEqual([
+      'src/auth/login.ts',
+      'docs/login-flow.md',
+      'src/legacy/old_login.ts',
+    ])
+    expect(rankFiles(files, 'auth')).toEqual(['src/auth/login.ts'])
+    expect(rankFiles(files, 'lgc')).toEqual(['src/logic.ts', 'src/legacy/old_login.ts'])
+    expect(rankFiles(files, 'SRC\\AUTH')).toEqual(['src/auth/login.ts'])
+    expect(rankFiles(files, '', 2)).toEqual(['src/auth/login.ts', 'docs/login-flow.md'])
+    expect(rankFiles(files, 'zzz')).toEqual([])
+  })
+})
+
+describe('SkillMarkers', () => {
+  it('marks only a leading /name and expands it per CLI', () => {
+    const markers = new SkillMarkers()
+    const marked = markers.mark('/review the auth flow')
+    expect(marked).not.toContain('/review')
+    expect(markers.has(marked)).toBe(true)
+    expect(markers.expand(marked, 'claude-cli', skills)).toMatch(
+      /^The owner invoked the "review" skill.*\n the auth flow$/,
+    )
+    // Codex has no `review`: the owner's text comes back as typed.
+    expect(markers.expand(marked, 'codex-cli', skills)).toBe('/review the auth flow')
+    expect(markers.expand(markers.mark('/deploy'), 'codex-cli', skills)).toContain('$deploy')
+    for (const text of ['no slash', ' /review indented', '/tmp/file.txt is big', 'see /review', '/'])
+      expect(markers.mark(text)).toBe(text)
+  })
+
+  it("does not expand another instance's marker (forged or stale)", () => {
+    const one = new SkillMarkers()
+    const other = new SkillMarkers()
+    const forged = one.mark('/review x')
+    expect(other.has(forged)).toBe(false)
+    expect(other.expand(forged, 'claude-cli', skills)).toBe(forged)
+  })
+})
+
+describe('withPlugins', () => {
+  function setup(projectDir = '/nowhere') {
+    const db = openDatabase(':memory:')
+    const plugins = new PluginService({
+      db,
+      secretStore: new SecretStore({ backend: new MemoryBackend(), env: {} }),
+      userHome: '/nowhere-home',
+      env: {},
+      warn: () => {},
+    })
+    const seen: RunOptions[] = []
+    const steered: string[] = []
+    const inner: AgentProvider = {
+      kind: 'claude-cli',
+      capabilities: {
+        codeEdit: true,
+        tools: true,
+        resume: true,
+        presetSessionId: false,
+        delegatedApproval: true,
+        quotaEvents: false,
+        structuredOutput: true,
+      },
+      async *run(options): AsyncGenerator<AgentEvent> {
+        seen.push(options)
+        const raw: Steer = async (text) => {
+          steered.push(text)
+          return true
+        }
+        options.onSteer?.(raw)
+        yield { type: 'done', sessionId: 's', isError: false }
+      },
+      healthCheck: async () => ({ ok: true, installed: true, loggedIn: true as const }),
+    }
+    const markers = new SkillMarkers()
+    const grants = new RunGrants()
+    const wrapped = withPlugins(
+      inner,
+      plugins,
+      markers,
+      () => ({ repoId: 'r1' as RepoId, projectDir, container: false }),
+      'joy',
+      grants,
+    )
+    return { wrapped, seen, steered, markers, db, grants }
+  }
+  const base = (extra: Partial<RunOptions> = {}): RunOptions => ({
+    cwd: '/w',
+    prompt: 'Do it',
+    autonomy: 'workspace-write',
+    signal: new AbortController().signal,
+    ...extra,
+  })
+  const model = { provider: 'claude-cli', model: 'haiku' } as const
+
+  it('expands markers in steering too, and adds nothing to a run without the Tool Hub', async () => {
+    const { wrapped, seen, steered, markers } = setup()
+    let steer: Steer | undefined
+    for await (const event of wrapped.run(
+      base({ prompt: 'Plain', onSteer: (s) => (steer = s ?? steer) }),
+      model,
+    ))
+      void event
+    expect(seen[0]?.prompt).toBe('Plain')
+    expect(seen[0]?.mcpServers).toBeUndefined()
+    await steer?.(markers.mark('/unknown thing'))
+    expect(steered).toEqual(['/unknown thing'])
+  })
+
+  const temps: string[] = []
+  afterEach(() => {
+    for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('grants the run the skills the owner invoked and the read-only servers it was handed, until it ends', async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), 'joy-grant-'))
+    temps.push(projectDir)
+    mkdirSync(join(projectDir, '.claude', 'skills', 'review'), { recursive: true })
+    writeFileSync(
+      join(projectDir, '.claude', 'skills', 'review', 'SKILL.md'),
+      '---\nname: review\ndescription: Review it\n---\nbody\n',
+    )
+    const { wrapped, markers, db, grants } = setup(projectDir)
+    const server = (n: number, name: string, readOnly: boolean, vars?: Array<{ name: string }>) =>
+      createMcpServer(db, {
+        id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`,
+        name,
+        transport: 'stdio',
+        command: 'node',
+        readOnly,
+        ...(vars ? { vars } : {}),
+      })
+    server(1, 'docs', true)
+    server(2, 'files', false)
+    // Its secret is not in the keychain: left out of the run, so not granted either.
+    server(3, 'notes', true, [{ name: 'TOKEN' }])
+    const hub = [{ name: 'joy', transport: 'stdio' as const, command: 'node', args: [] }]
+    let during: ReturnType<RunGrants['for']>
+    for await (const event of wrapped.run(
+      base({ cwd: projectDir, prompt: markers.mark('/review now'), mcpServers: hub }),
+      model,
+    )) {
+      void event
+      during = grants.for(projectDir)
+    }
+    expect(during?.readOnlyServers).toEqual(['docs'])
+    expect([...(during?.skills ?? [])]).toEqual(['review'])
+    expect(grants.for(projectDir)).toBeUndefined()
+
+    // A run without the hub (a peer, a pre-review) gets no grant, and one going on in the same worktree leaves the
+    // implementer's grant alone.
+    const peer = wrapped.run(base({ cwd: projectDir, prompt: markers.mark('/review') }), model)
+    for await (const event of wrapped.run(
+      base({ cwd: projectDir, prompt: markers.mark('/review now'), mcpServers: hub }),
+      model,
+    )) {
+      void event
+      for await (const inner of peer) void inner
+      during = grants.for(projectDir)
+    }
+    expect(during?.readOnlyServers).toEqual(['docs'])
+    expect([...(during?.skills ?? [])]).toEqual(['review'])
+
+    // A /name that is no skill grants nothing.
+    for await (const event of wrapped.run(
+      base({ cwd: '/w/b', prompt: markers.mark('/nothing'), mcpServers: hub }),
+      model,
+    )) {
+      void event
+      during = grants.for('/w/b')
+    }
+    expect(during?.skills.size).toBe(0)
+  })
+
+  it('grants no skill that a user and a project both have under one name', async () => {
+    const userHome = mkdtempSync(join(tmpdir(), 'joy-grant-home-'))
+    const projectDir = mkdtempSync(join(tmpdir(), 'joy-grant-'))
+    temps.push(userHome, projectDir)
+    for (const root of [join(userHome, '.claude'), join(projectDir, '.claude')]) {
+      mkdirSync(join(root, 'skills', 'review'), { recursive: true })
+      writeFileSync(join(root, 'skills', 'review', 'SKILL.md'), '---\nname: review\ndescription: r\n---\n')
+    }
+    const db = openDatabase(':memory:')
+    const plugins = new PluginService({
+      db,
+      secretStore: new SecretStore({ backend: new MemoryBackend(), env: {} }),
+      userHome,
+      env: {},
+      warn: () => {},
+    })
+    const markers = new SkillMarkers()
+    const grants = new RunGrants()
+    let skills: Set<string> | undefined
+    const inner: AgentProvider = {
+      kind: 'claude-cli',
+      capabilities: {
+        codeEdit: true,
+        tools: true,
+        resume: true,
+        presetSessionId: false,
+        delegatedApproval: true,
+        quotaEvents: false,
+        structuredOutput: true,
+      },
+      async *run(options): AsyncGenerator<AgentEvent> {
+        skills = grants.for(options.cwd)?.skills
+        yield { type: 'done', sessionId: 's', isError: false }
+      },
+      healthCheck: async () => ({ ok: true, installed: true, loggedIn: true as const }),
+    }
+    const wrapped = withPlugins(
+      inner,
+      plugins,
+      markers,
+      () => ({ repoId: 'r1' as RepoId, projectDir, container: false }),
+      'joy',
+      grants,
+    )
+    const hub = [{ name: 'joy', transport: 'stdio' as const, command: 'node', args: [] }]
+    for await (const event of wrapped.run(
+      base({ cwd: projectDir, prompt: markers.mark('/review'), mcpServers: hub }),
+      model,
+    ))
+      void event
+    expect(skills?.size).toBe(0)
+  })
+})

@@ -10,6 +10,7 @@ import type {
   CommandExecutionApprovalParams,
   FileChangeApprovalParams,
   JsonRpcId,
+  McpElicitationParams,
   ServerApprovalRequest,
 } from './app-server-protocol.js'
 
@@ -17,6 +18,7 @@ export type CodexApprovalDecision = 'accept' | 'acceptForSession' | 'decline' | 
 export type CodexApprovalRequest =
   | { method: 'item/commandExecution/requestApproval'; params: CommandExecutionApprovalParams }
   | { method: 'item/fileChange/requestApproval'; params: FileChangeApprovalParams }
+  | { method: 'mcpServer/elicitation/request'; params: McpElicitationParams }
 export type CodexApprovalHandler = (
   request: CodexApprovalRequest,
   runOptions: RunOptions,
@@ -205,7 +207,14 @@ export class CodexAppServerClient {
       if (decision === 'acceptForSession') decision = 'accept'
     }
     try {
-      this.write({ id: message.id, result: { decision } })
+      // An elicitation answers with the MCP shape (action, content), not a decision; only an accept goes through.
+      const result =
+        request.method === 'mcpServer/elicitation/request'
+          ? decision === 'accept' || decision === 'acceptForSession'
+            ? { action: 'accept', content: {} }
+            : { action: 'decline', content: null }
+          : { decision }
+      this.write({ id: message.id, result })
     } catch {
       // The app-server may have exited while the policy handler was deciding.
     }
@@ -263,6 +272,13 @@ function parseApprovalRequest(message: JsonRpcRequest): ServerApprovalRequest | 
     typeof params.startedAtMs === 'number'
   ) {
     return { method: message.method, id: message.id, params: params as FileChangeApprovalParams }
+  }
+  if (
+    message.method === 'mcpServer/elicitation/request' &&
+    typeof params.serverName === 'string' &&
+    params.serverName !== ''
+  ) {
+    return { method: message.method, id: message.id, params: params as McpElicitationParams }
   }
   return undefined
 }
