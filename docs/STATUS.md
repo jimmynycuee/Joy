@@ -2,6 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-18（加入專案對話框：家目錄還在載入時開始編輯路徑（例如全選再貼上），載入結果不再蓋掉輸入框；修掉 CI 上 `t1.8` 偶爾失敗，分支 `folder-dialog-race`）
 - 最後更新：2026-11-17（專案 `.claude/settings.json` 會自己執行的指令（hooks 等）要擁有者同意才啟動 Claude，內容變了再問，migration 27，分支 `project-hooks`）
 - 最後更新：2026-11-17（e2e 的埠改用 `JOY_E2E_WEB_PORT`／`JOY_E2E_API_PORT` 設定，本機跑 e2e 不用再改檔，分支 `e2e-ports`）
 - 最後更新：2026-11-17（安全缺口：Claude 不再載入 `.claude/settings.local.json`、設定頁把 http MCP 設成唯讀前要確認、同一個 JOY_HOME 只能有一個 Joy，分支 `security-gaps`）；2026-11-17（外掛：輸入框 `/` 叫出 skill、`@` 插入專案檔案與 MCP server，設定 → 外掛可新增 MCP server（stdio／http，機密只在 keychain），分支 `plugins`，**`packages/core` 的 `McpServerConfig.approval`、`packages/policy` 的 MCP／Skill 規則與 `packages/secrets` 的 MCP 機密待擁有者審**）
@@ -503,6 +504,7 @@
 
 ## 已確認決策
 
+- 2026-11-18 加入專案對話框的時序（擁有者要求修 `t1.8` 偶爾失敗）：原因是第一次列出家目錄的結果在「全選」與「插入文字」之間抵達，把輸入框換成家目錄，貼上的路徑就接在後面（CI 上變成去 `/home/runner/tmp/...`；本機用暫時測試重現出 `/Users/jimmy/tmp/x`）。真人先 ⌘A 再貼上也會遇到，所以輸入框的 keydown／pointerdown 也算開始編輯，載入結果不再覆蓋。Playwright 的 `fill` 不發這些事件，`t1.8`、`container.spec.ts` 另外改成先等第一次列表再輸入、並檢查輸入值。新增 e2e 先失敗（`/home/me/home/me/code`）後通過；e2e 133 passed，`pnpm check` 1540 passed。
 - 2026-11-17 專案 hooks（擁有者要求「偵測專案 hooks」；以下細節為 agent 決定，`packages/policy`、`core`、`secrets` 沒動）：每次 Claude Code run 前（包住 `claude-cli` provider，含注入的）讀 cwd 的 `.claude/settings.json`，取會自己執行的鍵（hooks、statusLine、apiKeyHelper、awsAuthRefresh、awsCredentialExport、otelHeadersHelper、enabledPlugins、extraKnownMarketplaces）算 SHA-256；和 `repos.trusted_claude_settings`（migration 27）不同就用現有核准卡（`run_outside_worktree`、approve）在任務裡問，同意後記在專案上，拒絕或逾時就不啟動、任務失敗；沒有任務可問（例如助理）就拒絕。只改 permissions 等其他鍵不再問；JSON 壞掉也問。另外每個 Claude run 都加 `--strict-mcp-config`（實測沒加時會啟動 repo 的 `.mcp.json` server 與帳號的 claude.ai connectors）；`env` 也算（實測專案 env 在未信任資料夾生效）。Tool Hub 的 peer 用 worktree 找回任務來問；等核准用任務的取消訊號（peer 請求 55 秒就放棄，核准卡照樣等完整時限）；逾時後再按同意只記住信任，不續跑（第一個 run 還沒有 session 可續），要重送任務；Joy 重啟後這種逾時卡會走一般的延遲核准流程（未處理，低）；env 只顯示變數名稱，值只進指紋；compete 兩個 Claude 共用同一張卡；設定路徑不是一般檔案或超過 256 KB 就拒絕。Codex、skill／agent frontmatter 的 hooks 不在範圍；Joy 讀檔到 Claude 讀檔之間仍有短暫空窗（需要 agent 已留下背景程序）。驗證：`pnpm check` 1538 passed；新增單元與整合測試（問、同意後不再問、改了再問、拒絕不啟動、沒指令不問、peer、逾時後同意、FIFO、env、BOM）；reviewer 審過一輪並修正。
 - 2026-11-17 e2e 埠（擁有者要求「e2e port 可設定」）：Playwright、fake preview 與 `origin-proxy.spec.ts` 從 `apps/web/e2e/ports.ts` 讀 `JOY_E2E_WEB_PORT`（預設 5173）和 `JOY_E2E_API_PORT`（預設 4317）；server 新增 `playwrightOriginPort`（預設 4173，只在 `allowPlaywrightOrigin` 時生效），fake preview 一律信任自己的 port。`vite.config.ts` 不變（`pnpm web` 仍代理到 4317），埠只在 fake preview 的 inline config 覆寫。驗證：`JOY_E2E_WEB_PORT=4399 JOY_E2E_API_PORT=4398 pnpm test:e2e` 132 個全過（含以前換埠必失敗的 `t1.8`、`origin-proxy`）。
 - 2026-11-17 安全缺口（擁有者要求「先補安全缺口」；以下細節為 agent 決定，`packages/policy`、`packages/core`、`packages/secrets` 沒動）：(1) Claude 用 `--setting-sources user,project`：拿掉會繞過 Joy 的 `settings.local.json`，保留專案 skill、指令與 CLAUDE.md；專案 settings.json 的 hooks 仍會執行，視為加入 repo 時的信任。(2) http MCP 設成唯讀前用確認視窗，不另外加說明文字（介面減量）。(3) 單一實例用 SQLite 獨佔鎖檔 `<JOY_HOME>/joy.lock`，不用 pid 檔，避免殘鎖與 pid 重用。
