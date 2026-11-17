@@ -24,6 +24,11 @@ export function buildClaudeArgs(
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--model', model.model]
   if (streamingInput) args.push('--input-format', 'stream-json')
   if (model.effort) args.push('--effort', model.effort)
+  // Without the trust dialog (`-p` skips it) Claude Code 2.1.319 ignores the project's `.claude/settings.json` allow
+  // rules, but still applies `.claude/settings.local.json`'s allow rules and runs its hooks: a file a repository can
+  // commit would then run commands without reaching Joy. `local` is left out; `project` stays because it also brings
+  // the project's CLAUDE.md, skills and commands (checked with the real CLI, docs/spikes/claude-code.md).
+  args.push('--setting-sources', 'user,project')
 
   if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId)
   else if (opts.sessionId) args.push('--session-id', opts.sessionId)

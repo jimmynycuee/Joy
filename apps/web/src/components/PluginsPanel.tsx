@@ -4,7 +4,7 @@ import { errorMessage, request } from '../api.js'
 import type { SkillItem } from '../completion.js'
 import { repoName } from '../labels.js'
 import type { McpServer } from '../plugins.js'
-import { commandLineOf, scopeLabel, splitCommandLine } from '../plugins.js'
+import { commandLineOf, readOnlyRisk, scopeLabel, splitCommandLine } from '../plugins.js'
 import type { Repo } from '../types.js'
 import { Button, IconButton } from './ui.js'
 
@@ -41,6 +41,10 @@ export function PluginsPanel({ repos }: { repos: Repo[] }) {
       repoIds?: string[] | null
     },
   ) {
+    if (patch.readOnly) {
+      const risk = readOnlyRisk(server)
+      if (risk && !window.confirm(risk)) return
+    }
     setFailure('')
     // Shown at once; the reload below brings back what the server kept.
     setServers(
@@ -266,6 +270,8 @@ function McpServerForm({
       setFailure(errorMessage(error, '格式不對'))
       return
     }
+    const risk = body.readOnly ? readOnlyRisk({ transport, url: target }) : undefined
+    if (risk && !window.confirm(risk)) return
     setBusy(true)
     try {
       await request('/api/mcp-servers', { method: 'POST', body: JSON.stringify(body) })

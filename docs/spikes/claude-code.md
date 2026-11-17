@@ -68,6 +68,16 @@ claude -p <prompt>
 - 唯讀的指令（如 `git status`）不會問，CLI 自己放行。
 - **MCP 工具本身也會被送去審核**（例如 `mcp__joy__ask_peer`）。T2.3 的 policy 要把 Joy 自己的工具預設放行。
 - `acceptEdits` 模式下，未獲許可的動作會直接拒絕，並發出 `system/permission_denied` 事件。
+- **設定檔（2026-11-17，2.1.319，haiku 實測）**：`-p` 跳過信任對話框，worktree 是沒信任過的新資料夾（上層資料夾信任過也不算）。
+  - 專案 `.claude/settings.json` 的 `permissions.allow` 被忽略（stderr：`Ignoring 1 permissions.allow entry ... has not
+been trusted`），但它的 `hooks`（例如 `SessionStart`）**照跑**。
+  - `.claude/settings.local.json` 的 allow **照樣生效**（`python3 -c ...` 不問就跑了），hooks 也照跑。
+  - `--setting-sources user,project`：local 的 allow 與 hooks 都不載入；專案 CLAUDE.md、`.claude/skills`、`.claude/commands`
+    還在。`--setting-sources user` 或空字串會連專案 CLAUDE.md、skill、指令一起拿掉，所以不用。Joy 每個 run 都傳
+    `user,project`。
+  - `acceptEdits` 下用 Write 寫 `.claude/settings.json` 會被當成需要許可（交給 Joy），不會直接寫入。
+  - 仍存在：repo 自己提交的 `.claude/settings.json` hooks 會在每個 run 開始時執行，等於加入這個 repo 就信任它；使用者
+    `~/.claude/settings.json` 的 allow 規則是擁有者自己的設定，照樣生效、不經 Joy。
 
 ## 額度感知（T2.5）
 

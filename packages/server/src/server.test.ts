@@ -782,31 +782,34 @@ describe('Joy local server', () => {
     await expect(app.serverPromise).rejects.toThrow(/API token file is empty; remove it and restart Joy/)
   })
 
-  it('atomically shares one generated token across concurrent server startups', async () => {
-    const home = mkdtempSync(join(tmpdir(), 'joy-server-shared-token-'))
+  it('lets only one server run on a home folder, and the next one in after it closes', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'joy-server-one-home-'))
     dirs.push(home)
     const first = fixture({ home, generateApiToken: true })
     const second = fixture({ home, generateApiToken: true })
-    const [firstServer, secondServer] = await Promise.all([
-      start(first.serverPromise),
-      start(second.serverPromise),
-    ])
+    const [firstResult, secondResult] = await Promise.allSettled([first.serverPromise, second.serverPromise])
+    const started = [firstResult, secondResult].filter((result) => result.status === 'fulfilled')
+    const refused = [firstResult, secondResult].filter((result) => result.status === 'rejected')
+    expect(started).toHaveLength(1)
+    expect(refused).toHaveLength(1)
+    expect(String((refused[0] as PromiseRejectedResult).reason)).toMatch(/Another Joy is already running/)
+    const running = await start(Promise.resolve((started[0] as PromiseFulfilledResult<JoyServer>).value))
     const token = readFileSync(join(home, 'api-token'), 'utf8')
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/)
-
-    const accepted = await Promise.all(
-      [firstServer.origin, secondServer.origin].map((origin) =>
-        rawRequest(
-          origin,
-          '/api/repos',
-          'GET',
-          { host: new URL(origin).host, origin: VITE_ORIGIN },
-          '',
-          token,
-        ),
-      ),
+    const response = await rawRequest(
+      running.origin,
+      '/api/repos',
+      'GET',
+      { host: new URL(running.origin).host, origin: VITE_ORIGIN },
+      '',
+      token,
     )
-    expect(accepted.map((response) => response.status)).toEqual([200, 200])
+    expect(response.status).toBe(200)
+
+    await running.server.close()
+    const next = await start(fixture({ home, generateApiToken: true }).serverPromise)
+    expect(readFileSync(join(home, 'api-token'), 'utf8')).toBe(token)
+    await next.server.close()
   })
 
   it.skipIf(process.platform === 'win32')(
@@ -4494,6 +4497,8 @@ describe('Joy local server', () => {
         : config
     }
     const { origin } = await start(serverPromise)
+    // Count from here: the server may read the config at startup before or after the wrapper is in place.
+    configReads = 0
     const { repo } = (await (
       await postJson(`${origin}/api/repos`, {
         path: '/runtime-allowlist-guard',

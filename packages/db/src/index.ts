@@ -1,4 +1,6 @@
 export { migrate, openDatabase, schemaVersion } from './database.js'
+export { lockHome } from './home-lock.js'
+export type { HomeLock } from './home-lock.js'
 export type { Database, OpenOptions } from './database.js'
 export { LATEST_VERSION, MIGRATIONS } from './migrations.js'
 export type { Migration } from './migrations.js'

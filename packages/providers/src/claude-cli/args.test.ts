@@ -74,6 +74,17 @@ describe('buildClaudeArgs', () => {
     expect(full).toEqual(expect.arrayContaining(['--permission-mode', 'bypassPermissions']))
   })
 
+  it('never loads .claude/settings.local.json, whose allow rules and hooks skip Joy even in an untrusted worktree', () => {
+    for (const autonomy of ['read-only', 'workspace-write', 'full'] as const) {
+      const args = buildClaudeArgs({ ...base, autonomy }, model)
+      const at = args.indexOf('--setting-sources')
+      expect(at).toBeGreaterThan(-1)
+      // Before `--`, so it is a flag and not part of the prompt.
+      expect(at).toBeLessThan(args.indexOf('--'))
+      expect(args[at + 1]).toBe('user,project')
+    }
+  })
+
   it('delegates approvals to the approval tool', () => {
     const args = buildClaudeArgs({ ...base, approvalTool: 'mcp__joy__approve' }, model)
     expect(args).toEqual(

@@ -64,3 +64,18 @@ export function scopeLabel(server: Pick<McpServer, 'repoIds'>, names: ReadonlyMa
   if (!server.repoIds.length) return '沒有專案'
   return server.repoIds.map((id) => names.get(id) ?? id).join('、')
 }
+
+/**
+ * What the owner confirms before an http server goes read-only: in auto mode its tools then run unasked, so anything
+ * the agent puts in the arguments leaves for that host. A stdio server gets no question; it runs on this computer.
+ */
+export function readOnlyRisk(server: Pick<McpServer, 'transport' | 'url'>): string | undefined {
+  if (server.transport !== 'http') return undefined
+  let host = server.url ?? ''
+  try {
+    host = new URL(host).host
+  } catch {
+    // An unparsable URL is shown as typed.
+  }
+  return `自動模式下，${host} 的工具不會先問，agent 給的內容會直接送過去。設成唯讀？`
+}

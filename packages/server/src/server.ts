@@ -106,6 +106,7 @@ import {
   modelStats,
   markMemoriesUsed,
   updateMemoryContent,
+  lockHome,
   openDatabase,
   setConversationPinned,
   setConversationTitle,
@@ -134,6 +135,7 @@ import type {
   ApprovalStatus,
   AttemptRecord,
   Database,
+  HomeLock,
   ProjectNoteRecord,
   RepoRecord,
   StoredTask,
@@ -803,6 +805,19 @@ function selectActiveRoles(
 
 /** Builds the local HTTP + WebSocket service. It never binds beyond loopback. */
 export async function createJoyServer(options: JoyServerOptions = {}): Promise<JoyServer> {
+  const home = options.home ?? joyHome()
+  await mkdir(home, { recursive: true, mode: 0o700 })
+  // Before anything touches the home folder: a second Joy on it would delete this one's run files at start.
+  const homeLock = lockHome(join(home, 'joy.lock'))
+  try {
+    return await startJoyServer({ ...options, home }, homeLock)
+  } catch (error) {
+    homeLock.release()
+    throw error
+  }
+}
+
+async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Promise<JoyServer> {
   const allowedOrigins = createOriginAllowlist(options.allowPlaywrightOrigin ?? false)
   const home = options.home ?? joyHome()
   const folderBrowserOptions = options.folderBrowserHome ? { home: options.folderBrowserHome } : {}
@@ -6797,6 +6812,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         )
       await rm(pidFile, { force: true }).catch(() => undefined)
       if (ownsDatabase && db.isOpen) db.close()
+      homeLock.release()
     },
   }
 }
