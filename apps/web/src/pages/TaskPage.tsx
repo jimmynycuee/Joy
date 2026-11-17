@@ -83,16 +83,17 @@ export function TaskPage({
     }),
     [details.attachments, onChanged, onError],
   )
+  const usage = useMemo(() => parseUsage(details.usage), [details.usage])
   const entries = useMemo(
     () =>
       buildTimeline(details.events, branch.worktreePath, {
         ...(queuedIds ? { queuedIds } : {}),
         busy: task.status === 'queued' || task.status === 'running' || task.status === 'awaiting_approval',
         pendingPlan: pendingPlan !== null,
+        ...(usage ? { runs: usage.runs } : {}),
       }),
-    [details.events, branch.worktreePath, queuedIds, task.status, pendingPlan],
+    [details.events, branch.worktreePath, queuedIds, task.status, pendingPlan, usage],
   )
-  const usage = useMemo(() => parseUsage(details.usage), [details.usage])
   const checkpointCount = details.events.filter((event) => event.type === 'checkpoint.created').length
   const taskAllows = details.taskAllows ?? []
   const published = details.events.some((event) => event.type === 'publish.done')

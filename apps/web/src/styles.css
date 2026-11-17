@@ -1196,6 +1196,12 @@ svg {
 .timeline-phase {
   margin-top: 6px;
 }
+/* What a round took, in small faint text under it. */
+.run-usage {
+  color: var(--faint);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
 /* A hairline on both sides of the phase's name, in the faintest text colour. */
 .phase-divider {
   display: flex;
@@ -2232,6 +2238,19 @@ kbd {
   color: var(--muted);
   font-weight: var(--fw-medium);
 }
+.stats-task-title {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sort-header {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
 .token-gate {
   display: flex;
   flex-direction: column;
@@ -2800,6 +2819,10 @@ summary.checks-head {
 .usage-row {
   flex-direction: column;
   gap: 2px;
+}
+.usage-list + .usage-list {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
 }
 .usage-totals {
   display: grid;

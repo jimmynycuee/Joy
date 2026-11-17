@@ -34,6 +34,7 @@ describe.each(['edit', 'mcp-approval', 'resume-1', 'resume-2'])('contract: claud
 
   it('reports usage and quota', () => {
     expect(of(events, 'usage')[0]?.costUsd).toBeGreaterThan(0)
+    expect(of(events, 'usage')[0]?.costSource).toBe('cli')
     const quota = of(events, 'quota')[0]
     expect(quota?.status).toBe('allowed')
     expect(quota?.windows.map((w) => w.name)).toEqual(expect.arrayContaining(['five_hour', 'seven_day']))
@@ -197,5 +198,44 @@ describe('ClaudeStreamParser edge cases', () => {
     expect(
       parser.push({ type: 'assistant', message: { content: [{ type: 'text', text: 'late' }] } }),
     ).toEqual([])
+  })
+
+  it('counts cached tokens in the input tokens, as the other backends do', () => {
+    const parser = new ClaudeStreamParser({ cwd: FIXTURE_WORKDIR })
+    const events = parser.push({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: 'ok',
+      session_id: 's',
+      total_cost_usd: 0.005,
+      usage: {
+        input_tokens: 12,
+        cache_creation_input_tokens: 11897,
+        cache_read_input_tokens: 228382,
+        output_tokens: 693,
+      },
+    })
+    expect(of(events, 'usage')).toEqual([
+      {
+        type: 'usage',
+        inputTokens: 12 + 11897 + 228382,
+        outputTokens: 693,
+        cachedInputTokens: 228382,
+        costUsd: 0.005,
+        costSource: 'cli',
+      },
+    ])
+  })
+
+  it('reports no cost source when the CLI gave no cost', () => {
+    const parser = new ClaudeStreamParser({ cwd: FIXTURE_WORKDIR })
+    const events = parser.push({
+      type: 'result',
+      subtype: 'success',
+      result: 'ok',
+      usage: { output_tokens: 3 },
+    })
+    expect(of(events, 'usage')).toEqual([{ type: 'usage', outputTokens: 3 }])
   })
 })

@@ -2,6 +2,16 @@ import { useEffect, useState } from 'react'
 import { errorMessage, request } from '../api.js'
 import { formatDuration, modeLabel } from '../labels.js'
 import type { Repo } from '../types.js'
+import {
+  costSourceLabel,
+  formatCost,
+  formatSpent,
+  formatTokens,
+  parseStatTasks,
+  sortStatTasks,
+  totalTokens,
+} from '../usage.js'
+import type { StatTask, TaskSort } from '../usage.js'
 
 interface ImplementerStat {
   provider: string
@@ -30,14 +40,17 @@ export function StatsPanel(props: { repos: Repo[] }) {
   const [stats, setStats] = useState<{ implementers: ImplementerStat[]; reviewers: ReviewerStat[] } | null>(
     null,
   )
+  const [tasks, setTasks] = useState<StatTask[]>([])
+  const [sort, setSort] = useState<TaskSort>('recent')
   const [failure, setFailure] = useState('')
 
   useEffect(() => {
     const query = new URLSearchParams(Object.entries(filter).filter(([, value]) => value))
     let cancelled = false
-    request<{ stats?: { implementers?: ImplementerStat[]; reviewers?: ReviewerStat[] } }>(
-      `/api/stats?${query}`,
-    )
+    request<{
+      stats?: { implementers?: ImplementerStat[]; reviewers?: ReviewerStat[] }
+      tasks?: unknown
+    }>(`/api/stats?${query}`)
       .then((body) => {
         if (cancelled) return
         setFailure('')
@@ -45,6 +58,7 @@ export function StatsPanel(props: { repos: Repo[] }) {
           implementers: Array.isArray(body.stats?.implementers) ? body.stats.implementers : [],
           reviewers: Array.isArray(body.stats?.reviewers) ? body.stats.reviewers : [],
         })
+        setTasks(parseStatTasks(body.tasks))
       })
       .catch((error: unknown) => {
         if (!cancelled) setFailure(errorMessage(error, '無法載入統計'))
@@ -158,6 +172,71 @@ export function StatsPanel(props: { repos: Repo[] }) {
           </div>
         ) : null}
       </section>
+      {tasks.length > 0 ? <TaskUsageTable tasks={tasks} sort={sort} onSort={setSort} /> : null}
     </>
+  )
+}
+
+/** A header that sorts the tasks by its column; the same column again goes back to the newest first. */
+function SortHeader(props: {
+  label: string
+  by: TaskSort
+  sort: TaskSort
+  onSort: (sort: TaskSort) => void
+}) {
+  const active = props.sort === props.by
+  return (
+    <th aria-sort={active ? 'descending' : undefined}>
+      <button
+        type="button"
+        className="sort-header"
+        onClick={() => props.onSort(active ? 'recent' : props.by)}
+      >
+        {props.label}
+        {active ? ' ↓' : ''}
+      </button>
+    </th>
+  )
+}
+
+/** What each task of the period took, to compare them. A task that reported no tokens or cost shows a dash. */
+function TaskUsageTable(props: { tasks: StatTask[]; sort: TaskSort; onSort: (sort: TaskSort) => void }) {
+  const rows = sortStatTasks(props.tasks, props.sort)
+  return (
+    <section className="card">
+      <h2>各任務用量</h2>
+      <div className="table-wrap">
+        <table className="stats-table" aria-label="各任務用量">
+          <thead>
+            <tr>
+              <th>任務</th>
+              <SortHeader label="耗時" by="duration" sort={props.sort} onSort={props.onSort} />
+              <SortHeader label="Token" by="tokens" sort={props.sort} onSort={props.onSort} />
+              <SortHeader label="花費" by="cost" sort={props.sort} onSort={props.onSort} />
+              <th>模型</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((task) => {
+              const tokens = totalTokens(task.usage)
+              const source = costSourceLabel(task.usage.costSource)
+              return (
+                <tr key={task.id}>
+                  <td className="stats-task-title" title={task.title}>
+                    {task.title}
+                  </td>
+                  <td>{formatSpent(task.usage.durationMs)}</td>
+                  <td>{tokens !== undefined ? formatTokens(tokens) : '—'}</td>
+                  <td title={source}>
+                    {task.usage.costUsd !== undefined ? formatCost(task.usage.costUsd) : '—'}
+                  </td>
+                  <td>{task.usage.byProvider.map((entry) => entry.model).join('、') || '—'}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
   )
 }

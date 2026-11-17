@@ -9,7 +9,8 @@ import { settingsLine } from './task-settings.js'
 import { summarizeToolCall, toolCallLabel, toolOutputText } from './tool-calls.js'
 import type { ToolOutput, ToolSummary } from './tool-calls.js'
 import { record } from './types.js'
-import type { TaskEvent } from './types.js'
+import type { RunUsage, TaskEvent } from './types.js'
+import { runLine } from './usage.js'
 
 export interface ReviewFindingView {
   severity: 'blocker' | 'major' | 'minor' | 'nit'
@@ -81,6 +82,8 @@ export type TimelineEntry =
    * the details but is not one of them, so it is not counted.
    */
   | (EntryBase & { kind: 'noise'; text: string; fragment?: true })
+  /** The time and tokens one run took, a small line after the event that ended it. */
+  | (EntryBase & { kind: 'usage'; text: string })
   /** Rounds the owner went back over: kept, folded and marked as discarded. */
   | (EntryBase & { kind: 'rewound'; entries: TimelineEntry[] })
 
@@ -229,6 +232,8 @@ export interface TimelineOptions {
   busy?: boolean
   /** The plan is shown as its own card at the end, so its timeline step does not repeat it. */
   pendingPlan?: boolean
+  /** What each run took (`usage.runs`); a line goes after the event that ended it. */
+  runs?: readonly RunUsage[]
 }
 
 /** Events that only change state; they stay behind 顯示細節. */
@@ -242,6 +247,7 @@ const QUIET_EVENTS = new Set([
   'checkpoint.created',
   'attachment.removed',
   'task.updated',
+  'compete.usage',
 ])
 
 const STEP_TONES: Record<string, string> = {
@@ -436,14 +442,34 @@ export function buildTimeline(
     const tone = STEP_TONES[event.type] ?? policyEventKind(event.type, payload)
     entries.push({ ...base, kind: 'step', text, ...(tone ? { tone } : {}) })
   })
-  return groupRewound(
-    entries.filter(
-      (entry) =>
-        !hidden.has(entry) &&
-        !(entry.kind === 'message' && entry.role === ROLE_SPEAKERS.reviewer && looksLikeVerdict(entry.text)),
-    ),
-    events,
+  const shown = entries.filter(
+    (entry) =>
+      !hidden.has(entry) &&
+      !(entry.kind === 'message' && entry.role === ROLE_SPEAKERS.reviewer && looksLikeVerdict(entry.text)),
   )
+  return groupRewound(withRunLines(shown, options.runs ?? []), events)
+}
+
+/** Puts each run's line after the last entry up to the event that ended the run. A run with nothing to say gets none. */
+export function withRunLines(entries: TimelineEntry[], runs: readonly RunUsage[]): TimelineEntry[] {
+  if (runs.length === 0) return entries
+  const result = [...entries]
+  // Latest first, so an insertion does not move the places of the earlier ones.
+  for (const run of [...runs].sort((a, b) => b.endSeq - a.endSeq)) {
+    const text = runLine(run)
+    const index = result.findLastIndex((entry) => entry.seq <= run.endSeq)
+    if (!text || index === -1) continue
+    const after = result[index]
+    if (!after) continue
+    result.splice(index + 1, 0, {
+      key: `usage-${run.endSeq}`,
+      seq: run.endSeq,
+      ts: after.ts,
+      kind: 'usage',
+      text,
+    })
+  }
+  return result
 }
 
 /** Each run of entries the owner went back over becomes one folded `rewound` entry, where the run started. */

@@ -63,19 +63,40 @@ export type DiffFile = {
   deletions: number
 }
 export type WorkspaceDiff = { files: DiffFile[]; patch: string }
-export interface ProviderUsage {
-  provider: string
-  model: string
+/** Tokens and cost of one slice of a task; only what was reported is present. `inputTokens` includes the cached ones. */
+export interface UsageTotals {
   inputTokens?: number
   outputTokens?: number
+  cachedInputTokens?: number
   costUsd?: number
 }
-export interface TaskUsage {
+export interface ProviderUsage extends UsageTotals {
+  provider: string
+  model: string
+}
+/** One role of the task (implementer, reviewer, judge); `durationMs` leaves the wait for approvals out. */
+export interface RoleUsage extends UsageTotals {
+  role: string
+  provider?: string
+  model?: string
+  durationMs?: number
+}
+/** One run of the task; `endSeq` is the event that ended it, where the timeline shows its line. */
+export interface RunUsage extends UsageTotals {
+  endSeq: number
   durationMs: number
-  inputTokens?: number
-  outputTokens?: number
-  costUsd?: number
+  approvalWaitMs?: number
+}
+/** `cli`: the CLI's own figure; `price_table`: Joy's price table applied to the tokens; `mixed`: both. */
+export type CostSource = 'cli' | 'price_table' | 'mixed'
+export interface TaskUsage extends UsageTotals {
+  /** Wall-clock time the task ran, the wait for approvals left out. */
+  durationMs: number
+  approvalWaitMs?: number
+  costSource?: CostSource
   byProvider: ProviderUsage[]
+  byRole: RoleUsage[]
+  runs: RunUsage[]
 }
 export interface PendingPlan {
   plan: string

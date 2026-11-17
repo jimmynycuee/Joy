@@ -356,6 +356,10 @@ function TimelineItem({
       ) : entry.kind === 'phase' ? (
         // A hairline with the phase in the middle, not a pill.
         <span className="phase-divider">{entry.text}</span>
+      ) : entry.kind === 'usage' ? (
+        <span className="run-usage" data-testid="run-usage">
+          {entry.text}
+        </span>
       ) : entry.kind === 'step' && entry.detail ? (
         <details className="step-detail">
           <summary>

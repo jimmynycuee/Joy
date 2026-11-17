@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { costIsEstimate, formatCost, formatSpent, formatTokens, parseUsage } from './usage.js'
+import {
+  costSourceLabel,
+  formatCost,
+  formatSpent,
+  formatTokens,
+  parseStatTasks,
+  parseUsage,
+  runLine,
+  sortStatTasks,
+  totalTokens,
+} from './usage.js'
 
 describe('parseUsage', () => {
   it('keeps only what was reported', () => {
@@ -18,6 +28,47 @@ describe('parseUsage', () => {
       inputTokens: 1200,
       costUsd: 0.5,
       byProvider: [{ provider: 'claude-cli', model: 'opus', inputTokens: 1200, costUsd: 0.5 }],
+      byRole: [],
+      runs: [],
+    })
+  })
+
+  it('reads the roles, the runs, the wait for approvals and where the cost came from', () => {
+    expect(
+      parseUsage({
+        durationMs: 5000,
+        approvalWaitMs: 2000,
+        cachedInputTokens: 40,
+        costSource: 'cli',
+        byRole: [
+          { role: 'reviewer', provider: 'codex-cli', model: 'luna', durationMs: 900, inputTokens: 3 },
+          { role: 7 },
+        ],
+        runs: [{ endSeq: 9, durationMs: 4000, outputTokens: 5 }, { endSeq: 'x' }],
+      }),
+    ).toEqual({
+      durationMs: 5000,
+      approvalWaitMs: 2000,
+      cachedInputTokens: 40,
+      costSource: 'cli',
+      byProvider: [],
+      byRole: [{ role: 'reviewer', provider: 'codex-cli', model: 'luna', durationMs: 900, inputTokens: 3 }],
+      runs: [{ endSeq: 9, durationMs: 4000, outputTokens: 5 }],
+    })
+  })
+
+  it('drops a cost source it does not know and numbers that are not numbers', () => {
+    const parsed = parseUsage({ durationMs: 1, costSource: 'guess', costUsd: '2', inputTokens: Number.NaN })
+    expect(parsed).toEqual({ durationMs: 1, byProvider: [], byRole: [], runs: [] })
+  })
+
+  it('reads a task from before usage was told by role and run', () => {
+    expect(parseUsage({ durationMs: 1000, inputTokens: 5, byProvider: [] })).toEqual({
+      durationMs: 1000,
+      inputTokens: 5,
+      byProvider: [],
+      byRole: [],
+      runs: [],
     })
   })
 
@@ -44,9 +95,78 @@ describe('formatters', () => {
     expect(formatSpent(3_900_000)).toBe('1 小時 5 分')
   })
 
-  it('treats CLI costs as estimates', () => {
-    expect(costIsEstimate('claude-cli')).toBe(true)
-    expect(costIsEstimate('codex-cli')).toBe(true)
-    expect(costIsEstimate('openai-api')).toBe(false)
+  it('names where a cost comes from', () => {
+    expect(costSourceLabel('cli')).toBe('CLI 回報')
+    expect(costSourceLabel('price_table')).toBe('價目表')
+    expect(costSourceLabel('mixed')).toBe('CLI 回報與價目表')
+    expect(costSourceLabel(undefined)).toBe('')
+  })
+})
+
+describe('runLine', () => {
+  it('says the time and the tokens of a round, input and output together', () => {
+    expect(runLine({ durationMs: 134_000, inputTokens: 36_000, outputTokens: 2_000 })).toBe(
+      '2 分 14 秒 · 38k tokens',
+    )
+  })
+
+  it('adds a cost when there is one and leaves out what is missing', () => {
+    expect(runLine({ durationMs: 45_000, inputTokens: 900, costUsd: 0.5 })).toBe('45 秒 · 900 tokens · $0.50')
+    expect(runLine({ durationMs: 45_000 })).toBe('45 秒')
+    expect(runLine({ durationMs: 400 })).toBe('')
+    expect(runLine({ durationMs: 400, outputTokens: 0 })).toBe('')
+  })
+})
+
+describe('totalTokens', () => {
+  it('is undefined for a task that reported no tokens', () => {
+    expect(totalTokens({})).toBeUndefined()
+    expect(totalTokens({ costUsd: 1 })).toBeUndefined()
+    expect(totalTokens({ outputTokens: 4 })).toBe(4)
+  })
+})
+
+describe('the tasks of the stats page', () => {
+  const body = [
+    {
+      id: 'a',
+      title: 'Old one',
+      mode: 'single',
+      status: 'done',
+      createdAt: 'x',
+      usage: { durationMs: 10_000 },
+    },
+    {
+      id: 'b',
+      title: 'Big',
+      mode: 'review_loop',
+      status: 'done',
+      createdAt: 'y',
+      usage: { durationMs: 5_000, inputTokens: 900, outputTokens: 100, costUsd: 2 },
+    },
+    {
+      id: 'c',
+      title: 'Cheap',
+      mode: 'single',
+      status: 'failed',
+      createdAt: 'z',
+      usage: { durationMs: 20_000, inputTokens: 10, costUsd: 0.1 },
+    },
+    { id: 'broken', usage: 'nope' },
+    'junk',
+  ]
+
+  it('reads the tasks that have a usage and skips the rest', () => {
+    expect(parseStatTasks(body).map((task) => task.id)).toEqual(['a', 'b', 'c'])
+    expect(parseStatTasks(undefined)).toEqual([])
+    expect(parseStatTasks({})).toEqual([])
+  })
+
+  it('sorts by one measure, the biggest first, tasks without it last and ties in the order given', () => {
+    const tasks = parseStatTasks(body)
+    expect(sortStatTasks(tasks, 'recent').map((task) => task.id)).toEqual(['a', 'b', 'c'])
+    expect(sortStatTasks(tasks, 'duration').map((task) => task.id)).toEqual(['c', 'a', 'b'])
+    expect(sortStatTasks(tasks, 'tokens').map((task) => task.id)).toEqual(['b', 'c', 'a'])
+    expect(sortStatTasks(tasks, 'cost').map((task) => task.id)).toEqual(['b', 'c', 'a'])
   })
 })

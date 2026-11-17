@@ -191,7 +191,7 @@ describe('ClaudeCliProvider.run with steering', () => {
     })
     // Usage is taken once, from the last result (the fake's cost is cumulative), never summed.
     expect(events.filter((e) => e.type === 'usage')).toEqual([
-      { type: 'usage', inputTokens: 20, outputTokens: 10, costUsd: 0.02 },
+      { type: 'usage', inputTokens: 20, outputTokens: 10, costUsd: 0.02, costSource: 'cli' },
     ])
     expect(events.filter((e) => e.type === 'done')).toEqual([
       expect.objectContaining({ isError: false, finalMessage: 'turn 2 done' }),

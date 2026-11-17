@@ -208,12 +208,19 @@ export class ClaudeStreamParser {
     const raw = rec(line.usage)
     const isError = line.is_error === true
     const final = str(line.result)
+    // Claude's `input_tokens` leaves out what came from or went into the prompt cache; the other backends count it,
+    // so add it back to make one task's tokens comparable across models.
+    const fresh = num(raw?.input_tokens)
+    const cacheRead = num(raw?.cache_read_input_tokens)
+    const cacheWrite = num(raw?.cache_creation_input_tokens)
+    const cost = num(line.total_cost_usd)
     const usage: Extract<AgentEvent, { type: 'usage' }> = {
       type: 'usage',
-      ...opt('inputTokens', num(raw?.input_tokens)),
+      ...opt('inputTokens', fresh === undefined ? undefined : fresh + (cacheRead ?? 0) + (cacheWrite ?? 0)),
       ...opt('outputTokens', num(raw?.output_tokens)),
-      ...opt('cachedInputTokens', num(raw?.cache_read_input_tokens)),
-      ...opt('costUsd', num(line.total_cost_usd)),
+      ...opt('cachedInputTokens', cacheRead),
+      ...opt('costUsd', cost),
+      ...(cost === undefined ? {} : { costSource: 'cli' as const }),
     }
     const failure = final ?? `Claude Code ended with ${str(line.subtype) ?? 'an error'}`
     const done: Extract<AgentEvent, { type: 'done' }> = {

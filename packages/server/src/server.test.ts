@@ -324,6 +324,7 @@ function routing(kind: ProviderKind): AgentProvider & { calls: RunOptions[] } {
     async *run(options: RunOptions) {
       calls.push(options)
       if (options.outputSchema === JUDGE_SCHEMA) {
+        yield { type: 'usage', inputTokens: 70, outputTokens: 7 }
         yield {
           type: 'done',
           sessionId: 'j',
@@ -2761,6 +2762,15 @@ describe('Joy local server', () => {
     expect(judged.judgement).toMatchObject({ winner: byProvider('codex-cli'), reasons: 'B has tests' })
     expect(details.events.filter((e) => e.type === 'compete.result')).toHaveLength(2)
     expect(claude.calls.filter((c) => c.outputSchema === JUDGE_SCHEMA)).toHaveLength(1)
+    // The judge's usage is part of the task's, under its own role.
+    expect(details.events.find((e) => e.type === 'compete.usage')?.payload).toMatchObject({
+      role: 'judge',
+      model: { provider: 'claude-cli', model: 'haiku' },
+      event: { type: 'usage', inputTokens: 70 },
+    })
+    expect((details as unknown as { usage: { byRole: unknown[] } }).usage.byRole).toContainEqual(
+      expect.objectContaining({ role: 'judge', provider: 'claude-cli', model: 'haiku', inputTokens: 70 }),
+    )
 
     // A compete task cannot be resumed, and only finished attempts can be chosen.
     expect((await postJson(`${origin}/api/tasks/${id}/resume`, {})).status).toBe(409)

@@ -327,6 +327,7 @@ export class OpenAiApiProvider implements AgentProvider {
       outputTokens: total.output,
       cachedInputTokens: total.cached,
       ...opt('costUsd', cost),
+      ...(cost === undefined ? {} : { costSource: 'price_table' as const }),
     }
   }
 

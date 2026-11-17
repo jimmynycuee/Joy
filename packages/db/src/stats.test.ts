@@ -2,7 +2,16 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { AttemptId, RepoId, TaskId } from '@joy/core'
 import type { Database } from './database.js'
 import { openDatabase } from './database.js'
-import { appendTaskEvent, createAttempt, createRepo, createReview, createTask } from './repositories.js'
+import {
+  appendTaskEvent,
+  appendTaskLevelEvent,
+  createAttempt,
+  createRepo,
+  createReview,
+  createTask,
+  listTaskEventsOfTypes,
+  listTasksCreated,
+} from './repositories.js'
 import { modelStats } from './stats.js'
 
 const databases: Database[] = []
@@ -152,5 +161,43 @@ describe('model stats', () => {
     ])
     expect(other.reviewers).toEqual([])
     expect(modelStats(db, { repoId: 'missing' })).toEqual({ implementers: [], reviewers: [] })
+  })
+})
+
+describe('what the stats page compares', () => {
+  it('lists the tasks of a period newest first, up to a limit', () => {
+    const db = seed()
+    db.prepare("UPDATE tasks SET created_at = '2026-09-01T10:00:00.000Z'").run()
+    db.prepare("UPDATE tasks SET created_at = '2026-10-01T10:00:00.000Z' WHERE id = 't1'").run()
+    db.prepare("UPDATE tasks SET created_at = '2026-11-01T10:00:00.000Z' WHERE id = 't2'").run()
+    expect(listTasksCreated(db, {}, 2).map((task) => task.id)).toEqual(['t2', 't1'])
+    expect(listTasksCreated(db, { from: '2026-10-15T00:00:00.000Z' }, 10)[0]?.id).toBe('t2')
+    expect(listTasksCreated(db, { repoId: 'missing' }, 10)).toEqual([])
+    expect(listTasksCreated(db, {}, 1)).toHaveLength(1)
+  })
+
+  it('loads only the usage of a task and the events that frame it', () => {
+    const db = seed()
+    const task = 't1' as TaskId
+    const attempt = 'a1' as AttemptId
+    appendTaskEvent(db, attempt, 'started', {})
+    appendTaskEvent(db, attempt, 'agent', {
+      role: 'implementer',
+      event: { type: 'message', text: 'x'.repeat(1000) },
+    })
+    appendTaskEvent(db, attempt, 'agent', { role: 'implementer', event: { type: 'usage', inputTokens: 5 } })
+    appendTaskEvent(db, attempt, 'workspace', { path: '/x' })
+    appendTaskLevelEvent(db, task, 'compete.usage', {
+      role: 'judge',
+      event: { type: 'usage', inputTokens: 1 },
+    })
+    appendTaskLevelEvent(db, task, 'error', { message: 'x' })
+    appendTaskLevelEvent(db, 't2' as TaskId, 'error', { message: 'other task' })
+    const kept = listTaskEventsOfTypes(db, task, ['started', 'agent', 'compete.usage', 'error'])
+    expect(kept.map((event) => event.type)).toEqual(['started', 'agent', 'compete.usage', 'error'])
+    expect(kept[1]?.payload).toMatchObject({ event: { type: 'usage' } })
+    expect(kept[0]).toMatchObject({ attemptId: attempt, taskId: task })
+    expect(kept.at(-1)).not.toHaveProperty('attemptId')
+    expect(listTaskEventsOfTypes(db, task, ['phase'])).toEqual([])
   })
 })
