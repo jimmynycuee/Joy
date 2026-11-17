@@ -31,6 +31,7 @@ import {
   updateRepoDefaults,
   updateRepoInstallCommand,
   updateRepoInstructions,
+  updateRepoTrustedClaudeSettings,
   updateRepoMaxPermissionMode,
   updateTask,
   updateTaskSettings,
@@ -435,6 +436,18 @@ describe('permission modes', () => {
     // @ts-expect-error not a permission mode
     expect(() => updateRepoMaxPermissionMode(db, repo.id, 'root')).toThrow('Invalid permission mode')
     expect(() => db.prepare("UPDATE repos SET max_permission_mode = 'root'").run()).toThrow()
+  })
+
+  it('remembers and forgets the approved Claude settings fingerprint, and refuses anything but a SHA-256 digest', () => {
+    const db = fresh()
+    const { repo } = seed(db)
+    expect(repo.trustedClaudeSettings).toBeUndefined()
+    const digest = 'a'.repeat(64)
+    expect(updateRepoTrustedClaudeSettings(db, repo.id, digest)?.trustedClaudeSettings).toBe(digest)
+    expect(updateRepoTrustedClaudeSettings(db, repo.id, null)?.trustedClaudeSettings).toBeUndefined()
+    expect(() => updateRepoTrustedClaudeSettings(db, repo.id, 'A'.repeat(64))).toThrow('SHA-256')
+    expect(() => db.prepare("UPDATE repos SET trusted_claude_settings = 'abc'").run()).toThrow()
+    expect(() => db.prepare(`UPDATE repos SET trusted_claude_settings = '${'G'.repeat(64)}'`).run()).toThrow()
   })
 
   it('keeps project instructions, trims them, clears them and refuses too long ones', () => {

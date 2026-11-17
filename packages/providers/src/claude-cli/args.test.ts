@@ -115,6 +115,15 @@ describe('buildClaudeArgs', () => {
     expect(args).not.toContain('none')
   })
 
+  it("loads no MCP server of the repository or the owner, even without Joy's own", () => {
+    for (const autonomy of ['read-only', 'workspace-write', 'full'] as const) {
+      const args = buildClaudeArgs({ ...base, autonomy }, model)
+      expect(args).toContain('--strict-mcp-config')
+      expect(args).not.toContain('--mcp-config')
+      expect(args.indexOf('--strict-mcp-config')).toBeLessThan(args.indexOf('--'))
+    }
+  })
+
   it('passes MCP config strictly and the output schema as JSON', () => {
     const args = buildClaudeArgs({ ...base, outputSchema: { type: 'object' } }, model, '/tmp/mcp.json')
     expect(args).toEqual(expect.arrayContaining(['--mcp-config', '/tmp/mcp.json', '--strict-mcp-config']))

@@ -124,6 +124,7 @@ import {
   updateRepoContainer,
   updateRepoGithubRemote,
   updateRepoMaxPermissionMode,
+  updateRepoTrustedClaudeSettings,
   clearTaskAllows,
   createTaskAllow,
   deleteTaskAllow,
@@ -143,6 +144,7 @@ import type {
   TaskEventRecord,
 } from '@joy/db'
 import { ApprovalBroker } from './approvals.js'
+import { CLAUDE_SETTINGS_FILE, readClaudeSettingsCommands } from './claude-settings.js'
 import type { TaskAllowOffer } from './approvals.js'
 import { runAssistantTurn, toApiTools } from './assistant.js'
 import { rewindHandoffPrompt, switchHandoffPrompt } from './handoff.js'
@@ -453,13 +455,13 @@ function assertDefaultsFit(
 }
 
 /** Runs `check` before every run of `inner`; a thrown error refuses the run before any request is made. */
-function withMonthlyBudget(inner: AgentProvider, check: () => Promise<void>): AgentProvider {
+function withPreRunCheck(inner: AgentProvider, check: (opts: RunOptions) => Promise<void>): AgentProvider {
   return {
     kind: inner.kind,
     capabilities: inner.capabilities,
     healthCheck: () => inner.healthCheck(),
     async *run(opts, model) {
-      await check()
+      await check(opts)
       yield* inner.run(opts, model)
     },
   }
@@ -924,7 +926,11 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
     }
   }
   const apiProvider = providers['openai-api']
-  if (apiProvider) providers['openai-api'] = withMonthlyBudget(apiProvider, assertMonthlyBudget)
+  if (apiProvider) providers['openai-api'] = withPreRunCheck(apiProvider, assertMonthlyBudget)
+  // Every Claude Code run, including injected ones, first gets the owner's yes for commands its project settings run.
+  const claudeProvider = providers['claude-cli']
+  if (claudeProvider)
+    providers['claude-cli'] = withPreRunCheck(claudeProvider, (opts) => assertClaudeSettingsTrusted(opts))
   // Owner attachments reach every backend the same way: markers in the prompt become text and images (attachments.ts).
   const attachmentStore = new AttachmentStore(db, join(home, 'attachments'))
   void attachmentStore
@@ -1239,6 +1245,25 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
     const decided = approvals.decide(id, decision, via, note)
     if (decided) return { approval: decided, resumed: false }
     const late = getApproval(db, id)
+    // A question about project settings that timed out or whose run stopped: a yes trusts the commands for next time.
+    const settingsOffer = late?.status === 'expired' ? claudeSettingsOffers.get(id) : undefined
+    if (late && settingsOffer) {
+      claudeSettingsOffers.delete(id)
+      const answered =
+        decision === 'approved'
+          ? approveTimedOutApproval(db, id, via, note ? redactor.redact(note) : undefined)
+          : late
+      if (!answered) return undefined
+      if (decision === 'approved')
+        updateRepoTrustedClaudeSettings(db, settingsOffer.repoId, settingsOffer.fingerprint)
+      publish(late.taskId, late.attemptId, 'approval.decided', {
+        approvalId: id,
+        status: decision,
+        via,
+        late: true,
+      })
+      return { approval: answered, resumed: false }
+    }
     if (!late || late.status !== 'expired' || late.decidedVia !== 'timeout') return undefined
     const task = getTask(db, late.taskId)
     // Compete tasks never pause for an approval (a timeout is a denial there), and resuming one would rerun the
@@ -1388,6 +1413,115 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         throw new ProviderAllowlistError(
           'This repository runs agents in a container, which needs Codex in exec mode: set providers.codex.transport to exec (and restart Joy), or use Claude Code.',
         )
+    }
+  }
+
+  /** The repository a run's working directory is (its checkout) or belongs to (a task's worktree). */
+  function repoForCwd(cwd: string): RepoRecord | undefined {
+    const repos = listRepos(db)
+    const direct = repos.find((repo) => samePath(repo.path, cwd))
+    if (direct) return direct
+    for (const task of listTasks(db))
+      for (const attempt of listAttempts(db, task.id))
+        if (attempt.worktreePath && samePath(attempt.worktreePath, cwd))
+          return repos.find((repo) => repo.id === task.repoId)
+    return undefined
+  }
+
+  /**
+   * The task and attempt a run belongs to: the task whose run is calling (judge, reviewer, implementer), else the one
+   * whose worktree it runs in. A peer that an agent asks through the Tool Hub runs in a request handler, which does not
+   * carry the task's async context.
+   */
+  function runOwner(cwd: string): { task: StoredTask; attempt: AttemptRecord } | undefined {
+    const inWorktree = (attempts: AttemptRecord[]) =>
+      attempts.find((attempt) => attempt.worktreePath && samePath(attempt.worktreePath, cwd))
+    const taskId = runningTaskId.getStore()
+    const current = taskId ? getTask(db, taskId) : undefined
+    if (current) {
+      const attempts = listAttempts(db, current.id)
+      const attempt = inWorktree(attempts) ?? attempts.at(-1)
+      return attempt ? { task: current, attempt } : undefined
+    }
+    for (const task of listTasks(db)) {
+      const attempt = inWorktree(listAttempts(db, task.id))
+      if (attempt) return { task, attempt }
+    }
+    return undefined
+  }
+
+  /** Approvals of `.claude/settings.json` commands that timed out: a late yes still trusts them for the project. */
+  const claudeSettingsOffers = new Map<string, { repoId: RepoId; fingerprint: string }>()
+  /** One question per task and content: compete's two Claude attempts share it. */
+  const claudeSettingsQuestions = new Map<string, Promise<ApprovalStatus>>()
+
+  /**
+   * Claude Code runs the hooks (and env, helpers, plugins) of a project's `.claude/settings.json` by itself, outside
+   * any tool call Joy approves, even in a worktree it never trusted. Before each run the owner approves them once per
+   * content: the approval is remembered on the project and asked again whenever those commands change, including when
+   * an agent edits the file in its worktree. Without a task to ask in, the run is refused.
+   */
+  async function assertClaudeSettingsTrusted(opts: RunOptions): Promise<void> {
+    const found = await readClaudeSettingsCommands(opts.cwd, opts.signal)
+    if (!found) return
+    const repo = repoForCwd(opts.cwd)
+    if (repo?.trustedClaudeSettings === found.fingerprint) return
+    const refused = (why: string) =>
+      new Error(
+        `Claude Code was not started: ${CLAUDE_SETTINGS_FILE} in ${opts.cwd} runs commands on its own (${found.commands.join('; ')}) and ${why}. Approve them, then send the task again, or remove them from the file.`,
+      )
+    const owner = runOwner(opts.cwd)
+    if (!repo || !owner || owner.task.repoId !== repo.id)
+      throw refused('there is no task of this project to ask the owner in')
+    if (!(options.ownerApprovalChannel ?? true)) throw refused('owner approvals are turned off')
+    const { task, attempt } = owner
+    const key = `${task.id}:${found.fingerprint}`
+    let question = claudeSettingsQuestions.get(key)
+    if (!question) {
+      question = askClaudeSettings(task, attempt, opts, found, repo.id).finally(() =>
+        claudeSettingsQuestions.delete(key),
+      )
+      claudeSettingsQuestions.set(key, question)
+    }
+    const status = await question
+    if (status !== 'approved') throw refused(`the owner did not approve them (${status})`)
+    updateRepoTrustedClaudeSettings(db, repo.id, found.fingerprint)
+    // The owner may have answered after this run gave up (a peer's request times out sooner): trusted, but not started.
+    opts.signal.throwIfAborted()
+  }
+
+  async function askClaudeSettings(
+    task: StoredTask,
+    attempt: AttemptRecord,
+    opts: RunOptions,
+    found: { fingerprint: string; commands: string[] },
+    repoId: RepoId,
+  ): Promise<ApprovalStatus> {
+    const action: ProposedAction = {
+      kind: 'run_outside_worktree',
+      summary: `Let Claude Code run the commands in this project's ${CLAUDE_SETTINGS_FILE}`,
+      detail: { command: found.commands.join('\n'), cwd: opts.cwd },
+      provenance: 'user',
+    }
+    const timeoutMs =
+      options.approvalTimeoutMs ?? (await configStore.get()).approvals.timeout_minutes * 60_000
+    setTaskStatus(db, task.id, 'awaiting_approval')
+    try {
+      // The task's own signal, not the run's: a peer asked through the Tool Hub gives up after under a minute, and the
+      // owner should get the whole approval timeout. A run that stops meanwhile still finds the answer saved.
+      const { approvalId, status } = await approvals.request(
+        { taskId: task.id, attemptId: attempt.id, action, tier: 'approve' },
+        running.get(task.id)?.controller.signal ?? opts.signal,
+        timeoutMs,
+      )
+      if (status === 'expired')
+        claudeSettingsOffers.set(approvalId, { repoId, fingerprint: found.fingerprint })
+      return status
+    } finally {
+      // Another red action of this task may still be waiting; only the last answer resumes the status.
+      const stillWaiting = listApprovals(db, { status: 'pending', taskId: task.id }).length > 0
+      if (!stillWaiting && getTask(db, task.id)?.status === 'awaiting_approval')
+        setTaskStatus(db, task.id, 'running')
     }
   }
 
@@ -6180,7 +6314,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
                 return key
               },
             }))
-        provider = withMonthlyBudget(factory(toApiTools(tools)), assertMonthlyBudget)
+        provider = withPreRunCheck(factory(toApiTools(tools)), assertMonthlyBudget)
       } else {
         provider = providers[brain.provider]
         const address = httpServer.address()

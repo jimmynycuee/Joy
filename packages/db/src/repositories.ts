@@ -61,6 +61,8 @@ export interface RepoRecord extends RepoRef {
   /** argv that replaces the lockfile install in a new worktree. */
   installCommand?: string[]
   defaults?: ProjectDefaults
+  /** Fingerprint of the command-running parts of `.claude/settings.json` the owner approved (project-hooks). */
+  trustedClaudeSettings?: string
   createdAt: string
 }
 
@@ -152,6 +154,7 @@ interface RepoRow {
   instructions: string | null
   install_command: string | null
   defaults: string | null
+  trusted_claude_settings: string | null
   created_at: string
 }
 
@@ -310,6 +313,18 @@ export function updateRepoInstallCommand(
     installCommand ? JSON.stringify(validateCheckCommand(installCommand, 'install command')) : null,
     id,
   )
+  return getRepo(db, id)
+}
+
+/** Remembers (or forgets, null) which `.claude/settings.json` commands the owner approved for this project. */
+export function updateRepoTrustedClaudeSettings(
+  db: Database,
+  id: RepoId,
+  fingerprint: string | null,
+): RepoRecord | undefined {
+  if (fingerprint !== null && !/^[0-9a-f]{64}$/.test(fingerprint))
+    throw new Error('A trusted settings fingerprint is a SHA-256 hex digest')
+  db.prepare('UPDATE repos SET trusted_claude_settings = ? WHERE id = ?').run(fingerprint, id)
   return getRepo(db, id)
 }
 
@@ -861,6 +876,7 @@ function mapRepo(row: RepoRow): RepoRecord {
       ? { installCommand: validateCheckCommand(JSON.parse(row.install_command), 'install command') }
       : {}),
     ...(row.defaults ? { defaults: validateProjectDefaults(JSON.parse(row.defaults)) } : {}),
+    ...(row.trusted_claude_settings ? { trustedClaudeSettings: row.trusted_claude_settings } : {}),
     createdAt: row.created_at,
   }
 }

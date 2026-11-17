@@ -54,7 +54,10 @@ export function buildClaudeArgs(
       break
   }
 
-  if (mcpConfigPath) args.push('--mcp-config', mcpConfigPath, '--strict-mcp-config')
+  if (mcpConfigPath) args.push('--mcp-config', mcpConfigPath)
+  // Always, also without Joy's servers: otherwise a run would load the repository's `.mcp.json` (with
+  // `enableAllProjectMcpServers` in its settings) or the owner's own MCP servers, outside Joy's approvals.
+  args.push('--strict-mcp-config')
   if (opts.outputSchema) args.push('--json-schema', JSON.stringify(opts.outputSchema))
 
   // `--` so a prompt starting with "-" is never read as a flag.

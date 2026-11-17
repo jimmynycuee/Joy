@@ -75,9 +75,15 @@ been trusted`），但它的 `hooks`（例如 `SessionStart`）**照跑**。
   - `--setting-sources user,project`：local 的 allow 與 hooks 都不載入；專案 CLAUDE.md、`.claude/skills`、`.claude/commands`
     還在。`--setting-sources user` 或空字串會連專案 CLAUDE.md、skill、指令一起拿掉，所以不用。Joy 每個 run 都傳
     `user,project`。
+  - 專案設定的 `env` 在未信任資料夾也生效（2026-11-18 實測：`SessionStart` hook 讀到專案 `env` 設的值），所以 `BASH_ENV`、
+    `NODE_OPTIONS` 之類會影響 Claude 啟動的每個指令；Joy 把 `env` 也列進要問的設定。
+  - 沒有 `--strict-mcp-config` 時，`-p` run 會載入專案 `.mcp.json`（配 `enableAllProjectMcpServers`，server 真的被啟動）、使用者與
+    claude.ai 的 MCP connectors；加上後 `mcp_servers` 是空的、run 正常。Joy 每個 Claude run 都加，不只有 Tool Hub 的 run。
   - `acceptEdits` 下用 Write 寫 `.claude/settings.json` 會被當成需要許可（交給 Joy），不會直接寫入。
-  - 仍存在：repo 自己提交的 `.claude/settings.json` hooks 會在每個 run 開始時執行，等於加入這個 repo 就信任它；使用者
-    `~/.claude/settings.json` 的 allow 規則是擁有者自己的設定，照樣生效、不經 Joy。
+  - repo 自己提交的 `.claude/settings.json` hooks 會在每個 run 開始時執行。Joy 在每次啟動 Claude 前讀 worktree 的這個檔
+    （hooks、statusLine、`apiKeyHelper` 等 helper、`enabledPlugins`、`extraKnownMarketplaces`），內容和專案上記住的指紋不同就先
+    走核准卡問擁有者，同意才啟動（`packages/server/src/claude-settings.ts`）。使用者 `~/.claude/settings.json` 的 allow 規則是
+    擁有者自己的設定，照樣生效、不經 Joy。
 
 ## 額度感知（T2.5）
 
