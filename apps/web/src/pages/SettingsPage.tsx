@@ -74,6 +74,9 @@ export interface SettingsPageProps {
   doctorLoading: boolean
   onRetryDoctor: () => void
   repos: Repo[]
+  /** Show only this project in 專案 (opened from the sidebar); null shows them all. */
+  repoId: string | null
+  onAllRepos: () => void
   onAddRepo: () => void
   onRepoSaved: (repo: Repo) => void
   theme: ThemePreference
@@ -219,19 +222,28 @@ export function SettingsPage(props: SettingsPageProps) {
       )
     }
     if (section === 'projects') {
+      // One project, when the sidebar opened it; if it has been removed since, all of them.
+      const only = props.repoId === null ? undefined : props.repos.find((repo) => repo.id === props.repoId)
+      const shown = only ? [only] : props.repos
       return (
         <section className="card settings-card">
           <div className="section-heading">
             <h2>專案</h2>
-            <Button variant="primary" icon="plus" onClick={props.onAddRepo}>
-              加入專案
-            </Button>
+            {only ? (
+              <Button variant="ghost" onClick={props.onAllRepos}>
+                所有專案
+              </Button>
+            ) : (
+              <Button variant="primary" icon="plus" onClick={props.onAddRepo}>
+                加入專案
+              </Button>
+            )}
           </div>
           {props.repos.length === 0 ? (
             <p className="muted">還沒有專案</p>
           ) : (
             <div className="repo-list">
-              {props.repos.map((repo) => (
+              {shown.map((repo) => (
                 <RepoSettingsCard key={repo.id} repo={repo} repos={props.repos} onSaved={props.onRepoSaved} />
               ))}
             </div>

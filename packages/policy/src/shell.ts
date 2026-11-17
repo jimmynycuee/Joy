@@ -653,6 +653,21 @@ export function analyzeShellConcerns(
   return { verdict: result.verdict, reason: result.reason, concerns }
 }
 
+/**
+ * Names in `SECRET_HOME_PATHS` that projects also keep in their own tree (`.claude/settings.json`, `.npmrc`,
+ * `.docker/`). A search that starts in the worktree and cannot climb out of it reads the project's copy, not the
+ * home directory's, so naming one of these there does not ask.
+ */
+const PROJECT_CONFIG_NAMES = new Set([
+  '.claude',
+  '.claude.json',
+  '.codex',
+  '.npmrc',
+  '.yarnrc',
+  '.yarnrc.yml',
+  '.docker',
+])
+
 /** Glob characters: a directory segment with one of them can match any directory, secrets included. */
 const GLOB_CHARS = /[*?[\]{}]/
 
@@ -686,11 +701,20 @@ export function analyzeSearch(
   const fold = (value: string) => (path === win32 ? value.toLowerCase() : value)
   // A secret named anywhere in a pattern (`**/.ssh/*`, `.config/gh/**`), wherever the search starts.
   const secretSequences = [...SECRET_HOME_PATHS, ...SECRET_SEGMENTS].map((p) => p.split('/').map(fold))
+  const projectConfig = new Set([...PROJECT_CONFIG_NAMES].map(fold))
+  const startsInWorktree = within(path, worktree, start)
   let descends = options.recursive
   for (const pattern of patterns) {
     if (pattern.trim() === '') continue
-    const segments = pattern.replace(/\\/g, '/').split('/').filter(Boolean).map(fold)
-    const named = secretSequences.some((sequence) =>
+    const normalized = pattern.replace(/\\/g, '/')
+    const segments = normalized.split('/').filter(Boolean).map(fold)
+    // `..`, an absolute pattern or `~` can leave the worktree, so the project's copy is not all such a pattern reaches.
+    const staysInWorktree =
+      startsInWorktree && !normalized.includes('..') && !normalized.includes('~') && !path.isAbsolute(pattern)
+    const sequences = staysInWorktree
+      ? secretSequences.filter((sequence) => !(sequence.length === 1 && projectConfig.has(sequence[0] ?? '')))
+      : secretSequences
+    const named = sequences.some((sequence) =>
       segments.some((_, i) => sequence.every((part, j) => segments[i + j] === part)),
     )
     if (named) result.raise('forbidden', REASONS.secret)

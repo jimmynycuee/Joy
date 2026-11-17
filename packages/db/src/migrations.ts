@@ -546,6 +546,16 @@ export const MIGRATIONS: readonly Migration[] = [
   },
   {
     version: 25,
+    name: 'pinned tasks and conversations',
+    sql: /* sql */ `
+      -- When the owner pinned the row to the top of the sidebar; NULL means not pinned. Pinning changes no other
+      -- column (the sidebar's recent order follows updated_at, which a pin must not move).
+      ALTER TABLE tasks ADD COLUMN pinned_at TEXT CHECK (pinned_at IS NULL OR length(pinned_at) > 0);
+      ALTER TABLE conversations ADD COLUMN pinned_at TEXT CHECK (pinned_at IS NULL OR length(pinned_at) > 0);
+      `,
+  },
+  {
+    version: 26,
     name: 'managed MCP servers',
     sql: /* sql */ `
       -- MCP servers the owner added in Settings: Joy hands the enabled ones to the implementer's CLI. vars is a JSON

@@ -80,9 +80,8 @@ export function NewTaskPage({
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [busy, setBusy] = useState(false)
   // What the owner picked last time (models, mode, 先規劃) is the starting point; roles without a pick follow Settings.
-  const [choice, setChoice] = useState<ComposerChoice>(() =>
-    parseStoredChoice(readStorage(COMPOSER_STORAGE_KEY)),
-  )
+  const [storedChoice] = useState(() => readStorage(COMPOSER_STORAGE_KEY))
+  const [choice, setChoice] = useState<ComposerChoice>(() => parseStoredChoice(storedChoice))
   useEffect(() => {
     writeStorage(COMPOSER_STORAGE_KEY, serializeChoice(choice))
   }, [choice])
@@ -102,16 +101,19 @@ export function NewTaskPage({
   // Picks the repository does not allow are left out, so they fall back to Settings instead of failing the task.
   const effective = useMemo(() => applyAllowlist(choice, allowedProviders), [choice, allowedProviders])
   // Switching project starts the box from that project's defaults (model, mode, permission); whatever the project has no
-  // default for stays as the owner last left it. The first project counts as switched to when the page opens.
+  // default for stays as the owner last left it. Opening the page is not a switch: the last choice stays, unless there
+  // is none yet, and then the first project's defaults are the start.
   const defaultsAppliedFor = useRef<string | null>(null)
   useEffect(() => {
     if (!activeRepo || defaultsAppliedFor.current === activeRepo.id) return
+    const opening = defaultsAppliedFor.current === null
     defaultsAppliedFor.current = activeRepo.id
+    if (opening && storedChoice !== null) return
     if (activeRepo.defaults)
       setChoice((current) =>
         applyProjectDefaults(current, activeRepo.defaults, defaults, activeRepo.maxPermissionMode),
       )
-  }, [activeRepo, defaults])
+  }, [activeRepo, defaults, storedChoice])
   const models = useMemo(() => {
     const resolved = resolveModels(effective.models, defaults)
     return { implementer: resolved.implementer.ref, reviewer: resolved.reviewer.ref }

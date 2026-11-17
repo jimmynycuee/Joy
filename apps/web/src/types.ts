@@ -43,6 +43,8 @@ export type Task = {
   updatedAt?: string
   /** Server-side archive flag; missing means not archived. */
   archived?: boolean
+  /** When the owner pinned it to the top of the sidebar; missing means not pinned. */
+  pinnedAt?: string
 }
 export type TaskEvent = {
   taskId: string
@@ -165,6 +167,8 @@ export interface ConversationSummary {
   brainProvider?: string
   updatedAt?: string
   createdAt: string
+  /** When the owner pinned it to the top of the sidebar; missing means not pinned. */
+  pinnedAt?: string
 }
 
 export function record(value: unknown): Record<string, unknown> | null {
