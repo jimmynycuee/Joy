@@ -180,8 +180,8 @@ svg.dino,svg.cat{display:block;overflow:visible}
       <dl class="doc">
         <div><dt>原告</dt><dd>一隻恐龍（兼任本案法官）</dd></div>
         <div><dt>被告</dt><dd>你</dd></div>
-        <div><dt>案由</dt><dd><span class="redact">妨害專心</span></dd></div>
-        <div><dt>事實</dt><dd><span class="redact">被告多次害恐龍分心，</span><br><span class="redact">本週尤其嚴重。</span></dd></div>
+        <div><dt>案由</dt><dd><span class="redact">讓喬治流落街頭</span></dd></div>
+        <div><dt>事實</dt><dd><span class="redact">喬治至今無人收留，</span><br><span class="redact">被告知情，而且沒有要管。</span></dd></div>
         <div><dt>求刑</dt><dd><span class="redact">還不能看。</span></dd></div>
       </dl>
       <div class="watch">
@@ -204,7 +204,7 @@ svg.dino,svg.cat{display:block;overflow:visible}
         </button>
         <div class="knocks" id="knocks" aria-hidden="true"><i></i><i></i><i></i></div>
       </div>
-      <p class="say" id="say" aria-live="polite">被告，害恐龍分心這件事，<br>你有什麼要說的。</p>
+      <p class="say" id="say" aria-live="polite">被告，喬治流落街頭這件事，<br>你有什麼要說的。</p>
       <p class="hint" id="courtHint" aria-live="polite"></p>
       <div class="pleas">
         <button class="plea" data-plea="guilty">我認罪</button>
@@ -378,7 +378,7 @@ $('#toCourt').addEventListener('click',()=>goto(2));
 /* ── 2 開庭：法官手短，請代敲 ── */
 const PLEAS={
   guilty:'認得這麼快，本庭反而有點慌。',
-  innocent:'每個害恐龍分心的人都這麼說。',
+  innocent:'每個讓喬治流落街頭的人都這麼說。',
   proof:'證物一：一雙太久沒出門的跑鞋。證物二還沒想到。'
 };
 let pleaded=false,knocks=0;
