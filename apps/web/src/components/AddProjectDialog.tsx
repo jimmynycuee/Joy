@@ -35,7 +35,8 @@ export function AddProjectDialog({
   const [busy, setBusy] = useState(false)
   // Only the answer to the newest request is used, so a slow listing cannot replace a newer one.
   const latest = useRef(0)
-  // Whether the owner typed in the path box since the last listing was asked for: a late answer must not erase it.
+  // Whether the owner started editing the path box since the last listing was asked for: a late answer must not
+  // replace it.
   const typed = useRef(false)
 
   const open = useCallback(async (path?: string) => {
@@ -216,6 +217,14 @@ export function AddProjectDialog({
                 onChange={(event) => {
                   typed.current = true
                   setPathText(event.target.value)
+                }}
+                // A key or a click starts editing before any change (select all, then paste): a listing that lands
+                // in between must not replace the box, or the paste ends up after the old path.
+                onKeyDown={() => {
+                  typed.current = true
+                }}
+                onPointerDown={() => {
+                  typed.current = true
                 }}
               />
               <Button type="submit" variant="secondary" disabled={loading}>

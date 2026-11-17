@@ -340,6 +340,31 @@ test.describe('加入專案 picks a folder', () => {
     await expect(dialog.locator('.folder-name')).toHaveText(['app', 'sketch'])
   })
 
+  test('what the owner starts typing while the home folder is still loading is not replaced by it', async ({
+    page,
+  }) => {
+    await mockApi(page, { repos: [], folders })
+    // Registered last, so it runs first: holds the first listing until the owner has selected the box.
+    let release = () => {}
+    const held = new Promise<void>((resolve) => (release = resolve))
+    await page.route('**/api/fs/folders**', async (route) => {
+      await held
+      await route.fallback()
+    })
+    await page.goto('/')
+    await sidebarOf(page).getByRole('button', { name: '加入專案' }).click()
+    const dialog = page.getByRole('dialog', { name: '加入專案' })
+    const input = dialog.getByLabel('資料夾路徑')
+    await input.focus()
+    await page.keyboard.press('ControlOrMeta+a')
+    release()
+    await expect(dialog.locator('.folder-name')).toHaveText(['code', 'notes'])
+    await page.keyboard.insertText('/home/me/code')
+    await expect(input).toHaveValue('/home/me/code')
+    await input.press('Enter')
+    await expect(dialog.locator('.folder-name')).toHaveText(['app', 'sketch'])
+  })
+
   test('a folder that is not a git repository offers git init, only after a confirmation', async ({
     page,
   }) => {

@@ -39,7 +39,10 @@ test('a repository can be added in container mode', async ({ page }) => {
   await page.goto('/')
   await page.getByRole('button', { name: '加入專案' }).first().click()
   const dialog = page.getByRole('dialog', { name: '加入專案' })
+  // Wait for the first listing, which fills the box, before typing over it (see t1.8.spec.ts).
+  await expect(dialog.getByRole('navigation', { name: '目前位置' })).toBeVisible()
   await dialog.getByLabel('資料夾路徑').fill('/work/untrusted')
+  await expect(dialog.getByLabel('資料夾路徑')).toHaveValue('/work/untrusted')
   await dialog.getByRole('button', { name: '前往' }).click()
   await dialog.getByRole('button', { name: '選擇這個資料夾' }).click()
   await dialog.getByLabel('在容器裡執行 agent').check()

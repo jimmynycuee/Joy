@@ -110,7 +110,11 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   execFileSync('git', ['init'], { cwd: projectPath })
   await page.getByRole('button', { name: '加入專案' }).first().click()
   const repoDialog = page.getByRole('dialog', { name: '加入專案' })
+  // The dialog first lists the home folder and puts its path in the box. Typing before that lands lets the listing
+  // replace the box between fill's select-all and its insert, so the typed path ends up after the home path.
+  await expect(repoDialog.getByRole('navigation', { name: '目前位置' })).toBeVisible()
   await repoDialog.getByLabel('資料夾路徑').fill(projectPath)
+  await expect(repoDialog.getByLabel('資料夾路徑')).toHaveValue(projectPath)
   await repoDialog.getByRole('button', { name: '前往' }).click()
   await expect(repoDialog.getByRole('navigation', { name: '目前位置' })).toContainText(
     projectPath.split('/').filter(Boolean).at(-1) ?? '',
