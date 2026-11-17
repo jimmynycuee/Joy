@@ -4,9 +4,9 @@ import { createServer as createHttpServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { link, lstat, mkdir, open, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises'
+import { link, lstat, mkdir, open, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
-import { extname, isAbsolute, join, resolve, sep } from 'node:path'
+import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WebSocket, WebSocketServer } from 'ws'
 import { z, ZodError } from 'zod'
@@ -853,9 +853,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     (request: CodexApprovalRequest) => Promise<CodexApprovalDecision>
   >()
   // A run's MCP config (with the servers' secrets) lives under JOY_HOME, never in the OS temp folder an agent may read.
-  // One left behind by a crash is removed here: no run is going yet.
-  const runConfigDir = join(home, 'run')
-  await rm(runConfigDir, { recursive: true, force: true })
+  // Ones left behind by a crash are removed here (only Joy's own `joy-claude-*` folders); failing to only warns.
+  const runConfigDir = join(home, 'mcp-run')
+  await removeStaleRunConfigs(runConfigDir, (message) => log.warn(redactor.redact(`[joy] ${message}`)))
   const providers: Partial<Record<ProviderKind, AgentProvider>> = {
     'claude-cli': new ClaudeCliProvider({
       configDir: runConfigDir,
@@ -1419,9 +1419,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       ...(atRepo ? [] : [{ host: await gitCommonDir(run.cwd), readOnly: false }]),
       { host: JOY_SOURCE_ROOT },
       // Files Joy wrote for this run (MCP config, output schema).
-      ...run.args
-        .filter((arg) => isAbsolute(arg) && arg.startsWith(tmpdir()) && existsSyncFs(arg))
-        .map((arg) => ({ host: arg })),
+      ...runFileMounts(run.args, [tmpdir(), runConfigDir]),
       // Files the provider says the CLI reads (attached images for `codex exec --image`), read-only: the container
       // may look at them, never change them.
       ...(run.readFiles ?? [])
@@ -7150,5 +7148,43 @@ function codexElicitationInput(params: {
     toolCall: meta.codex_approval_kind === 'mcp_tool_call',
     ...(tool ? { tool } : {}),
     ...(typeof params.message === 'string' ? { message: params.message } : {}),
+  }
+}
+
+/**
+ * The files among a CLI's arguments that Joy wrote for the run (in the OS temp folder or the MCP config folder under
+ * JOY_HOME), mounted read-only into an agent container so the CLI there can read them. Only the file itself is
+ * mounted, never its folder.
+ */
+export function runFileMounts(
+  args: readonly string[],
+  dirs: readonly string[],
+): Array<{ host: string; readOnly: true }> {
+  return args
+    .filter((arg) => isAbsolute(arg) && dirs.some((dir) => isInside(dir, arg)) && existsSyncFs(arg))
+    .map((arg) => ({ host: arg, readOnly: true as const }))
+}
+
+function isInside(dir: string, path: string): boolean {
+  const rel = relative(dir, path)
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
+}
+
+/** Removes the `joy-claude-*` folders a crashed run left in `dir`; anything else there is left alone. */
+export async function removeStaleRunConfigs(dir: string, warn: (message: string) => void): Promise<void> {
+  let names: string[]
+  try {
+    names = await readdir(dir)
+  } catch {
+    return
+  }
+  for (const name of names.filter((entry) => entry.startsWith('joy-claude-'))) {
+    try {
+      await rm(join(dir, name), { recursive: true, force: true })
+    } catch (cause) {
+      warn(
+        `Could not remove the old MCP config ${join(dir, name)}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      )
+    }
   }
 }

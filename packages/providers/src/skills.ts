@@ -15,6 +15,8 @@ export interface DiscoveredSkill {
   kind: 'skill' | 'command'
   /** The SKILL.md or command file. */
   path: string
+  /** Another skill or command of this CLI has the same name; which one the CLI loads is not known. */
+  sameNameElsewhere?: true
 }
 
 export interface SkillSources {
@@ -84,15 +86,22 @@ function sources({ userHome, projectDir, env = {} }: SkillSources): Source[] {
   ]
 }
 
-/** Every skill and command found; a name already found for the same CLI keeps its first place. */
+/**
+ * Every skill and command found; a name already found for the same CLI keeps its first place and is marked
+ * `sameNameElsewhere`.
+ */
 export async function discoverSkills(input: SkillSources): Promise<DiscoveredSkill[]> {
   const found: DiscoveredSkill[] = []
-  const seen = new Set<string>()
+  const seen = new Map<string, DiscoveredSkill>()
   for (const source of sources(input)) {
     for (const skill of await readSource(source)) {
       const key = `${skill.cli}:${skill.name}`
-      if (seen.has(key)) continue
-      seen.add(key)
+      const first = seen.get(key)
+      if (first) {
+        first.sameNameElsewhere = true
+        continue
+      }
+      seen.set(key, skill)
       found.push(skill)
     }
   }

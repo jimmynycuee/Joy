@@ -182,12 +182,78 @@ describe('withPlugins', () => {
     expect([...(during?.skills ?? [])]).toEqual(['review'])
     expect(grants.for('/w/a')).toBeUndefined()
 
-    // A /name that is no skill, or a run without the hub, grants nothing.
-    for await (const event of wrapped.run(base({ cwd: '/w/b', prompt: markers.mark('/nothing') }), model)) {
+    // A run without the hub (a peer, a pre-review) gets no grant, and one going on in the same worktree leaves the
+    // implementer's grant alone.
+    const peer = wrapped.run(base({ cwd: '/w/a', prompt: markers.mark('/review') }), model)
+    for await (const event of wrapped.run(
+      base({ cwd: '/w/a', prompt: markers.mark('/review now'), mcpServers: hub }),
+      model,
+    )) {
+      void event
+      for await (const inner of peer) void inner
+      during = grants.for('/w/a')
+    }
+    expect(during?.readOnlyServers).toEqual(['docs'])
+    expect([...(during?.skills ?? [])]).toEqual(['review'])
+
+    // A /name that is no skill grants nothing.
+    for await (const event of wrapped.run(
+      base({ cwd: '/w/b', prompt: markers.mark('/nothing'), mcpServers: hub }),
+      model,
+    )) {
       void event
       during = grants.for('/w/b')
     }
-    expect(during?.readOnlyServers).toEqual([])
     expect(during?.skills.size).toBe(0)
+  })
+
+  it('grants no skill that a user and a project both have under one name', async () => {
+    const userHome = mkdtempSync(join(tmpdir(), 'joy-grant-home-'))
+    const projectDir = mkdtempSync(join(tmpdir(), 'joy-grant-'))
+    temps.push(userHome, projectDir)
+    for (const root of [join(userHome, '.claude'), join(projectDir, '.claude')]) {
+      mkdirSync(join(root, 'skills', 'review'), { recursive: true })
+      writeFileSync(join(root, 'skills', 'review', 'SKILL.md'), '---\nname: review\ndescription: r\n---\n')
+    }
+    const db = openDatabase(':memory:')
+    const plugins = new PluginService({
+      db,
+      secretStore: new SecretStore({ backend: new MemoryBackend(), env: {} }),
+      userHome,
+      env: {},
+      warn: () => {},
+    })
+    const markers = new SkillMarkers()
+    const grants = new RunGrants()
+    let skills: Set<string> | undefined
+    const inner: AgentProvider = {
+      kind: 'claude-cli',
+      capabilities: {
+        codeEdit: true,
+        tools: true,
+        resume: true,
+        presetSessionId: false,
+        delegatedApproval: true,
+        quotaEvents: false,
+        structuredOutput: true,
+      },
+      async *run(options): AsyncGenerator<AgentEvent> {
+        skills = grants.for(options.cwd)?.skills
+        yield { type: 'done', sessionId: 's', isError: false }
+      },
+      healthCheck: async () => ({ ok: true, installed: true, loggedIn: true as const }),
+    }
+    const wrapped = withPlugins(
+      inner,
+      plugins,
+      markers,
+      () => ({ repoId: 'r1' as RepoId, projectDir, container: false }),
+      'joy',
+      grants,
+    )
+    const hub = [{ name: 'joy', transport: 'stdio' as const, command: 'node', args: [] }]
+    for await (const event of wrapped.run(base({ prompt: markers.mark('/review'), mcpServers: hub }), model))
+      void event
+    expect(skills?.size).toBe(0)
   })
 })

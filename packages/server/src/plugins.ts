@@ -378,18 +378,25 @@ export function withPlugins(
         const run = context()
         // Skill folders are read only when the owner actually invoked one (lazily, once per run).
         let skills: Promise<DiscoveredSkill[]> | undefined
+        // Only a run with Joy's Tool Hub has an approval channel, so only it gets a grant. Other runs in the same
+        // worktree while it goes on (a peer, a pre-review) leave its grant alone.
+        const withHub = Boolean(opts.mcpServers?.some((server) => server.name === toolHubName))
         const handed =
-          run && !run.container && opts.mcpServers?.some((server) => server.name === toolHubName)
+          run && !run.container && withHub
             ? await plugins.runServers(run.repoId)
             : { configs: [], readOnly: [] }
         const managed = handed.configs
-        const grant = grants.open(opts.cwd, handed.readOnly)
-        const expand = async (text: string) =>
-          markers.has(text)
-            ? markers.expand(text, inner.kind, await (skills ??= plugins.skills(run?.projectDir)), (name) =>
-                grant.skills.add(name),
-              )
-            : text
+        const grant = withHub ? grants.open(opts.cwd, handed.readOnly) : undefined
+        const expand = async (text: string) => {
+          if (!markers.has(text)) return text
+          const found = await (skills ??= plugins.skills(run?.projectDir))
+          return markers.expand(text, inner.kind, found, (name) => {
+            // A user skill and a project skill of the same name: which one the CLI loads is not known, so neither is
+            // granted (loading it asks).
+            const skill = found.find((entry) => entry.cli === inner.kind && entry.name === name)
+            if (skill && !skill.sameNameElsewhere) grant?.skills.add(name)
+          })
+        }
         try {
           const next: RunOptions = {
             ...opts,
@@ -399,7 +406,7 @@ export function withPlugins(
           }
           yield* inner.run(next, model)
         } finally {
-          grants.close(opts.cwd, grant)
+          if (grant) grants.close(opts.cwd, grant)
         }
       })()
     },
