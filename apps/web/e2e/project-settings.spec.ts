@@ -161,7 +161,7 @@ test('switching project in the new task box applies that project’s defaults an
   await page.evaluate(() => localStorage.clear())
   await page.reload()
 
-  // The first project counts as switched to: its defaults show.
+  // With no last choice yet, the first project's defaults are the start.
   await expect(button(page, /^做法/)).toContainText('單人')
   await expect(button(page, /^權限/)).toContainText('要求核准')
   await expect(button(page, /^模型/)).toContainText('Haiku')
@@ -191,6 +191,31 @@ test('switching project in the new task box applies that project’s defaults an
     permissionMode: 'ask',
     roleOverrides: { implementer: { provider: 'claude-cli', model: 'haiku', effort: 'low' } },
   })
+})
+
+test('opening the new task box keeps the last choice instead of the first project’s defaults', async ({
+  page,
+}) => {
+  await mockApi(page, {
+    repos: [{ ...alpha, defaults: { mode: 'single', permissionMode: 'ask' } }, beta],
+  })
+  await page.goto('/')
+  await page.evaluate(() => localStorage.clear())
+  await page.reload()
+  await expect(button(page, /^做法/)).toContainText('單人')
+  await button(page, /^做法/).click()
+  await page.getByRole('menuitemradio', { name: /兩家比賽/ }).click()
+  await expect(button(page, /^做法/)).toContainText('兩家比賽')
+
+  await page.reload()
+  await expect(button(page, /^做法/)).toContainText('兩家比賽')
+
+  // Switching to the project again is a switch.
+  await button(page, /^專案/).click()
+  await page.getByRole('menuitemradio', { name: /beta/ }).click()
+  await button(page, /^專案/).click()
+  await page.getByRole('menuitemradio', { name: /alpha/ }).click()
+  await expect(button(page, /^做法/)).toContainText('單人')
 })
 
 const projectTask = (id: string, repoId: string, title: string, minutesAgo: number, extra: Json = {}) => ({

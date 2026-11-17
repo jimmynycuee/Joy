@@ -50,6 +50,30 @@ describe('searches stay out of secrets', () => {
       expect(outcome(tool, input, mode)).toBe('require_approval')
   })
 
+  it.each([
+    ['Glob', { pattern: '.claude/**' }],
+    ['Glob', { pattern: '**/.npmrc' }],
+    ['Glob', { pattern: 'packages/*/.docker/*' }],
+    ['Grep', { pattern: 'hook', glob: '.claude/*.json' }],
+    ['Glob', { path: 'apps', pattern: '**/.codex/*' }],
+  ])('%s %j reads the project’s own config and runs in every mode', (tool, input) => {
+    for (const mode of ['ask', 'auto', 'full'] as const) expect(outcome(tool, input, mode)).toBe('allow')
+  })
+
+  it.each([
+    // The same names where the search can leave the worktree still ask.
+    ['Glob', { pattern: '../**/.claude/**' }],
+    ['Glob', { pattern: '~/.npmrc' }],
+    ['Glob', { pattern: '/home/me/.claude/**' }],
+    ['Glob', { path: '/home/me/code', pattern: '**/.npmrc' }],
+    // Credentials are credentials in the worktree too.
+    ['Glob', { pattern: '**/.ssh/*' }],
+    ['Glob', { pattern: '**/.aws/credentials' }],
+  ])('%s %j still asks in every mode', (tool, input) => {
+    for (const mode of ['ask', 'auto', 'full'] as const)
+      expect(outcome(tool, input, mode)).toBe('require_approval')
+  })
+
   it('a search outside the worktree that cannot reach a secret is only outside', () => {
     expect(verdict('/opt/lib', [], true)).toBe('outside')
     expect(verdict('/home/me/code/other', ['**/*.ts'], false)).toBe('outside')

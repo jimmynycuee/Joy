@@ -158,7 +158,11 @@ test('a task or a conversation can be pinned: it moves to 已釘選 and the serv
   await page.reload()
   await expect(pinned.locator('.task-title')).toHaveText(['Weekend plans', 'Older task'])
 
-  await sidebar.getByRole('button', { name: '更多：Older task' }).first().click()
+  // A right click on the row opens the same menu.
+  await pinned
+    .getByRole('button', { name: /Older task/ })
+    .first()
+    .click({ button: 'right' })
   await expect(page.getByRole('menuitem', { name: '取消釘選' })).toBeVisible()
   await page.getByRole('menuitem', { name: '取消釘選' }).click()
   await expect(pinned.locator('.task-title')).toHaveText(['Weekend plans'])
