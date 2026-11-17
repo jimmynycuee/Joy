@@ -2,7 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-17（外掛：輸入框 `/` 叫出 skill、`@` 插入專案檔案與 MCP server，設定 → 外掛可新增 MCP server（stdio／http，機密只在 keychain），分支 `plugins`，**`packages/core` 的 `McpServerConfig.approval`、`packages/policy` 的 MCP／Skill 規則與 `packages/secrets` 的 MCP 機密待擁有者審**）
+- 最後更新：2026-11-17（安全缺口：Claude 不再載入 `.claude/settings.local.json`、設定頁把 http MCP 設成唯讀前要確認、同一個 JOY_HOME 只能有一個 Joy，分支 `security-gaps`）；2026-11-17（外掛：輸入框 `/` 叫出 skill、`@` 插入專案檔案與 MCP server，設定 → 外掛可新增 MCP server（stdio／http，機密只在 keychain），分支 `plugins`，**`packages/core` 的 `McpServerConfig.approval`、`packages/policy` 的 MCP／Skill 規則與 `packages/secrets` 的 MCP 機密待擁有者審**）
 - 最後更新：2026-11-16（每個任務顯示用量與耗時：每輪結尾一行、用量面板依模型與角色、統計頁依任務比較，分支 `task-usage`，基於 `queue-rewind`，**core 的 `usage` 事件多一個欄位待擁有者審**）；2026-11-16（執行中訊息預設排到這一輪結束、可編輯／排序／刪除且重啟後仍在；時間軸「從這裡重做」：還原到該輪開始前的檢查點、捨棄之後的輪次、以新 session 重送，分支 `queue-rewind`，基於 `task-diff-allow`）；2026-11-15（任務頁完整 diff 與 diff 上方的「開 PR」；核准卡「這個任務內一律允許」，分支 `task-diff-allow`，基於 `project-settings`，**policy 待擁有者審**）；2026-11-15（專案設定：專案指示、安裝指令、新任務預設、側邊欄依專案分組，分支 `project-settings`，基於 `composer-switch`）；2026-11-15（輸入框自動長高；任務中用首頁的選單切換模型、做法與權限模式，分支 `composer-switch`，基於 `permission-modes`）；2026-11-15（每個任務的權限模式：要求核准／自動／完整存取，分支 `permission-modes`，core 與 policy 待擁有者審）；2026-11-15（修正：review loop／compete 的 Claude 實作者沒有核准管道，`pnpm check` 被 CLI 自動拒絕）；2026-11-14（附件：輸入框附加檔案與貼上圖片；介面減量：側邊欄單一清單、設定返回鍵、移除說明文字；品牌角色、配色與專案色；2026-11-13：不用終端機：單一程式＋背景服務、上限停下後排隊訊息不自動接續；擁有者已審即時補充的 core 介面）
 - 最後更新：2026-11-16（側邊欄改成已釘選／專案／最近項目，加入專案改用資料夾選擇器，分支 `sidebar-projects`；pins 的 migration 是 25，排在 #147 的 24 之後）；2026-11-15（任務頁完整 diff 與 diff 上方的「開 PR」；核准卡「這個任務內一律允許」，分支 `task-diff-allow`，基於 `project-settings`，**policy 待擁有者審**）；2026-11-15（專案設定：專案指示、安裝指令、新任務預設、側邊欄依專案分組，分支 `project-settings`，基於 `composer-switch`）；2026-11-15（輸入框自動長高；任務中用首頁的選單切換模型、做法與權限模式，分支 `composer-switch`，基於 `permission-modes`）；2026-11-15（每個任務的權限模式：要求核准／自動／完整存取，分支 `permission-modes`，core 與 policy 待擁有者審）；2026-11-15（修正：review loop／compete 的 Claude 實作者沒有核准管道，`pnpm check` 被 CLI 自動拒絕）；2026-11-14（附件：輸入框附加檔案與貼上圖片；介面減量：側邊欄單一清單、設定返回鍵、移除說明文字；品牌角色、配色與專案色；2026-11-13：不用終端機：單一程式＋背景服務、上限停下後排隊訊息不自動接續；擁有者已審即時補充的 core 介面）
 - 最後更新：2026-11-16（執行中訊息預設排到這一輪結束、可編輯／排序／刪除且重啟後仍在；時間軸「從這裡重做」：還原到該輪開始前的檢查點、捨棄之後的輪次、以新 session 重送，分支 `queue-rewind`，基於 `task-diff-allow`）；2026-11-15（任務頁完整 diff 與 diff 上方的「開 PR」；核准卡「這個任務內一律允許」，分支 `task-diff-allow`，基於 `project-settings`，**policy 待擁有者審**）；2026-11-15（專案設定：專案指示、安裝指令、新任務預設、側邊欄依專案分組，分支 `project-settings`，基於 `composer-switch`）；2026-11-15（輸入框自動長高；任務中用首頁的選單切換模型、做法與權限模式，分支 `composer-switch`，基於 `permission-modes`）；2026-11-15（每個任務的權限模式：要求核准／自動／完整存取，分支 `permission-modes`，core 與 policy 待擁有者審）；2026-11-15（修正：review loop／compete 的 Claude 實作者沒有核准管道，`pnpm check` 被 CLI 自動拒絕）；2026-11-14（附件：輸入框附加檔案與貼上圖片；介面減量：側邊欄單一清單、設定返回鍵、移除說明文字；品牌角色、配色與專案色；2026-11-13：不用終端機：單一程式＋背景服務、上限停下後排隊訊息不自動接續；擁有者已審即時補充的 core 介面）
@@ -11,6 +11,16 @@
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
 ## 驗證結果
+
+### 安全缺口：settings.local.json、唯讀 http MCP、同一個 JOY_HOME（2026-11-17，分支 `security-gaps`）
+
+- **Claude 的設定來源**：每個 run 都加 `--setting-sources user,project`。用 2.1.319＋haiku 實測（細節在 `docs/spikes/claude-code.md`「權限與審核」）：`-p` 下 worktree 是沒信任過的資料夾，專案 `.claude/settings.json` 的 allow 規則會被 CLI 忽略，但 **`.claude/settings.local.json` 的 allow 規則與 hooks 照樣生效**，repo 提交這個檔就能不經 Joy 執行指令。加了旗標之後，local 不再載入；專案 CLAUDE.md、`.claude/skills`、`.claude/commands` 都還在（`user` 或空字串會連這些一起拿掉，所以不用）。`acceptEdits` 下 agent 用 Write 寫 `.claude/settings.json` 會交給 Joy 核准，不會直接寫入。
+- **Codex 的 session 紀錄**：用假的機密值實測 codex-cli 0.166.0（`-c mcp_servers.*.env` 與 `http_headers`），整個 `~/.codex`（含 sessions 與 sqlite）都找不到那個值；rollout 只記 `session_meta`、`turn_context`（模型、cwd、sandbox、核准設定）。這次額度用完，回合沒跑完，走的是 `exec` 而非 app-server（兩者共用同一套設定與 rollout 程式）。
+- **唯讀的 http MCP**：設定 → 外掛把 http server 勾成唯讀（新增或之後勾）前，跳出確認並寫出主機名稱：auto 模式下它的工具不會先問，agent 給的內容會直接送過去。取消就不送出。stdio server 不問。
+- **同一個 JOY_HOME**：`createJoyServer` 一開始用 `lockHome(<home>/joy.lock)`（`packages/db`）拿獨佔鎖，第二個 Joy 在碰任何東西前就停下，訊息是 `Another Joy is already running with this home folder …`。用 SQLite 的 `locking_mode = EXCLUSIVE` 而不是 pid 檔：程式怎麼結束（含 `SIGKILL`）鎖都由作業系統釋放，不會留下殘鎖，pid 被重用也不會擋住啟動。啟動失敗或 `close()` 都會釋放。
+- **測試**：providers `args.test.ts`（三種 autonomy 都在 `--` 之前帶 `user,project`）；db `home-lock.test.ts`（同時只有一個、release 後可再拿、持有的子程序被 `SIGKILL` 後可再拿）；server `server.test.ts`（同時啟動兩個只成功一個、關掉後下一個可用同一個 token 啟動）；web `plugins.test.ts`（`readOnlyRisk`）與 Playwright `plugins.spec.ts`（http 唯讀取消就不送、確認才送）。原本「兩個 server 同時啟動共用一個 token」的測試改成上面這個，因為現在不允許兩個同時跑；`retains the runtime allowlist guard` 改成只算啟動後的設定讀取（`createJoyServer` 現在先拿鎖，啟動時讀設定的時間點晚了一步）。
+- **驗證**：`pnpm check` 通過（server 單獨跑兩次 405 passed；全套並行時 `queue-rewind` 的重啟測試曾失敗一次，單獨與 server 專案重跑都通過，和 `thread-api` 一樣是負載下的時序）。e2e 在臨時埠 130 個通過，`t1.8`、`origin-proxy` 2 個是換埠造成的既有失敗。
+- **仍存在**：repo 自己提交的 `.claude/settings.json` 的 hooks 每個 run 都會執行（等於加入這個 repo 就信任它；拿掉 `project` 會失去專案 skill 與 CLAUDE.md）；使用者 `~/.claude/settings.json` 的 allow 規則是擁有者自己的設定，照樣不經 Joy。
 
 ### 外掛：`/` skill、`@` 檔案與 MCP、設定 → 外掛（2026-11-17，分支 `plugins`，**core、policy、secrets 待擁有者審**）
 
@@ -491,6 +501,7 @@
 
 ## 已確認決策
 
+- 2026-11-17 安全缺口（擁有者要求「先補安全缺口」；以下細節為 agent 決定，`packages/policy`、`packages/core`、`packages/secrets` 沒動）：(1) Claude 用 `--setting-sources user,project`：拿掉會繞過 Joy 的 `settings.local.json`，保留專案 skill、指令與 CLAUDE.md；專案 settings.json 的 hooks 仍會執行，視為加入 repo 時的信任。(2) http MCP 設成唯讀前用確認視窗，不另外加說明文字（介面減量）。(3) 單一實例用 SQLite 獨佔鎖檔 `<JOY_HOME>/joy.lock`，不用 pid 檔，避免殘鎖與 pid 重用。
 - 2026-11-17 外掛（擁有者要求 `/`、`@` 使用 skill 與 MCP；以下細節為 agent 決定，**policy、core、secrets 待擁有者審**）：(1) MCP server 由 Joy 管理（設定 → 外掛），不改寫使用者的 `~/.claude.json` 或 `~/.codex/config.toml`；(2) 只交給實作者 run，因為只有它有核准管道；(3) 預設每個工具都問，「唯讀」只在 auto 免問，而且只是擁有者的宣告，Joy 不驗證那個 server 真的唯讀；(4) skill 只在擁有者這一輪叫出時免問；(5) `@檔案` 只插入相對路徑文字，不附上檔案內容；(6) run 的 MCP 設定檔放 JOY_HOME 底下，不放系統暫存資料夾。
 
 - 2026-11-16 任務用量與耗時（擁有者要求；以下細節為 agent 決定，**`packages/core` 的 `usage` 事件新增 `costSource` 待擁有者審**）：(1) **不新增資料表**，用量從既有事件算，所以舊任務自然沒有資料就不顯示；(2) 「耗時」＝所有輪的 wall-clock 加總**扣掉等核准**，等核准另外記；每輪的時間算法相同；(3) 「tokens」一律＝輸入＋輸出，輸入含快取（Claude 的 `inputTokens` 由 Joy 加上兩種 cache token，與 Codex／OpenAI 一致），快取另外顯示；(4) cost 只在後端有回報或有價目表時才有，並記來源（`cli`／`price_table`／`mixed`）；Codex 沒有 cost，不推算；Claude 的 cost 是 CLI 依標價換算的數字，面板把它標成「CLI 回報」並在提示說明訂閱不會實際扣；(5) 「每一輪」＝一次 run（`started` 到結束事件），不是 review loop 的審查輪；每輪的行是時間軸的獨立項目，完成後收合過程時保留；(6) 統計頁的任務比較只列期間內最新 50 個任務，沒有分頁。

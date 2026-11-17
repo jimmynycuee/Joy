@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { commandLineOf, scopeLabel, splitCommandLine } from './plugins.js'
+import { commandLineOf, readOnlyRisk, scopeLabel, splitCommandLine } from './plugins.js'
 
 describe('splitCommandLine', () => {
   it('splits on spaces and keeps quoted words together', () => {
@@ -35,5 +35,15 @@ describe('scopeLabel', () => {
     expect(scopeLabel({}, names)).toBe('所有專案')
     expect(scopeLabel({ repoIds: ['r1', 'r9'] }, names)).toBe('joy、r9')
     expect(scopeLabel({ repoIds: [] }, names)).toBe('沒有專案')
+  })
+})
+
+describe('readOnlyRisk', () => {
+  it('asks only for http servers, naming the host', () => {
+    expect(readOnlyRisk({ transport: 'stdio' })).toBeUndefined()
+    expect(readOnlyRisk({ transport: 'http', url: 'https://mcp.example.test:8443/mcp?x=1' })).toContain(
+      'mcp.example.test:8443 ',
+    )
+    expect(readOnlyRisk({ transport: 'http', url: 'not a url' })).toContain('not a url')
   })
 })

@@ -207,3 +207,34 @@ test('Settings → 外掛: empty states, add a server with a secret, mark it rea
   await row.getByRole('button', { name: '刪除 files' }).click()
   await expect(page.getByTestId('mcp-panel')).toContainText('沒有 MCP server')
 })
+
+test('Settings → 外掛: an http server goes read-only only after the owner confirms', async ({ page }) => {
+  const mock = fresh()
+  mock.skills = []
+  mock.servers = []
+  await mockApi(page, mock)
+  await page.goto('/')
+  await openSettings(page)
+  await page.getByRole('navigation', { name: '設定分類' }).getByRole('button', { name: '外掛' }).click()
+  await page.getByRole('button', { name: '新增' }).click()
+  const form = page.getByTestId('mcp-form')
+  await form.getByLabel('名稱').fill('web')
+  await form.getByLabel('類型').selectOption('http')
+  await form.getByLabel('URL').fill('https://mcp.example.test/mcp')
+  await form.getByLabel('唯讀，可自動').check()
+
+  let asked = ''
+  page.once('dialog', (dialog) => {
+    asked = dialog.message()
+    void dialog.dismiss()
+  })
+  await form.getByRole('button', { name: '新增' }).click()
+  await expect.poll(() => asked).toContain('mcp.example.test')
+  expect(mock.requests.some((r) => r.method === 'POST' && r.path === '/api/mcp-servers')).toBe(false)
+
+  page.once('dialog', (dialog) => void dialog.accept())
+  await form.getByRole('button', { name: '新增' }).click()
+  await expect
+    .poll(() => mock.requests.find((r) => r.method === 'POST' && r.path === '/api/mcp-servers')?.body)
+    .toMatchObject({ transport: 'http', url: 'https://mcp.example.test/mcp', readOnly: true })
+})
