@@ -581,6 +581,17 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 27,
+    name: 'trusted Claude project settings',
+    sql: /* sql */ `
+      -- SHA-256 (hex) of the command-running parts (hooks and the like) of the repository's .claude/settings.json that
+      -- the owner approved. Claude Code runs them without asking, so Joy asks before a run whenever they differ.
+      ALTER TABLE repos ADD COLUMN trusted_claude_settings TEXT
+        CHECK (trusted_claude_settings IS NULL OR (length(trusted_claude_settings) = 64
+          AND trusted_claude_settings NOT GLOB '*[^0-9a-f]*'));
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

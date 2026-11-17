@@ -40,6 +40,7 @@ export {
   updateRepoInstallCommand,
   updateRepoInstructions,
   updateRepoMaxPermissionMode,
+  updateRepoTrustedClaudeSettings,
   updateRepoContainer,
   updateRepoGithubRemote,
 } from './repositories.js'
