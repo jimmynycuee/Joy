@@ -389,7 +389,9 @@ export function withPlugins(
         const grant = withHub ? grants.open(opts.cwd, handed.readOnly) : undefined
         const expand = async (text: string) => {
           if (!markers.has(text)) return text
-          const found = await (skills ??= plugins.skills(run?.projectDir))
+          // The worktree, not the repository: the CLI loads the project skills from where it runs, and an agent may
+          // have added one there.
+          const found = await (skills ??= plugins.skills(run ? opts.cwd : undefined))
           return markers.expand(text, inner.kind, found, (name) => {
             // A user skill and a project skill of the same name: which one the CLI loads is not known, so neither is
             // granted (loading it asks).

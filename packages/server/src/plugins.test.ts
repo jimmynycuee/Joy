@@ -172,26 +172,26 @@ describe('withPlugins', () => {
     const hub = [{ name: 'joy', transport: 'stdio' as const, command: 'node', args: [] }]
     let during: ReturnType<RunGrants['for']>
     for await (const event of wrapped.run(
-      base({ cwd: '/w/a', prompt: markers.mark('/review now'), mcpServers: hub }),
+      base({ cwd: projectDir, prompt: markers.mark('/review now'), mcpServers: hub }),
       model,
     )) {
       void event
-      during = grants.for('/w/a')
+      during = grants.for(projectDir)
     }
     expect(during?.readOnlyServers).toEqual(['docs'])
     expect([...(during?.skills ?? [])]).toEqual(['review'])
-    expect(grants.for('/w/a')).toBeUndefined()
+    expect(grants.for(projectDir)).toBeUndefined()
 
     // A run without the hub (a peer, a pre-review) gets no grant, and one going on in the same worktree leaves the
     // implementer's grant alone.
-    const peer = wrapped.run(base({ cwd: '/w/a', prompt: markers.mark('/review') }), model)
+    const peer = wrapped.run(base({ cwd: projectDir, prompt: markers.mark('/review') }), model)
     for await (const event of wrapped.run(
-      base({ cwd: '/w/a', prompt: markers.mark('/review now'), mcpServers: hub }),
+      base({ cwd: projectDir, prompt: markers.mark('/review now'), mcpServers: hub }),
       model,
     )) {
       void event
       for await (const inner of peer) void inner
-      during = grants.for('/w/a')
+      during = grants.for(projectDir)
     }
     expect(during?.readOnlyServers).toEqual(['docs'])
     expect([...(during?.skills ?? [])]).toEqual(['review'])
@@ -252,7 +252,10 @@ describe('withPlugins', () => {
       grants,
     )
     const hub = [{ name: 'joy', transport: 'stdio' as const, command: 'node', args: [] }]
-    for await (const event of wrapped.run(base({ prompt: markers.mark('/review'), mcpServers: hub }), model))
+    for await (const event of wrapped.run(
+      base({ cwd: projectDir, prompt: markers.mark('/review'), mcpServers: hub }),
+      model,
+    ))
       void event
     expect(skills?.size).toBe(0)
   })
