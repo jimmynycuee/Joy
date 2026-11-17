@@ -2,9 +2,11 @@ import { randomBytes } from 'node:crypto'
 import { request as nodeRequest } from 'node:http'
 import { expect, test } from '@playwright/test'
 import { E2E_API_TOKEN } from './fakes.js'
+import { E2E_WEB_ORIGIN, E2E_WEB_PORT } from './ports.js'
 
-const devOrigin = 'http://127.0.0.1:5173'
-const crossPortOrigin = 'http://127.0.0.1:5174'
+const devOrigin = E2E_WEB_ORIGIN
+// Any other port, but never 5173, which the API always trusts.
+const crossPortOrigin = `http://127.0.0.1:${E2E_WEB_PORT + (E2E_WEB_PORT + 1 === 5173 ? 2 : 1)}`
 
 function websocketHandshake(
   taskId: string,
@@ -15,7 +17,7 @@ function websocketHandshake(
     const protocols = token ? ['joy', `joy-auth.${token}`] : ['joy']
     const request = nodeRequest({
       hostname: '127.0.0.1',
-      port: 5173,
+      port: E2E_WEB_PORT,
       path: `/ws?taskId=${encodeURIComponent(taskId)}`,
       headers: {
         connection: 'Upgrade',
@@ -45,8 +47,8 @@ test('Vite proxy preserves origin checks and requires API tokens for HTTP writes
   const allowedHealth = await request.get('/api/health', { headers: { origin: devOrigin } })
   expect(allowedHealth.status()).toBe(200)
 
-  const localhostHealth = await request.get('http://localhost:5173/api/health', {
-    headers: { origin: 'http://localhost:5173' },
+  const localhostHealth = await request.get(`http://localhost:${E2E_WEB_PORT}/api/health`, {
+    headers: { origin: `http://localhost:${E2E_WEB_PORT}` },
   })
   expect(localhostHealth.status()).toBe(200)
 

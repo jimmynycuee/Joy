@@ -35,6 +35,9 @@ judge, background) can use any backend. The full plan, tickets and acceptance cr
 
 Run one package's tests: `pnpm vitest run --project core`.
 
+Web E2E (`pnpm test:e2e`) listens on 5173 (Vite) and 4317 (fake API) by default. When Joy or `pnpm web` already uses
+them, pick free ports instead of editing files: `JOY_E2E_WEB_PORT=4399 JOY_E2E_API_PORT=4398 pnpm test:e2e`.
+
 **Anything that calls a real model uses the cheapest model at low effort** (Claude `haiku`, Codex `gpt-6-luna`,
 `effort: 'low'`). Those runs test plumbing, not answer quality, and they spend the owner's subscription quota.
 Real-CLI e2e tests are opt-in (`JOY_E2E_CLAUDE=1`) and never run in CI.

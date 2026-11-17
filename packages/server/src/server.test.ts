@@ -166,6 +166,7 @@ function fixture(
     secretBackend?: MemoryBackend
     secretEnv?: NodeJS.ProcessEnv
     allowPlaywrightOrigin?: boolean
+    playwrightOriginPort?: number
     ownerApprovalChannel?: boolean
     approvalTimeoutMs?: number
     telegram?: JoyServerOptions['telegram']
@@ -238,6 +239,7 @@ function fixture(
     redactor,
     executor: options.executor ?? executor,
     ...(options.allowPlaywrightOrigin ? { allowPlaywrightOrigin: true } : {}),
+    ...(options.playwrightOriginPort ? { playwrightOriginPort: options.playwrightOriginPort } : {}),
     ...(options.ownerApprovalChannel !== undefined
       ? { ownerApprovalChannel: options.ownerApprovalChannel }
       : {}),
@@ -1185,6 +1187,38 @@ describe('Joy local server', () => {
       JSON.stringify({ path: '/tmp/tauri', defaultBranch: 'main' }),
     )
     expect(tauri.status).toBe(201)
+  })
+
+  it('moves the Playwright Origins to the configured port and drops the default one', async () => {
+    const { serverPromise } = fixture({ allowPlaywrightOrigin: true, playwrightOriginPort: 4398 })
+    const { origin } = await start(serverPromise)
+    const post = (from: string, path: string) =>
+      rawRequest(
+        origin,
+        '/api/repos',
+        'POST',
+        { host: new URL(origin).host, origin: from, 'content-type': 'application/json' },
+        JSON.stringify({ path, defaultBranch: 'main' }),
+      )
+    const responses = await Promise.all([
+      post('http://127.0.0.1:4398', '/tmp/moved-127'),
+      post('http://localhost:4398', '/tmp/moved-localhost'),
+      post('http://127.0.0.1:4173', '/tmp/old-default'),
+    ])
+    expect(responses.map((response) => response.status)).toEqual([201, 201, 403])
+  })
+
+  it('ignores the Playwright port unless E2E mode is on', async () => {
+    const { serverPromise } = fixture({ playwrightOriginPort: 4398 })
+    const { origin } = await start(serverPromise)
+    const response = await rawRequest(
+      origin,
+      '/api/repos',
+      'POST',
+      { host: new URL(origin).host, origin: 'http://127.0.0.1:4398', 'content-type': 'application/json' },
+      JSON.stringify({ path: '/tmp/not-e2e', defaultBranch: 'main' }),
+    )
+    expect(response.status).toBe(403)
   })
 
   it('accepts only the fixed Playwright Origins for HTTP and WebSocket in E2E mode', async () => {
