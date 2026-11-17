@@ -588,7 +588,7 @@ const POLICY_REVIEW_SCHEMA = {
   required: ['approve', 'summary', 'findings'],
 }
 const API_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,}$/
-const PLAYWRIGHT_E2E_ORIGINS = ['http://127.0.0.1:4173', 'http://localhost:4173'] as const
+const DEFAULT_PLAYWRIGHT_PORT = 4173
 
 export interface TaskEvent {
   taskId: TaskId
@@ -609,8 +609,10 @@ export interface JoyServerOptions {
   redactor?: Redactor
   providers?: Partial<Record<ProviderKind, AgentProvider>>
   executor?: Executor
-  /** Adds only the fixed Playwright E2E origins; this is never enabled by default. */
+  /** Adds only the Playwright E2E origins (127.0.0.1 and localhost); this is never enabled by default. */
   allowPlaywrightOrigin?: boolean
+  /** The port of those origins (default 4173), so an E2E run can move off ports already in use. */
+  playwrightOriginPort?: number
   /**
    * Whether red actions wait for a person (web UI, Telegram). Default true. When false they are denied straight
    * away without a cross-model pre-review, which would spend quota on a request nobody can approve.
@@ -818,7 +820,9 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
 }
 
 async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Promise<JoyServer> {
-  const allowedOrigins = createOriginAllowlist(options.allowPlaywrightOrigin ?? false)
+  const allowedOrigins = createOriginAllowlist(
+    options.allowPlaywrightOrigin ? (options.playwrightOriginPort ?? DEFAULT_PLAYWRIGHT_PORT) : undefined,
+  )
   const home = options.home ?? joyHome()
   const folderBrowserOptions = options.folderBrowserHome ? { home: options.folderBrowserHome } : {}
   const configStore = options.configStore ?? new ConfigStore(join(home, 'config.yaml'))
@@ -7070,12 +7074,19 @@ function resolvePeerModel(
   throw new Error(`No model is configured for the allowed peer provider ${provider}`)
 }
 
-function createOriginAllowlist(allowPlaywrightOrigin: boolean): Set<string> {
+function createOriginAllowlist(playwrightPort: number | undefined): Set<string> {
+  if (
+    playwrightPort !== undefined &&
+    !(Number.isInteger(playwrightPort) && playwrightPort > 0 && playwrightPort < 65536)
+  )
+    throw new Error(`playwrightOriginPort must be a TCP port (1-65535), got ${playwrightPort}`)
   return new Set([
     'tauri://localhost',
     'http://127.0.0.1:5173',
     'http://localhost:5173',
-    ...(allowPlaywrightOrigin ? PLAYWRIGHT_E2E_ORIGINS : []),
+    ...(playwrightPort === undefined
+      ? []
+      : [`http://127.0.0.1:${playwrightPort}`, `http://localhost:${playwrightPort}`]),
   ])
 }
 
