@@ -1,9 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, ReactNode, RefObject } from 'react'
 import type { PendingAttachment } from '../attachments.js'
 import { pastedFiles, sendableAttachments } from '../attachments.js'
 import { composerHeight, composerMaxHeight } from '../composer-height.js'
 import { AttachmentTray } from './Attachments.js'
+import { CompletionMenu, useCompletion } from './CompletionMenu.js'
+import type { ComposerCompletion } from './CompletionMenu.js'
 import { Icon, IconButton, Spinner } from './ui.js'
 
 /** Files for the box: pasted (⌘V), dropped on it, or picked with the paperclip. */
@@ -41,6 +43,7 @@ export function Composer({
   attachments,
   onSubmitNow,
   nowLabel = '立即送出',
+  completion,
 }: {
   className?: string
   value: string
@@ -70,11 +73,15 @@ export function Composer({
   /** A second way to send (⌘/Ctrl+Enter and a small button), e.g. straight to a working agent instead of queuing. */
   onSubmitNow?: () => void | Promise<void>
   nowLabel?: string
+  /** `/` (skills, Joy's commands) and `@` (files, MCP servers) menus. */
+  completion?: ComposerCompletion
 }) {
   const ownRef = useRef<HTMLTextAreaElement | null>(null)
   const ref = textareaRef ?? ownRef
   const pickerRef = useRef<HTMLInputElement | null>(null)
   const [dragging, setDragging] = useState(false)
+  const menuId = useId()
+  const menu = useCompletion({ value, onChange, textarea: ref, completion })
   const files = attachments ? sendableAttachments(attachments.items) : { ids: [], blocked: false }
   const hasContent = Boolean(value.trim()) || Boolean(attachments?.allowWithoutText && files.ids.length)
   // An upload still running or a file that failed must not be left out silently.
@@ -104,6 +111,7 @@ export function Composer({
   }, [value, ref, viewportHeight])
 
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (menu.onKeyDown(event)) return
     if (event.key !== 'Enter' || event.shiftKey) return
     // keyCode 229 is how Safari reports the Enter that confirms an IME candidate.
     if (event.nativeEvent.isComposing || event.keyCode === 229) return
@@ -158,6 +166,15 @@ export function Composer({
       {...dropHandlers}
     >
       {attachments ? <AttachmentTray items={attachments.items} onRemove={attachments.onRemove} /> : null}
+      {menu.open ? (
+        <CompletionMenu
+          id={menuId}
+          items={menu.items}
+          active={menu.active}
+          onChoose={menu.choose}
+          onHover={menu.hover}
+        />
+      ) : null}
       <textarea
         ref={ref}
         name="message"
@@ -167,9 +184,26 @@ export function Composer({
         value={value}
         autoFocus={autoFocus}
         disabled={disabled}
-        onChange={(event) => onChange(event.target.value)}
+        onChange={(event) => {
+          onChange(event.target.value)
+          menu.track()
+        }}
         onKeyDown={onKeyDown}
+        onKeyUp={(event) => {
+          if (event.key.startsWith('Arrow') || event.key === 'Home' || event.key === 'End') menu.track()
+        }}
+        onClick={menu.track}
+        onFocus={menu.track}
+        onBlur={menu.blur}
         onPaste={onPaste}
+        {...(completion
+          ? {
+              'aria-autocomplete': 'list' as const,
+              'aria-expanded': menu.open,
+              'aria-controls': menuId,
+              ...(menu.open ? { 'aria-activedescendant': `${menuId}-${menu.active}` } : {}),
+            }
+          : {})}
       />
       <div className="composer-bar">
         {attachments ? (

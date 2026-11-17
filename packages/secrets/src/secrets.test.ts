@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { REDACTED, Redactor } from './redact.js'
-import { KeychainBackend, MemoryBackend, SecretStore } from './store.js'
+import { KeychainBackend, MemoryBackend, mcpSecretName, SecretStore } from './store.js'
 import type { SecretName } from './store.js'
 
 describe('SecretStore', () => {
@@ -43,6 +43,25 @@ describe('SecretStore', () => {
     const store = new SecretStore({ backend: new MemoryBackend(), env: {} })
     await expect(store.set('openai_api_key', '   ')).rejects.toThrow(/empty/)
     await expect(store.get('github_token' as SecretName)).rejects.toThrow(/Unknown secret/)
+  })
+
+  it('keeps an MCP server secret per server and variable, and accepts no other dynamic name', async () => {
+    const backend = new MemoryBackend()
+    const seen: string[] = []
+    const store = new SecretStore({ backend, env: { API_TOKEN: 'from-env' }, onSecret: (v) => seen.push(v) })
+    const id = '00000000-0000-4000-8000-000000000001'
+    const name = mcpSecretName(id, 'API_TOKEN')
+    expect(name).toBe(`mcp:${id}:API_TOKEN`)
+    await store.set(name, 'mcp-secret-value')
+    // The variable's name in Joy's own environment never stands in for the keychain.
+    expect(await store.get(name)).toBe('mcp-secret-value')
+    expect(await store.status(name)).toEqual({ set: true, source: 'keychain' })
+    expect(seen).toContain('mcp-secret-value')
+    expect(await store.delete(name)).toBe(true)
+    expect(() => mcpSecretName('not-a-uuid', 'A')).toThrow(/Invalid MCP secret/)
+    expect(() => mcpSecretName(id, 'BAD NAME')).toThrow(/Invalid MCP secret/)
+    await expect(store.get(`mcp:${id}:A:B` as SecretName)).rejects.toThrow(/Unknown secret/)
+    await expect(store.get('mcp:constructor' as SecretName)).rejects.toThrow(/Unknown secret/)
   })
 
   it('explains how to fix an unavailable keychain', async () => {

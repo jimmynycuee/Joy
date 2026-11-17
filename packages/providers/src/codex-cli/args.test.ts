@@ -82,6 +82,22 @@ describe('mcpOverrides', () => {
     ])
   })
 
+  it('leaves out a server whose every call needs approval: exec cannot ask, and its secrets stay off argv', () => {
+    expect(
+      mcpOverrides([
+        {
+          name: 'owner',
+          transport: 'stdio',
+          command: 'node',
+          args: [],
+          env: { TOKEN: 'secret-value' },
+          approval: 'every-call',
+        },
+        { name: 'web', transport: 'http', url: 'http://localhost:1/mcp' },
+      ]),
+    ).toEqual(['-c', 'mcp_servers.web.url="http://localhost:1/mcp"'])
+  })
+
   it('rejects server names that would break the config key', () => {
     expect(() => mcpOverrides([{ name: 'a.b', transport: 'http', url: 'x' }])).toThrow(
       /Invalid MCP server name/,

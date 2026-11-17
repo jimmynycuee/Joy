@@ -138,6 +138,11 @@ export function ThreadComposer({
         busy={busy}
         disabled={state.disabled}
         attachments={{ items: files.items, onAdd: files.add, onRemove: files.remove, allowWithoutText: true }}
+        completion={{
+          cli: (choice.models.implementer ?? defaults.implementer).provider,
+          repoId: task.repoId,
+          taskId: task.id,
+        }}
         {...(onStop ? { onStop, stopping, stopLabel: '停止任務' } : {})}
         bar={
           switchable && !state.disabled ? (

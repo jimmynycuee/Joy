@@ -86,9 +86,27 @@ export type AgentEventType = AgentEvent['type']
 /** How much the agent may do without asking. Maps to CLI sandbox / permission modes. */
 export type Autonomy = 'read-only' | 'workspace-write' | 'full'
 
+/**
+ * `approval: 'every-call'`: every tool call of this server must reach the host's approval (an MCP server the owner
+ * added, whose tools Joy does not know). Claude Code already sends MCP tool calls to `approvalTool`; Codex is told to
+ * ask for each one. Absent: the CLI's own default.
+ */
 export type McpServerConfig =
-  | { name: string; transport: 'stdio'; command: string; args: string[]; env?: Record<string, string> }
-  | { name: string; transport: 'http'; url: string; headers?: Record<string, string> }
+  | {
+      name: string
+      transport: 'stdio'
+      command: string
+      args: string[]
+      env?: Record<string, string>
+      approval?: 'every-call'
+    }
+  | {
+      name: string
+      transport: 'http'
+      url: string
+      headers?: Record<string, string>
+      approval?: 'every-call'
+    }
 
 export interface RunOptions {
   /** Absolute path of the worktree the agent works in. */

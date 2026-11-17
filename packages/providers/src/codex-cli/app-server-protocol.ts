@@ -94,9 +94,24 @@ export interface FileChangeApprovalParams {
   [key: string]: unknown
 }
 
+/**
+ * An MCP server (or Codex on its behalf, for a tool whose approval mode is `prompt`) asks the client to confirm. Only
+ * `serverName` is relied on: the rest of the generated McpServerElicitationRequestParams was not available when this
+ * was written (codex-cli 0.166.0 names the method and the response's `action`/`content`, see docs/spikes/codex.md),
+ * so anything Joy cannot read is declined.
+ */
+export interface McpElicitationParams {
+  serverName: string
+  threadId?: string | null
+  turnId?: string | null
+  message?: string | null
+  [key: string]: unknown
+}
+
 export type ServerApprovalRequest =
   | { method: 'item/commandExecution/requestApproval'; id: JsonRpcId; params: CommandExecutionApprovalParams }
   | { method: 'item/fileChange/requestApproval'; id: JsonRpcId; params: FileChangeApprovalParams }
+  | { method: 'mcpServer/elicitation/request'; id: JsonRpcId; params: McpElicitationParams }
 
 export type CommandExecutionApprovalDecision =
   | 'accept'

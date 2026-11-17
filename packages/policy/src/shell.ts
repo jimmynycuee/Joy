@@ -43,6 +43,11 @@ export interface ClassifyEnvironment {
    * case-insensitive), whatever the worktree string looks like. Default: this process's platform.
    */
   platform?: NodeJS.Platform
+  /**
+   * MCP servers the owner added in Settings and marked read-only: in the `auto` permission mode their tools run
+   * without asking. Any other mode, and every other server, still asks (see classify.ts).
+   */
+  readOnlyMcpServers?: readonly string[]
 }
 
 export function defaultClassifyEnvironment(): ClassifyEnvironment {

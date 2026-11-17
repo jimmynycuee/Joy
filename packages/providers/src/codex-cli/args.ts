@@ -8,6 +8,9 @@ export function mcpOverrides(servers: McpServerConfig[]): string[] {
   const out: string[] = []
   for (const s of servers) {
     if (!/^[A-Za-z0-9_-]+$/.test(s.name)) throw new Error(`Invalid MCP server name "${s.name}"`)
+    // `codex exec` cannot ask anyone, so a server whose every call needs approval is left out instead of being run
+    // unasked (and its secrets never land on a command line, where other local processes can read them).
+    if (s.approval === 'every-call') continue
     const key = `mcp_servers.${s.name}`
     if (s.transport === 'stdio') {
       out.push('-c', `${key}.command=${q(s.command)}`, '-c', `${key}.args=[${s.args.map(q).join(',')}]`)

@@ -189,6 +189,88 @@ describe('Codex app-server', () => {
     expect(new CodexCliProvider().capabilities.delegatedApproval).toBe(true)
   })
 
+  it('asks for every call of an owner-added MCP server and answers its elicitation through the policy', async () => {
+    const { dir, env, rpcPath, approvalsPath, readLines } = setup({ FAKE_APP_SERVER_MODE: 'elicit' })
+    const seen: string[] = []
+    const events = await collect(
+      new CodexAppServerProvider({
+        command: process.execPath,
+        argsPrefix: [fakeCodexAppServer],
+        env,
+        timeoutMs: 5_000,
+        approvalHandler: (request) => {
+          seen.push(
+            request.method === 'mcpServer/elicitation/request'
+              ? `${request.method}:${request.params.serverName}`
+              : request.method,
+          )
+          return 'accept'
+        },
+      }).run(
+        opts(dir, {
+          mcpServers: [
+            {
+              name: 'files',
+              transport: 'stdio',
+              command: 'files-mcp',
+              args: [],
+              env: { TOKEN: 't' },
+              approval: 'every-call',
+            },
+            { name: 'joy', transport: 'stdio', command: 'node', args: ['hub.mjs'] },
+          ],
+        }),
+        model,
+      ),
+    )
+    expect(events.at(-1)).toMatchObject({ type: 'done', isError: false })
+    const threadStart = readLines(rpcPath).find((request) => request.method === 'thread/start')
+    expect(threadStart?.params).toMatchObject({
+      config: {
+        mcp_servers: {
+          files: {
+            command: 'files-mcp',
+            env: { TOKEN: 't' },
+            default_tools_approval_mode: 'prompt',
+          },
+          joy: { command: 'node', args: ['hub.mjs'] },
+        },
+      },
+    })
+    const config = (threadStart?.params as { config: { mcp_servers: Record<string, object> } }).config
+    expect(config.mcp_servers.joy).not.toHaveProperty('default_tools_approval_mode')
+    // The unreadable elicitation never reaches the policy and is refused; the readable one gets the MCP answer shape.
+    expect(seen[0]).toBe('mcpServer/elicitation/request:files')
+    expect(seen.filter((entry) => entry.startsWith('mcpServer'))).toHaveLength(1)
+    const answers = readLines(approvalsPath)
+    expect(answers.find((answer) => answer.id === 'mcp-ok')).toEqual({
+      id: 'mcp-ok',
+      result: { action: 'accept', content: {} },
+    })
+    expect(answers.find((answer) => answer.id === 'mcp-bad')).toMatchObject({
+      id: 'mcp-bad',
+      error: { code: -32601 },
+    })
+  })
+
+  it('declines an MCP elicitation the policy did not accept', async () => {
+    const { dir, env, approvalsPath, readLines } = setup({ FAKE_APP_SERVER_MODE: 'elicit' })
+    await collect(
+      new CodexAppServerProvider({
+        command: process.execPath,
+        argsPrefix: [fakeCodexAppServer],
+        env,
+        timeoutMs: 5_000,
+        approvalHandler: (request) =>
+          request.method === 'mcpServer/elicitation/request' ? 'decline' : 'accept',
+      }).run(opts(dir), model),
+    )
+    expect(readLines(approvalsPath).find((answer) => answer.id === 'mcp-ok')).toEqual({
+      id: 'mcp-ok',
+      result: { action: 'decline', content: null },
+    })
+  })
+
   it('uses app-server by default through the existing Codex provider entry point', async () => {
     const { dir, env, rpcPath, readLines } = setup()
     const provider = new CodexCliProvider({

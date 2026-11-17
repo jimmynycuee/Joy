@@ -1,5 +1,38 @@
-import { describe, expect, it } from 'vitest'
-import { KeyedMutex } from './git.js'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import { git, KeyedMutex, listProjectFiles } from './git.js'
+
+const dirs: string[] = []
+afterEach(() => {
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+
+describe('listProjectFiles', () => {
+  it('lists tracked and untracked files but not ignored ones or .git, up to the limit', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'joy-list-files-'))
+    dirs.push(dir)
+    await git(dir, ['init', '-q'])
+    mkdirSync(join(dir, 'src', 'deep'), { recursive: true })
+    mkdirSync(join(dir, 'node_modules', 'x'), { recursive: true })
+    writeFileSync(join(dir, '.gitignore'), 'node_modules/\n*.log\n')
+    writeFileSync(join(dir, 'src', 'a.ts'), 'a')
+    writeFileSync(join(dir, 'src', 'deep', 'b file.ts'), 'b')
+    writeFileSync(join(dir, 'node_modules', 'x', 'index.js'), 'x')
+    writeFileSync(join(dir, 'debug.log'), 'x')
+    await git(dir, ['add', 'src/a.ts'])
+    const files = await listProjectFiles(dir)
+    expect(files.sort()).toEqual(['.gitignore', 'src/a.ts', 'src/deep/b file.ts'])
+    expect(await listProjectFiles(dir, 2)).toHaveLength(2)
+  })
+
+  it('is empty outside a git checkout', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'joy-list-files-'))
+    dirs.push(dir)
+    expect(await listProjectFiles(join(dir, 'missing'))).toEqual([])
+  })
+})
 
 describe('KeyedMutex', () => {
   it('runs work for the same key one at a time, in order, even after a failure', async () => {

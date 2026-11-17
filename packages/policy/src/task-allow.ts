@@ -180,6 +180,8 @@ export function taskAllowForCodexApproval(
   worktree: string,
   env: ClassifyEnvironment = defaultClassifyEnvironment(),
 ): TaskAllowJudgement {
+  // MCP tools are never remembered (as for Claude's mcp__ tools).
+  if (request.method === 'mcpServer/elicitation/request') return no('unknown')
   if (request.method === 'item/commandExecution/requestApproval') {
     // Writing to a running program depends on what that program is doing; only whole commands are remembered.
     if (request.kind !== 'command') return no('unknown')

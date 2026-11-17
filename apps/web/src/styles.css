@@ -1002,11 +1002,71 @@ svg {
 
 /* The one composer. */
 .composer {
+  position: relative;
   width: 100%;
   padding: 14px 14px 10px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-xl);
   background: var(--surface);
+}
+
+/* `/` and `@` menus: a plain list right above the message box, in the shared menu's look. */
+.completion-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  max-height: min(288px, 45vh);
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+  border-radius: var(--radius-md);
+  background: var(--menu-surface);
+  box-shadow: var(--menu-shadow);
+  font-size: var(--fs-13);
+}
+.completion-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-height: 32px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+.completion-item.active {
+  background: var(--hover);
+}
+.completion-label {
+  flex: none;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.completion-file .completion-label {
+  max-width: 100%;
+  font-family: var(--mono);
+  font-size: var(--fs-12);
+}
+.completion-detail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: var(--fs-12);
+}
+.completion-tag {
+  flex: none;
+  margin-left: auto;
+  color: var(--faint);
+  font-size: var(--fs-12);
 }
 /* Focus only darkens the outline, in the text colour: no accent, no glow. */
 .composer:focus-within {
@@ -3447,4 +3507,51 @@ summary.checks-head {
 }
 .attachment-removed .attachment-name {
   text-decoration: line-through;
+}
+
+/* Settings → 外掛 */
+.plugin-row {
+  align-items: flex-start;
+}
+.plugin-row .row-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.plugin-vars {
+  font-family: var(--mono);
+  font-size: var(--fs-12);
+}
+.plugin-controls {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  font-size: var(--fs-13);
+}
+.plugin-scope {
+  font-size: var(--fs-12);
+  color: var(--muted);
+}
+.plugin-scope summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.plugin-scope .checkbox-row {
+  margin-top: 4px;
+}
+.plugin-form {
+  margin: 8px 0 12px;
+}
+.plugin-form .mono-input {
+  font-family: var(--mono);
+}
+.plugin-cli {
+  flex: none;
+  font-size: var(--fs-12);
+}
+@media (max-width: 640px) {
+  .plugin-row {
+    flex-direction: column;
+  }
 }

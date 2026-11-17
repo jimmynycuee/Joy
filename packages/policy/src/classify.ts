@@ -16,6 +16,11 @@ export interface ClassifiedAction extends ProposedAction {
 const JOY_MCP_PREFIX = 'mcp__joy__'
 
 const READ_TOOLS = new Set(['read', 'glob', 'grep', 'listdirectory', 'ls'])
+/**
+ * Loading a skill or custom command only adds its instructions to the conversation (the owner picks them with `/`);
+ * whatever it then asks for (Bash, edits, MCP) is a tool call of its own and is judged on its own.
+ */
+const SKILL_TOOLS = ['skill', 'slashcommand'] as const
 const WRITE_TOOLS = new Set(['edit', 'multiedit', 'write', 'notebookedit'])
 
 /** Anything that chains commands, redirects, substitutes or expands makes a command impossible to judge by its words. */
@@ -67,6 +72,7 @@ const SESSION_TOOLS = new Set([
   'killshell',
   'killbash',
   'toolsearch',
+  ...SKILL_TOOLS,
 ])
 const NETWORK_TOOLS = new Set(['webfetch', 'websearch'])
 
@@ -98,6 +104,8 @@ function judgeClaudeTool(
   env: ClassifyEnvironment,
 ): Judgement {
   if (toolName.startsWith('mcp__')) {
+    // An owner-marked read-only server runs on its own in `auto` only; `full` asks for it like any other server.
+    if (mode === 'auto' && isReadOnlyMcp(mcpServerOf(toolName), env)) return inside('read_file')
     // Joy's own tools keep their rules; another server's tools are unknown to Joy.
     const kind = classifyKind(toolName, input, cwd)
     return kind === 'run_outside_worktree' ? unknownTool : inside(kind)
@@ -194,6 +202,7 @@ function classifyKind(
   }
   const name = toolName.toLowerCase()
   const record = asRecord(input)
+  if ((SKILL_TOOLS as readonly string[]).includes(name)) return 'read_file'
   if (READ_TOOLS.has(name)) {
     // Glob and Grep default to the working directory when no path is given; Read always names a file.
     const path = pathOf(record)
@@ -263,6 +272,17 @@ export function isSafeShellCommand(command: string): boolean {
   })
 }
 
+/** `mcp__<server>__<tool>`: the server part (server names never contain `__`; Joy's are checked on input). */
+function mcpServerOf(toolName: string): string {
+  const rest = toolName.slice('mcp__'.length)
+  const end = rest.indexOf('__')
+  return end < 0 ? '' : rest.slice(0, end)
+}
+
+function isReadOnlyMcp(server: string, env: ClassifyEnvironment): boolean {
+  return server !== '' && server !== 'joy' && (env.readOnlyMcpServers ?? []).includes(server)
+}
+
 function asRecord(input: unknown): Record<string, unknown> | undefined {
   return input !== null && typeof input === 'object' && !Array.isArray(input)
     ? (input as Record<string, unknown>)
@@ -291,6 +311,8 @@ export type CodexApprovalInput =
       cwd?: string | null
     }
   | { method: 'item/fileChange/requestApproval'; grantRoot?: string | null }
+  /** Codex asks before a tool call of an MCP server Joy told it to ask about; only the server is known. */
+  | { method: 'mcpServer/elicitation/request'; server: string }
 
 /**
  * Map a Codex app-server approval request to a policy action. Codex only asks when it wants to step outside its
@@ -302,6 +324,18 @@ export function classifyCodexApproval(
   mode: PermissionMode = 'ask',
   env?: ClassifyEnvironment,
 ): ClassifiedAction {
+  if (request.method === 'mcpServer/elicitation/request') {
+    const action: ProposedAction = {
+      kind: 'run_outside_worktree',
+      summary: `Codex requested a tool of the ${request.server} MCP server.`,
+      detail: request,
+      provenance: 'agent',
+    }
+    // Same rule as Claude's mcp__ tools: an owner-marked read-only server runs on its own in `auto`, nowhere else.
+    if (mode === 'auto' && isReadOnlyMcp(request.server, env ?? defaultClassifyEnvironment()))
+      return { ...action, kind: 'read_file' }
+    return mode === 'ask' ? action : withVerdict(action, unknownTool, mode)
+  }
   if (mode !== 'ask')
     return classifyCodexApprovalForMode(request, worktree, mode, env ?? defaultClassifyEnvironment())
   let kind: ActionKind = 'run_outside_worktree'
@@ -330,7 +364,7 @@ function unwrapShell(command: string): string {
  * analysis as Claude's Bash decides whether that is still the worktree's business.
  */
 function classifyCodexApprovalForMode(
-  request: CodexApprovalInput,
+  request: Exclude<CodexApprovalInput, { method: 'mcpServer/elicitation/request' }>,
   worktree: string,
   mode: 'auto' | 'full',
   env: ClassifyEnvironment,
