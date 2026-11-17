@@ -552,7 +552,7 @@ export const MIGRATIONS: readonly Migration[] = [
       -- column (the sidebar's recent order follows updated_at, which a pin must not move).
       ALTER TABLE tasks ADD COLUMN pinned_at TEXT CHECK (pinned_at IS NULL OR length(pinned_at) > 0);
       ALTER TABLE conversations ADD COLUMN pinned_at TEXT CHECK (pinned_at IS NULL OR length(pinned_at) > 0);
-      `,
+    `,
   },
   {
     version: 26,
@@ -565,7 +565,8 @@ export const MIGRATIONS: readonly Migration[] = [
       -- read-only, so a task in the auto permission mode may use them without asking (packages/policy).
       CREATE TABLE mcp_servers (
         id          TEXT PRIMARY KEY CHECK (length(id) = 36),
-        name        TEXT NOT NULL UNIQUE CHECK (length(name) BETWEEN 1 AND 64 AND name NOT GLOB '*[^A-Za-z0-9_-]*'),
+        name        TEXT NOT NULL UNIQUE COLLATE NOCASE
+                    CHECK (length(name) BETWEEN 1 AND 64 AND name NOT GLOB '*[^A-Za-z0-9_-]*' AND name NOT GLOB '*__*'),
         transport   TEXT NOT NULL CHECK (transport IN ('stdio', 'http')),
         command     TEXT CHECK (command IS NULL OR length(command) BETWEEN 1 AND 4000),
         args        TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(args) AND json_type(args) = 'array'),

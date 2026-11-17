@@ -78,6 +78,32 @@ describe('ClaudeCliProvider.run', () => {
     expect(existsSync(path)).toBe(false)
   })
 
+  it('writes the MCP config under configDir when it is given (the server passes one under JOY_HOME)', async () => {
+    const { dir, received } = setup({ FAKE_CAT_MCP: '1', FAKE_REPLAY: fixturePath('claude', 'resume-1') })
+    const configDir = join(dir, 'joy-home', 'run')
+    const provider = new ClaudeCliProvider({
+      command: process.execPath,
+      argsPrefix: [fakeCli],
+      env: {
+        ...process.env,
+        FAKE_ARGS_OUT: join(dir, 'args.json'),
+        FAKE_CAT_MCP: '1',
+        FAKE_REPLAY: fixturePath('claude', 'resume-1'),
+      },
+      configDir,
+    })
+    await collect(
+      provider.run(
+        opts(dir, { mcpServers: [{ name: 'joy', transport: 'stdio', command: 'node', args: ['hub.js'] }] }),
+        model,
+      ),
+    )
+    const args = received().args
+    const path = args[args.indexOf('--mcp-config') + 1] ?? ''
+    expect(path.startsWith(configDir)).toBe(true)
+    expect(existsSync(path)).toBe(false)
+  })
+
   it('cancels: kills the process and ends with a failing done', async () => {
     const { dir, provider, received } = setup({ FAKE_MODE: 'hang' })
     const controller = new AbortController()

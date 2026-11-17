@@ -1,8 +1,11 @@
 import type { RepoId } from '@joy/core'
 import type { Database } from './database.js'
 
-/** Names Joy itself uses for MCP servers it hands to agents; an owner's server may not take them. */
-export const RESERVED_MCP_SERVER_NAMES = ['joy', 'joy_assistant'] as const
+/**
+ * Names Joy itself uses for MCP servers it hands to agents, and Codex's built-in connectors; an owner's server may not
+ * take them, in any letter case.
+ */
+export const RESERVED_MCP_SERVER_NAMES = ['joy', 'joy_assistant', 'codex_apps'] as const
 const NAME = /^[A-Za-z0-9_-]{1,64}$/
 /** Environment variable or HTTP header name. */
 const VAR_NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,127}$/
@@ -88,7 +91,9 @@ function toRecord(row: Row): McpServerRecord {
 export function assertMcpServerShape(input: NewMcpServer): void {
   if (!NAME.test(input.name))
     throw new Error('MCP server names use letters, digits, "-" and "_" (at most 64)')
-  if ((RESERVED_MCP_SERVER_NAMES as readonly string[]).includes(input.name))
+  // Tool names are `mcp__<server>__<tool>`: a server name with `__` would make another server's tools look like its own.
+  if (input.name.includes('__')) throw new Error('MCP server names cannot contain "__"')
+  if ((RESERVED_MCP_SERVER_NAMES as readonly string[]).includes(input.name.toLowerCase()))
     throw new Error(`"${input.name}" is used by Joy itself; pick another MCP server name`)
   if (input.transport === 'stdio' && (!input.command || input.url !== undefined))
     throw new Error('A stdio MCP server needs a command and no URL')

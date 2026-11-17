@@ -40,6 +40,7 @@ function streamTurn() {
         threadId: 'thread-synthetic-1',
         turnId: 'turn-synthetic-1',
         message: 'Allow?',
+        _meta: { codex_approval_kind: 'mcp_tool_call', tool_title: 'search' },
       },
     })
     send({ id: 'mcp-bad', method: 'mcpServer/elicitation/request', params: { message: 'no server' } })

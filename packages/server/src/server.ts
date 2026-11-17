@@ -290,6 +290,7 @@ import {
   mcpServerPatchSchema,
   PluginInputError,
   PluginService,
+  RunGrants,
   SkillMarkers,
   withPlugins,
 } from './plugins.js'
@@ -851,8 +852,13 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     string,
     (request: CodexApprovalRequest) => Promise<CodexApprovalDecision>
   >()
+  // A run's MCP config (with the servers' secrets) lives under JOY_HOME, never in the OS temp folder an agent may read.
+  // One left behind by a crash is removed here: no run is going yet.
+  const runConfigDir = join(home, 'run')
+  await rm(runConfigDir, { recursive: true, force: true })
   const providers: Partial<Record<ProviderKind, AgentProvider>> = {
     'claude-cli': new ClaudeCliProvider({
+      configDir: runConfigDir,
       ...(initialConfig.providers.claude.command ? { command: initialConfig.providers.claude.command } : {}),
       wrap: containerWrap,
       // A container run gets no stdin (`docker run` without `-i`); anywhere else the wrapper changes nothing.
@@ -921,6 +927,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
     warn: (message) => log.warn(redactor.redact(`[joy] ${message}`)),
   })
   const skillMarkers = new SkillMarkers()
+  const runGrants = new RunGrants()
   /** The project of the task this run belongs to, for skills and the owner's MCP servers. */
   const pluginRunContext = () => {
     const taskId = runningTaskId.getStore()
@@ -959,6 +966,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
         skillMarkers,
         pluginRunContext,
         TOOL_HUB_SERVER_NAME,
+        runGrants,
       )
   }
   const baseExecutor =
@@ -4913,10 +4921,18 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
       if (!getRepo(db, id as RepoId)) throw new HttpError(422, `Repository ${id} was not found`)
   }
 
-  /** The classifier's environment for a run in this project: plus the owner's read-only MCP servers it gets. */
-  function policyEnvironment(repo: RepoRecord): ClassifyEnvironment {
-    const readOnly = repo.container ? [] : plugins.readOnlyServers(repo.id)
-    return readOnly.length ? { ...classifyEnvironment, readOnlyMcpServers: readOnly } : classifyEnvironment
+  /**
+   * The classifier's environment for the run in this worktree: plus what the owner granted that run (the read-only MCP
+   * servers it was handed, the skills the owner invoked). A worktree without a running grant gets neither.
+   */
+  function policyEnvironment(worktree: string): ClassifyEnvironment {
+    const grant = runGrants.for(worktree)
+    if (!grant) return classifyEnvironment
+    return {
+      ...classifyEnvironment,
+      ...(grant.readOnlyServers.length ? { readOnlyMcpServers: grant.readOnlyServers } : {}),
+      ...(grant.skills.size ? { ownerSkills: [...grant.skills] } : {}),
+    }
   }
 
   function createRunToolHub(
@@ -5160,7 +5176,7 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
           input.input,
           workspace.path,
           effectivePermissionMode(task),
-          policyEnvironment(repo),
+          policyEnvironment(workspace.path),
         )
         const action =
           task.provenance === 'external_content'
@@ -5260,14 +5276,14 @@ export async function createJoyServer(options: JoyServerOptions = {}): Promise<J
               cwd: request.params.cwd ?? null,
             }
           : request.method === 'mcpServer/elicitation/request'
-            ? { method: request.method, server: request.params.serverName }
+            ? codexElicitationInput(request.params)
             : { method: request.method, grantRoot: request.params.grantRoot ?? null }
       const classified = classifyCodexApproval(
         codexInput,
         workspace.path,
         // Codex only asks to step outside its workspace-write sandbox, which is the real boundary.
         effectivePermissionMode(task),
-        policyEnvironment(repo),
+        policyEnvironment(workspace.path),
       )
       const action =
         task.provenance === 'external_content'
@@ -7115,4 +7131,24 @@ function pathSpellings(dir: string): string[] {
   }
   spellings.delete(dir)
   return [...spellings]
+}
+
+/** What the policy needs from a Codex MCP elicitation; `_meta` and `message` come from the MCP server, untrusted. */
+function codexElicitationInput(params: {
+  serverName: string
+  message?: string | null
+  [key: string]: unknown
+}): CodexApprovalInput {
+  const meta =
+    params._meta !== null && typeof params._meta === 'object' && !Array.isArray(params._meta)
+      ? (params._meta as Record<string, unknown>)
+      : {}
+  const tool = typeof meta.tool_title === 'string' ? meta.tool_title : undefined
+  return {
+    method: 'mcpServer/elicitation/request',
+    server: params.serverName,
+    toolCall: meta.codex_approval_kind === 'mcp_tool_call',
+    ...(tool ? { tool } : {}),
+    ...(typeof params.message === 'string' ? { message: params.message } : {}),
+  }
 }

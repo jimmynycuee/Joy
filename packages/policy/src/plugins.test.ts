@@ -15,9 +15,14 @@ const env: ClassifyEnvironment = {
 }
 const claude = (tool: string, mode: PermissionMode, environment = env) =>
   evaluateAction(classifyClaudeToolAction(tool, { q: 1 }, worktree, mode, environment), 'normal').outcome
-const codex = (server: string, mode: PermissionMode, environment = env) =>
+const codex = (server: string, mode: PermissionMode, environment = env, toolCall = true) =>
   evaluateAction(
-    classifyCodexApproval({ method: 'mcpServer/elicitation/request', server }, worktree, mode, environment),
+    classifyCodexApproval(
+      { method: 'mcpServer/elicitation/request', server, toolCall },
+      worktree,
+      mode,
+      environment,
+    ),
     'normal',
   ).outcome
 
@@ -52,6 +57,26 @@ describe('owner-added MCP servers', () => {
     // Only the server part counts: a server whose name merely starts the same is not covered.
     expect(claude('mcp__docs2__search', 'auto')).toBe('require_approval')
     expect(claude('mcp__docs', 'auto')).toBe('require_approval')
+    // Codex: only a tool call; anything else the server asks goes to the owner.
+    expect(codex('docs', 'auto', env, false)).toBe('require_approval')
+  })
+
+  it("shows what the server says about the call, as the server's words", () => {
+    const action = classifyCodexApproval(
+      {
+        method: 'mcpServer/elicitation/request',
+        server: 'docs',
+        toolCall: true,
+        tool: 'search',
+        message: 'Run\nit?',
+      },
+      worktree,
+      'ask',
+      env,
+    )
+    expect(action.summary).toBe(
+      'Codex requested a tool of the docs MCP server (the server says: search — Run it?).',
+    )
   })
 
   it("never lets the mark cover Joy's own server name", () => {
@@ -84,10 +109,43 @@ describe('owner-added MCP servers', () => {
 })
 
 describe('skills', () => {
-  it('loading a skill or custom command runs without asking in every mode', () => {
+  const skill = (tool: string, input: unknown, mode: PermissionMode, environment: ClassifyEnvironment) =>
+    evaluateAction(classifyClaudeToolAction(tool, input, worktree, mode, environment), 'normal').outcome
+  const invoked: ClassifyEnvironment = { ...env, ownerSkills: ['review', 'tidy'] }
+
+  it('loading a skill the owner invoked with /name in this run does not ask, in every mode', () => {
     for (const mode of ['ask', 'auto', 'full'] as const) {
-      expect(claude('Skill', mode)).toBe('allow')
-      expect(claude('SlashCommand', mode)).toBe('allow')
+      expect(skill('Skill', { skill: 'review' }, mode, invoked)).toBe('allow')
+      expect(skill('SlashCommand', { command: '/tidy src' }, mode, invoked)).toBe('allow')
+    }
+  })
+
+  it('any other skill or command asks in every mode: its allowed-tools would skip Joy', () => {
+    for (const mode of ['ask', 'auto', 'full'] as const) {
+      expect(skill('Skill', { skill: 'deploy' }, mode, invoked)).toBe('require_approval')
+      expect(skill('SlashCommand', { command: '/deploy' }, mode, invoked)).toBe('require_approval')
+      expect(skill('Skill', { skill: 'review' }, mode, env)).toBe('require_approval')
+      expect(skill('Skill', {}, mode, invoked)).toBe('require_approval')
+      expect(skill('Skill', { skill: '' }, mode, { ...env, ownerSkills: [''] })).toBe('require_approval')
+    }
+    expect(
+      classifyClaudeToolAction('Skill', { skill: 'deploy' }, worktree, 'full', invoked),
+    ).not.toHaveProperty('grant')
+  })
+})
+
+describe("a run's MCP config", () => {
+  it('lives under JOY_HOME, so reading it asks in every mode', () => {
+    const path = '/home/me/.joy/run/joy-claude-AbC123/mcp.json'
+    for (const mode of ['ask', 'auto', 'full'] as const) {
+      expect(readOf('Read', { file_path: path }, mode)).toBe('require_approval')
+      expect(readOf('Bash', { command: 'cat /home/me/.joy/run/joy-claude-*/mcp.json' }, mode)).toBe(
+        'require_approval',
+      )
+      expect(readOf('Grep', { pattern: 'Bearer', path: '/home/me/.joy/run' }, mode)).toBe('require_approval')
     }
   })
 })
+
+const readOf = (tool: string, input: unknown, mode: PermissionMode) =>
+  evaluateAction(classifyClaudeToolAction(tool, input, worktree, mode, env), 'normal').outcome

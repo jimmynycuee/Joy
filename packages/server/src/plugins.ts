@@ -147,20 +147,23 @@ export class PluginService {
     return deleteMcpServer(this.options.db, id)
   }
 
-  /** Names of the servers a run in this project gets and the owner marked read-only (for the policy). */
-  readOnlyServers(repoId: RepoId): string[] {
-    return mcpServersForRepo(this.options.db, repoId)
-      .filter((server) => server.readOnly)
-      .map((server) => server.name)
-  }
-
   /**
    * The enabled servers for a run in this project, with secrets read from the keychain just now (the SecretStore
    * registers each value with the redactor). A server whose secret is missing is left out with a warning instead of
    * starting without it.
    */
   async runConfigs(repoId: RepoId): Promise<McpServerConfig[]> {
+    return (await this.runServers(repoId)).configs
+  }
+
+  /**
+   * `runConfigs`, plus the names among them the owner marked read-only. Taken together, so the policy only lets a
+   * read-only server through when this very run got that server (not one left out for a missing secret, not a
+   * same-named one from the CLI's own config, not one changed while the run goes on).
+   */
+  async runServers(repoId: RepoId): Promise<{ configs: McpServerConfig[]; readOnly: string[] }> {
     const out: McpServerConfig[] = []
+    const readOnly: string[] = []
     for (const server of mcpServersForRepo(this.options.db, repoId)) {
       const values: Record<string, string> = {}
       let missing: string | undefined
@@ -179,6 +182,7 @@ export class PluginService {
         continue
       }
       const vars = Object.keys(values).length ? values : undefined
+      if (server.readOnly) readOnly.push(server.name)
       out.push(
         server.transport === 'stdio'
           ? {
@@ -198,7 +202,7 @@ export class PluginService {
             },
       )
     }
-    return out
+    return { configs: out, readOnly }
   }
 
   private async forgetSecrets(id: string, names: readonly string[]): Promise<void> {
@@ -289,9 +293,15 @@ export class SkillMarkers {
   }
 
   /** The marker for `name`, or the original `/name` when this CLI has no such skill. */
-  expand(prompt: string, kind: ProviderKind, skills: readonly DiscoveredSkill[]): string {
+  expand(
+    prompt: string,
+    kind: ProviderKind,
+    skills: readonly DiscoveredSkill[],
+    onInvoked?: (name: string) => void,
+  ): string {
     return prompt.replace(this.pattern(), (_whole, name: string) => {
       const skill = skills.find((s) => s.cli === kind && s.name === name)
+      if (skill) onInvoked?.(skill.name)
       return skill ? `${skillInstruction(skill)}\n` : `/${name}`
     })
   }
@@ -306,6 +316,36 @@ export class SkillMarkers {
 
   private pattern(): RegExp {
     return new RegExp(`⟦joy-skill:${this.nonce}:([A-Za-z0-9][A-Za-z0-9._:-]{0,63})⟧`, 'g')
+  }
+}
+
+/** What the owner granted one run, for the policy to read while that run asks for tools. */
+export interface RunGrant {
+  /** Skills the owner invoked with `/name` in this run (its prompt or a steer): loading only these runs on its own. */
+  skills: Set<string>
+  /** The owner's read-only MCP servers this run was handed, fixed when it started. */
+  readOnlyServers: readonly string[]
+}
+
+/**
+ * The grants of the runs going on, by working directory (each attempt has its own worktree). A tool call asked from a
+ * directory without a grant gets none: every skill and MCP tool then asks.
+ */
+export class RunGrants {
+  private readonly byCwd = new Map<string, RunGrant>()
+
+  open(cwd: string, readOnlyServers: readonly string[]): RunGrant {
+    const grant: RunGrant = { skills: new Set(), readOnlyServers }
+    this.byCwd.set(cwd, grant)
+    return grant
+  }
+
+  close(cwd: string, grant: RunGrant): void {
+    if (this.byCwd.get(cwd) === grant) this.byCwd.delete(cwd)
+  }
+
+  for(cwd: string): RunGrant | undefined {
+    return this.byCwd.get(cwd)
   }
 }
 
@@ -327,6 +367,7 @@ export function withPlugins(
   markers: SkillMarkers,
   context: () => PluginRunContext | undefined,
   toolHubName: string,
+  grants: RunGrants = new RunGrants(),
 ): AgentProvider {
   return {
     kind: inner.kind,
@@ -337,21 +378,29 @@ export function withPlugins(
         const run = context()
         // Skill folders are read only when the owner actually invoked one (lazily, once per run).
         let skills: Promise<DiscoveredSkill[]> | undefined
+        const handed =
+          run && !run.container && opts.mcpServers?.some((server) => server.name === toolHubName)
+            ? await plugins.runServers(run.repoId)
+            : { configs: [], readOnly: [] }
+        const managed = handed.configs
+        const grant = grants.open(opts.cwd, handed.readOnly)
         const expand = async (text: string) =>
           markers.has(text)
-            ? markers.expand(text, inner.kind, await (skills ??= plugins.skills(run?.projectDir)))
+            ? markers.expand(text, inner.kind, await (skills ??= plugins.skills(run?.projectDir)), (name) =>
+                grant.skills.add(name),
+              )
             : text
-        const managed =
-          run && !run.container && opts.mcpServers?.some((server) => server.name === toolHubName)
-            ? await plugins.runConfigs(run.repoId)
-            : []
-        const next: RunOptions = {
-          ...opts,
-          prompt: await expand(opts.prompt),
-          ...(managed.length ? { mcpServers: [...(opts.mcpServers ?? []), ...managed] } : {}),
-          ...(opts.onSteer ? { onSteer: wrapSteer(opts.onSteer, expand) } : {}),
+        try {
+          const next: RunOptions = {
+            ...opts,
+            prompt: await expand(opts.prompt),
+            ...(managed.length ? { mcpServers: [...(opts.mcpServers ?? []), ...managed] } : {}),
+            ...(opts.onSteer ? { onSteer: wrapSteer(opts.onSteer, expand) } : {}),
+          }
+          yield* inner.run(next, model)
+        } finally {
+          grants.close(opts.cwd, grant)
         }
-        yield* inner.run(next, model)
       })()
     },
   }

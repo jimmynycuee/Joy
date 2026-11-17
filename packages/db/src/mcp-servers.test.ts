@@ -61,6 +61,10 @@ describe('managed MCP servers', () => {
     const bad: Omit<NewMcpServer, 'id'>[] = [
       { name: 'joy', transport: 'stdio', command: 'x' },
       { name: 'joy_assistant', transport: 'stdio', command: 'x' },
+      { name: 'JOY', transport: 'stdio', command: 'x' },
+      { name: 'codex_apps', transport: 'stdio', command: 'x' },
+      // `mcp__docs__write__x` would read as a tool of `docs`.
+      { name: 'docs__write', transport: 'stdio', command: 'x' },
       { name: 'has space', transport: 'stdio', command: 'x' },
       { name: 'a', transport: 'stdio' },
       { name: 'a', transport: 'http', url: 'ftp://x' },
@@ -74,6 +78,9 @@ describe('managed MCP servers', () => {
     expect(() => createMcpServer(db, { id: uuid(2), name: 'web', transport: 'stdio', command: 'x' })).toThrow(
       /already exists/,
     )
+    expect(() =>
+      createMcpServer(db, { id: uuid(3), name: 'WEB', transport: 'stdio', command: 'x' }),
+    ).toThrow()
   })
 
   it('keeps its CHECKs even when the module is bypassed', () => {
@@ -96,6 +103,11 @@ describe('managed MCP servers', () => {
       db
         .prepare("INSERT INTO mcp_servers (id, name, transport, command) VALUES (?, 'a.b', 'stdio', 'c')")
         .run(uuid(3)),
+    ).toThrow()
+    expect(() =>
+      db
+        .prepare("INSERT INTO mcp_servers (id, name, transport, command) VALUES (?, 'a__b', 'stdio', 'c')")
+        .run(uuid(4)),
     ).toThrow()
   })
 

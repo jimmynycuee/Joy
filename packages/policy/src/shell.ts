@@ -48,6 +48,8 @@ export interface ClassifyEnvironment {
    * without asking. Any other mode, and every other server, still asks (see classify.ts).
    */
   readOnlyMcpServers?: readonly string[]
+  /** Skills the owner invoked with `/name` in this run: loading one of them does not ask (see classify.ts). */
+  ownerSkills?: readonly string[]
 }
 
 export function defaultClassifyEnvironment(): ClassifyEnvironment {

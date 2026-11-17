@@ -2,8 +2,12 @@ import type { AgentEvent, AgentProvider, RepoId, RunOptions, Steer } from '@joy/
 import { openDatabase } from '@joy/db'
 import type { DiscoveredSkill } from '@joy/providers'
 import { MemoryBackend, SecretStore } from '@joy/secrets'
-import { describe, expect, it } from 'vitest'
-import { PluginService, rankFiles, SkillMarkers, withPlugins } from './plugins.js'
+import { createMcpServer } from '@joy/db'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import { PluginService, rankFiles, RunGrants, SkillMarkers, withPlugins } from './plugins.js'
 
 const skills: DiscoveredSkill[] = [
   {
@@ -104,14 +108,16 @@ describe('withPlugins', () => {
       healthCheck: async () => ({ ok: true, installed: true, loggedIn: true as const }),
     }
     const markers = new SkillMarkers()
+    const grants = new RunGrants()
     const wrapped = withPlugins(
       inner,
       plugins,
       markers,
       () => ({ repoId: 'r1' as RepoId, projectDir, container: false }),
       'joy',
+      grants,
     )
-    return { wrapped, seen, steered, markers, db }
+    return { wrapped, seen, steered, markers, db, grants }
   }
   const base = (extra: Partial<RunOptions> = {}): RunOptions => ({
     cwd: '/w',
@@ -134,5 +140,54 @@ describe('withPlugins', () => {
     expect(seen[0]?.mcpServers).toBeUndefined()
     await steer?.(markers.mark('/unknown thing'))
     expect(steered).toEqual(['/unknown thing'])
+  })
+
+  const temps: string[] = []
+  afterEach(() => {
+    for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('grants the run the skills the owner invoked and the read-only servers it was handed, until it ends', async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), 'joy-grant-'))
+    temps.push(projectDir)
+    mkdirSync(join(projectDir, '.claude', 'skills', 'review'), { recursive: true })
+    writeFileSync(
+      join(projectDir, '.claude', 'skills', 'review', 'SKILL.md'),
+      '---\nname: review\ndescription: Review it\n---\nbody\n',
+    )
+    const { wrapped, markers, db, grants } = setup(projectDir)
+    const server = (n: number, name: string, readOnly: boolean, vars?: Array<{ name: string }>) =>
+      createMcpServer(db, {
+        id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`,
+        name,
+        transport: 'stdio',
+        command: 'node',
+        readOnly,
+        ...(vars ? { vars } : {}),
+      })
+    server(1, 'docs', true)
+    server(2, 'files', false)
+    // Its secret is not in the keychain: left out of the run, so not granted either.
+    server(3, 'notes', true, [{ name: 'TOKEN' }])
+    const hub = [{ name: 'joy', transport: 'stdio' as const, command: 'node', args: [] }]
+    let during: ReturnType<RunGrants['for']>
+    for await (const event of wrapped.run(
+      base({ cwd: '/w/a', prompt: markers.mark('/review now'), mcpServers: hub }),
+      model,
+    )) {
+      void event
+      during = grants.for('/w/a')
+    }
+    expect(during?.readOnlyServers).toEqual(['docs'])
+    expect([...(during?.skills ?? [])]).toEqual(['review'])
+    expect(grants.for('/w/a')).toBeUndefined()
+
+    // A /name that is no skill, or a run without the hub, grants nothing.
+    for await (const event of wrapped.run(base({ cwd: '/w/b', prompt: markers.mark('/nothing') }), model)) {
+      void event
+      during = grants.for('/w/b')
+    }
+    expect(during?.readOnlyServers).toEqual([])
+    expect(during?.skills.size).toBe(0)
   })
 })
