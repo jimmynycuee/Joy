@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test'
+import { E2E_WEB_ORIGIN } from './e2e/ports.js'
 
 export default defineConfig({
   testDir: './e2e',
@@ -9,14 +10,14 @@ export default defineConfig({
   reporter: 'list',
   outputDir: './test-results',
   use: {
-    baseURL: 'http://127.0.0.1:5173',
+    baseURL: E2E_WEB_ORIGIN,
     headless: true,
     screenshot: 'only-on-failure',
     trace: 'retain-on-failure',
   },
   webServer: {
     command: 'pnpm --filter @joy/web exec node --import tsx e2e/fake-preview.ts',
-    url: 'http://127.0.0.1:5173',
+    url: E2E_WEB_ORIGIN,
     reuseExistingServer: true,
     timeout: 30_000,
   },
