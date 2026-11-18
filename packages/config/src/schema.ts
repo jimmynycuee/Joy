@@ -203,6 +203,16 @@ export const configSchema = z.strictObject({
       stale_after_days: z.number().int().min(1).max(365).default(14),
     })
     .default({ stale_after_days: 14 }),
+  /**
+   * What the task page's 在編輯器開啟 runs: `command` with `args`, then the task's worktree path as the last argument,
+   * without a shell. Default the VS Code CLI (`code`); e.g. `{ command: cursor }` or `{ command: idea, args: [] }`.
+   */
+  editor: z
+    .strictObject({
+      command: z.string().trim().min(1).max(1000).default('code'),
+      args: z.array(z.string().max(1000)).max(20).default([]),
+    })
+    .default({ command: 'code', args: [] }),
   tool_hub: z
     .strictObject({ max_ask_peer_calls: z.number().int().min(1).max(100).default(5) })
     .default({ max_ask_peer_calls: 5 }),

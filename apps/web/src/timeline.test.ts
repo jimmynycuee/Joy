@@ -36,6 +36,11 @@ describe('buildTimeline', () => {
     expect(entries[0]).toMatchObject({ kind: 'step', text: '改用 Opus · 實作＋審查' })
   })
 
+  it('shows a merge into the default branch as an owner step', () => {
+    const entries = buildTimeline([event('task.merged', { branch: 'main', commit: 'abc', files: 2 })])
+    expect(entries).toEqual([expect.objectContaining({ kind: 'step', text: '已合併到 main', owner: true })])
+  })
+
   it('joins a streamed reply into one message and one line of thinking', () => {
     const entries = buildTimeline([
       agent('implementer', { type: 'thinking', text: '先看' }),

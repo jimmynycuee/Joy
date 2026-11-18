@@ -3,6 +3,8 @@ import { lstat, mkdir, readdir, realpath, rm } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { AttemptId, DiffFile, Executor, RepoRef, TaskId, Workspace, WorkspaceDiff } from '@joy/core'
 import { KeyedMutex, git } from './git.js'
+import { MergeRefusedError, isAncestor, mergeIntoTarget, mergeTarget, notFastForward } from './merge.js'
+import type { MergeResult } from './merge.js'
 import { runCommand } from './run.js'
 import type { RunCommandResult } from './run.js'
 
@@ -229,6 +231,35 @@ export class WorktreeExecutor implements Executor {
         throw new CheckpointRestoreIncompleteError(error)
       }
       return { commit, discardedCommits }
+    })
+  }
+
+  /**
+   * Lands a task in the repository's default branch: first the worktree's changes are committed on the task branch
+   * (the same `commit` the GitHub publisher uses), then the branch is merged as `mergeIntoTarget` describes.
+   * Everything that could refuse is checked before that commit, so a refusal changes nothing, neither in the owner's
+   * checkout nor in the worktree. A conflict is found only by merging; it is aborted, and the task commit stays.
+   */
+  async mergeIntoDefaultBranch(
+    ws: Workspace,
+    messages: { commit: string; merge: string },
+  ): Promise<MergeResult> {
+    if (resolve(ws.path) === resolve(ws.repo.path))
+      throw new Error('Refusing to merge the main checkout into itself')
+    return this.locks.run(ws.repo.path, async () => {
+      const target = await mergeTarget(ws.repo)
+      const head = (await git(ws.path, ['rev-parse', '--verify', 'HEAD'])).trim()
+      const clean = (await git(ws.path, ['status', '--porcelain=v1', '-z'])).trim() === ''
+      if (clean && (await isAncestor(ws.repo.path, head, target.head)))
+        throw new MergeRefusedError(
+          'nothing_to_merge',
+          `Nothing to merge: ${target.branch} already has these changes`,
+        )
+      if (target.checkout === 'none' && !(await isAncestor(ws.repo.path, target.head, head)))
+        throw notFastForward(ws.repo, target.branch)
+      await this.commit(ws, messages.commit)
+      const source = (await git(ws.path, ['rev-parse', '--verify', 'HEAD'])).trim()
+      return mergeIntoTarget(ws.repo, target, source, messages.merge, await this.identityArgs(ws.repo.path))
     })
   }
 

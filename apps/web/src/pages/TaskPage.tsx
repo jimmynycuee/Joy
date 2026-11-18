@@ -17,6 +17,7 @@ import {
   ApprovalsPanel,
   ComparePanel,
   DiscardButton,
+  MergeButton,
   PublishPanel,
   PullRequestBar,
 } from '../components/task-panels.js'
@@ -25,6 +26,7 @@ import { diffTotals } from '../diff.js'
 import { modeLabel, statusLabel } from '../labels.js'
 import { followUpState, ownerActionError } from '../messages.js'
 import { diffFrom, failureMessage, taskBranchInfo, worktreeRemoved } from '../task-info.js'
+import { editorErrorText } from '../task-actions.js'
 import { buildTimeline } from '../timeline.js'
 import type { AttachmentControls } from '../components/Attachments.js'
 import type { TaskDetails } from '../types.js'
@@ -165,6 +167,14 @@ export function TaskPage({
       .catch(() => undefined)
   }
 
+  async function openEditor() {
+    try {
+      await request(`/api/tasks/${encodeURIComponent(task.id)}/open-editor`, { method: 'POST', body: '{}' })
+    } catch (error) {
+      onError(editorErrorText(error))
+    }
+  }
+
   async function act(path: 'cancel' | 'resume') {
     setActing(true)
     try {
@@ -230,6 +240,11 @@ export function TaskPage({
               onSelect={() => copy('path', branch.worktreePath ?? '')}
             >
               {copied === 'path' ? '已複製' : '複製工作副本路徑'}
+            </MenuItem>
+          ) : null}
+          {branch.worktreePath && !worktreeRemoved(details.events) ? (
+            <MenuItem icon="code" onSelect={() => void openEditor()}>
+              在編輯器開啟
             </MenuItem>
           ) : null}
           {branch.branch || branch.worktreePath ? <MenuSeparator /> : null}
@@ -360,6 +375,7 @@ export function TaskPage({
                 </button>
               ) : null}
               <div className="thread-actions">
+                <MergeButton details={details} onChanged={onChanged} />
                 <PublishPanel details={details} onChanged={onChanged} />
                 <DiscardButton details={details} onChanged={onChanged} />
               </div>

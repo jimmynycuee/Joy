@@ -3,7 +3,8 @@ import type { FormEvent } from 'react'
 import { errorMessage, removeWithConfirmation, request } from '../api.js'
 import { approvalTarget } from '../approval-detail.js'
 import { safeHref } from '../markdown.js'
-import { hasUnpublishedChanges, worktreeRemoved } from '../task-info.js'
+import { diffFrom, hasUnpublishedChanges, worktreeRemoved } from '../task-info.js'
+import { currentMerge, mergeErrorText } from '../task-actions.js'
 import { policyEventTitle } from '../policy-events.js'
 import { record } from '../types.js'
 import type { TaskDetails, WorkspaceDiff } from '../types.js'
@@ -292,27 +293,107 @@ export function ComparePanel({ details, onChanged }: { details: TaskDetails; onC
   )
 }
 
+/**
+ * Merges a finished task into the project's default branch, on the owner's machine (no GitHub). Asks first, naming
+ * the branch and the number of files; the server refuses anything that could touch the owner's own work.
+ */
+export function MergeButton({ details, onChanged }: { details: TaskDetails; onChanged: () => void }) {
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [failure, setFailure] = useState('')
+  const branch = details.repo?.defaultBranch ?? ''
+  const files = diffFrom(details.events)?.files.length ?? 0
+  if (
+    details.task.status !== 'done' ||
+    !branch ||
+    files === 0 ||
+    worktreeRemoved(details.events) ||
+    currentMerge(details.events)
+  )
+    return null
+
+  async function merge() {
+    setBusy(true)
+    setFailure('')
+    try {
+      await request(`/api/tasks/${encodeURIComponent(details.task.id)}/merge-into-default`, {
+        method: 'POST',
+        body: JSON.stringify({ confirm: true }),
+      })
+      setConfirming(false)
+      onChanged()
+    } catch (error) {
+      setFailure(mergeErrorText(error, branch))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="action-stack" data-testid="merge">
+      {confirming ? (
+        <div className="pr-row" role="group" aria-label="確認合併">
+          <span>
+            把 {files} 個檔案合併到 {branch}？
+          </span>
+          <Button variant="primary" icon="git-merge" disabled={busy} onClick={() => void merge()}>
+            {busy ? '正在合併…' : '合併'}
+          </Button>
+          <Button
+            disabled={busy}
+            onClick={() => {
+              setConfirming(false)
+              setFailure('')
+            }}
+          >
+            取消
+          </Button>
+        </div>
+      ) : (
+        <Button icon="git-merge" onClick={() => setConfirming(true)}>
+          合併到 {branch}
+        </Button>
+      )}
+      {failure ? (
+        <p className="form-error" role="alert">
+          {failure}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
 /** Throws away a finished task's worktrees (T2.8). */
 export function DiscardButton({ details, onChanged }: { details: TaskDetails; onChanged: () => void }) {
   const [failure, setFailure] = useState('')
   const finished = ['done', 'review_ready', 'failed', 'cancelled'].includes(details.task.status)
   const removed = details.events.some((event) => event.type === 'worktree.removed')
   const published = details.events.some((event) => event.type === 'publish.done')
+  // Merged and untouched since: the commits are in the default branch, so removing the worktree loses nothing.
+  const merged = currentMerge(details.events)
   if (!finished || removed || published) return null
   return (
     <div className="action-stack">
       <Button
-        variant="danger"
+        variant={merged ? 'secondary' : 'danger'}
         icon="trash"
         onClick={() => {
-          if (!window.confirm('要丟掉這個任務的工作副本和所有變更嗎？')) return
+          if (
+            !window.confirm(
+              merged ? '要清除這個任務的工作副本嗎？' : '要丟掉這個任務的工作副本和所有變更嗎？',
+            )
+          )
+            return
           setFailure('')
-          void removeWithConfirmation(`/api/tasks/${encodeURIComponent(details.task.id)}/discard`, {})
+          void removeWithConfirmation(
+            `/api/tasks/${encodeURIComponent(details.task.id)}/discard`,
+            merged ? { confirmUnpushedCommits: true } : {},
+          )
             .then(onChanged)
             .catch((error: unknown) => setFailure(errorMessage(error, '無法丟棄')))
         }}
       >
-        丟掉這些變更
+        {merged ? '清除工作副本' : '丟掉這些變更'}
       </Button>
       {failure ? <p className="form-error">{failure}</p> : null}
     </div>
