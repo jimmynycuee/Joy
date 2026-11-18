@@ -42,6 +42,10 @@ interface Mock {
   forbidden?: string[]
   gitInits?: Json[]
   created?: Json[]
+  /** `GET /api/fs/repository` by path; a missing path answers 409. */
+  repositories?: Record<string, Json>
+  /** Branches `POST /api/repos` refuses with 422. */
+  missingBranches?: string[]
 }
 
 /** One folder listing shaped like the server's. */
@@ -102,8 +106,16 @@ async function mockApi(page: Page, mock: Mock) {
       const body = request.postDataJSON() as { path: string }
       mock.gitInits?.push(body as Json)
       await route.fulfill({ status: 201, json: { path: body.path, defaultBranch: 'main' } })
+    } else if (path === '/api/fs/repository') {
+      const found = mock.repositories?.[url.searchParams.get('path') ?? '']
+      if (found) await route.fulfill({ json: found })
+      else await route.fulfill({ status: 409, json: { error: 'no' } })
     } else if (path === '/api/repos' && method === 'POST') {
       const body = request.postDataJSON() as Json
+      if (mock.missingBranches?.includes(String(body.defaultBranch))) {
+        await route.fulfill({ status: 422, json: { error: 'Branch does not exist' } })
+        return
+      }
       mock.created?.push(body)
       await route.fulfill({ status: 201, json: { repo: { id: 'new', ...body } } })
     } else if (path === '/api/repos') await route.fulfill({ json: { repos: mock.repos } })
@@ -395,6 +407,35 @@ test.describe('加入專案 picks a folder', () => {
     await dialog.getByRole('button', { name: '加入專案' }).click()
     await expect(dialog).toHaveCount(0)
     expect(created).toEqual([{ path: '/home/me/code/sketch', defaultBranch: 'main' }])
+  })
+
+  test("a repository's own branch is filled in, and a branch it does not have is refused", async ({
+    page,
+  }) => {
+    const created: Json[] = []
+    await mockApi(page, {
+      repos: [],
+      folders,
+      created,
+      repositories: {
+        '/home/me/code/app': { path: '/home/me/code/app', defaultBranch: 'master', githubRemote: null },
+      },
+      missingBranches: ['main'],
+    })
+    await page.goto('/')
+    await sidebarOf(page).getByRole('button', { name: '加入專案' }).click()
+    const dialog = page.getByRole('dialog', { name: '加入專案' })
+    await dialog.getByRole('button', { name: 'code', exact: true }).click()
+    await dialog.getByRole('button', { name: '加入：app' }).click()
+    await expect(dialog.getByLabel('預設分支')).toHaveValue('master')
+
+    await dialog.getByLabel('預設分支').fill('main')
+    await dialog.getByRole('button', { name: '加入專案' }).click()
+    await expect(dialog.getByRole('alert')).toHaveText('這個專案沒有「main」分支')
+    await dialog.getByLabel('預設分支').fill('master')
+    await dialog.getByRole('button', { name: '加入專案' }).click()
+    await expect(dialog).toHaveCount(0)
+    expect(created).toEqual([{ path: '/home/me/code/app', defaultBranch: 'master' }])
   })
 
   test('going back from the chosen folder returns to the list, and Esc closes the dialog', async ({

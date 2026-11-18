@@ -239,6 +239,12 @@ export function Workspace() {
 
   const composing = page === 'tasks' && (showTaskForm || !selectedTaskId)
   const setupProblems = doctorReport?.checks.filter((check) => check.status === 'missing').length ?? 0
+  const missingClis =
+    doctorReport?.checks
+      .filter(
+        (check) => check.status === 'missing' && (check.id === 'claude-cli' || check.id === 'codex-cli'),
+      )
+      .map((check) => check.id) ?? []
   const activeTasks = useMemo(() => tasks.filter((task) => !task.archived), [tasks])
   const diff = useMemo(() => diffFrom(details?.events ?? []), [details?.events])
   const changesVisible = changesOpen ?? Boolean(diff && diff.files.length > 0)
@@ -512,7 +518,8 @@ export function Workspace() {
     view === 'new-task'
       ? '新任務'
       : view === 'task'
-        ? shortTitle(details?.task.title ?? '任務')
+        ? // The task's own title bar is right below and says it already.
+          ''
         : view === 'assistant'
           ? '聊聊'
           : '設定'
@@ -634,6 +641,7 @@ export function Workspace() {
         config={config}
         customWorkflows={customWorkflows}
         setupProblems={setupProblems}
+        missingClis={missingClis}
         onOpenSetup={() => openSettings('advanced')}
         onAddRepo={() => setShowRepoForm(true)}
         onCreate={createTask}

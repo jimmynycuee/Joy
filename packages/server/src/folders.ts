@@ -4,6 +4,7 @@ import { lstat, mkdtemp, readdir, realpath, rm, stat } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, parse, resolve, sep } from 'node:path'
 import { gitEnvironment } from '@joy/executor'
+import { parseGitHubRepository } from '@joy/github'
 
 /*
  * The folder picker behind 加入專案. It only ever lists folder names (never file names or contents) and refuses the
@@ -304,4 +305,71 @@ export async function initGitRepository(
     await rm(noHooks, { recursive: true, force: true }).catch(() => undefined)
   }
   return { path, defaultBranch: 'main' }
+}
+
+export interface RepositoryInfo {
+  path: string
+  /** The branch new tasks start from: what the remote calls its default, else the checked-out branch. */
+  defaultBranch: string | null
+  /** `origin` when it is a GitHub repository, as an HTTPS URL without credentials. */
+  githubRemote: string | null
+}
+
+/** What 加入專案 fills in for a repository, so the owner does not have to know or type it. */
+export async function describeRepository(
+  input: string,
+  options: FolderBrowserOptions,
+): Promise<RepositoryInfo> {
+  const found = await roots(options)
+  const path = await openFolder(input, found)
+  if (!(await hasGit(path))) throw new FolderError(409, 'That folder is not a git repository')
+  return {
+    path,
+    defaultBranch: await detectDefaultBranch(path),
+    githubRemote: await detectGithubRemote(path),
+  }
+}
+
+async function quietGit(cwd: string, args: string[]): Promise<string | null> {
+  try {
+    const out = (await git(cwd, args)).trim()
+    return out === '' ? null : out
+  } catch {
+    return null
+  }
+}
+
+async function detectDefaultBranch(path: string): Promise<string | null> {
+  const remoteHead = await quietGit(path, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'])
+  const fromRemote = remoteHead?.startsWith('origin/') ? remoteHead.slice('origin/'.length) : null
+  // Tasks start from the local branch, so the remote's default only counts when it exists here.
+  if (fromRemote && (await branchExists(path, fromRemote))) return fromRemote
+  const head = await quietGit(path, ['symbolic-ref', '--quiet', '--short', 'HEAD'])
+  return head && (await branchExists(path, head)) ? head : null
+}
+
+export async function detectGithubRemote(path: string): Promise<string | null> {
+  const url = await quietGit(path, ['remote', 'get-url', 'origin'])
+  if (!url) return null
+  try {
+    const repo = parseGitHubRepository(url)
+    if (repo.host !== 'github.com') return null
+    return `https://github.com/${repo.owner}/${repo.name}`
+  } catch {
+    // Not GitHub, or a URL with credentials in it: the owner can still type one.
+    return null
+  }
+}
+
+/** Whether `branch` is a local branch with a commit, the way a task's worktree is made from it. */
+export async function branchExists(path: string, branch: string): Promise<boolean> {
+  if (branch.startsWith('-')) return false
+  return (
+    (await quietGit(path, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`])) !== null
+  )
+}
+
+/** Whether `path` holds a repository (a `.git` folder, or the file a linked worktree has). */
+export async function isGitRepository(path: string): Promise<boolean> {
+  return hasGit(path)
 }

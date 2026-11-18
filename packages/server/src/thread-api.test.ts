@@ -1158,7 +1158,8 @@ describe('owner messages that were not delivered', () => {
         ? new Promise((resolve) => options.signal.addEventListener('abort', () => resolve(), { once: true }))
         : undefined
     const id = await newTask(call, await newRepo(call), { mode: 'review_loop' })
-    await until(call, id, settled('running'), 'running')
+    // Sent once the agent has started, so it queues instead of joining the first prompt under load.
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length === 1, 'running')
     await call('POST', `/api/tasks/${id}/messages`, { text: 'DISCARDED-INSTRUCTION', interrupt: false })
     await call('POST', `/api/tasks/${id}/cancel`)
     await until(

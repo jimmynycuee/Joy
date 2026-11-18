@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { errorMessage, request } from '../api.js'
-import { folderErrorText, foldersUrl, gitInitErrorText } from '../folders.js'
-import type { FolderListing } from '../folders.js'
+import {
+  addProjectErrorText,
+  folderErrorText,
+  foldersUrl,
+  gitInitErrorText,
+  repositoryUrl,
+} from '../folders.js'
+import type { FolderListing, RepositoryInfo } from '../folders.js'
 import { Button, Icon, IconButton, Spinner } from './ui.js'
 
 export interface NewProject {
@@ -33,6 +39,7 @@ export function AddProjectDialog({
   const [branch, setBranch] = useState('main')
   const [container, setContainer] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [detecting, setDetecting] = useState(false)
   // Only the answer to the newest request is used, so a slow listing cannot replace a newer one.
   const latest = useRef(0)
   // Whether the owner started editing the path box since the last listing was asked for: a late answer must not
@@ -74,10 +81,28 @@ export function AddProjectDialog({
     void open(pathText)
   }
 
+  // Only the newest repository lookup may fill in the branch, as with listings.
+  const looked = useRef(0)
+
   function choose(path: string, isGit: boolean) {
     setChosen({ path, isGit })
     setConfirmingInit(false)
     setFailure('')
+    if (isGit) void lookUp(path)
+  }
+
+  /** Fills in the branch tasks start from, so a `master` or `develop` repository does not get `main`. */
+  async function lookUp(path: string) {
+    const ticket = ++looked.current
+    setDetecting(true)
+    try {
+      const info = await request<RepositoryInfo>(repositoryUrl(path))
+      if (ticket === looked.current && info.defaultBranch) setBranch(info.defaultBranch)
+    } catch {
+      // The owner can still type the branch; adding checks it.
+    } finally {
+      if (ticket === looked.current) setDetecting(false)
+    }
   }
 
   async function initHere() {
@@ -108,7 +133,7 @@ export function AddProjectDialog({
     try {
       await onAdd({ path: chosen.path, defaultBranch: branch.trim() || 'main', container })
     } catch (cause) {
-      setFailure(errorMessage(cause, '無法加入專案'))
+      setFailure(addProjectErrorText(cause, branch.trim()) ?? errorMessage(cause, '無法加入專案'))
       setBusy(false)
     }
   }
@@ -148,7 +173,11 @@ export function AddProjectDialog({
                   <input
                     aria-label="預設分支"
                     value={branch}
-                    onChange={(event) => setBranch(event.target.value)}
+                    onChange={(event) => {
+                      looked.current++
+                      setDetecting(false)
+                      setBranch(event.target.value)
+                    }}
                     required
                   />
                 </label>
@@ -177,10 +206,19 @@ export function AddProjectDialog({
             <div className="dialog-actions">
               {chosen.isGit ? (
                 <>
-                  <Button variant="ghost" onClick={() => setChosen(null)} disabled={busy}>
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      looked.current++
+                      setDetecting(false)
+                      setBranch('main')
+                      setChosen(null)
+                    }}
+                    disabled={busy}
+                  >
                     返回
                   </Button>
-                  <Button variant="primary" type="submit" disabled={busy}>
+                  <Button variant="primary" type="submit" disabled={busy || detecting}>
                     加入專案
                   </Button>
                 </>

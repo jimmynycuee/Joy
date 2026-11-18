@@ -107,7 +107,23 @@ test('settings, secure key status, and a complete fake-provider task flow', asyn
   await page.getByRole('button', { name: '新任務' }).click()
   // A real git repository in a temp folder, picked through the folder picker (the fake runtime lists the real disk).
   const projectPath = realpathSync(mkdtempSync(join(tmpdir(), 'joy-e2e-project-')))
-  execFileSync('git', ['init'], { cwd: projectPath })
+  // With a commit on main: Joy refuses a default branch the repository does not have.
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: projectPath })
+  execFileSync(
+    'git',
+    [
+      '-c',
+      'user.name=e2e',
+      '-c',
+      'user.email=e2e@example.test',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'first',
+    ],
+    { cwd: projectPath },
+  )
   await page.getByRole('button', { name: '加入專案' }).first().click()
   const repoDialog = page.getByRole('dialog', { name: '加入專案' })
   // The dialog first lists the home folder and puts its path in the box. Typing before that lands lets the listing

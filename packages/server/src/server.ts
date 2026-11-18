@@ -288,7 +288,15 @@ import { cliVersionWarnings, runDoctor } from './doctor.js'
 import type { DoctorOptions } from './doctor.js'
 import { describeDisallowedRoleProvider, findDisallowedRoleProviders } from './provider-allowlist.js'
 import { withProjectInstructions } from './project-instructions.js'
-import { FolderError, initGitRepository, listFolders } from './folders.js'
+import {
+  branchExists,
+  describeRepository,
+  detectGithubRemote,
+  FolderError,
+  initGitRepository,
+  isGitRepository,
+  listFolders,
+} from './folders.js'
 import {
   mcpServerInputSchema,
   mcpServerPatchSchema,
@@ -1911,11 +1919,17 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
     if (url.pathname === '/api/repos' && method === 'POST') {
       assertJsonContentType(req)
       const input = repoInputSchema.parse(await readJson(req))
+      // Every task's worktree starts from this branch: a wrong name would only fail at the first task.
+      const isGit = await isGitRepository(input.path)
+      if (isGit && !(await branchExists(input.path, input.defaultBranch)))
+        throw new HttpError(422, `Branch ${input.defaultBranch} does not exist in ${input.path}`)
+      // A GitHub `origin` is the repository pull requests go to, unless the owner said otherwise.
+      const githubRemote = input.githubRemote ?? (isGit ? await detectGithubRemote(input.path) : null)
       const repo = createRepo(db, {
         id: (input.id ?? randomUUID()) as RepoId,
         path: input.path,
         defaultBranch: input.defaultBranch,
-        ...(input.githubRemote ? { githubRemote: input.githubRemote } : {}),
+        ...(githubRemote ? { githubRemote } : {}),
         ...(input.allowedProviders ? { allowedProviders: input.allowedProviders } : {}),
         ...(input.container ? { container: true } : {}),
         ...(input.checkCommand ? { checkCommand: input.checkCommand } : {}),
@@ -1927,6 +1941,12 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       // Only folder names, never files or their contents; Joy's data and the home folder's hidden folders are left out.
       const { path } = folderListSchema.parse({ path: url.searchParams.get('path') ?? undefined })
       json(res, 200, await listFolders(path, { joyHome: home, ...folderBrowserOptions }))
+      return
+    }
+    if (url.pathname === '/api/fs/repository' && method === 'GET') {
+      const { path } = folderListSchema.parse({ path: url.searchParams.get('path') ?? undefined })
+      if (!path) throw new HttpError(400, 'path is required')
+      json(res, 200, await describeRepository(path, { joyHome: home, ...folderBrowserOptions }))
       return
     }
     if (url.pathname === '/api/fs/git-init' && method === 'POST') {
