@@ -30,10 +30,13 @@ type ApiErrorBody = { error?: string }
 /** A failed API call; `status` lets callers treat 409 (busy, conflict) and 429 (too many) differently. */
 export class ApiError extends Error {
   readonly status: number
-  constructor(message: string, status: number) {
+  /** The whole error body, for the few errors that carry more than a message (e.g. a merge's conflicting files). */
+  readonly body: Record<string, unknown>
+  constructor(message: string, status: number, body: Record<string, unknown> = {}) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.body = body
   }
 }
 
@@ -45,7 +48,12 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (response.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
   const text = await response.text()
   const body = text ? (JSON.parse(text) as T & ApiErrorBody) : ({} as T & ApiErrorBody)
-  if (!response.ok) throw new ApiError(body.error ?? `請求失敗（${response.status}）`, response.status)
+  if (!response.ok)
+    throw new ApiError(
+      body.error ?? `請求失敗（${response.status}）`,
+      response.status,
+      body as Record<string, unknown>,
+    )
   return body
 }
 

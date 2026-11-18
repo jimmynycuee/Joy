@@ -33,6 +33,15 @@ describe('parseConfig', () => {
     expect(() => parseConfig('tool_hub: { max_ask_peer_calls: 101 }')).toThrow(/tool_hub.max_ask_peer_calls/)
   })
 
+  it('defaults the editor to the VS Code CLI and accepts another command with arguments', () => {
+    expect(parseConfig('').editor).toEqual({ command: 'code', args: [] })
+    expect(parseConfig('editor: { command: cursor, args: [--reuse-window] }').editor).toEqual({
+      command: 'cursor',
+      args: ['--reuse-window'],
+    })
+    expect(() => parseConfig('editor: { command: "" }')).toThrow(/editor.command/)
+  })
+
   it('refuses a remote address that listens on every network (T4.1)', () => {
     expect(parseConfig('remote: { enabled: true, address: 100.64.0.5 }').remote.address).toBe('100.64.0.5')
     for (const address of ['0.0.0.0', '"::"', '"0:0:0:0:0:0:0:0"', '"::ffff:0.0.0.0"'])

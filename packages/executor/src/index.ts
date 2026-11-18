@@ -7,6 +7,8 @@ export type {
   PackageManager,
 } from './dependencies.js'
 export { GitError, KeyedMutex, git, gitEnvironment, listProjectFiles } from './git.js'
+export { MergeConflictError, MergeRefusedError } from './merge.js'
+export type { MergeRefusal, MergeResult } from './merge.js'
 export { runCommand } from './run.js'
 export type { RunCommandInput, RunCommandResult } from './run.js'
 export {
