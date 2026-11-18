@@ -2,6 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-19（完成的任務可「合併到 main」（本機合併，先確認分支與檔案數）與「在編輯器開啟」（設定 `editor`），分支 `task-actions`）
 - 最後更新：2026-11-18（修掉 `thread-api` 兩個排隊訊息測試在 CI 上偶爾失敗：送達紀錄比 provider 下一次呼叫早寫入，測試改成兩者都等到，分支 `fix-thread-api-flaky`）
 - 最後更新：2026-11-18（加入專案對話框：家目錄還在載入時開始編輯路徑（例如全選再貼上），載入結果不再蓋掉輸入框；修掉 CI 上 `t1.8` 偶爾失敗，分支 `folder-dialog-race`）
 - 最後更新：2026-11-17（專案 `.claude/settings.json` 會自己執行的指令（hooks 等）要擁有者同意才啟動 Claude，內容變了再問，migration 27，分支 `project-hooks`）
@@ -15,6 +16,16 @@
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
 ## 驗證結果
+
+### 任務完成後：合併到預設分支、在編輯器開啟（2026-11-19，分支 `task-actions`）
+
+- **合併**：`POST /api/tasks/:id/merge-into-default`（body 一定要 `{ "confirm": true }`；`/merge` 已是 compete 的「裁判綜合」）。只有 `done` 且沒在跑的任務；compete 只合併擁有者選的方案。先用 publisher 同一個 `executor.commit` 把工作副本提交到任務分支，再由 `WorktreeExecutor.mergeIntoDefaultBranch`（`packages/executor/src/merge.ts`）合併。一律 `--no-ff`：任務是一個可用 `git revert -m 1` 撤回的 merge commit。hooks 指向空資料夾、不簽章、明確帶 `--commit --no-squash --no-autostash` 蓋過擁有者的 `mergeOptions`。成功記 `task.merged`（branch、commit、sourceCommit、files），時間軸顯示「已合併到 main」，按鈕消失，直到 agent 又做了新一輪。
+- **安全規則**（拒絕時一律 409、帶 `reason`，任何東西都沒動，連任務的 commit 都還沒做）：預設分支在 `repo.path` checkout 中 → 有已追蹤檔案的未提交變更（`dirty_checkout`）或進行中的 merge／rebase／cherry-pick／bisect（`operation_in_progress`）就拒絕；未追蹤檔案交給 git 自己保護。預設分支沒被 checkout → 只在 fast-forward 時用 `commit-tree`＋`update-ref`（帶舊值做 compare-and-swap）建 merge commit，不碰擁有者的工作目錄，否則 `not_fast_forward`。預設分支在別的 worktree → `checked_out_elsewhere`。已經合併過、或沒有變更 → `nothing_to_merge`。衝突 → `git merge --abort`（失敗再 `reset --merge` 回原 HEAD），回 `reason: conflict` 與 `conflicts` 檔案清單。
+- **編輯器**：`POST /api/tasks/:id/open-editor`，設定 `editor: { command: code, args: [] }`（`packages/config`），執行 `command [...args, worktree]`，`shell: false`、detached。路徑只來自 Joy 的 attempt 紀錄，且必須在 Joy 的 worktrees 資料夾裡、還存在、沒被移除，否則 404。找不到指令回 422 `reason: editor_not_found`，UI 顯示「找不到 code 指令，請在設定指定編輯器」。放在 ⋯ 選單。
+- **前端**：完成列下方「合併到 main」→ 行內確認「把 N 個檔案合併到 main？」→ 合併／取消；拒絕原因用中文顯示（衝突列出檔名）。合併後「丟掉這些變更」變成「清除工作副本」（變更已在 main，直接帶 `confirmUnpushedCommits`）。
+- **測試**：executor `merge.test.ts`（11 個：乾淨合併、main 已前進仍可合併、main 有未提交變更、進行中的 merge、衝突中止、未 checkout 的 FF 與非 FF、別的 worktree、第二次合併、沒有變更、hooks 不執行）；server `task-actions.test.ts`（8 個：`confirm` 必填、合併與 `task.merged`、第二次 409、dirty、衝突、非 FF、執行中、編輯器參數、預設 `code` 找不到、404 三種）與 `editor.test.ts`；config `editor` 預設與驗證；web `task-actions.test.ts`、`timeline.test.ts`；Playwright `task-actions.spec.ts`（確認流程、已合併狀態、衝突文字、沒變更不顯示、選單項目與錯誤）。
+- **驗證**：本機 `pnpm check` 的 format、lint、typecheck 通過，vitest 1566 passed、1 失敗是既有的 `thread-api`「continues a single task right after the run…」在全套並行時逾時，單獨重跑 63 個全過。e2e 在臨時埠（4399／4398）137 個全過。
+- **沒驗證到**：沒有真的開過 VS Code；Windows 上 `code` 是 `code.cmd`，不經 shell 無法執行，要在設定填編輯器的 `.exe`；Windows／Linux 的合併只靠 CI。
 
 ### 修正偶爾失敗的 `thread-api` 測試（2026-11-18，分支 `fix-thread-api-flaky`）
 

@@ -197,6 +197,8 @@ import type { WorktreeCleanupOptions, WorktreeInfo } from '@joy/executor'
 import {
   CheckpointCommitsError,
   CheckpointRestoreIncompleteError,
+  MergeConflictError,
+  MergeRefusedError,
   UnpushedCommitsError,
   WorktreeExecutor,
   checkpointRef,
@@ -205,7 +207,9 @@ import {
   installDependencies,
   stopContainer,
 } from '@joy/executor'
-import type { RunCommandResult, RunInWorktreeInput } from '@joy/executor'
+import type { MergeResult, RunCommandResult, RunInWorktreeInput } from '@joy/executor'
+import { EditorNotFoundError, editorInvocation, spawnEditor } from './editor.js'
+import type { EditorRunner } from './editor.js'
 import { dependencyInstall as dependencyInstallFor } from '@joy/executor'
 import type { Executor, WorkspaceDiff } from '@joy/core'
 import type {
@@ -678,6 +682,8 @@ export interface JoyServerOptions {
   dependencyInstall?: false | { resolve?: (command: string) => { command: string; prefix: string[] } }
   /** Where the project folder picker starts (and what `~` means). Default the user's home folder; tests use a temp one. */
   folderBrowserHome?: string
+  /** Starts the editor for 在編輯器開啟 (tests use a fake). Default spawns `editor.command` without a shell. */
+  editorRunner?: EditorRunner
 }
 
 export interface JoyServer {
@@ -692,6 +698,8 @@ class HttpError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** Extra fields of the error body, for a client that acts on them (e.g. the files a merge conflicts in). */
+    readonly details?: Record<string, unknown>,
   ) {
     super(message)
   }
@@ -1120,6 +1128,16 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         ): Promise<{ commit: string; discardedCommits: number }>
       })
     | undefined
+  /** Executors that can merge a task into the default branch (the real git executor; test fakes may not). */
+  const merger = ('mergeIntoDefaultBranch' in executor ? executor : undefined) as
+    | (Executor & {
+        mergeIntoDefaultBranch(
+          ws: Workspace,
+          messages: { commit: string; merge: string },
+        ): Promise<MergeResult>
+      })
+    | undefined
+  const editorRunner = options.editorRunner ?? spawnEditor
   const subscribers = new Map<TaskId, Set<WebSocket>>()
   const toolHubSessions = new Map<string, { token: string; dispatch: ToolHubDispatcher }>()
   const wsServer = new WebSocketServer({
@@ -1727,7 +1745,10 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         error instanceof AttachmentError ||
         error instanceof FolderError
       ) {
-        json(res, error.status, { error: redactor.redact(error.message) })
+        json(res, error.status, {
+          ...(error instanceof HttpError && error.details ? redactor.redactValue(error.details) : {}),
+          error: redactor.redact(error.message),
+        })
       } else {
         const message = error instanceof Error ? error.message : 'Unexpected server error'
         json(res, 500, { error: redactor.redact(message) })
@@ -2121,6 +2142,100 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
           ? rememberTaskAllow(answered.approval, offer)
           : undefined
       json(res, 200, { ...answered, ...(remembered ? { taskAllow: remembered } : {}) })
+      return
+    }
+    const landMatch = /^\/api\/tasks\/([^/]+)\/merge-into-default$/.exec(url.pathname)
+    if (landMatch && method === 'POST') {
+      assertJsonContentType(req)
+      // The owner's click in the confirmation is the only way in; nothing an agent does can send this.
+      z.strictObject({ confirm: z.literal(true) }).parse(await readJson(req))
+      const task = requireTask(decodePathSegment(landMatch[1] ?? ''))
+      if (task.status !== 'done' || running.has(task.id))
+        throw new HttpError(409, `Only finished tasks can be merged; this task is ${task.status}`)
+      const repo = getRepo(db, task.repoId)
+      if (!repo) throw new HttpError(404, `Repository ${task.repoId} was not found`)
+      if (!merger) throw new HttpError(501, 'This Joy cannot merge (no git executor)')
+      // Compete: only the attempt the owner chose, as for a pull request.
+      const attempt = task.mode === 'compete' ? chosenAttempt(task) : latestAttempt(db, task.id)
+      if (!attempt?.worktreePath || !attempt.branch || !attempt.baseCommit)
+        throw new HttpError(409, 'This task has no worktree to merge')
+      if (removedWorktrees(task.id).has(attempt.id))
+        throw new HttpError(
+          409,
+          'This worktree was already removed (published or discarded); start a new task',
+        )
+      if (publishing.has(task.id))
+        throw new HttpError(409, 'This task is being published; try again in a moment')
+      const workspace: Workspace = {
+        repo,
+        taskId: task.id,
+        attemptId: attempt.id,
+        path: attempt.worktreePath,
+        branch: attempt.branch,
+        baseCommit: attempt.baseCommit,
+      }
+      const title = redactor.redact(task.title)
+      let result: MergeResult
+      try {
+        result = await exclusive(task.id, () =>
+          merger.mergeIntoDefaultBranch(workspace, {
+            commit: title,
+            merge: `Merge ${attempt.branch}: ${title}`,
+          }),
+        )
+      } catch (error) {
+        if (error instanceof MergeConflictError)
+          throw new HttpError(409, error.message, {
+            reason: 'conflict',
+            branch: error.branch,
+            conflicts: error.files,
+          })
+        if (error instanceof MergeRefusedError)
+          throw new HttpError(409, error.message, { reason: error.reason, branch: repo.defaultBranch })
+        throw error
+      }
+      const merged = {
+        branch: result.branch,
+        commit: result.commit,
+        sourceCommit: result.sourceCommit,
+        files: result.files,
+        updatedCheckout: result.updatedCheckout,
+      }
+      publish(task.id, attempt.id, 'task.merged', merged)
+      json(res, 200, { merged })
+      return
+    }
+    const editorMatch = /^\/api\/tasks\/([^/]+)\/open-editor$/.exec(url.pathname)
+    if (editorMatch && method === 'POST') {
+      assertJsonContentType(req)
+      z.strictObject({}).parse(await readJson(req))
+      const task = requireTask(decodePathSegment(editorMatch[1] ?? ''))
+      const attempt =
+        task.mode === 'compete'
+          ? (chosenAttempt(task) ?? latestAttempt(db, task.id))
+          : latestAttempt(db, task.id)
+      // Only a worktree Joy made for this task: the path comes from Joy's records, never from the request.
+      const folder = attempt?.worktreePath
+      if (
+        !attempt ||
+        !folder ||
+        removedWorktrees(task.id).has(attempt.id) ||
+        !existsSyncFs(folder) ||
+        !isInside(realPath(paths.worktrees), realPath(folder))
+      )
+        throw new HttpError(404, 'This task has no worktree to open')
+      const { command, args } = editorInvocation((await configStore.get()).editor, realPath(folder))
+      try {
+        await editorRunner(command, args)
+      } catch (error) {
+        if (error instanceof EditorNotFoundError)
+          throw new HttpError(422, error.message, { reason: 'editor_not_found', command: error.command })
+        throw new HttpError(
+          422,
+          `Could not start the editor "${command}": ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+      json(res, 200, { opened: true })
       return
     }
     const publishMatch = /^\/api\/tasks\/([^/]+)\/publish$/.exec(url.pathname)
@@ -6990,6 +7105,14 @@ const UI_TYPES: Record<string, string> = {
 const JOY_SOURCE_ROOT = fileURLToPath(new URL('../../../', import.meta.url))
 
 /** Paths compare after resolving symlinks (macOS temp dirs live under /private/var; git reports the real path). */
+function realPath(path: string): string {
+  try {
+    return realpathSync.native(path)
+  } catch {
+    return resolve(path)
+  }
+}
+
 function samePath(a: string, b: string): boolean {
   const real = (path: string) => {
     try {

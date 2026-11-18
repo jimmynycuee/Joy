@@ -155,6 +155,8 @@ export function eventTitle(event: TaskEvent): string {
   if (event.type === 'started') return '任務開始'
   if (event.type === 'workspace') return '已準備好獨立的工作副本'
   if (event.type === 'publish.done') return '已推送到 PR'
+  if (event.type === 'task.merged')
+    return `已合併到 ${typeof payload?.branch === 'string' ? payload.branch : '預設分支'}`
   if (event.type === 'worktree.removed') {
     if (payload?.pullRequestState === 'merged') return 'PR 已合併，已清除工作副本'
     if (payload?.pullRequestState === 'closed') return 'PR 已關閉，已清除工作副本'
@@ -435,7 +437,8 @@ export function buildTimeline(
       entries.push({ ...base, kind: 'noise', text })
       return
     }
-    if (event.type === 'task.settings' || event.type === 'task.rewound') {
+    // The owner's own decisions stay in view when a finished task folds its process away.
+    if (event.type === 'task.settings' || event.type === 'task.rewound' || event.type === 'task.merged') {
       entries.push({ ...base, kind: 'step', text, owner: true })
       return
     }
