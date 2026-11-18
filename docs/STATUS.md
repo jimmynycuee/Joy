@@ -2,6 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-19（真實 CLI 冒煙測試：review loop 兩種組合都通過；修好 Claude 在連結資料夾下回報絕對路徑；擁有者確認 core 與 policy 已審；分支 `real-cli-smoke`）
 - 最後更新：2026-11-19（介面與 bug 修正：輸入框依自身寬度收合、加入專案讀出 repo 的預設分支與 GitHub origin 並在加入時檢查分支、環境檢查文字改給使用者看、首頁指出選的模型缺哪個 CLI、手機任務頁不重複標題；本檔只留近期驗證結果，較早的移到 `docs/status-history.md`；分支 `ui-fixes`）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
@@ -17,6 +18,8 @@
 更早的「最後更新」紀錄在 `docs/status-history.md`。
 
 ## 擁有者待審
+
+- **2026-11-19 擁有者確認：`packages/core` 介面與 `packages/policy` 的待審項目都沒問題**（下表與各節標「core／policy 待擁有者審」的都算已審）。其他類別仍待審：`packages/secrets` 的 MCP 機密、channel 認證、記憶寫入規則。
 
 2026-11-06 由 agent 代為審查（擁有者授權）。下表為結論；擁有者可只看「發現」欄。
 
@@ -85,6 +88,17 @@
 ## 驗證結果
 
 > 2026-11-15 以前的驗證結果在 `docs/status-history.md`。
+
+### 真實 CLI 冒煙測試（2026-11-19，分支 `real-cli-smoke`）
+
+用本機登入的 Claude Code 2.1.319（`haiku`）與 codex-cli 0.166.0（`gpt-6-luna`、`low`）實跑，花費很少（Claude 一次約 US$0.005）。
+
+- **provider 層**：`JOY_E2E_CLAUDE=1 JOY_E2E_CODEX=1 pnpm vitest run --project providers provider.e2e`。新增 `codex-cli/provider.e2e.test.ts`（app-server 與 exec 兩種模式、不退回 exec、修 bug 後 resume）。
+- **找到並修好**：Claude 回報檔案用**真實路徑**，工作目錄經過連結時（macOS 的 `/var` → `/private/var`），`file_change` 原本顯示絕對路徑。`ClaudeStreamParser.relPath` 改成也用 `cwd` 的真實路徑比對（`parse.test.ts` 新測試，修正前失敗）。
+- **Codex exec 的發現**：`codex exec` 搭 `gpt-6-luna` 會說「已修正」但只跑過 `cat`，不經 Joy 直接執行也一樣；app-server（Joy 預設）會真的修改。exec 只是 app-server 起不來時的退路，測試裡 exec 只驗證接線。
+- **全流程**：另開一個 Joy（暫存 `JOY_HOME`、埠 4420，不碰擁有者的 Joy）從 API 跑 review loop：(1) Claude 實作＋Codex 審查、`auto`：18 秒完成，第 1 輪核准，diff 為 `math.js` +1 −1；(2) Codex 實作＋Claude 審查、`ask`，並要求實作者自己跑 `node -e` 驗證：24 秒完成，第 1 輪核准。
+- **觀察（符合現有設計，沒改）**：`ask` 模式下 Codex 在沙盒內執行 `rg`、`cat`、`node -e` 都沒有問擁有者，因為三種模式都用 `workspace-write`＋`on-request`，只有跨出沙盒才問（`app-server.ts` 的註解）。Claude 審查者在 plan mode 裡，沒辦法執行任務要求的驗證指令，它在審查摘要裡自己說明了這點。
+- **沒跑到**：執行中即時補充（steer）、Claude `--resume` 換模型、Codex 跨出沙盒的核准往返、compete。擁有者的 Claude 5 小時額度當時已用到約 90%，所以先停在這裡。
 
 ### 介面與 bug 修正（2026-11-19，分支 `ui-fixes`）
 

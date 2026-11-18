@@ -1,3 +1,6 @@
+import { mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { AgentEvent } from '@joy/core'
 import { describe, expect, it } from 'vitest'
 import { FIXTURE_WORKDIR, readFixture } from '../../test-support/fixtures.js'
@@ -237,5 +240,37 @@ describe('ClaudeStreamParser edge cases', () => {
       usage: { output_tokens: 3 },
     })
     expect(of(events, 'usage')).toEqual([{ type: 'usage', outputTokens: 3 }])
+  })
+})
+
+describe('file paths', () => {
+  it('reports a path relative to the workspace when the CLI names it through the real path of a linked folder', () => {
+    // On macOS the temp folder /var/... is a link to /private/var/...; Claude Code 2.1.319 reports the real path.
+    const real = realpathSync.native(mkdtempSync(join(tmpdir(), 'joy-parse-real-')))
+    const link = `${real}-link`
+    // A junction needs no special rights on Windows.
+    symlinkSync(real, link, process.platform === 'win32' ? 'junction' : 'dir')
+    try {
+      const parser = new ClaudeStreamParser({ cwd: link })
+      parser.push({ type: 'system', subtype: 'init', session_id: '00000000-0000-0000-0000-000000000001' })
+      parser.push({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', id: 't1', name: 'Edit', input: { file_path: join(real, 'src', 'a.js') } },
+          ],
+        },
+      })
+      const events = parser.push({
+        type: 'user',
+        message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] },
+      })
+      expect(of(events, 'file_change')).toEqual([
+        { type: 'file_change', path: join('src', 'a.js'), kind: 'modify' },
+      ])
+    } finally {
+      rmSync(link, { force: true })
+      rmSync(real, { recursive: true, force: true })
+    }
   })
 })
