@@ -402,7 +402,8 @@ describe('follow-up messages and steering', () => {
     claude.state.work = (_options, n) => (n === 1 ? wait.promise : undefined)
     codex.verdicts.push({ approve: false, findings: [{ severity: 'major', message: 'handle NaN' }] })
     const id = await newTask(call, await newRepo(call), { mode: 'review_loop' })
-    await until(call, id, settled('running'), 'running')
+    // The agent itself must have started, or under load the message joins its first prompt.
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length >= 1, 'running')
     const sent = await call('POST', `/api/tasks/${id}/messages`, {
       text: 'Keep the public API',
       interrupt: false,
@@ -424,7 +425,8 @@ describe('follow-up messages and steering', () => {
     const wait = gate()
     claude.state.work = (_options, n) => (n === 1 ? wait.promise : undefined)
     const id = await newTask(call, await newRepo(call))
-    await until(call, id, settled('running'), 'running')
+    // The agent itself must have started, or under load the message joins its first prompt.
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length >= 1, 'running')
     await call('POST', `/api/tasks/${id}/messages`, { text: 'Add a changelog entry', interrupt: false })
     wait.open()
     await until(call, id, (d) => d.task.status === 'done' && count(d, 'result') === 2, 'auto follow-up')
