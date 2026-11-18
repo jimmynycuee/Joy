@@ -1,5 +1,6 @@
 // Maps Claude Code `--output-format stream-json` lines to AgentEvents.
 // Event shapes: docs/spikes/claude-code.md, fixtures in tests/fixtures/cli-events/claude/.
+import { realpathSync } from 'node:fs'
 import { isAbsolute, relative } from 'node:path'
 import type { AgentEvent, QuotaWindow } from '@joy/core'
 import type { Rec } from '../guards.js'
@@ -263,8 +264,25 @@ export class ClaudeStreamParser {
   private relPath(path: string): string {
     const cwd = this.options.cwd
     if (!cwd || !isAbsolute(path)) return path
-    const rel = relative(cwd, path)
-    return rel.startsWith('..') ? path : rel
+    // Claude Code names files by their real path, which differs from cwd when cwd goes through a link (macOS /var).
+    for (const base of [cwd, this.realCwd()]) {
+      if (!base) continue
+      const rel = relative(base, path)
+      if (rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)) return rel
+    }
+    return path
+  }
+
+  private resolvedCwd: string | null | undefined
+  private realCwd(): string | null {
+    if (this.resolvedCwd === undefined) {
+      try {
+        this.resolvedCwd = this.options.cwd ? realpathSync.native(this.options.cwd) : null
+      } catch {
+        this.resolvedCwd = null
+      }
+    }
+    return this.resolvedCwd
   }
 }
 
