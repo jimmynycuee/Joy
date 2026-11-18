@@ -2,6 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-18（修掉 `thread-api` 兩個排隊訊息測試在 CI 上偶爾失敗：送達紀錄比 provider 下一次呼叫早寫入，測試改成兩者都等到，分支 `fix-thread-api-flaky`）
 - 最後更新：2026-11-18（加入專案對話框：家目錄還在載入時開始編輯路徑（例如全選再貼上），載入結果不再蓋掉輸入框；修掉 CI 上 `t1.8` 偶爾失敗，分支 `folder-dialog-race`）
 - 最後更新：2026-11-17（專案 `.claude/settings.json` 會自己執行的指令（hooks 等）要擁有者同意才啟動 Claude，內容變了再問，migration 27，分支 `project-hooks`）
 - 最後更新：2026-11-17（e2e 的埠改用 `JOY_E2E_WEB_PORT`／`JOY_E2E_API_PORT` 設定，本機跑 e2e 不用再改檔，分支 `e2e-ports`）
@@ -14,6 +15,12 @@
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 
 ## 驗證結果
+
+### 修正偶爾失敗的 `thread-api` 測試（2026-11-18，分支 `fix-thread-api-flaky`）
+
+- **原因**：`messages queued when a limit stops the task` 裡「按 Continue 會送出」與「review loop 也一樣」兩個測試，等到 `user.message.delivered` 就去讀 `claude.calls[1]`；但送達紀錄是在 provider 第二次呼叫之前寫的，負載重時（#156 的 Windows CI）讀到 `undefined`。
+- **修法**：`until` 的條件改成送達與 `claude.calls` 都到齊才往下；斷言沒放寬，伺服器程式沒改。
+- **驗證**：這組 10 個測試連跑 5 次都通過；format（只檢查 git 追蹤的檔案，本機 `graphify-out/` 不在 CI）、lint、typecheck 通過，vitest 1540 passed、4 skipped。這是時序問題，沒有在本機重現失敗。
 
 ### 安全缺口：settings.local.json、唯讀 http MCP、同一個 JOY_HOME（2026-11-17，分支 `security-gaps`）
 
