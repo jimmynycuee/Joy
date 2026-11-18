@@ -53,6 +53,8 @@ export interface NewTaskInput {
 
 const ROLE_KEYS: Array<Extract<Role, 'implementer' | 'reviewer'>> = ['implementer', 'reviewer']
 
+const CLI_NAMES: Record<string, string> = { 'claude-cli': 'Claude Code', 'codex-cli': 'Codex' }
+
 /** The home page: Joy and one big message box (and a few ways to start before the first task). */
 export function NewTaskPage({
   repos,
@@ -60,6 +62,7 @@ export function NewTaskPage({
   config,
   customWorkflows,
   setupProblems,
+  missingClis = [],
   onOpenSetup,
   onAddRepo,
   onCreate,
@@ -70,6 +73,8 @@ export function NewTaskPage({
   config: JoyConfig | null
   customWorkflows: Array<{ name: string; description?: string }>
   setupProblems: number
+  /** Providers whose CLI the environment check could not find. */
+  missingClis?: string[]
   onOpenSetup: () => void
   onAddRepo: () => void
   onCreate: (input: NewTaskInput) => Promise<boolean>
@@ -118,6 +123,13 @@ export function NewTaskPage({
     const resolved = resolveModels(effective.models, defaults)
     return { implementer: resolved.implementer.ref, reviewer: resolved.reviewer.ref }
   }, [effective, defaults])
+  // The picked models need these CLIs; say so before the task starts, not when it fails.
+  const blockedClis = [
+    models.implementer.provider,
+    ...(mode === 'review_loop' || mode === 'compete' ? [models.reviewer.provider] : []),
+  ]
+    .filter((provider, index, all) => all.indexOf(provider) === index && missingClis.includes(provider))
+    .map((provider) => CLI_NAMES[provider] ?? provider)
   const planFirstOn = choice.planFirst && !planFirstDisabledReason(mode)
   const starters = visibleStarters(hasAnyTask, activeRepo?.githubRemote)
 
@@ -161,7 +173,12 @@ export function NewTaskPage({
   return (
     <main className="home-page">
       <div className="home-column">
-        {setupProblems > 0 ? (
+        {blockedClis.length > 0 && repos.length > 0 ? (
+          <button type="button" className="setup-banner" onClick={onOpenSetup}>
+            <Icon name="alert" size={14} />
+            找不到 {blockedClis.join('、')} CLI，選這個模型的任務無法執行
+          </button>
+        ) : setupProblems > 0 ? (
           <button type="button" className="setup-banner" onClick={onOpenSetup}>
             <Icon name="alert" size={14} />有 {setupProblems} 項環境設定需要處理
           </button>

@@ -242,3 +242,20 @@ test('the approval card offers "allow for this task" only when Joy can remember 
     .poll(() => calls.map((call) => `${call.method} ${call.path}`))
     .toContain('DELETE /api/tasks/diff-task/allows/allow-1')
 })
+
+test('beside the open diff on a 1024px window, the message box toolbar stays inside the box', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 768 })
+  await mockApi(page, { task: taskOf('done'), events: [event('result', { status: 'succeeded', diff })] }, [])
+  await page.goto('/?task=diff-task')
+  await expect(page.getByTestId('diff-patch')).toBeVisible()
+  const bar = page.locator('.composer-chat .composer-bar')
+  await expect(bar).toBeVisible()
+  const fits = await bar.evaluate((element) => element.scrollWidth <= element.clientWidth)
+  expect(fits).toBe(true)
+  // The send button and the model entry do not overlap.
+  const model = await page.getByRole('button', { name: /^模型：/ }).boundingBox()
+  const send = await page.locator('.composer-chat .send-btn').boundingBox()
+  expect(model && send && model.x + model.width <= send.x + 1).toBe(true)
+})

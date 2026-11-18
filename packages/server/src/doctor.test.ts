@@ -169,7 +169,9 @@ describe('runDoctor', () => {
     // 2.1.317 is the version the Claude fixtures were recorded with; 0.104.0 is outside Codex's tested range.
     expect(checks.get('claude-cli')).toMatchObject({ status: 'ok', version: '2.1.317' })
     expect(checks.get('codex-cli')).toMatchObject({ status: 'untested', version: '0.104.0' })
-    expect(checks.get('codex-cli')?.repair).toContain('node scripts/record-fixtures.mjs codex')
+    // The owner is told which version to install, not how to re-record Joy's fixtures.
+    expect(checks.get('codex-cli')?.repair).toContain('測試過的版本 0.166.0')
+    expect(checks.get('codex-cli')?.repair).not.toContain('record-fixtures')
     expect(checks.get('keychain')).toMatchObject({ status: 'ok' })
     expect(checks.get('data-directory')).toMatchObject({ status: 'ok' })
     expect(JSON.stringify(report)).not.toContain('private-account')

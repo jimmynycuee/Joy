@@ -493,7 +493,15 @@ describe('project files for @', () => {
   it('lists the project’s files git knows about, fuzzy-matched, without ignored ones', async () => {
     const { call, addRepo, newTask } = await setup()
     const project = temp('joy-plugins-files-')
-    execFileSync('git', ['init', '-q'], { cwd: project })
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: project })
+    // Joy only adds a repository whose default branch has a commit.
+    execFileSync(
+      'git',
+      ['-c', 'user.name=t', '-c', 'user.email=t@t.test', 'commit', '-q', '--allow-empty', '-m', 'first'],
+      {
+        cwd: project,
+      },
+    )
     write(join(project, '.gitignore'), 'dist/\n')
     write(join(project, 'src', 'auth', 'login.ts'), 'x')
     write(join(project, 'src', 'logout.ts'), 'x')

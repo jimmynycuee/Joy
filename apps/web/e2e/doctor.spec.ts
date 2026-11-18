@@ -92,3 +92,21 @@ test('settings show setup status and actionable repair guidance', async ({ page 
   await page.getByRole('button', { name: '重新檢查環境' }).click()
   await expect.poll(() => requests).toBe(2)
 })
+
+test('the home page names a missing CLI that the picked model needs, instead of a count', async ({
+  page,
+}) => {
+  await page.route('**/api/doctor', (route) => route.fulfill({ json: { doctor } }))
+  await page.route('**/api/repos', (route) =>
+    route.request().method() === 'GET'
+      ? route.fulfill({ json: { repos: [{ id: 'r', path: '/work/app', defaultBranch: 'main' }] } })
+      : route.fallback(),
+  )
+  await page.goto('/')
+  // The default implementer is a Claude model.
+  await expect(page.getByRole('button', { name: /^模型：Opus/ })).toBeVisible()
+  const banner = page.getByRole('button', { name: /找不到 Claude Code CLI/ })
+  await expect(banner).toBeVisible()
+  await banner.click()
+  await expect(page.getByTestId('doctor-checks')).toBeVisible()
+})

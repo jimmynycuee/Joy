@@ -1037,6 +1037,8 @@ svg {
 /* The one composer. */
 .composer {
   position: relative;
+  /* The composer sits beside the diff panel too, so it folds by its own width, not the window's. */
+  container: composer / inline-size;
   width: 100%;
   padding: 14px 14px 10px;
   border: 1px solid var(--border-strong);
@@ -3216,6 +3218,19 @@ summary.checks-head {
   }
   .hide-narrow {
     display: none;
+  }
+}
+@container composer (max-width: 460px) {
+  .composer-trigger {
+    padding: 0 8px;
+  }
+  .hide-narrow {
+    display: none;
+  }
+  /* The model name gives way last, with an ellipsis, instead of running under the send button. */
+  .composer-model {
+    flex: 0 1 auto;
+    min-width: 0;
   }
 }
 

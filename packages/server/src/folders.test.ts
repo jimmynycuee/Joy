@@ -3,7 +3,15 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { FolderError, MAX_FOLDERS, initGitRepository, isNetworkPath, listFolders } from './folders.js'
+import {
+  branchExists,
+  describeRepository,
+  FolderError,
+  MAX_FOLDERS,
+  initGitRepository,
+  isNetworkPath,
+  listFolders,
+} from './folders.js'
 
 let root: string
 let home: string
@@ -324,5 +332,55 @@ describe('initGitRepository', () => {
     // A folder next to the home folder is just a folder.
     mkdirSync(join(root, 'other-project'))
     expect((await initGitRepository(join(root, 'other-project'), options)).defaultBranch).toBe('main')
+  })
+})
+
+describe('describeRepository', () => {
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t.test', ...args], {
+      cwd,
+      encoding: 'utf8',
+    }).trim()
+  const repo = (name: string, branch: string) => {
+    const folder = dir(name)
+    git(folder, 'init', '-q', '-b', branch)
+    git(folder, 'commit', '-q', '--allow-empty', '-m', 'first')
+    return folder
+  }
+
+  it('reads the checked-out branch of a repository without a remote', async () => {
+    const folder = repo('old', 'master')
+    expect(await describeRepository(folder, options)).toEqual({
+      path: folder,
+      defaultBranch: 'master',
+      githubRemote: null,
+    })
+  })
+
+  it("prefers the remote's default branch, and reads a GitHub origin without its credentials", async () => {
+    const folder = repo('cloned', 'main')
+    git(folder, 'checkout', '-q', '-b', 'feature')
+    git(folder, 'remote', 'add', 'origin', 'git@github.com:acme/widgets.git')
+    git(folder, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+    git(folder, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
+    expect(await describeRepository(folder, options)).toMatchObject({
+      defaultBranch: 'main',
+      githubRemote: 'https://github.com/acme/widgets',
+    })
+    git(folder, 'remote', 'set-url', 'origin', 'https://gitlab.com/acme/widgets.git')
+    expect((await describeRepository(folder, options)).githubRemote).toBeNull()
+    git(folder, 'remote', 'set-url', 'origin', 'https://user:secret@github.com/acme/widgets.git')
+    expect((await describeRepository(folder, options)).githubRemote).toBeNull()
+  })
+
+  it('refuses a folder that is not a repository', async () => {
+    expect((await failure(describeRepository(dir('plain'), options))).status).toBe(409)
+  })
+
+  it('tells whether a branch exists', async () => {
+    const folder = repo('branches', 'trunk')
+    expect(await branchExists(folder, 'trunk')).toBe(true)
+    expect(await branchExists(folder, 'main')).toBe(false)
+    expect(await branchExists(folder, '--help')).toBe(false)
   })
 })

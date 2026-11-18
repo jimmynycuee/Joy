@@ -50,6 +50,7 @@ Re-record CLI fixtures (uses the logged-in account's quota, macOS/Linux/WSL only
 
 ```
 docs/STATUS.md       current state, blockers, next step, decisions (read first, update last)
+docs/status-history.md older verification results moved out of STATUS.md (read only when needed)
 docs/PLAN.md         plan, tickets, acceptance criteria
 docs/spikes/         what the Claude Code and Codex CLIs actually do; read before touching providers
 packages/core        domain types and interfaces. No I/O, no dependencies on other packages
