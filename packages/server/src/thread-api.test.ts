@@ -1602,7 +1602,13 @@ describe('messages queued when a limit stops the task', () => {
   it('sends them when the owner presses Continue (resume)', async () => {
     const { call, claude, id, ids } = await stoppedWithQueuedMessages()
     expect((await call('POST', `/api/tasks/${id}/resume`)).status).toBe(202)
-    const after = await until(call, id, (d) => deliveredIds(d).length === 2, 'delivered')
+    // Delivery is recorded before the provider's next run starts: wait for both.
+    const after = await until(
+      call,
+      id,
+      (d) => deliveredIds(d).length === 2 && claude.calls.length === 2,
+      'delivered',
+    )
     expect(claude.calls).toHaveLength(2)
     expect(claude.calls[1]?.prompt).toContain('first thought')
     expect(claude.calls[1]?.prompt).toContain('second thought')
@@ -1617,7 +1623,12 @@ describe('messages queued when a limit stops the task', () => {
     expect(claude.calls).toHaveLength(1)
     expect((await details(call, id)).queuedMessages).toHaveLength(2)
     expect((await call('POST', `/api/tasks/${id}/resume`)).status).toBe(202)
-    const after = await until(call, id, (d) => deliveredIds(d).length === 2, 'delivered')
+    const after = await until(
+      call,
+      id,
+      (d) => deliveredIds(d).length === 2 && claude.calls.length >= 2,
+      'delivered',
+    )
     expect(deliveredIds(after)).toEqual(ids)
     expect(claude.calls[1]?.prompt).toContain('first thought')
   })
