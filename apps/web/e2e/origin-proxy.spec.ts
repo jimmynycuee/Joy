@@ -2,11 +2,14 @@ import { randomBytes } from 'node:crypto'
 import { request as nodeRequest } from 'node:http'
 import { expect, test } from '@playwright/test'
 import { E2E_API_TOKEN } from './fakes.js'
-import { E2E_WEB_ORIGIN, E2E_WEB_PORT } from './ports.js'
+import { E2E_API_PORT, E2E_WEB_ORIGIN, E2E_WEB_PORT } from './ports.js'
 
 const devOrigin = E2E_WEB_ORIGIN
-// Any other port, but never 5173, which the API always trusts.
-const crossPortOrigin = `http://127.0.0.1:${E2E_WEB_PORT + (E2E_WEB_PORT + 1 === 5173 ? 2 : 1)}`
+// Any other port, but never 5173 or the API's own port, which the API always trusts.
+const crossPort = [1, 2, 3]
+  .map((step) => E2E_WEB_PORT + step)
+  .find((port) => port !== 5173 && port !== E2E_API_PORT)
+const crossPortOrigin = `http://127.0.0.1:${crossPort}`
 
 function websocketHandshake(
   taskId: string,

@@ -154,6 +154,39 @@ describe('POST /api/fs/git-init', () => {
   })
 })
 
+describe('adding a git repository', () => {
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t.test', ...args], {
+      cwd,
+      encoding: 'utf8',
+    })
+
+  it('reads its branch and GitHub origin, and refuses a branch it does not have', async () => {
+    const { call, browseHome } = await setup()
+    const folder = join(browseHome, 'old-project')
+    mkdirSync(folder)
+    git(folder, 'init', '-q', '-b', 'master')
+    git(folder, 'commit', '-q', '--allow-empty', '-m', 'first')
+    git(folder, 'remote', 'add', 'origin', 'https://github.com/acme/old.git')
+
+    const info = await call('GET', `/api/fs/repository?path=${encodeURIComponent(folder)}`)
+    expect(info.body).toEqual({
+      path: folder,
+      defaultBranch: 'master',
+      githubRemote: 'https://github.com/acme/old',
+    })
+    const wrong = await call('POST', '/api/repos', { path: folder, defaultBranch: 'main' })
+    expect(wrong.status).toBe(422)
+    expect(String(wrong.body.error)).toContain('main')
+    const added = await call('POST', '/api/repos', { path: folder, defaultBranch: 'master' })
+    expect(added.status).toBe(201)
+    expect((added.body as unknown as { repo: unknown }).repo).toMatchObject({
+      defaultBranch: 'master',
+      githubRemote: 'https://github.com/acme/old',
+    })
+  })
+})
+
 function seed(db: Database) {
   createRepo(db, { id: 'r1' as RepoId, path: '/repo', defaultBranch: 'main' })
   for (const id of ['t1', 't2']) {

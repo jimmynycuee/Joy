@@ -1,4 +1,4 @@
-import { checkCliVersion, parseCliVersion } from '@joy/providers'
+import { checkCliVersion, parseCliVersion, TESTED_CLI_VERSIONS } from '@joy/providers'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import type { ChildProcess, SpawnOptions } from 'node:child_process'
@@ -216,8 +216,9 @@ async function checkOptionalCli(
       label: `${label} CLI`,
       status: 'untested',
       version: check.version,
-      summary: `${label} CLI ${check.version} 尚未和 Joy 一起測試過，輸出格式可能已經改變。`,
-      repair: `安裝測試過的版本；或用 \`${recordCommand(label)}\` 重新錄製 contract fixture、執行 \`pnpm test\`，並更新 TESTED_CLI_VERSIONS。`,
+      summary: `${label} CLI ${check.version} 尚未和 Joy 一起測試過，通常仍可使用。`,
+      // For the owner: what to do if it breaks. Re-recording fixtures is Joy development work (docs/cli-versions.md).
+      repair: `任務若出現無法解讀的輸出，請改裝 Joy 測試過的版本 ${testedSpan(label)}。`,
     }
   return {
     id,
@@ -284,7 +285,7 @@ async function checkKeychain(
       id: 'keychain',
       label: '系統鑰匙圈',
       status: 'ok',
-      summary: '系統鑰匙圈回應了一次不存在帳號的可用性查詢。',
+      summary: 'Joy 可以使用系統鑰匙圈保存機密。',
       repair: NO_ACTION_NEEDED,
     }
   } catch {
@@ -343,8 +344,9 @@ async function checkDataDirectory(home: string): Promise<DoctorCheck> {
       }
 }
 
-function recordCommand(label: 'Claude Code' | 'Codex'): string {
-  return `node scripts/record-fixtures.mjs ${label === 'Claude Code' ? 'claude' : 'codex'}`
+function testedSpan(label: 'Claude Code' | 'Codex'): string {
+  const range = TESTED_CLI_VERSIONS[label === 'Claude Code' ? 'claude' : 'codex']
+  return range.from === range.through ? range.from : `${range.from}–${range.through}`
 }
 
 async function safeRunCommand(

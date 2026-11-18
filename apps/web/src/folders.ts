@@ -29,6 +29,23 @@ export function folderErrorText(cause: unknown): string {
   return '連不到 Joy server'
 }
 
+/** What `GET /api/fs/repository` answers for a git repository. */
+export interface RepositoryInfo {
+  path: string
+  defaultBranch: string | null
+  githubRemote: string | null
+}
+
+export function repositoryUrl(path: string): string {
+  return `/api/fs/repository?path=${encodeURIComponent(path)}`
+}
+
+/** One line for a project that could not be added, when the reason is one the owner can fix here. */
+export function addProjectErrorText(cause: unknown, branch: string): string | undefined {
+  if (cause instanceof ApiError && cause.status === 422) return `這個專案沒有「${branch}」分支`
+  return undefined
+}
+
 /** One line for a failed `git init`. */
 export function gitInitErrorText(cause: unknown): string {
   if (cause instanceof ApiError) {
