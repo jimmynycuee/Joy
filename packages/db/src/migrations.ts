@@ -592,6 +592,17 @@ export const MIGRATIONS: readonly Migration[] = [
           AND trusted_claude_settings NOT GLOB '*[^0-9a-f]*'));
     `,
   },
+  {
+    version: 28,
+    name: 'conversation attachments',
+    sql: /* sql */ `
+      -- A file can also come with a message to the assistant. Then conversation_id is set and message_id is the
+      -- messages row id (as text). A file belongs to a task or a conversation, never both.
+      ALTER TABLE attachments ADD COLUMN conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE
+        CHECK (conversation_id IS NULL OR task_id IS NULL);
+      CREATE INDEX attachments_conversation ON attachments (conversation_id);
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

@@ -6,9 +6,12 @@ import {
   disableAttachment,
   getAttachment,
   linkAttachments,
+  linkConversationAttachments,
   listAttachmentIds,
+  listConversationAttachments,
   listTaskAttachments,
 } from './attachments.js'
+import { appendMessage, createConversation } from './conversations.js'
 import { openDatabase } from './database.js'
 import type { Database } from './database.js'
 import { createRepo, createTask } from './repositories.js'
@@ -94,5 +97,26 @@ describe('attachments', () => {
     linkAttachments(db, [A], task)
     db.prepare('DELETE FROM tasks WHERE id = ?').run(task)
     expect(getAttachment(db, A)).toBeUndefined()
+  })
+
+  it('links uploads to one message of a conversation, never to a task as well', () => {
+    const task = seed()
+    createConversation(db, { id: 'c1', channel: 'web' })
+    const message = appendMessage(db, 'c1', 'user', 'look')
+    createAttachment(db, { id: A, name: 'a.png', mediaType: 'image/png', size: 1 })
+    createAttachment(db, { id: B, name: 'b.txt', mediaType: 'text/plain', size: 1 })
+    expect(linkConversationAttachments(db, [A, B], 'c1', message.id)).toBe(true)
+    expect(listConversationAttachments(db, 'c1').map((a) => [a.id, a.conversationId, a.messageId])).toEqual([
+      [A, 'c1', String(message.id)],
+      [B, 'c1', String(message.id)],
+    ])
+    // Used by the conversation: not free for a task, a second message, or cleanup.
+    expect(linkAttachments(db, [A], task)).toBe(false)
+    expect(linkConversationAttachments(db, [A], 'c1', message.id)).toBe(false)
+    expect(deleteUnusedAttachments(db, '2999-01-01T00:00:00.000Z')).toEqual([])
+    expect(disableAttachment(db, A)).toBe(true)
+    expect(() => db.prepare('UPDATE attachments SET task_id = ? WHERE id = ?').run(task, B)).toThrow()
+    db.prepare('DELETE FROM conversations WHERE id = ?').run('c1')
+    expect(getAttachment(db, B)).toBeUndefined()
   })
 })

@@ -158,7 +158,9 @@ export {
   disableAttachment,
   getAttachment,
   linkAttachments,
+  linkConversationAttachments,
   listAttachmentIds,
+  listConversationAttachments,
   listTaskAttachments,
 } from './attachments.js'
 export type { AttachmentMediaType, AttachmentRecord } from './attachments.js'

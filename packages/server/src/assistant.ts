@@ -1,6 +1,6 @@
 // The assistant (T3.1): one conversation loop for any brain. Tools are defined once here and reach an OpenAI API
 // brain as function calls and a CLI brain (Claude Code, Codex) through the assistant MCP bridge.
-import type { AgentEvent, AgentProvider, ModelRef, RunOptions } from '@joy/core'
+import type { AgentEvent, AgentProvider, ImageInput, ModelRef, RunOptions } from '@joy/core'
 import type { ApiTool } from '@joy/providers'
 import type { AssistantToolSpec } from '@joy/tools'
 
@@ -13,6 +13,8 @@ export interface AssistantTurnInput {
   /** The provider for a CLI brain; the API brain is built per turn with the tools (see `apiProviderFor`). */
   provider: AgentProvider
   userText: string
+  /** Images the owner attached to this message (text files are already quoted in `userText`). */
+  images?: ImageInput[]
   /** Extra instructions for a new session (e.g. what Joy remembers about the owner). */
   context?: string
   /** Earlier messages, used only when the stored session cannot be resumed (first turn or a different brain). */
@@ -67,6 +69,7 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     autonomy: 'read-only',
     signal: input.signal,
     ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
+    ...(input.images?.length ? { images: input.images } : {}),
     ...(input.mcpServer ? { mcpServers: [input.mcpServer] } : {}),
   }
   for await (const event of input.provider.run(options, input.brain)) {

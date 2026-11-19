@@ -95,6 +95,8 @@ import {
   listRepos,
   listReviews,
   linkAttachments,
+  linkConversationAttachments,
+  listConversationAttachments,
   listTaskAttachments,
   listTaskEvents,
   listTaskEventsOfTypes,
@@ -547,6 +549,7 @@ const rewindSchema = z.strictObject({
 const conversationMessageSchema = z.strictObject({
   text: z.string().trim().min(1).max(20_000),
   interrupt: z.boolean().optional(),
+  attachments: z.array(z.string().max(64)).max(MAX_ATTACHMENTS_PER_MESSAGE).optional(),
 })
 const projectNoteStatusSchema = z.enum(['pending', 'applied', 'rejected', 'conflict']).optional()
 const statsDay = z
@@ -2779,7 +2782,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
     if (conversationMatch && method === 'GET') {
       const conversation = getConversation(db, decodePathSegment(conversationMatch[1] ?? ''))
       if (!conversation) throw new HttpError(404, 'Conversation not found')
-      json(res, 200, { conversation, messages: listMessages(db, conversation.id) })
+      json(res, 200, { conversation, messages: messagesWithAttachments(conversation.id) })
       return
     }
     if (conversationMatch && method === 'PATCH') {
@@ -2793,8 +2796,8 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
     const messageMatch = /^\/api\/conversations\/([^/]+)\/messages$/.exec(url.pathname)
     if (messageMatch && method === 'POST') {
       assertJsonContentType(req)
-      const { text } = conversationMessageSchema.parse(await readJson(req))
-      const result = await assistantReply(decodePathSegment(messageMatch[1] ?? ''), text)
+      const { text, attachments } = conversationMessageSchema.parse(await readJson(req))
+      const result = await assistantReply(decodePathSegment(messageMatch[1] ?? ''), text, attachments ?? [])
       json(res, 200, result)
       return
     }
@@ -6421,24 +6424,54 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
     }
   }
 
+  /** A conversation's messages, each owner message with the files sent along with it. */
+  function messagesWithAttachments(conversationId: string) {
+    const byMessage = new Map<string, Array<ReturnType<typeof attachmentInfo> & { disabled: boolean }>>()
+    for (const record of listConversationAttachments(db, conversationId)) {
+      if (!record.messageId) continue
+      const list = byMessage.get(record.messageId) ?? []
+      list.push({ ...attachmentInfo(record), disabled: record.disabled })
+      byMessage.set(record.messageId, list)
+    }
+    return listMessages(db, conversationId).map((message) => {
+      const files = byMessage.get(String(message.id))
+      return files ? { ...message, attachments: files } : message
+    })
+  }
+
   /** One assistant turn: store the owner's message, ask the configured brain, store and return its reply. */
-  async function assistantReply(conversationId: string, text: string) {
+  async function assistantReply(conversationId: string, text: string, attachmentIds: readonly string[] = []) {
     const conversation = getConversation(db, conversationId)
     if (!conversation) throw new HttpError(404, 'Conversation not found')
     if (busyConversations.has(conversationId))
       throw new HttpError(409, 'The assistant is still answering the previous message')
+    const files = attachmentStore.checkUnused(attachmentIds, { conversationId })
     busyConversations.add(conversationId)
     let closeBridge = () => {}
     try {
       const config = await configStore.get()
       const brain = resolveRole('assistant_brain', config.roles as RoleConfig, {})
-      const history = listMessages(db, conversationId)
+      // A brain that cannot resume gets earlier files by name only; it saw them in its own session, if at all.
+      const history = messagesWithAttachments(conversationId)
         .filter(
           (message): message is typeof message & { role: 'user' | 'assistant' } =>
             message.role === 'user' || message.role === 'assistant',
         )
-        .map(({ role, content }) => ({ role, content }))
-      appendMessage(db, conversationId, 'user', redactor.redact(text))
+        .map((message) => ({
+          role: message.role,
+          content:
+            'attachments' in message && message.attachments.length
+              ? `${message.content}\n[attached: ${message.attachments.map((file) => JSON.stringify(file.name)).join(', ')}]`
+              : message.content,
+        }))
+      const ownerMessage = appendMessage(db, conversationId, 'user', redactor.redact(text))
+      if (files.length && !linkConversationAttachments(db, attachmentIds, conversationId, ownerMessage.id))
+        throw new HttpError(409, 'An attached file was already sent; attach it again')
+      // Text files are quoted into the message and images go with it; the owner's own words stay what is stored,
+      // remembered and summarised.
+      const attached = files.length
+        ? await attachmentStore.resolve(attachmentStore.withMarkers(text, attachmentIds), { conversationId })
+        : undefined
       const tools = [...assistantTools(conversationId), ...(await externalAssistantTools(conversationId))]
       const canResume =
         conversation.sessionId &&
@@ -6491,7 +6524,8 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         result = await runAssistantTurn({
           brain,
           provider,
-          userText: text,
+          userText: attached?.text ?? text,
+          ...(attached?.images.length ? { images: attached.images } : {}),
           history,
           cwd,
           ...(remembered.length ? { context: memoryContext(remembered) } : {}),

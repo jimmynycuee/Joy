@@ -26,13 +26,14 @@ interface Calls {
   deletes: string[]
   taskBodies: Array<Record<string, unknown>>
   messageBodies: Array<Record<string, unknown>>
+  chatBodies: Array<Record<string, unknown>>
 }
 
 async function mockApi(
   page: Page,
   options: { failNames?: string[]; details?: Record<string, unknown>; uploadDelayMs?: number } = {},
 ): Promise<Calls> {
-  const calls: Calls = { uploads: [], deletes: [], taskBodies: [], messageBodies: [] }
+  const calls: Calls = { uploads: [], deletes: [], taskBodies: [], messageBodies: [], chatBodies: [] }
   let next = 0
   const task = taskOf('done')
   // Live updates are not needed here; answering the socket in the page keeps the dev server's proxy idle.
@@ -71,6 +72,34 @@ async function mockApi(
     } else if (path === `/api/tasks/${task.id}/messages` && method === 'POST') {
       calls.messageBodies.push(request.postDataJSON() as Record<string, unknown>)
       await route.fulfill({ status: 202, json: { task, message: { id: 'm9', delivery: 'follow_up' } } })
+    } else if (path === '/api/conversations' && method === 'POST') {
+      await route.fulfill({
+        status: 201,
+        json: { conversation: { id: 'c1', createdAt: new Date().toISOString() } },
+      })
+    } else if (path === '/api/conversations/c1/messages' && method === 'POST') {
+      calls.chatBodies.push(request.postDataJSON() as Record<string, unknown>)
+      await route.fulfill({ json: { message: { id: 2, role: 'assistant', content: 'A screenshot.' } } })
+    } else if (path === '/api/conversations/c1') {
+      const sent = calls.chatBodies[0]
+      await route.fulfill({
+        json: {
+          conversation: { id: 'c1' },
+          messages: sent
+            ? [
+                {
+                  id: 1,
+                  role: 'user',
+                  content: sent.text,
+                  attachments: [
+                    { id: 'att-1', name: 'shot.png', mediaType: 'image/png', size: 4, disabled: false },
+                  ],
+                },
+                { id: 2, role: 'assistant', content: 'A screenshot.' },
+              ]
+            : [],
+        },
+      })
     } else if (path === '/api/repos') {
       await route.fulfill({ json: { repos: [repo] } })
     } else if (path === '/api/tasks') {
@@ -281,4 +310,23 @@ test('a sent file can be removed from its message and then shows as removed', as
   await expect.poll(() => calls.deletes).toEqual(['first-shot'])
   await expect(files.getByTestId('removed-attachment')).toContainText('broken.png')
   await expect(files.getByRole('button', { name: '放大 broken.png' })).toHaveCount(0)
+})
+
+test('sends files with a message to the assistant, and shows them on the sent message', async ({ page }) => {
+  const calls = await mockApi(page)
+  await page.goto('/')
+  await page.getByRole('button', { name: '聊聊', exact: true }).click()
+  await page
+    .getByTestId('attachment-input')
+    .setInputFiles([{ name: 'shot.png', mimeType: 'image/png', buffer: PNG }])
+  await expect(page.getByTestId('attachment-tray').locator('li')).toHaveCount(1)
+  await page.getByLabel('訊息').fill('What is this?')
+  await page.getByRole('button', { name: '送出' }).click()
+
+  await expect.poll(() => calls.chatBodies).toEqual([{ text: 'What is this?', attachments: ['att-1'] }])
+  await expect(page.getByText('A screenshot.')).toBeVisible()
+  await expect(page.getByTestId('message-attachments').getByRole('img')).toHaveCount(1)
+  // The box is empty again, and the file is not discarded: it belongs to the message now.
+  await expect(page.getByTestId('attachment-tray').locator('li')).toHaveCount(0)
+  expect(calls.deletes).toEqual([])
 })
