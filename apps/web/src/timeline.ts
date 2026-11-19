@@ -196,6 +196,7 @@ export function eventTitle(event: TaskEvent): string {
   if (event.type === 'plan.rejected')
     return typeof payload?.note === 'string' ? `你取消了計畫：${payload.note}` : '你取消了計畫'
   if (event.type === 'checks') return payload?.ok === true ? '專案檢查通過' : '專案檢查失敗'
+  if (event.type === 'result.warning') return 'agent 說改了檔案，但沒有任何變更'
   if (event.type === 'checks.skipped')
     return `略過專案檢查${typeof payload?.reason === 'string' ? `：${payload.reason}` : ''}`
   if (event.type === 'checkpoint.created')
@@ -259,6 +260,7 @@ const STEP_TONES: Record<string, string> = {
   'plan.rejected': 'bad',
   'checkpoint.restored': 'ok',
   'checks.skipped': 'muted',
+  'result.warning': 'muted',
   'run.interrupted': 'muted',
   'attachment.missing': 'bad',
   'checkpoint.restore_failed': 'bad',

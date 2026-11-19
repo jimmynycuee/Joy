@@ -3,6 +3,7 @@ import { isAbsolute, relative, win32 } from 'node:path'
 import type { RateLimitSnapshot, RateLimitWindow } from './app-server-protocol.js'
 import type { Rec } from '../guards.js'
 import { arr, isRecord, num, opt, rec, str } from '../guards.js'
+import { ConfigWarningFilter } from './config-warning.js'
 
 export interface AppServerParserOptions {
   cwd: string
@@ -19,6 +20,7 @@ export class CodexAppServerParser {
   private readonly announcedTools = new Set<string>()
   private readonly commandOutput = new Map<string, string>()
   private readonly rateLimits = new Map<string, RateLimitSnapshot>()
+  private readonly configWarnings = new ConfigWarningFilter()
   private ordinaryUsageAllowed: boolean | undefined
 
   constructor(private readonly options: AppServerParserOptions) {}
@@ -86,6 +88,13 @@ export class CodexAppServerParser {
       }
       case 'turn/completed':
         return this.turnCompleted(p)
+      case 'configWarning':
+      case 'warning':
+      case 'error': {
+        const message = str(p?.summary) ?? str(p?.message) ?? str(rec(p?.error)?.message)
+        const notice = message ? this.configWarnings.take(message) : undefined
+        return notice ?? [{ type: 'raw', source: 'codex-cli', payload: { method, params } }]
+      }
       default:
         return [{ type: 'raw', source: 'codex-cli', payload: { method, params } }]
     }

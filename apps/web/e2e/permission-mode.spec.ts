@@ -103,6 +103,7 @@ test('the permission menu sits next to the model menu, starts at 自動 and send
   await expect(items).toHaveCount(3)
   await expect(items.nth(0)).toContainText('要求核准')
   await expect(items.nth(0)).toContainText('白名單以外都先問')
+  await expect(items.nth(0)).toContainText('Codex 在沙盒')
   await expect(items.nth(1)).toContainText('只在碰到工作副本以外時才問')
   await expect(items.nth(1)).toHaveAttribute('aria-checked', 'true')
   await expect(items.nth(2)).toContainText('幾乎不問，只擋密鑰與 Joy 設定')

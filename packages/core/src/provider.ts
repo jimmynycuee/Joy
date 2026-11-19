@@ -124,6 +124,12 @@ export interface RunOptions {
    */
   approvalTool?: string
   autonomy: Autonomy
+  /**
+   * The prompt already holds everything the agent needs (the compete judge gets the task and the diffs): a backend
+   * may leave out its own tools and the project/user instructions and skills it would load, which cost tokens on every
+   * run. Backends that cannot do this ignore it.
+   */
+  promptOnly?: boolean
   /** Final answer must match this JSON Schema (used for structured review findings). */
   outputSchema?: object
   signal: AbortSignal

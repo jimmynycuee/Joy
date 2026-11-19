@@ -371,6 +371,15 @@ describe('buildTimeline: thread messages, plans, checks and checkpoints', () => 
     expect(buildTimeline([e('checks', { ok: true, command: [1, 2] })])[0]).not.toHaveProperty('command')
   })
 
+  it('shows a claimed-but-empty change as one muted line', () => {
+    const entries = buildTimeline([e('result.warning', { reason: 'empty_diff_claimed_changes' })])
+    expect(entries[0]).toMatchObject({
+      kind: 'step',
+      tone: 'muted',
+      text: 'agent 說改了檔案，但沒有任何變更',
+    })
+  })
+
   it('keeps checkpoint creation quiet and shows a restore as a step', () => {
     const entries = buildTimeline([
       e('checkpoint.created', { n: 2, label: 'implementer turn' }),
