@@ -10,7 +10,7 @@ import type {
 } from '@joy/core'
 import { effortCompatibilityError } from '@joy/model-effort'
 import { probeVersion } from '../cli-run.js'
-import { rec, str } from '../guards.js'
+import { arr, rec, str } from '../guards.js'
 import type { McpServerConfig } from '@joy/core'
 import { CodexAppServerClient, type CodexApprovalHandler } from './app-server-client.js'
 import type {
@@ -71,7 +71,7 @@ export class CodexAppServerProvider implements AgentProvider {
 
     const client = new CodexAppServerClient({
       command: this.command,
-      args: [...this.argsPrefix, 'app-server'],
+      args: [...this.argsPrefix, 'app-server', ...OWNER_EXTRAS_OFF],
       cwd: opts.cwd,
       signal: opts.signal,
       timeoutMs: this.timeoutMs,
@@ -92,12 +92,15 @@ export class CodexAppServerProvider implements AgentProvider {
       await client.request('initialize', initialize)
       client.notify('initialized')
 
-      const config = mcpConfig(opts.mcpServers)
+      const config = isolatedConfig(await ownerMcpServers(client, opts.cwd), opts.mcpServers)
       const common: ThreadStartParams = {
         model: model.model,
         cwd: opts.cwd,
         approvalPolicy: approvalPolicy(opts.autonomy),
         sandbox: sandboxMode(opts.autonomy),
+        // Measured with codex-cli 0.166.0: `approvals_reviewer = "guardian_subagent"` in the owner's config.toml made
+        // Codex approve a network escalation itself in an `ask` task; Joy never saw the request.
+        approvalsReviewer: 'user',
         ...(config ? { config } : {}),
       }
       const thread = opts.resumeSessionId
@@ -108,6 +111,7 @@ export class CodexAppServerProvider implements AgentProvider {
         : await client.request('thread/start', common)
       sessionId = str(rec(rec(thread)?.thread)?.id) ?? ''
       if (!sessionId) throw new Error('Codex app-server did not return a thread id')
+      await assertOnlyJoyServers(client, sessionId, opts.mcpServers)
       yield* parser.startSession(sessionId)
 
       try {
@@ -211,6 +215,71 @@ function sandboxMode(autonomy: RunOptions['autonomy']): ThreadStartParams['sandb
  */
 function approvalPolicy(autonomy: RunOptions['autonomy']): ThreadStartParams['approvalPolicy'] {
   return autonomy === 'workspace-write' ? 'on-request' : 'never'
+}
+
+/**
+ * Started without the owner's plugins (CapCut, Notion, Gmail…), the ChatGPT apps connectors and remote plugins: their
+ * tools would reach the agent without Joy's approval. Measured with codex-cli 0.166.0: a thread-level `features`
+ * override is too late for remote plugins, so this is on the command line.
+ */
+const OWNER_EXTRAS_OFF = ['--disable', 'plugins', '--disable', 'apps', '--disable', 'remote_plugin']
+
+/**
+ * The MCP servers the owner's own Codex config would start here (`config/read` includes the project's
+ * `.codex/config.toml`). Joy cannot keep them out without their names, so a run stops when it cannot get them.
+ */
+async function ownerMcpServers(client: CodexAppServerClient, cwd: string): Promise<string[]> {
+  let read: unknown
+  try {
+    read = await client.request('config/read', { cwd, includeLayers: false })
+  } catch (error) {
+    throw new Error(
+      `Codex app-server did not report which MCP servers it would load, so Joy cannot keep the owner's own servers out of this run: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    )
+  }
+  const settings = rec(rec(read)?.config)
+  if (!settings)
+    throw new Error(
+      "Codex app-server sent no configuration for config/read; Joy cannot keep the owner's MCP servers out",
+    )
+  return Object.keys(rec(settings.mcp_servers) ?? {})
+}
+
+/**
+ * Joy's servers plus every other configured server switched off: like Claude's `--strict-mcp-config`, a run only gets
+ * the servers Joy gave it. Without this, the owner's servers (computer use, a REPL, anything in config.toml) ran in
+ * Joy's tasks and their tools were called without Joy's approval.
+ */
+function isolatedConfig(
+  ownerServers: string[],
+  servers: McpServerConfig[] | undefined,
+): Record<string, unknown> | undefined {
+  const joy = mcpConfig(servers)
+  const joyServers = rec(joy?.mcp_servers) ?? {}
+  const off = Object.fromEntries(
+    ownerServers.filter((name) => !(name in joyServers)).map((name) => [name, { enabled: false }]),
+  )
+  const all = { ...off, ...joyServers }
+  return Object.keys(all).length ? { mcp_servers: all } : undefined
+}
+
+/** A safety net for servers from places neither switch reaches: the run stops before the agent gets a turn. */
+async function assertOnlyJoyServers(
+  client: CodexAppServerClient,
+  threadId: string,
+  servers: McpServerConfig[] | undefined,
+): Promise<void> {
+  const joy = new Set((servers ?? []).map((server) => server.name))
+  const listed = arr(rec(await client.request('mcpServerStatus/list', { threadId }))?.data)
+  const stray = listed
+    .map((entry) => rec(entry))
+    .filter((entry) => entry && !joy.has(str(entry.name) ?? '') && str(entry.runtimeStatus) !== 'disabled')
+    .map((entry) => str(entry?.name) ?? '?')
+  if (stray.length)
+    throw new Error(
+      `Codex started MCP servers Joy did not configure (${stray.join(', ')}); the run was stopped so their tools cannot be used without approval`,
+    )
 }
 
 function mcpConfig(servers: McpServerConfig[] | undefined): Record<string, unknown> | undefined {
