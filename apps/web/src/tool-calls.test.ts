@@ -37,11 +37,24 @@ describe('summarizeToolCall', () => {
     )
   })
 
+  it('names Claude structured output and Joy tools for what they do', () => {
+    expect(
+      toolCallLabel(summarizeToolCall('StructuredOutput', { verdict: 'approve', summary: 'Looks good.' })),
+    ).toBe('送出結果')
+    expect(toolCallLabel(summarizeToolCall('mcp__joy__ask_peer', { question: 'Is this safe?' }))).toBe(
+      '詢問另一個模型 Is this safe?',
+    )
+    expect(toolCallLabel(summarizeToolCall('mcp__joy__task_status', {}))).toBe('查看任務狀態')
+    expect(
+      toolCallLabel(summarizeToolCall('mcp__joy__request_approval', { summary: 'Push the branch' })),
+    ).toBe('請你核准 Push the branch')
+  })
+
   it('falls back to the tool name and first string argument', () => {
-    expect(summarizeToolCall('mcp__joy__ask_peer', { question: 'Is this safe?' })).toEqual({
+    expect(summarizeToolCall('mcp__github__get_issue', { repo: 'a/b' })).toEqual({
       kind: 'other',
-      verb: 'ask_peer',
-      detail: 'Is this safe?',
+      verb: 'get_issue',
+      detail: 'a/b',
     })
     expect(summarizeToolCall('SomethingNew', { count: 3 })).toEqual({
       kind: 'other',

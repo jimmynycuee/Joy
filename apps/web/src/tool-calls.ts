@@ -30,6 +30,13 @@ const SEARCH_TOOLS: Record<string, string> = {
   web_search: '搜尋網路',
   webfetch: '讀取網頁',
 }
+/** Joy's own MCP tools (`packages/tools`), named for what they do rather than their API name. */
+const JOY_TOOLS: Record<string, string> = {
+  ask_peer: '詢問另一個模型',
+  task_status: '查看任務狀態',
+  request_approval: '請你核准',
+  approve: '回覆核准',
+}
 
 export function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text
@@ -86,9 +93,16 @@ export function summarizeToolCall(name: string, input: unknown, worktreePath?: s
     }
   }
   if (key === 'todowrite') return { kind: 'other', verb: '更新待辦清單', detail: '' }
+  // Claude's `--json-schema` answer arrives as this tool call; its fields are already shown by the card it fills.
+  if (key === 'structuredoutput') return { kind: 'other', verb: '送出結果', detail: '' }
 
   // Anything else (MCP tools, new tools): show the short name and the first string argument.
   const shortName = key.startsWith('mcp__') ? (name.split('__').at(-1) ?? name) : name
+  const joyVerb = key.startsWith('mcp__joy__') ? JOY_TOOLS[shortName] : undefined
+  if (joyVerb) {
+    const detail = text(fields?.question) ?? text(fields?.summary) ?? text(fields?.reason) ?? ''
+    return { kind: 'other', verb: joyVerb, detail }
+  }
   const firstText = fields
     ? Object.values(fields).find((value) => typeof value === 'string' && value.trim())
     : undefined
