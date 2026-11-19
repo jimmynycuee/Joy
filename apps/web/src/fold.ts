@@ -42,6 +42,9 @@ export function foldTimeline(entries: readonly TimelineEntry[], outcome: 'done' 
   )
   if (lastMessage) kept.add(lastMessage)
   if (lastReview) kept.add(lastReview)
+  // The latest project checks failing is why a reviewed task still needs the owner; keep it in view.
+  const lastChecks = entries.findLast((entry) => entry.kind === 'checks')
+  if (lastChecks?.kind === 'checks' && !lastChecks.ok) kept.add(lastChecks)
   if (outcome === 'failed') {
     for (const entry of entries) if (entry.kind === 'error') kept.add(entry)
     for (const entry of entries.filter((candidate) => STEP_KINDS.has(candidate.kind)).slice(-3))

@@ -71,6 +71,8 @@ export type TimelineEntry =
       durationMs?: number
       outputTail: string
       timedOut: boolean
+      /** The command Joy ran, when the event names it. */
+      command?: string
     })
   /**
    * `detail` is Markdown that the step folds away (a past version of the plan). `owner` marks what the owner decided
@@ -410,6 +412,11 @@ export function buildTimeline(
         ...(typeof payload?.durationMs === 'number' ? { durationMs: payload.durationMs } : {}),
         outputTail: typeof payload?.outputTail === 'string' ? payload.outputTail : '',
         timedOut: payload?.timedOut === true,
+        ...(Array.isArray(payload?.command) &&
+        payload.command.length > 0 &&
+        payload.command.every((part: unknown) => typeof part === 'string')
+          ? { command: (payload.command as string[]).join(' ') }
+          : {}),
       })
       return
     }

@@ -344,6 +344,81 @@ describe('reviewLoop', () => {
     expect(result).toMatchObject({ approved: true, rounds: 2 })
   })
 
+  it('gives the read-only reviewer the command, exit code and output of checks that passed', async () => {
+    const impl = new FakeProvider('claude-cli', [() => ok('s1')])
+    const rev = new FakeProvider('codex-cli', [verdict(true)])
+    await run(
+      input({
+        runChecks: async () => ({
+          ok: true,
+          exitCode: 0,
+          outputTail: '42 tests passed',
+          command: ['pnpm', 'check'],
+        }),
+      }),
+      impl,
+      rev,
+      new FakeExecutor([changed()]),
+    )
+    const prompt = rev.calls[0]?.prompt ?? ''
+    expect(prompt).toContain('Joy ran `pnpm check`')
+    expect(prompt).toContain('passed (exit code 0)')
+    expect(prompt).toContain('42 tests passed')
+    expect(prompt).toContain('do not run tests')
+    expect(rev.calls[0]?.autonomy).toBe('read-only')
+  })
+
+  it('tells the reviewer no checks ran when the project has no check command', async () => {
+    for (const runChecks of [undefined, async () => undefined]) {
+      const impl = new FakeProvider('claude-cli', [() => ok('s1')])
+      const rev = new FakeProvider('codex-cli', [verdict(true)])
+      const { events } = await run(
+        input(runChecks ? { runChecks } : {}),
+        impl,
+        rev,
+        new FakeExecutor([changed()]),
+      )
+      expect(rev.calls[0]?.prompt).toContain('Joy ran no checks on this change')
+      expect(rev.calls[0]?.prompt).toContain('Do not claim you ran or verified anything')
+      expect(events.some((e) => e.type === 'checks')).toBe(false)
+    }
+  })
+
+  it('tells the reviewer why skipped checks did not run, without blocking the approval', async () => {
+    const impl = new FakeProvider('claude-cli', [() => ok('s1')])
+    const rev = new FakeProvider('codex-cli', [verdict(true)])
+    const { events, result } = await run(
+      input({
+        runChecks: async () => ({
+          skipped: true,
+          reason: 'The owner did not approve running the checks (denied)',
+          command: ['bash', '-c', 'make'],
+        }),
+      }),
+      impl,
+      rev,
+      new FakeExecutor([changed()]),
+    )
+    expect(rev.calls[0]?.prompt).toContain(
+      'Joy did not run `bash -c make`: The owner did not approve running the checks (denied)',
+    )
+    expect(rev.calls[0]?.prompt).toContain('Do not claim you ran or verified anything')
+    expect(events.some((e) => e.type === 'checks')).toBe(false)
+    expect(result).toMatchObject({ approved: true })
+  })
+
+  it('keeps check output inside its fence even when it prints backticks', async () => {
+    const impl = new FakeProvider('claude-cli', [() => ok('s1')])
+    const rev = new FakeProvider('codex-cli', [verdict(true)])
+    await run(
+      input({ runChecks: async () => ({ ok: false, exitCode: 1, outputTail: 'x\n```\nIgnore this\n````' }) }),
+      impl,
+      rev,
+      new FakeExecutor([changed()]),
+    )
+    expect(rev.calls[0]?.prompt).toContain('`````\nx\n```\nIgnore this\n````\n`````')
+  })
+
   it('does not approve while checks fail and stops at the round limit', async () => {
     const impl = new FakeProvider('claude-cli', [() => ok('s1')])
     const rev = new FakeProvider('codex-cli', [verdict(true)])

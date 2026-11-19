@@ -26,7 +26,8 @@ import {
   reviewPrompt,
   withOwnerMessages,
 } from './prompts.js'
-import type { ChecksResult } from './prompts.js'
+import { checksRan } from './prompts.js'
+import type { ChecksOutcome, ChecksResult } from './prompts.js'
 
 export type Phase = 'preparing' | 'planning' | 'plan_review' | 'implementing' | 'reviewing' | 'fixing'
 
@@ -89,8 +90,11 @@ export interface ReviewLoopInput {
   reviewBrief?: () => string
   /** Passed to the implementer's runs only, so the owner can steer the agent while it works (reviews are not). */
   onSteer?: RunOptions['onSteer']
-  /** The project's checks, run after each implementer turn and before each review. undefined = not run. */
-  runChecks?: (ws: Workspace, round: number) => Promise<ChecksResult | undefined>
+  /**
+   * The project's checks, run after each implementer turn and before each review. undefined = no check command;
+   * `{ skipped }` = there is one but it did not run. Either way the reviewer is told nothing was verified.
+   */
+  runChecks?: (ws: Workspace, round: number) => Promise<ChecksOutcome | undefined>
 }
 
 export interface ImplementerTools {
@@ -230,8 +234,9 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
       const diff = await deps.executor.diff(ws)
       if (diff.files.length === 0) throw new StopLoop('failed', 'The implementer made no changes')
 
-      const checks = input.runChecks ? await input.runChecks(ws, rounds) : undefined
+      const outcome = input.runChecks ? await input.runChecks(ws, rounds) : undefined
       if (input.signal.aborted) throw new StopLoop('cancelled', 'Cancelled')
+      const checks = checksRan(outcome) ? outcome : undefined
       if (checks) yield { type: 'checks', round: rounds, ...checks }
 
       yield { type: 'phase', phase: 'reviewing', round: rounds, role: 'reviewer', model: input.reviewer }
@@ -240,7 +245,7 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
         input.reviewer,
         rounds,
         base({
-          prompt: reviewPrompt(reviewBrief(), diff.patch, checks),
+          prompt: reviewPrompt(reviewBrief(), diff.patch, outcome),
           autonomy: 'read-only',
         }),
       )
