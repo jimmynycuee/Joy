@@ -85,6 +85,22 @@ describe('buildClaudeArgs', () => {
     }
   })
 
+  it('a prompt-only run (the compete judge) drops the built-in tools, skills and CLAUDE.md, and stays read-only', () => {
+    const args = buildClaudeArgs({ ...base, autonomy: 'read-only', promptOnly: true }, model, undefined)
+    const valueOf = (flag: string) => args[args.indexOf(flag) + 1]
+    expect(valueOf('--tools')).toBe('')
+    expect(valueOf('--setting-sources')).toBe('')
+    expect(args).toContain('--disable-slash-commands')
+    expect(args).toEqual(expect.arrayContaining(['--permission-mode', 'plan', '--strict-mcp-config']))
+    expect(args).not.toContain('--mcp-config')
+    expect(args.indexOf('--tools')).toBeLessThan(args.indexOf('--'))
+    expect(args.slice(-2)).toEqual(['--', 'do it'])
+    // Every other run keeps the default tools and its project instructions.
+    const normal = buildClaudeArgs(base, model)
+    expect(normal).not.toContain('--tools')
+    expect(normal).not.toContain('--disable-slash-commands')
+  })
+
   it('delegates approvals to the approval tool', () => {
     const args = buildClaudeArgs({ ...base, approvalTool: 'mcp__joy__approve' }, model)
     expect(args).toEqual(

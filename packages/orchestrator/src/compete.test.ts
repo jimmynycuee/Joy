@@ -13,7 +13,14 @@ import type {
 } from '@joy/core'
 import { describe, expect, it } from 'vitest'
 import type { CompeteEvent, ContestantOutcome } from './compete.js'
-import { JUDGE_SCHEMA, compete, mergePrompt, parseJudgement } from './compete.js'
+import {
+  JUDGE_DIFF_CHARS,
+  JUDGE_SCHEMA,
+  compete,
+  judgePrompt,
+  mergePrompt,
+  parseJudgement,
+} from './compete.js'
 import { REVIEW_SCHEMA } from './prompts.js'
 
 /** Answers by what it is asked: implement, review, or judge. */
@@ -204,6 +211,97 @@ describe('compete', () => {
       },
     })
     expect(events.at(-1)).toEqual({ type: 'result', status: 'succeeded' })
+  })
+
+  it('runs the judge read-only and prompt-only, with no Tool Hub, approval tool or session to resume', async () => {
+    const judgeProvider = new RoutingProvider('openai-api', {
+      judge: { winner: 'A', reasons: 'r', attempts: [], merge_recommended: false },
+    })
+    await run(
+      {
+        providers: {
+          'claude-cli': new RoutingProvider('claude-cli', {}),
+          'codex-cli': new RoutingProvider('codex-cli', {}),
+          'openai-api': judgeProvider,
+        },
+        executor: new PerAttemptExecutor({ a1: change('+one'), a2: change('+two') }),
+      },
+      new AbortController().signal,
+      { implementerTools: () => ({ approvalTool: 'mcp__joy__approve', mcpServers: [] }) },
+    )
+    expect(judgeProvider.calls).toHaveLength(1)
+    const call = judgeProvider.calls[0]
+    expect(call).toMatchObject({ autonomy: 'read-only', promptOnly: true, cwd: '/repo' })
+    expect(call?.mcpServers).toBeUndefined()
+    expect(call?.approvalTool).toBeUndefined()
+    expect(call?.resumeSessionId).toBeUndefined()
+  })
+
+  it('keeps the judge prompt small for small diffs and bounded for huge ones, with a note and the file list', () => {
+    const outcome = (label: string, attemptId: AttemptId, patch: string, files = 1): ContestantOutcome => ({
+      attemptId,
+      label,
+      implementer: claude,
+      status: 'succeeded',
+      approved: true,
+      reviewSummary: 'ok',
+      diff: {
+        files: Array.from({ length: files }, (_, i) => ({
+          path: `src/f${i}.ts`,
+          status: 'modified' as const,
+          additions: 3,
+          deletions: 1,
+        })),
+        patch,
+      },
+    })
+    const oneLine = '--- a/math.js\n+++ b/math.js\n@@ -1 +1 @@\n-a - b\n+a + b\n'
+    const small = judgePrompt('Fix add()', [outcome('A', a, oneLine), outcome('B', b, oneLine)])
+    expect(small.length).toBeLessThan(1500)
+    expect(small).not.toContain('diff cut')
+    expect(small).not.toContain('Changed files')
+
+    // One huge diff and one short one: the short one stays whole, the huge one takes the rest of the budget.
+    const huge = 'x'.repeat(500_000)
+    const big = judgePrompt('Fix add()', [outcome('A', a, huge, 40), outcome('B', b, oneLine)])
+    expect(big.length).toBeLessThan(JUDGE_DIFF_CHARS + 3000)
+    expect(big).toContain(oneLine)
+    expect(big).toContain(`first ${JUDGE_DIFF_CHARS - oneLine.length} of 500000 characters shown`)
+    expect(big).toContain('Changed files (40):')
+    expect(big).toContain('- src/f39.ts (modified, +3 -1)')
+
+    // Two huge diffs share the budget evenly, however many attempts there are.
+    const two = judgePrompt('Fix add()', [outcome('A', a, huge), outcome('B', b, huge)])
+    expect(two.length).toBeLessThan(JUDGE_DIFF_CHARS + 3000)
+    expect(two).toContain(`first ${JUDGE_DIFF_CHARS / 2} of 500000`)
+
+    // A long review summary is cut too.
+    const wordy = { ...outcome('A', a, oneLine), reviewSummary: 'r'.repeat(10_000) }
+    expect(judgePrompt('t', [wordy]).length).toBeLessThan(3000)
+  })
+
+  it('reads a judge answer written as plain JSON text when the backend gave no structured output', async () => {
+    class TextJudge extends RoutingProvider {
+      override async *run(opts: RunOptions): AsyncGenerator<AgentEvent> {
+        if (opts.outputSchema !== JUDGE_SCHEMA) return yield* super.run(opts)
+        const answer = { winner: 'B', reasons: 'r', attempts: [], merge_recommended: false }
+        yield {
+          type: 'done',
+          sessionId: 'j',
+          isError: false,
+          finalMessage: `\`\`\`json\n${JSON.stringify(answer)}\n\`\`\``,
+        }
+      }
+    }
+    const events = await run({
+      providers: {
+        'claude-cli': new RoutingProvider('claude-cli', {}),
+        'codex-cli': new RoutingProvider('codex-cli', {}),
+        'openai-api': new TextJudge('openai-api', {}),
+      },
+      executor: new PerAttemptExecutor({ a1: change('+one'), a2: change('+two') }),
+    })
+    expect(events.find((e) => e.type === 'judgement')).toMatchObject({ judgement: { winner: 'a2' } })
   })
 
   it('skips the judge when only one attempt produced a change', async () => {

@@ -3,6 +3,9 @@
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
 - 最後更新：2026-11-19（執行訊號：實作者說改了檔案但沒有變更時提示一行、Codex 設定警告每次執行只報一次且不當錯誤、權限選單說明 Codex 沙盒差異，分支 `run-signals`）
+- 最後更新：2026-11-19（競賽裁判輸入瘦身：裁判 run 不載入 Claude 內建工具、skills、CLAUDE.md，prompt 的 diff 有上限與註記；新增 core 選填欄位 `RunOptions.promptOnly` 待擁有者審；分支 `judge-input`）
+- 最後更新：2026-11-19（Codex 只拿 Joy 給的 MCP：關掉擁有者的 config.toml server、外掛、連接器與遠端外掛；修 `codex exec resume` 的 `--sandbox`；分支 `codex-approvals-reviewer`）
+- 最後更新：2026-11-19（真實 CLI 第二輪：steer、換模型 resume、compete 通過；修掉 Codex 沿用擁有者 `approvals_reviewer` 讓自己的審查子代理繞過 Joy 核准的問題；分支 `codex-approvals-reviewer`）
 - 最後更新：2026-11-19（真實 CLI 冒煙測試：review loop 兩種組合都通過；修好 Claude 在連結資料夾下回報絕對路徑；擁有者確認 core 與 policy 已審；分支 `real-cli-smoke`）
 - 最後更新：2026-11-19（完成的任務可「合併到 main」（本機合併，先確認分支與檔案數）與「在編輯器開啟」（設定 `editor`），分支 `task-actions`）
 - 最後更新：2026-11-19（介面與 bug 修正：輸入框依自身寬度收合、加入專案讀出 repo 的預設分支與 GitHub origin 並在加入時檢查分支、環境檢查文字改給使用者看、首頁指出選的模型缺哪個 CLI、手機任務頁不重複標題；本檔只留近期驗證結果，較早的移到 `docs/status-history.md`；分支 `ui-fixes`）
@@ -96,6 +99,34 @@
 - 單一模式的實作者成功結束、工作副本沒有任何變更、沒有 `file_change` 事件，但最後訊息像在說改了檔案（提到檔案路徑或「修正／fixed／updated」等字）時，記一筆 `result.warning` 事件，討論串顯示一行「agent 說改了檔案，但沒有任何變更」；任務結果不受影響。判斷在 `packages/server/src/empty-change-claim.ts`。review loop 路徑尚未加。
 - Codex 的「忽略 1 個無法辨識的設定」通知（`~/.codex/config.toml` 有過時的 key）改成每次執行只發一次 `status`，不再是兩筆 recoverable `error`（`config-warning.ts`，exec 與 app-server 解析器共用；app-server 的通知方法名 `configWarning`／`warning`／`error` 是依協定推測，尚未用真實輸出確認）。
 - 權限選單「要求核准」的說明加上 Codex 在沙盒內不問、出沙盒才問。
+
+### 競賽裁判輸入瘦身（2026-11-19，分支 `judge-input`）
+
+真實 run（裁判 Claude haiku、low）兩個一行 diff 就用了約 44.5k input token，遠多於實作者。
+
+- **token 去哪了（程式分析，未用真實 CLI 量）**：裁判 prompt 本身很小（兩個一行 diff 約 700 字元，約 170 token；最壞 60k 字元）。其餘是 Claude Code 自己每次 run 都帶的：內建工具定義、系統提示，以及 `--setting-sources user,project` 載入的使用者與專案 CLAUDE.md、skills 清單。裁判沒有掛 MCP（`--strict-mcp-config`），也沒有核准工具。裁判在 repo 本身（不是 worktree）唯讀執行，這些工具它既用不到也看不到 attempt 的檔案。
+- **改動**：`RunOptions` 新增選填 `promptOnly`（**`packages/core` 介面，待擁有者審**）；裁判 run 傳 `promptOnly: true`（仍是 `read-only`、沒有 MCP、沒有核准工具）。Claude provider 對它加 `--tools ""`、`--disable-slash-commands`，並把 `--setting-sources` 改成空字串（不載入 CLAUDE.md、skills、user／project hooks）；其他 provider 忽略它，Codex 沒動。其他角色（實作者、審查者）參數不變。
+- **prompt**：diff 總量上限 `JUDGE_DIFF_CHARS = 40_000`（原本 `MAX_DIFF_CHARS` 60k），短的 diff 整份保留、剩餘額度給長的（原本平均分，短 diff 浪費額度）；被截斷的 attempt 會列出完整的「Changed files」清單與「diff cut: first N of M characters」註記（不再叫它「read the files」，裁判沒有工具）；審查摘要上限 2000 字元。prompt 明說沒有工具。合併（`mergePrompt`）不變。
+- **裁判輸出**：結構化輸出與判斷邏輯不變；若後端沒給 structured output 但 finalMessage 是 JSON（含 code fence），也接受。
+- **量測**（`judgePrompt` 字元數，前→後）：兩個一行 diff 634→699（多一句「沒有工具」）；200k + 5k 的兩個 diff 35,563→40,691（原本 A 只拿 30k、B 的額度用不完；新上限下 A 拿 35k）；兩個都超大最壞 60k→40k。
+- **測試**：`compete.test.ts`（裁判 run 收到 `read-only`、`promptOnly`、無 `mcpServers`／`approvalTool`／resume；小 diff prompt 小、大 diff 有上限、註記與檔案清單；純文字 JSON 答案）、`claude-cli/args.test.ts`（promptOnly 的參數，一般 run 不變）。
+- **沒驗證（需要真實 CLI）**：實際 input token 降多少；`--tools ""` 搭 `--json-schema` 是否仍能回結構化輸出（若不行，上面的純文字 JSON 退路會接住，但值得跑一次確認）；裁判結論品質。驗證方式：compete 任務裁判用 haiku／low 跑一次，看 `compete.usage` 的 input token。
+- **真實 CLI 實測（2026-11-19，協調者補）**：haiku `low` 當裁判、兩個一行 diff：input tokens 44,502 → **6,203**、US$0.18 → **US$0.029**；`--tools ""` 搭 `--json-schema` 仍回結構化判斷，`/choose` 正常。觀察：沒有載入 CLAUDE.md，英文任務的判斷理由是英文。
+
+### 真實 CLI 驗證第二輪：steer、換模型 resume、Codex 升權、compete（2026-11-19，分支 `codex-approvals-reviewer`）
+
+同樣用暫存 `JOY_HOME`、埠 4420 的另一個 Joy，經 API 跑，模型都是 `haiku`／`gpt-6-luna`、`low`（換模型那一步用 `sonnet` `low`）。
+
+- **執行中即時補充（steer）**：Claude 實作者在 `sleep 20` 時收到訊息，`delivery: steer`、`user.message.delivered via steer`。整個任務只有 1 次 provider run、1 個結果，diff 同時有修正和插話要求的 `// steered`。
+- **Claude 換模型後 resume**：第一輪 haiku，follow-up 帶 `roleOverrides.implementer = sonnet`。兩輪是同一個 session id，模型從 `claude-haiku-5-5` 變成 `claude-sonnet-5-5`，第二輪答出第一輪要它記住的暗號。
+- **Codex 跨出沙盒（找到並修好安全問題）**：`ask` 模式下要 Codex 跑 `curl -sSI https://example.com`。修正前沒有任何核准就連上網路（`HTTP/2 200`）。原因是擁有者的 `~/.codex/config.toml` 設了 `approvals_reviewer = "guardian_subagent"`，codex-cli 0.166.0 的 app-server thread 沿用它（`thread/start` 回應 `approvalsReviewer: "auto_review"`、`networkAccess: false`），升權請求由 Codex 自己的審查子代理批准，Joy 的模式與秘密規則都被繞過。修法：`thread/start`／`thread/resume` 一律送 `approvalsReviewer: 'user'`，`codex exec` 加 `-c approvals_reviewer="user"`（exec 沒人可問，升權就被拒）。修正後實跑：請求以 `run_outside_worktree` 核准卡送到 Joy，核准才執行；拒絕則不執行，Codex 回報「升級權限請求遭拒」。測試：`app-server.test.ts`（start 與兩種 resume 都帶 `approvalsReviewer`）、`args.test.ts`（read-only／workspace-write 都帶），修正前失敗。
+- **compete**：Claude haiku 對 Codex luna、裁判 haiku。兩邊各自完成、互審都核准，裁判給出 `winner` 與理由，任務停在 `review_ready`（`awaitingChoice`）；`POST /choose` 後 `compete.chosen`、另一份 `discarded`，任務 `done`。觀察：裁判一次用了 44,502 input tokens、沒有快取命中，約 US$0.18，比實作者貴很多。
+- **compete 的「請裁判合併」**：`POST /merge` 後 `compete.merge_started`，裁判（haiku）在第三個 worktree 重新實作，Codex 審查核准，`compete.merged`，任務回到等待選擇（「合併版好了」）；`/choose` 選合併版後 `compete.chosen`、兩份原始方案 `discarded`，任務 `done`。第二次裁判有快取命中（25,992），約 US$0.08。
+- **Codex 的 MCP 提問**：擁有者加的 stdio MCP server（`scripts/fixtures/mcp-stub.mjs`）在 `ask` 模式下，Codex 呼叫 `ask_peer` 時發 `mcpServer/elicitation/request`，Joy 出核准卡（`toolCall: true`、寫出 server 自己的訊息），核准後工具才跑並回傳 `PEER SAYS: 4`。
+- **Codex 會載入擁有者全域的 MCP（已修）**：Joy 的 Codex run 原本會啟動擁有者 `~/.codex/config.toml` 的全部 MCP server（實測 9 個，含 `computer-use`、`node_repl`、`private_investment_*`）、外掛帶的 server（CapCut、Notion、Gmail…）、`codex_apps` 連接器與遠端外掛的 server；Codex 曾呼叫 `mcp__capcut_creation_resource__background_music`，沒有送任何核准到 Joy。修法（等於 Claude 的 `--strict-mcp-config`）：app-server 以 `--disable plugins --disable apps --disable remote_plugin` 啟動（遠端外掛在 thread 層關太晚，實測要在啟動時關）；`config/read` 讀出生效的 `mcp_servers` 名稱，`thread/start`／`thread/resume` 把不屬於 Joy 的都設 `enabled: false`；thread 開好後 `mcpServerStatus/list`，還有非 Joy、非 disabled 的 server 就在任何 turn 之前結束這次 run；`config/read` 失敗也不跑（交給 exec 退路）。`codex exec` 加 `--ignore-user-config --ignore-rules --disable plugins --disable apps --disable remote_plugin`。實跑：同一個 MCP 任務只啟動 `joy` 與 `stub`，Codex 直接用 `stub`。測試：`app-server.test.ts` 3 個（停用與啟動旗標、漏網 server 在 turn 前停下、`config/read` 失敗不開 thread）、`args.test.ts`，修正前都失敗。
+- **順手修：`codex exec resume` 不接受 `--sandbox`**（codex-cli 0.166.0 回 `unexpected argument`），Joy 原本照送，exec 退路的接續一定失敗。改成 `-c sandbox_mode="…"`（`args.test.ts` 新測試，修正前失敗）；真實 `provider.e2e`（app-server 與 exec、各自修 bug 後 resume）兩個都通過。
+- **已知缺口：擁有者的 Codex execpolicy 規則**：`~/.codex/rules/default.rules` 的 `decision="allow"` 規則在 app-server 仍有效。實測 `ask` 模式下 `curl -sS --max-time 2 -I https://example.com`（符合一條 allow 規則）不問 Joy 就連網執行。app-server 沒有 `--ignore-rules`（`ignoreRules` 只在管理者的 `AutoReviewRequirements`），唯一辦法是另給一個沒有 rules 的 `CODEX_HOME`，那會牽動登入憑證的位置，違反「不碰訂閱憑證」，所以沒做。和 Claude 一樣（擁有者自己 `~/.claude/settings.json` 的 allow 規則也不經 Joy），視為擁有者自己的設定；`codex exec` 已加 `--ignore-rules`。專案 `.codex/rules`（repo 自帶的規則）在 app-server 是否生效沒有驗證。
+- **沒驗證到**：Windows。
 
 ### 真實 CLI 冒煙測試（2026-11-19，分支 `real-cli-smoke`）
 
