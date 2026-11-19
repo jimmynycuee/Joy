@@ -29,7 +29,11 @@ describe('parseRoute and routeQuery', () => {
     expect(parseRoute('?foo=bar')).toEqual({ kind: 'new-task' })
     expect(parseRoute('?settings=nope')).toEqual({ kind: 'settings', section: 'general', repoId: null })
     // A project only narrows 專案.
-    expect(parseRoute('?settings=stats&repo=r1')).toEqual({ kind: 'settings', section: 'stats', repoId: null })
+    expect(parseRoute('?settings=stats&repo=r1')).toEqual({
+      kind: 'settings',
+      section: 'stats',
+      repoId: null,
+    })
   })
 })
 
@@ -48,8 +52,8 @@ describe('replacesEntry', () => {
     expect(replacesEntry({ kind: 'chat', id: 'c1' }, { kind: 'chat', id: 'c2' })).toBe(false)
     expect(replacesEntry({ kind: 'task', id: 'a' }, { kind: 'task', id: 'b' })).toBe(false)
     expect(replacesEntry({ kind: 'new-task' }, { kind: 'task', id: 'a' })).toBe(false)
-    expect(replacesEntry({ kind: 'task', id: 'a' }, { kind: 'settings', section: 'general', repoId: null })).toBe(
-      false,
-    )
+    expect(
+      replacesEntry({ kind: 'task', id: 'a' }, { kind: 'settings', section: 'general', repoId: null }),
+    ).toBe(false)
   })
 })

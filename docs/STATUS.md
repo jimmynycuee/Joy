@@ -2,6 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-19（介面：審查卡與 Joy 工具改用易懂的名稱、側邊欄篩選顯示各狀態數量並把目前條件留在清單上方、任務／對話／設定都有自己的網址（上一頁、下一頁可用），分支 `ui-improvements`）
 - 最後更新：2026-11-19（真實 CLI 第四輪：一律允許、附件、專案 hooks 同意、Codex exec 都通過；「說改了沒改」的提示在任務完成收合後仍留在外面，沒有變更時按鈕改成「清除工作副本」並不再要 GitHub 網址，分支 `keep-warning-visible`）
 - 最後更新：2026-11-19（真實 CLI 第三輪：審查看到檢查結果、說改了沒改的提示、auto 權限、換 provider 交接與重做、合併到 main 與開編輯器都通過；修 Claude 多輪 run 的 token 只算最後一輪，分支 `claude-usage-turns`）
 - 最後更新：2026-11-19（`queue-rewind` 的測試改成等 agent 開始才送要排隊的訊息，修掉 macOS／Windows CI 上偶爾失敗；分支 `fix-queue-rewind-flaky`）
@@ -97,6 +98,14 @@
 ## 驗證結果
 
 > 2026-11-15 以前的驗證結果在 `docs/status-history.md`。
+
+### 介面：工具名稱、篩選、網址（2026-11-19，分支 `ui-improvements`）
+
+- **工具名稱**：Claude 用 `--json-schema` 回結構化結果時的 `StructuredOutput` 工具呼叫改顯示「送出結果」；Joy 自己的 MCP 工具（`mcp__joy__ask_peer`、`task_status`、`request_approval`、`approve`）改顯示中文動作名（`tool-calls.ts`）。其他 MCP 工具照舊顯示短名。
+- **側邊欄篩選**：狀態篩選原本就有（最近項目的漏斗），這次在每個選項旁顯示會列出幾個任務（依目前選的專案計算，`statusCounts`）；篩選中時清單上方有一個標籤寫出條件（例如「沒完成 · beta」），點一下就清除。
+- **網址**：網址列跟著目前頁面走：`?task=<id>`、`?chat=<id>`（新對話是 `?chat`）、`?settings=<section>`（專案可加 `&repo=<id>`），新任務頁是 `/`。用 query string 而不是路徑，因為 server 只在 `/` 提供網頁，通知原本就開 `/?task=<id>`。上一頁、下一頁會換頁；新對話拿到 id、在設定裡切換分頁時改寫目前這一筆而不新增，所以一次上一頁就離開設定。開啟時網址不認得就換成 `/`（`route.ts`）。`SettingsSection` 型別改從 `route.ts` 的清單來，兩邊不會不同步。
+- **驗證**：`tool-calls.test.ts`、`sidebar-groups.test.ts`、`route.test.ts` 新增測試；e2e `sidebar-projects.spec.ts` 加上數量、清除標籤，以及網址、上一頁、下一頁、直接開連結的測試。用假資料預覽（`joy-fake-preview`）在深色桌面寬度點過：點任務網址變成 `?task=…`、上一頁回到前一個任務、篩選標籤顯示「已完成」。
+- **沒驗證到**：手機寬度與淺色模式沒截圖；真實審查者的 `StructuredOutput` 只用單元測試確認。
 
 ### 真實 CLI 驗證第四輪（2026-11-19，分支 `keep-warning-visible`）
 

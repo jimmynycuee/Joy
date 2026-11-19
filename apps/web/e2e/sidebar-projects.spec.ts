@@ -136,8 +136,7 @@ async function mockApi(page: Page, mock: Mock) {
           events: [],
         },
       })
-    }
-    else await route.fulfill({ json: {} })
+    } else await route.fulfill({ json: {} })
   })
 }
 
