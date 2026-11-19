@@ -30,4 +30,9 @@ Then:
 2. Update `TESTED_CLI_VERSIONS` to the versions in the new `*.meta.json` files (the test tells you the expected value).
 3. Open a PR with the new fixtures and the range change.
 
+The repository is public. The recorder replaces temp, repo and home paths, and it strips the recording owner's own
+setup out of Claude's `system/init` line (plugins, claude.ai connectors and their tools, skills, agents). Check the
+diff for anything personal before you commit. `node scripts/record-fixtures.mjs claude --scrub` re-applies the
+stripping to the files already recorded, without calling a model.
+
 Recording spends a little of the subscription quota; never record in CI.

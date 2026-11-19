@@ -145,7 +145,7 @@ describe('runDoctor', () => {
         {
           git: { exitCode: 0, output: 'git version 2.48.1' },
           gh: { exitCode: 0, output: privateOutput },
-          'fake-claude': { exitCode: 0, output: 'Claude Code v2.1.317 (private-account)' },
+          'fake-claude': { exitCode: 0, output: 'Claude Code v2.1.319 (private-account)' },
           'fake-codex': { exitCode: 0, output: 'codex-cli 0.104.0 (private-account)' },
         },
         calls,
@@ -166,8 +166,8 @@ describe('runDoctor', () => {
     })
     expect(checks.get('git')).toMatchObject({ status: 'ok', version: '2.48.1' })
     expect(checks.get('gh-auth')).toMatchObject({ status: 'ok' })
-    // 2.1.317 is the version the Claude fixtures were recorded with; 0.104.0 is outside Codex's tested range.
-    expect(checks.get('claude-cli')).toMatchObject({ status: 'ok', version: '2.1.317' })
+    // 2.1.319 is the version the Claude fixtures were recorded with; 0.104.0 is outside Codex's tested range.
+    expect(checks.get('claude-cli')).toMatchObject({ status: 'ok', version: '2.1.319' })
     expect(checks.get('codex-cli')).toMatchObject({ status: 'untested', version: '0.104.0' })
     // The owner is told which version to install, not how to re-record Joy's fixtures.
     expect(checks.get('codex-cli')?.repair).toContain('測試過的版本 0.166.0')

@@ -3167,7 +3167,7 @@ describe('Joy local server', () => {
         runCommand: async (command) =>
           command === 'codex'
             ? { exitCode: 0, output: 'codex-cli 99.0.0' }
-            : { exitCode: 0, output: '2.1.317 (Claude Code)' },
+            : { exitCode: 0, output: '2.1.319 (Claude Code)' },
       },
     })
     await start(serverPromise)
@@ -4943,6 +4943,65 @@ describe('Joy local server', () => {
         }),
       ]),
     )
+  })
+
+  it.each(['single', 'review_loop'] as const)(
+    'warns when a %s implementer says it changed files but the worktree has no changes',
+    async (mode) => {
+      const implementer = new FakeProvider('claude-cli', [
+        { type: 'done', sessionId: 'impl', isError: false, finalMessage: '已修正 math.js 的 add()。' },
+      ])
+      const { executor, serverPromise } = fixture({ implementer })
+      executor.diff = async () => ({ files: [], patch: '' })
+      const { origin } = await start(serverPromise)
+      const { repo } = (await (
+        await postJson(`${origin}/api/repos`, { path: '/repo', defaultBranch: 'main' })
+      ).json()) as { repo: { id: string } }
+      const { task } = (await (
+        await postJson(`${origin}/api/tasks`, {
+          repoId: repo.id,
+          title: 'Fix add()',
+          prompt: 'math.js has a bug in add(). Fix it.',
+          mode,
+          roleOverrides: { implementer: { provider: 'claude-cli', model: 'haiku' } },
+        })
+      ).json()) as { task: { id: string } }
+
+      const result = await waitForEvent(origin, task.id, 'result')
+      const types = result.events.map((event) => (event as { type: string }).type)
+      expect(result.events).toContainEqual(
+        expect.objectContaining({
+          type: 'result.warning',
+          payload: { reason: 'empty_diff_claimed_changes' },
+        }),
+      )
+      // Shown with the result it explains, not after it.
+      expect(types.indexOf('result.warning')).toBeLessThan(types.indexOf('result'))
+    },
+  )
+
+  it('does not warn a review loop whose implementer says nothing about changes', async () => {
+    const implementer = new FakeProvider('claude-cli', [
+      { type: 'done', sessionId: 'impl', isError: false, finalMessage: '這個專案用 pnpm。' },
+    ])
+    const { executor, serverPromise } = fixture({ implementer })
+    executor.diff = async () => ({ files: [], patch: '' })
+    const { origin } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/repo', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    const { task } = (await (
+      await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: 'Look around',
+        prompt: 'Which package manager does this use?',
+        mode: 'review_loop',
+        roleOverrides: { implementer: { provider: 'claude-cli', model: 'haiku' } },
+      })
+    ).json()) as { task: { id: string } }
+
+    const result = await waitForEvent(origin, task.id, 'result')
+    expect(result.events.map((event) => (event as { type: string }).type)).not.toContain('result.warning')
   })
 
   it('rejects saving a config with a non-editing implementer provider', async () => {

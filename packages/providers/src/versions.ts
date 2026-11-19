@@ -12,8 +12,7 @@ export interface TestedRange {
 }
 
 export const TESTED_CLI_VERSIONS: Record<CliName, TestedRange> = {
-  claude: { from: '2.1.317', through: '2.1.317' },
-  // Only a sandbox recording without a login exists so far (T0.4 is open); real runs are not contract-tested yet.
+  claude: { from: '2.1.319', through: '2.1.319' },
   codex: { from: '0.166.0', through: '0.166.0' },
 }
 
