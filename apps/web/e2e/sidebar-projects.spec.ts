@@ -125,10 +125,18 @@ async function mockApi(page: Page, mock: Mock) {
       await route.fulfill({ json: { conversations: mock.conversations ?? [] } })
     else if (path.startsWith('/api/conversations/'))
       await route.fulfill({ json: { conversation: { id: 'c1' }, messages: [] } })
-    else if (path.startsWith('/api/tasks/'))
+    else if (path.startsWith('/api/tasks/')) {
+      const id = decodeURIComponent(path.split('/')[3] ?? '')
       await route.fulfill({
-        json: { task: mock.tasks?.[0], repo: mock.repos[0], attempts: [], reviews: [], events: [] },
+        json: {
+          task: mock.tasks?.find((item) => item.id === id) ?? mock.tasks?.[0],
+          repo: mock.repos[0],
+          attempts: [],
+          reviews: [],
+          events: [],
+        },
       })
+    }
     else await route.fulfill({ json: {} })
   })
 }
@@ -214,7 +222,7 @@ test('最近項目 folds, remembers it, and filters by status and project', asyn
   const sidebar = sidebarOf(page)
   const recent = sidebar.getByRole('region', { name: '最近項目' })
   const titles = recent.locator('.task-row .task-title')
-  const filter = recent.getByRole('button', { name: '篩選' })
+  const filter = recent.getByRole('button', { name: '篩選', exact: true })
 
   await expect(titles).toHaveText([
     'Alpha waiting',
@@ -225,6 +233,9 @@ test('最近項目 folds, remembers it, and filters by status and project', asyn
   ])
 
   await filter.click()
+  // Each choice says how many tasks it would show.
+  await expect(page.getByRole('menuitemradio', { name: '等你的' })).toContainText('1')
+  await expect(page.getByRole('menuitemradio', { name: '全部' }).first()).toContainText('4')
   await page.getByRole('menuitemradio', { name: '等你的' }).click()
   await expect(titles).toHaveText(['Alpha waiting'])
   // The menu stays open to pick the project too.
@@ -238,13 +249,13 @@ test('最近項目 folds, remembers it, and filters by status and project', asyn
   await page.keyboard.press('Escape')
   await expect(filter).toHaveClass(/filter-on/)
 
-  // Back to everything.
-  await filter.click()
-  await page.getByRole('menuitemradio', { name: '全部' }).first().click()
-  await page.getByRole('menuitemradio', { name: '全部' }).last().click()
+  // The filter stays in view above the list; clicking it goes back to everything.
+  const clear = recent.getByRole('button', { name: '清除篩選' })
+  await expect(clear).toHaveText('沒完成 · beta')
+  await clear.click()
   await expect(titles).toHaveCount(5)
   await expect(filter).not.toHaveClass(/filter-on/)
-  await page.keyboard.press('Escape')
+  await expect(clear).toHaveCount(0)
 
   // The section's own button starts a new task.
   await recent.getByRole('button', { name: '新對話' }).click()
@@ -453,4 +464,44 @@ test.describe('加入專案 picks a folder', () => {
     await page.keyboard.press('Escape')
     await expect(dialog).toHaveCount(0)
   })
+})
+
+test('the address bar names the open page; back, forward and a link all reach it', async ({ page }) => {
+  await mockApi(page, {
+    repos: [alpha],
+    tasks: [task('t1', 'a', 'First task', 5), task('t2', 'a', 'Second task', 10)],
+    conversations: [{ id: 'c1', title: 'Weekend plans', createdAt: iso(900), updatedAt: iso(30) }],
+  })
+  await page.goto('/')
+  const recent = sidebarOf(page).getByRole('region', { name: '最近項目' })
+  const row = (title: string) => recent.locator('.task-row', { hasText: title })
+
+  await row('First task').click()
+  await expect(page).toHaveURL(/\/\?task=t1$/)
+  await row('Second task').click()
+  await expect(page).toHaveURL(/\/\?task=t2$/)
+  await row('Weekend plans').click()
+  await expect(page).toHaveURL(/\/\?chat=c1$/)
+
+  await page.goBack()
+  await expect(page).toHaveURL(/\/\?task=t2$/)
+  await expect(row('Second task')).toHaveAttribute('aria-current', 'page')
+  await page.goBack()
+  await expect(row('First task')).toHaveAttribute('aria-current', 'page')
+  await page.goForward()
+  await expect(row('Second task')).toHaveAttribute('aria-current', 'page')
+
+  // Moving between 設定 sections rewrites the entry, so one 上一頁 leaves 設定.
+  await sidebarOf(page).getByRole('button', { name: '設定' }).click()
+  await expect(page).toHaveURL(/\/\?settings=general$/)
+  await page.getByRole('button', { name: '統計' }).click()
+  await expect(page).toHaveURL(/\/\?settings=stats$/)
+  await page.goBack()
+  await expect(page).toHaveURL(/\/\?task=t2$/)
+
+  // A link opens its page directly.
+  await page.goto('/?settings=stats')
+  await expect(page.getByRole('button', { name: '統計' })).toHaveAttribute('aria-current', 'page')
+  await page.goto('/?chat=c1')
+  await expect(row('Weekend plans')).toHaveAttribute('aria-current', 'page')
 })
