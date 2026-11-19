@@ -15,6 +15,14 @@ describe('buildCodexArgs', () => {
     expect(buildCodexArgs(base, model)).toEqual([
       'exec',
       '--json',
+      '--ignore-user-config',
+      '--ignore-rules',
+      '--disable',
+      'plugins',
+      '--disable',
+      'apps',
+      '--disable',
+      'remote_plugin',
       '--model',
       'gpt-6-luna',
       '--sandbox',
@@ -32,6 +40,23 @@ describe('buildCodexArgs', () => {
     for (const autonomy of ['read-only', 'workspace-write'] as const) {
       const args = buildCodexArgs({ ...base, autonomy }, model)
       expect(args.slice(0, args.indexOf('--'))).toContain('approvals_reviewer="user"')
+    }
+  })
+
+  it("leaves out the owner's config.toml (its MCP servers), plugins and connectors", () => {
+    const args = buildCodexArgs(base, model)
+    const flags = args.slice(0, args.indexOf('--'))
+    expect(flags).toContain('--ignore-user-config')
+    expect(flags).toContain('--ignore-rules')
+    for (const feature of ['plugins', 'apps', 'remote_plugin'])
+      expect(flags.join(' ')).toContain(`--disable ${feature}`)
+  })
+
+  it('sets the sandbox of a resumed run through config: `exec resume` has no --sandbox (codex-cli 0.166.0)', () => {
+    for (const autonomy of ['read-only', 'workspace-write'] as const) {
+      const args = buildCodexArgs({ ...base, autonomy, resumeSessionId: 'th1' }, model)
+      expect(args).not.toContain('--sandbox')
+      expect(args).toContain(`sandbox_mode="${autonomy}"`)
     }
   })
 

@@ -42,15 +42,30 @@ export function buildCodexArgs(
   promptOnStdin = false,
 ): string[] {
   const args = opts.resumeSessionId ? ['exec', 'resume', '--json'] : ['exec', '--json']
+  // Only the MCP servers Joy passes below: not the owner's config.toml (its servers, approvals reviewer), plugins,
+  // connectors or remote plugins, whose tools would run without Joy's approval. Login still comes from CODEX_HOME.
+  // `--ignore-rules`: the owner's execpolicy `allow` rules would run matching commands outside the sandbox, unasked.
+  args.push(
+    '--ignore-user-config',
+    '--ignore-rules',
+    '--disable',
+    'plugins',
+    '--disable',
+    'apps',
+    '--disable',
+    'remote_plugin',
+  )
   args.push('--model', model.model)
   if (model.effort) args.push('-c', `model_reasoning_effort=${q(model.effort)}`)
 
   switch (opts.autonomy) {
     case 'read-only':
-      args.push('--sandbox', 'read-only', ...OWNER_REVIEWS)
-      break
     case 'workspace-write':
-      args.push('--sandbox', 'workspace-write', ...OWNER_REVIEWS)
+      // `exec resume` has no `--sandbox` flag (codex-cli 0.166.0 rejects it); the config key does the same.
+      args.push(
+        ...(opts.resumeSessionId ? ['-c', `sandbox_mode=${q(opts.autonomy)}`] : ['--sandbox', opts.autonomy]),
+        ...OWNER_REVIEWS,
+      )
       break
     case 'full':
       args.push('--dangerously-bypass-approvals-and-sandbox')

@@ -9,6 +9,8 @@ if (args[0] !== 'app-server') {
   process.exit(0)
 }
 
+if (process.env.FAKE_APP_SERVER_ARGS_OUT)
+  writeFileSync(process.env.FAKE_APP_SERVER_ARGS_OUT, JSON.stringify(args))
 if (process.env.FAKE_APP_SERVER_MODE === 'exit') process.exit(2)
 if (process.env.FAKE_APP_SERVER_MODE === 'hang') {
   setInterval(() => {}, 1000)
@@ -28,6 +30,7 @@ function record(path, value) {
   if (path) appendFileSync(path, `${JSON.stringify(value)}\n`)
 }
 
+let threadConfig
 const elicitations = new Set()
 function streamTurn() {
   // 'elicit': an MCP tool approval (synthetic shape; see docs/spikes/codex.md) and one Joy cannot read come first.
@@ -71,7 +74,44 @@ lines.on('line', (line) => {
     return
   }
   if (message.method === 'initialized') return
+  // The owner's own MCP servers (comma-separated names in FAKE_OWNER_MCP), as `config/read` reports them, and one
+  // that is not in the config but still runs (FAKE_LEAKED_MCP, like a remote plugin's server).
+  if (message.method === 'config/read') {
+    const owner = (process.env.FAKE_OWNER_MCP ?? '').split(',').filter(Boolean)
+    if (process.env.FAKE_APP_SERVER_MODE === 'no-config-read')
+      send({ id: message.id, error: { code: -32601, message: 'method not found' } })
+    else
+      send({
+        id: message.id,
+        result: {
+          config: { mcp_servers: Object.fromEntries(owner.map((name) => [name, { command: 'x' }])) },
+        },
+      })
+    return
+  }
+  if (message.method === 'mcpServerStatus/list') {
+    const owner = (process.env.FAKE_OWNER_MCP ?? '').split(',').filter(Boolean)
+    const configured = threadConfig?.mcp_servers ?? {}
+    const data = [
+      ...owner.map((name) => ({
+        name,
+        runtimeStatus: configured[name]?.enabled === false ? 'disabled' : 'connected',
+      })),
+      ...Object.keys(configured)
+        .filter((name) => !owner.includes(name))
+        .map((name) => ({
+          name,
+          runtimeStatus: configured[name].enabled === false ? 'disabled' : 'connected',
+        })),
+      ...(process.env.FAKE_LEAKED_MCP
+        ? [{ name: process.env.FAKE_LEAKED_MCP, runtimeStatus: 'starting' }]
+        : []),
+    ]
+    send({ id: message.id, result: { data } })
+    return
+  }
   if (message.method === 'thread/start' || message.method === 'thread/resume') {
+    threadConfig = message.params?.config
     send({ method: 'thread/started', params: { thread: fixture.thread } })
     send({ id: message.id, result: { thread: fixture.thread } })
     return
