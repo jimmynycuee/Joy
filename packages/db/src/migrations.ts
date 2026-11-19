@@ -603,6 +603,21 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX attachments_conversation ON attachments (conversation_id);
     `,
   },
+  {
+    version: 29,
+    name: 'long assistant conversations start a new brain session from a summary',
+    sql: /* sql */ `
+      -- What the assistant's next brain session is told about messages up to context_through (a messages id),
+      -- instead of the messages themselves. Separate from summary, which is only for search (T3.6).
+      ALTER TABLE conversations ADD COLUMN context_summary TEXT
+        CHECK (context_summary IS NULL OR length(context_summary) BETWEEN 1 AND 8000);
+      ALTER TABLE conversations ADD COLUMN context_through INTEGER
+        CHECK ((context_through IS NULL) = (context_summary IS NULL));
+      -- Joy's estimate of how many tokens of conversation the current brain session holds.
+      ALTER TABLE conversations ADD COLUMN context_tokens INTEGER
+        CHECK (context_tokens IS NULL OR context_tokens >= 0);
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

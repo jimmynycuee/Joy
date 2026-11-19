@@ -186,6 +186,9 @@ export class OpenAiApiProvider implements AgentProvider {
       model: model.model,
       input,
       stream: true,
+      // A chain of previous_response_id grows every turn; without this the API rejects the request once the chain
+      // passes the model's context window, and that conversation can never answer again.
+      truncation: 'auto',
       ...(previous ? { previous_response_id: previous } : {}),
       ...(model.effort ? { reasoning: { effort: model.effort === 'max' ? 'high' : model.effort } } : {}),
       ...(this.tools.length

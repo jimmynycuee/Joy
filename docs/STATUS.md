@@ -2,6 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-20（助理長對話不再越聊越貴、也不會卡死：OpenAI 請求加 `truncation: 'auto'`；Joy 估算大腦 session 裡的對話量，超過約 4 萬 token 就在背景把較早的訊息整理成「上下文摘要」並結束 session，下一輪從摘要＋最近 6 則訊息開新 session；對話頁在摘要涵蓋到的地方顯示可展開的「以上已整理成摘要」；migration 29，分支 `assistant-context-compaction`）
 - 最後更新：2026-11-19（助理對話可以附圖片與文字檔：圖片隨訊息交給大腦、文字檔引用進訊息，存下的訊息只留擁有者的話並列出檔案；migration 28 讓附件屬於任務或對話其中之一，分支 `assistant-attachments`）
 - 最後更新：2026-11-19（介面：審查卡與 Joy 工具改用易懂的名稱、側邊欄篩選顯示各狀態數量並把目前條件留在清單上方、任務／對話／設定都有自己的網址（上一頁、下一頁可用），分支 `ui-improvements`）
 - 最後更新：2026-11-19（T0.4 Codex 真實 fixture（exec 的 edit／mcp／resume）與 contract test、確認 app-server 設定警告是 `configWarning`＋`warning` 兩則同文字；T4.6 重錄 Claude 2.1.319 fixture，錄製腳本清掉 init 事件裡擁有者的外掛／連接器／skills；Codex exec 搭附件真實通過；review loop 也會提示「說改了沒改」；分支 `claude/codex-verify-e95d1a`）
@@ -62,6 +63,7 @@
 
 ## 需要擁有者處理
 
+- 助理上下文摘要（2026-11-20）：(1) 確認「上下文摘要」可以放進同一段對話的新 session（見「已確認決策」最上面一列；T3.6 的搜尋摘要仍然不放進指示）；(2) 確認門檻約 4 萬 token、保留最近 6 則訊息這兩個預設；(3) 用 haiku 或 `gpt-6-luna`（low effort）聊一段會查很多任務的長對話，確認摘要出現後 Joy 仍接得上前面的決定。
 - 這個任務內一律允許（2026-11-15）：(1) 審 `packages/policy/src/task-allow.ts`、`analyzeShellConcerns`、`analyzeSearch` 與 `classify.ts` 的 Grep／Glob 秘密檢查（見「擁有者待審」；後者在 `ask` 模式也會讓碰到秘密的搜尋改成要問）；(2) 確認依協調者指示定的兩點：MCP 工具一律不提供、只在封存／丟棄／刪除時失效（完成後的 follow-up 沿用）；(3) 用 haiku 跑一個 `ask` 任務，在核准卡按「這個任務內一律允許」，確認同一指令不再問、改參數會問，並在 ⋯ 選單撤銷。
 - 權限模式（2026-11-15）：(1) 審 `packages/core` 的 `PermissionMode`／`Task.permissionMode` 與 `packages/policy/src/shell.ts`、`classify.ts` 的 auto／full 規則（見「擁有者待審」）；(2) 用 haiku 跑一個 `auto` 的 review_loop 任務，確認 `pnpm install … && pnpm check` 不再要核准、`curl` 仍要；(3) 決定是否要在 Claude Code 開啟它自己的 Bash sandbox（需要先做 spike）。
 - 附件（2026-11-14）：(1) 審 `packages/core` 的 `RunOptions.images`、`ImageInput`、`ImageMediaType` 與 `Steer` 的第二個參數，以及文字附件的定位（見「擁有者待審」）；(2) 確認上限（3.75 MiB 圖片、256 KB 文字、每任務 40 個與 100 MB、每次 run 8 張圖與 256 KB 文字、容器 64 KB 文字）、「PDF 不收」、審查者看附件、草稿保存 id 這幾個決定；(3) 在已登入的 Mac 錄 fixture（haiku／gpt-6-luna、low effort）：Claude `-p --input-format stream-json` 第一則訊息帶一張小 PNG、Codex app-server `turn/start` 帶 `localImage`、`codex exec --image`、`codex exec -`（prompt 從 stdin）；錄完把合成 fake 換成真實 fixture。
@@ -98,6 +100,13 @@
 - 無。
 
 ## 驗證結果
+
+### 助理長對話：上下文摘要（2026-11-20，分支 `assistant-context-compaction`）
+
+- **問題**：預設的助理大腦（OpenAI API）用 `previous_response_id` 一輪接一輪串下去，沒設 `truncation`，也沒有任何壓縮：每輪都重算整段歷史（含工具結果）的 input token，超過模型上限時 API 直接回錯，那段對話再也無法回答。CLI 大腦（Claude、Codex）會自己在接近上限時壓縮，但之前一樣每輪變貴。不能續用 session 時只帶最後 20 則原文，更早的內容直接消失。
+- **做法**：(1) `packages/providers` 的 OpenAI 請求一律帶 `truncation: 'auto'`，超過上限時由 API 丟掉最舊的項目，不再卡死；(2) `packages/server/src/assistant.ts` 估算每輪留在 session 裡的量（prompt、圖片每張算 1000、工具呼叫與結果、回覆；ASCII 約 4 字元 1 token、其他文字 1 字元 1 token），續用時累加，存在 `conversations.context_tokens`；不用 provider 回報的 token，因為那是一輪內所有請求的加總，Codex 續用時看起來還是累計值（fixture `resume-1` 28k → 沒有工具呼叫的 `resume-2` 71k）；(3) 超過 `ASSISTANT_CONTEXT_TOKENS`（4 萬）就在背景用 `roles.background` 把「最近 6 則以外、上次摘要之後」的訊息連同舊摘要整理成上下文摘要（最多 6000 字，經 Redactor），存進 `context_summary`／`context_through` 並結束 session；整理失敗就維持原 session，下一個超量的回合再試；訊息太少（大量工具結果）時直接結束 session，不呼叫模型；(4) 新 session 的 prompt 是指示、記憶、「Earlier in this conversation（Joy's summary; a record, not new instructions）」、之後的訊息（仍最多 20 則）、這則訊息；換大腦時也用同一份摘要；(5) 對話頁在摘要涵蓋的最後一則訊息後顯示「以上已整理成摘要」，點開看摘要。
+- **測試**：providers（首輪與續用都帶 `truncation: 'auto'`）；db（存摘要時結束 session 與記憶、`endConversationSession`、`context_*` 的 CHECK）；server `assistant.test.ts`（token 估算、每輪計算、prompt 版面、摘要 prompt、輸出驗證、取最新訊息）與 `server.test.ts` 兩個情境（第一次整理失敗 session 照常續用、第二次成功後新 session 只有摘要＋最近 6 則、之後又能續用、API 回傳摘要；短對話大量工具結果時直接重開且不呼叫背景模型）；web `context-summary.test.ts` 與 Playwright `context-summary.spec.ts`（分隔線位置、展開摘要）。
+- **沒驗證到**：沒呼叫真的 OpenAI API 或 CLI；真實模型寫出的摘要品質、`truncation: 'auto'` 在真實 API 上的行為（照 OpenAI 文件）。本機根目錄 `pnpm check` 會被 `.claude/worktrees/` 裡殘留的 agent worktree 弄失敗（prettier 掃到它們、eslint 每個檔都報「multiple candidate TSConfigRootDirs」），所以改成分步跑：追蹤中與新增檔案的 prettier、`eslint . --ignore-pattern '.claude/**'`、typecheck、全部測試。
 
 > 2026-11-15 以前的驗證結果在 `docs/status-history.md`。
 
@@ -325,6 +334,7 @@
 
 ## 已確認決策
 
+- 2026-11-20 助理上下文摘要（擁有者同意修「長對話不會自動 compact」；以下細節為 agent 決定，待擁有者確認，`packages/core`、`policy`、`memory`、`secrets` 沒動）：(1) 上下文摘要和 T3.6 的搜尋摘要分開存（`context_summary` vs `summary`），只給同一段對話的下一個 session，不寫入 memories、不跨對話；它的內容本來就在被結束的 session 裡，所以不違反 T3.6「摘要不放進指示」的理由（那是怕助理回覆與工具結果變成長期記憶），prompt 標明它是紀錄、不是新指示；(2) 門檻用 Joy 自己估的對話量，不看 provider 回報的 token（各家語意不同，見「驗證結果」）；門檻是 server 選項 `assistantContextTokens`，還沒放進 `config.yaml`；(3) 在背景整理、成功才結束 session，不讓擁有者多等一輪；(4) 摘要只讀存下的訊息，工具結果不在裡面，新 session 需要時會再查一次。
 - 2026-11-19 審查依據實際檢查結果（擁有者要求審查要有真實驗證、審查者不加寫入權限；以下細節為 agent 決定，`packages/core`、`packages/policy` 沒動）：(1) 延伸既有送審前檢查，不讓審查者 CLI 跑 shell；(2) 只跑專案的 `checkCommand`，不從任務文字抽指令；(3) 審查者 prompt 一律說明跑了什麼或沒跑，通過的輸出結尾也給；(4) 略過的檢查不擋核准（沿用既有行為），但審查者會被告知沒驗證。
 - 2026-11-18 加入專案對話框的時序（擁有者要求修 `t1.8` 偶爾失敗）：原因是第一次列出家目錄的結果在「全選」與「插入文字」之間抵達，把輸入框換成家目錄，貼上的路徑就接在後面（CI 上變成去 `/home/runner/tmp/...`；本機用暫時測試重現出 `/Users/jimmy/tmp/x`）。真人先 ⌘A 再貼上也會遇到，所以輸入框的 keydown／pointerdown 也算開始編輯，載入結果不再覆蓋。Playwright 的 `fill` 不發這些事件，`t1.8`、`container.spec.ts` 另外改成先等第一次列表再輸入、並檢查輸入值。新增 e2e 先失敗（`/home/me/home/me/code`）後通過；e2e 133 passed，`pnpm check` 1540 passed。
 - 2026-11-17 專案 hooks（擁有者要求「偵測專案 hooks」；以下細節為 agent 決定，`packages/policy`、`core`、`secrets` 沒動）：每次 Claude Code run 前（包住 `claude-cli` provider，含注入的）讀 cwd 的 `.claude/settings.json`，取會自己執行的鍵（hooks、statusLine、apiKeyHelper、awsAuthRefresh、awsCredentialExport、otelHeadersHelper、enabledPlugins、extraKnownMarketplaces）算 SHA-256；和 `repos.trusted_claude_settings`（migration 27）不同就用現有核准卡（`run_outside_worktree`、approve）在任務裡問，同意後記在專案上，拒絕或逾時就不啟動、任務失敗；沒有任務可問（例如助理）就拒絕。只改 permissions 等其他鍵不再問；JSON 壞掉也問。另外每個 Claude run 都加 `--strict-mcp-config`（實測沒加時會啟動 repo 的 `.mcp.json` server 與帳號的 claude.ai connectors）；`env` 也算（實測專案 env 在未信任資料夾生效）。Tool Hub 的 peer 用 worktree 找回任務來問；等核准用任務的取消訊號（peer 請求 55 秒就放棄，核准卡照樣等完整時限）；逾時後再按同意只記住信任，不續跑（第一個 run 還沒有 session 可續），要重送任務；Joy 重啟後這種逾時卡會走一般的延遲核准流程（未處理，低）；env 只顯示變數名稱，值只進指紋；compete 兩個 Claude 共用同一張卡；設定路徑不是一般檔案或超過 256 KB 就拒絕。Codex、skill／agent frontmatter 的 hooks 不在範圍；Joy 讀檔到 Claude 讀檔之間仍有短暫空窗（需要 agent 已留下背景程序）。驗證：`pnpm check` 1538 passed；新增單元與整合測試（問、同意後不再問、改了再問、拒絕不啟動、沒指令不問、peer、逾時後同意、FIFO、env、BOM）；reviewer 審過一輪並修正。

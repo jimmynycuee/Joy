@@ -95,11 +95,13 @@ export type { McpServerRecord, McpServerUpdate, McpVar, NewMcpServer } from './m
 export {
   appendMessage,
   createConversation,
+  endConversationSession,
   getConversation,
   listConversations,
   listMessages,
   resetSessionsUsingMemory,
   searchHistory,
+  setConversationContext,
   setConversationSummary,
   setConversationPinned,
   setConversationTitle,

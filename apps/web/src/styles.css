@@ -1930,6 +1930,36 @@ svg {
 .chat-error {
   color: var(--red);
 }
+.context-divider {
+  font-size: var(--fs-13);
+  color: var(--muted);
+}
+.context-divider > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+.context-divider > summary::-webkit-details-marker {
+  display: none;
+}
+.context-divider > summary::before,
+.context-divider > summary::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+.context-divider > summary:hover {
+  color: var(--text);
+}
+.context-divider > p {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  white-space: pre-wrap;
+}
 .chat-composer {
   max-width: 800px;
   width: 100%;

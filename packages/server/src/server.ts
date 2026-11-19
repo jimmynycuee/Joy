@@ -91,6 +91,8 @@ import {
   listMessages,
   resetSessionsUsingMemory,
   searchHistory,
+  endConversationSession,
+  setConversationContext,
   setConversationSummary,
   listRepos,
   listReviews,
@@ -148,7 +150,17 @@ import type {
 import { ApprovalBroker } from './approvals.js'
 import { CLAUDE_SETTINGS_FILE, readClaudeSettingsCommands } from './claude-settings.js'
 import type { TaskAllowOffer } from './approvals.js'
-import { runAssistantTurn, toApiTools } from './assistant.js'
+import {
+  ASSISTANT_CONTEXT_TOKENS,
+  CONTEXT_KEEP_MESSAGES,
+  CONTEXT_SUMMARY_SCHEMA,
+  MAX_CONTEXT_SUMMARY_INPUT,
+  contextSummaryPrompt,
+  newestWithin,
+  parseContextSummary,
+  runAssistantTurn,
+  toApiTools,
+} from './assistant.js'
 import { claimsChangesWithoutAny } from './empty-change-claim.js'
 import { rewindHandoffPrompt, switchHandoffPrompt } from './handoff.js'
 import { summarizeTaskUsage, USAGE_EVENT_TYPES } from './task-usage.js'
@@ -662,6 +674,11 @@ export interface JoyServerOptions {
   logger?: Logger
   /** Summarize conversations for history search (T3.6). Default true. */
   conversationSummaries?: boolean
+  /**
+   * Start a new assistant brain session from a summary once the current one holds about this many tokens of
+   * conversation (tests). Default `ASSISTANT_CONTEXT_TOKENS`.
+   */
+  assistantContextTokens?: number
   /** Overrides budget.per_task.max_minutes (tests). */
   taskTimeLimitMs?: number
   /** Replaces the GitHub publisher (tests). */
@@ -6344,6 +6361,60 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
     }
   }
 
+  const compacting = new Set<string>()
+
+  /**
+   * The brain session of this conversation got long: fold the older messages into the context summary and end the
+   * session, so the next turn starts a new one from the summary and the latest messages. Until the summary is
+   * stored the session goes on; when summarizing fails, the next long turn tries again.
+   */
+  async function compactConversation(conversationId: string): Promise<void> {
+    const conversation = getConversation(db, conversationId)
+    if (!conversation?.sessionId || compacting.has(conversationId)) return
+    const spoken = listMessages(db, conversationId).filter(
+      (m) => (m.role === 'user' || m.role === 'assistant') && m.id > (conversation.contextThrough ?? 0),
+    )
+    const older = spoken.slice(0, Math.max(0, spoken.length - CONTEXT_KEEP_MESSAGES))
+    const through = older.at(-1)
+    if (!through) {
+      // Few messages but large tool results: the latest messages word for word are already a small start.
+      endConversationSession(db, conversationId)
+      return
+    }
+    const config = await configStore.get()
+    const model = resolveRole('background', config.roles as RoleConfig, {})
+    const provider = providers[model.provider]
+    if (!provider) return
+    compacting.add(conversationId)
+    try {
+      const cwd = join(home, 'assistant')
+      await mkdir(cwd, { recursive: true, mode: 0o700 })
+      const transcript = newestWithin(older, MAX_CONTEXT_SUMMARY_INPUT).map((m) => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+      }))
+      let done: Extract<AgentEvent, { type: 'done' }> | undefined
+      for await (const event of provider.run(
+        {
+          cwd,
+          prompt: contextSummaryPrompt(transcript, conversation.contextSummary),
+          autonomy: 'read-only',
+          outputSchema: CONTEXT_SUMMARY_SCHEMA,
+          signal: AbortSignal.timeout(5 * 60_000),
+        },
+        model,
+      )) {
+        persistUsageEvent(db, model.provider, event)
+        if (event.type === 'done') done = event
+      }
+      const summary = done && !done.isError ? parseContextSummary(done.structured) : undefined
+      if (!summary) throw new Error('The background model returned no context summary; the session goes on')
+      setConversationContext(db, conversationId, redactor.redact(summary), through.id)
+    } finally {
+      compacting.delete(conversationId)
+    }
+  }
+
   /** Bumped on every memory edit or delete, so a turn that was running at the time can tell. */
   let memoryEpoch = 0
   const staleMemories = new Set<string>()
@@ -6477,10 +6548,12 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       const config = await configStore.get()
       const brain = resolveRole('assistant_brain', config.roles as RoleConfig, {})
       // A brain that cannot resume gets earlier files by name only; it saw them in its own session, if at all.
+      // Messages a context summary covers reach a new session as that summary instead.
       const history = messagesWithAttachments(conversationId)
         .filter(
           (message): message is typeof message & { role: 'user' | 'assistant' } =>
-            message.role === 'user' || message.role === 'assistant',
+            (message.role === 'user' || message.role === 'assistant') &&
+            message.id > (conversation.contextThrough ?? 0),
         )
         .map((message) => ({
           role: message.role,
@@ -6554,6 +6627,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
           history,
           cwd,
           ...(remembered.length ? { context: memoryContext(remembered) } : {}),
+          ...(conversation.contextSummary ? { earlier: conversation.contextSummary } : {}),
           signal: AbortSignal.timeout(10 * 60_000),
           ...(canResume && conversation.sessionId ? { resumeSessionId: conversation.sessionId } : {}),
           ...(mcpServer ? { mcpServer } : {}),
@@ -6569,12 +6643,17 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       const reply = appendMessage(db, conversationId, 'assistant', redactor.redact(result.reply), memoryIds)
       // A memory this session holds was edited or deleted while the brain answered: do not keep the session.
       const stale = memoryEpoch !== epochAtStart && memoryIds.some((id) => staleMemories.has(id))
+      const sessionId = stale ? null : (result.sessionId ?? null)
+      const contextTokens = (canResume ? (conversation.contextTokens ?? 0) : 0) + result.contextTokens
       updateConversationSession(db, conversationId, {
         provider: brain.provider,
         model: brain.model,
-        sessionId: stale ? null : (result.sessionId ?? null),
+        sessionId,
         memoryIds,
+        contextTokens,
       })
+      if (sessionId && contextTokens >= (options.assistantContextTokens ?? ASSISTANT_CONTEXT_TOKENS))
+        backgroundJob('context summary', () => compactConversation(conversationId))
       if (!conversation.title) setConversationTitle(db, conversationId, redactor.redact(text).slice(0, 60))
       if (options.conversationSummaries ?? true)
         backgroundJob('summary', () => summarizeConversation(conversationId))
