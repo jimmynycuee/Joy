@@ -3,14 +3,25 @@
 //
 //   node scripts/record-fixtures.mjs claude [--model haiku]
 //   node scripts/record-fixtures.mjs codex  [--model gpt-6-luna]
+//   node scripts/record-fixtures.mjs claude --scrub   re-apply the scrubbing below to the recorded files, no model calls
 //
 // Uses whatever account the CLI is logged into, and spends a little of its quota. Defaults are the cheapest
 // model at low effort; fixtures check event plumbing, not answer quality. List Codex models: `codex debug models`.
 // Runs on macOS and Linux (and WSL). On native Windows the npm shims are .cmd files, which need a shell; not supported.
 // Output is sanitized: temp dirs, the repo dir and the home dir are replaced with <WORKDIR>, <TMP> and <HOME>.
+// Claude's system/init also lists the recording owner's own setup (plugins, claude.ai connectors and their tools,
+// skills, agents). The repository is public, so that is cut down to what Joy reads and Claude's built-ins.
 import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,6 +39,7 @@ if (cli !== 'claude' && cli !== 'codex') {
 
 const outDir = join(root, 'tests', 'fixtures', 'cli-events', cli)
 mkdirSync(outDir, { recursive: true })
+const scrubOnly = rest.includes('--scrub')
 
 function makeRepo() {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'joy-fixture-')))
@@ -50,6 +62,28 @@ function sanitize(text, workdir) {
   return text
 }
 
+/** Drops the owner's personal setup from Claude's system/init line; every other line is returned unchanged. */
+function scrubClaudeLine(line) {
+  if (!line.trim()) return line
+  const event = JSON.parse(line)
+  if (event.type !== 'system' || event.subtype !== 'init') return line
+  const joyTool = (name) => !name.startsWith('mcp__') || name.startsWith('mcp__joy__')
+  if (Array.isArray(event.tools)) event.tools = event.tools.filter((t) => typeof t === 'string' && joyTool(t))
+  if (Array.isArray(event.mcp_servers)) event.mcp_servers = event.mcp_servers.filter((s) => s?.name === 'joy')
+  if (Array.isArray(event.plugins))
+    event.plugins = event.plugins.filter(
+      (p) => typeof p?.source === 'string' && p.source.endsWith('@builtin'),
+    )
+  for (const key of ['skills', 'slash_commands', 'agents']) if (Array.isArray(event[key])) event[key] = []
+  for (const key of ['scratchpad_path', 'messaging_socket_path', 'memory_paths', 'startup_timing'])
+    if (key in event) event[key] = '<SCRUBBED>'
+  return JSON.stringify(event)
+}
+
+function scrub(text) {
+  return cli === 'claude' ? text.split('\n').map(scrubClaudeLine).join('\n') : text
+}
+
 function version() {
   const r = spawnSync(cli, ['--version'], { encoding: 'utf8' })
   return (r.stdout || r.stderr).trim()
@@ -65,7 +99,7 @@ function record(name, args, workdir) {
     timeout: 10 * 60 * 1000,
     maxBuffer: 64 * 1024 * 1024,
   })
-  const stdout = sanitize(r.stdout ?? '', workdir)
+  const stdout = scrub(sanitize(r.stdout ?? '', workdir))
   writeFileSync(join(outDir, `${name}.jsonl`), stdout)
   const meta = {
     cli,
@@ -102,7 +136,12 @@ function withRepo(fn) {
   }
 }
 
-if (cli === 'claude') {
+if (scrubOnly) {
+  for (const name of readdirSync(outDir).filter((n) => n.endsWith('.jsonl'))) {
+    const file = join(outDir, name)
+    writeFileSync(file, scrub(readFileSync(file, 'utf8')))
+  }
+} else if (cli === 'claude') {
   const base = ['-p', '--output-format', 'stream-json', '--verbose', ...m]
   withRepo((dir) => record('edit', [...base, '--permission-mode', 'acceptEdits', FIX], dir))
   withRepo((dir) => {

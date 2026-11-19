@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a1f329-075e-7630-a0e1-52789a5ef68b"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  user (<HOME>/.codex/config.toml): `features.goal` is ignored."}}
+{"type":"item.completed","item":{"id":"item_1","type":"error","message":"Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  user (<HOME>/.codex/config.toml): `features.goal` is ignored."}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"PELICAN"}}
+{"type":"turn.completed","usage":{"input_tokens":70903,"cached_input_tokens":28288,"cache_write_input_tokens":0,"output_tokens":12,"reasoning_output_tokens":0}}

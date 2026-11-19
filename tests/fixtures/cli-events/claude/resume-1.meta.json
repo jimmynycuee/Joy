@@ -1,6 +1,6 @@
 {
   "cli": "claude",
-  "version": "2.1.317 (Claude Code)",
+  "version": "2.1.319 (Claude Code)",
   "args": [
     "-p",
     "--output-format",
@@ -8,12 +8,14 @@
     "--verbose",
     "--model",
     "haiku",
+    "--effort",
+    "low",
     "--session-id",
-    "0ab2fa96-5030-4d55-a37a-25b99360b07b",
+    "476241c7-248d-4184-8b19-ac514edf4601",
     "Remember the code word PELICAN. Reply only OK."
   ],
   "exitCode": 0,
   "signal": null,
-  "recordedAt": "2026-11-03T08:44:33.953Z",
+  "recordedAt": "2026-11-19T09:38:20.145Z",
   "stderrTail": ""
 }
