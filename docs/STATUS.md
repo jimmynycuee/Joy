@@ -2,6 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-19（助理對話可以附圖片與文字檔：圖片隨訊息交給大腦、文字檔引用進訊息，存下的訊息只留擁有者的話並列出檔案；migration 28 讓附件屬於任務或對話其中之一，分支 `assistant-attachments`）
 - 最後更新：2026-11-19（介面：審查卡與 Joy 工具改用易懂的名稱、側邊欄篩選顯示各狀態數量並把目前條件留在清單上方、任務／對話／設定都有自己的網址（上一頁、下一頁可用），分支 `ui-improvements`）
 - 最後更新：2026-11-19（真實 CLI 第四輪：一律允許、附件、專案 hooks 同意、Codex exec 都通過；「說改了沒改」的提示在任務完成收合後仍留在外面，沒有變更時按鈕改成「清除工作副本」並不再要 GitHub 網址，分支 `keep-warning-visible`）
 - 最後更新：2026-11-19（真實 CLI 第三輪：審查看到檢查結果、說改了沒改的提示、auto 權限、換 provider 交接與重做、合併到 main 與開編輯器都通過；修 Claude 多輪 run 的 token 只算最後一輪，分支 `claude-usage-turns`）
@@ -98,6 +99,15 @@
 ## 驗證結果
 
 > 2026-11-15 以前的驗證結果在 `docs/status-history.md`。
+
+### 助理對話附件（2026-11-19，分支 `assistant-attachments`，基於 `ui-improvements`）
+
+- **改動**：`POST /api/conversations/:id/messages` 接受 `attachments`（上傳流程、型別與大小上限和任務相同；每則 ≤ 10 個，每個對話 ≤ 40 個、≤ 100 MB）。圖片用 `RunOptions.images` 交給助理大腦（OpenAI API、Claude、Codex 三種大腦都已支援圖片），文字檔用任務同一套框架字句引用進這一輪的訊息。訊息仍要有文字。
+- **存什麼**：`messages` 只存擁有者打的字；檔案用 `attachments.conversation_id` 與 `message_id`（`messages` 的 id）連到那則訊息，`GET /api/conversations/:id` 在使用者訊息上列出 `attachments`。記憶擷取、對話摘要、標題都只看擁有者打的字，不看檔案內容。不能續用 session 的大腦（第一輪或換了大腦）從歷史只拿到檔名。
+- **DB**：migration 28 加 `attachments.conversation_id`（`ON DELETE CASCADE`，`CHECK` 不能同時屬於任務與對話）；「還沒用過」改成兩個欄位都是 NULL，所以送進對話的檔案不能再給任務用，反之亦然，也不會被清理掉。送出後移除（`DELETE /api/attachments/:id`）同任務：留下名稱、標成已移除。
+- **網頁**：助理輸入框多了迴紋針、貼上與拖放（沿用任務的 `useAttachments`）；送出的訊息顯示縮圖或檔名。
+- **驗證**：db `attachments.test.ts` +1；server `attachments-api.test.ts` 把原本「助理只收文字」的測試換成兩個（大腦收到圖片與引用的文字、存下的訊息不含檔案內容、重複送出 409、移除後標成已移除；任務與對話不能共用同一個檔案）；e2e `attachments.spec.ts` +1。用假資料預覽把 `assistant_brain` 設成假的 `claude-cli`，貼上一張圖片送出：訊息上有縮圖，網址從 `?chat` 換成 `?chat=<id>`。
+- **沒驗證到**：真實大腦（haiku／luna／OpenAI API）看圖的回答；Telegram 送來的圖片不在這次範圍。
 
 ### 介面：工具名稱、篩選、網址（2026-11-19，分支 `ui-improvements`）
 
@@ -316,7 +326,7 @@
 - 2026-11-15 任務頁整理（擁有者原則，實作細節為 agent 決定）：任務完成（`done`／`review_ready`）或失敗／取消後，時間軸預設只留使用者訊息、agent 最後一則訊息、最後一個審查卡與錯誤，其餘收進「過程」；執行中、等核准計畫與比賽任務維持展開。標題列只有狀態點、單行標題、「變更」與「⋯」；任務標題顯示一律用 `shortTitle()`（約 24 全形或 48 半形字元）。選中、聚焦、卡片一律中性（不用 accent 色塊、外框或光暈）。
 - 2026-11-14 擁有者決定：通過本機 listener 接受自身 Origin（#134）、附件的 core 介面 `RunOptions.images`／`ImageInput`／`Steer` 第二參數（#138）、文字附件定位為參考資料而非擁有者指示，以及附件上限（圖片 3.75 MiB、文字 256 KB、每則 10 個、每任務 40 個／100 MB、每次 run 最多 8 張圖與 256 KB 文字）。
 
-- 2026-11-14 附件（agent 決定，待擁有者確認；第二輪依審查修正）：(1) 只收圖片（PNG／JPEG／GIF／WebP，原始 ≤ 3.75 MiB＝base64 後 ≤ 5 MiB）與文字／程式碼檔（UTF-8，≤ 256 KB，內容放進 prompt），PDF 與其他二進位不收；每則 ≤ 10 個、≤ 20 MB；每任務 ≤ 40 個、≤ 100 MB；(2) 檔案存 `<JOY_HOME>/attachments/<uuid>.<ext>`，從不進 worktree，所以不會被 commit 或進 PR；(3) 只有 server 組的擁有者段落放帶行程 nonce 的標記，provider 外層 `withAttachments` 只展開這種標記、只展開同任務的附件、每個檔案引用一次；(4) 審查者也看得到附件，每次 run 最多最新 8 張圖、256 KB 文字，較舊的只給名稱；(5) 文字附件是 reference data，不放進指令清單（擁有者待審）；(6) 容器模式加 Claude 角色時送圖、容器模式文字累計超過 64 KB 時，送出時就回 422；(7) 缺檔改成「[attachment missing]」並發警示事件、run 照常；擁有者可移除已送出的附件，之後只給名稱；(8) prompt 超過 16 KB 時，Claude 與 `codex exec` 改走 stdin；(9) 草稿只保存已上傳附件的 id；未送出的上傳 7 天後刪；備份與匯出不含附件檔案；(10) 助理對話暫不支援附件；(11) 改 `packages/core` 的 `RunOptions`（可選 `images`）與 `Steer`（可選第二個參數 `images`），列入擁有者待審。
+- 2026-11-14 附件（agent 決定，待擁有者確認；第二輪依審查修正）：(1) 只收圖片（PNG／JPEG／GIF／WebP，原始 ≤ 3.75 MiB＝base64 後 ≤ 5 MiB）與文字／程式碼檔（UTF-8，≤ 256 KB，內容放進 prompt），PDF 與其他二進位不收；每則 ≤ 10 個、≤ 20 MB；每任務 ≤ 40 個、≤ 100 MB；(2) 檔案存 `<JOY_HOME>/attachments/<uuid>.<ext>`，從不進 worktree，所以不會被 commit 或進 PR；(3) 只有 server 組的擁有者段落放帶行程 nonce 的標記，provider 外層 `withAttachments` 只展開這種標記、只展開同任務的附件、每個檔案引用一次；(4) 審查者也看得到附件，每次 run 最多最新 8 張圖、256 KB 文字，較舊的只給名稱；(5) 文字附件是 reference data，不放進指令清單（擁有者待審）；(6) 容器模式加 Claude 角色時送圖、容器模式文字累計超過 64 KB 時，送出時就回 422；(7) 缺檔改成「[attachment missing]」並發警示事件、run 照常；擁有者可移除已送出的附件，之後只給名稱；(8) prompt 超過 16 KB 時，Claude 與 `codex exec` 改走 stdin；(9) 草稿只保存已上傳附件的 id；未送出的上傳 7 天後刪；備份與匯出不含附件檔案；(10) 助理對話暫不支援附件（2026-11-19 已支援，見「助理對話附件」）；(11) 改 `packages/core` 的 `RunOptions`（可選 `images`）與 `Steer`（可選第二個參數 `images`），列入擁有者待審。
 - 2026-11-14 介面不放說明文字，讓介面自己說明（擁有者原則）：新增或修改介面時，不加只是在解釋 UI 的段落、副標題、說明性 placeholder；需要時用 `title` tooltip 或選單第二行小字。保留真正必要的錯誤訊息、確認對話與不可逆動作的提醒。側邊欄只有一個「最近」清單，已封存、統計放在設定。
 - 2026-11-14 品牌與專案色（擁有者核准設計；實作細節為 agent 決定）：(1) 品牌色只用在角色與需要注意處（等你、進行中），其餘介面維持黑白，送出鍵維持黑白；(2) 文字用的青色是 `--accent-text`（淺色 `#07726A`），`--accent`（`#0E9C91`）只做線條、圓點、焦點，因為前者在白底不到 4.5:1；(3) 專案色是 6 個固定灰階色，預設依專案順序自動輪流，可在設定改，只當小圓點、不當文字色，儲存 id（`blue green purple orange pink teal`）不是色碼，沒選就是 NULL；(4) 角色與圖示是 agent 依擁有者提供的參考圖用 SVG 重繪，日後可整組替換（見上方「品牌」一節）；(5) 角色轉圈用 CSS 動畫，`prefers-reduced-motion` 時不轉。
 - 2026-11-13 擁有者決定：(1) 審過並確認 `packages/core` 的 `RunOptions.onSteer`／`Steer`（#133）；(2) 確認即時補充的細節（下一條 2026-11-09）：只 steer 實作者、容器模式不 steer、10 秒逾時退回排隊、每次審查前重讀任務說明；(3) 因時間上限、花費上限或月預算停下後，排隊訊息**不自動接續**，保持排隊並提示，按「繼續」或再送訊息才一併送出；(4) T4.3 Tauri 繼續延後、P5 其餘繼續暫緩、Telegram 真實 bot 測試維持暫緩；(5) 優先順序：不用終端機（單一程式＋背景服務）→ 輸入框附檔與貼圖 → 新任務選起始分支 → 變更檢視行內留言；(6) 擁有者會先錄 Claude 真實 fixture，並先做 T1.13 與 T1.9 驗收。
