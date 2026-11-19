@@ -2,6 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-19（`queue-rewind` 的測試改成等 agent 開始才送要排隊的訊息，修掉 macOS／Windows CI 上偶爾失敗；分支 `fix-queue-rewind-flaky`）
 - 最後更新：2026-11-19（審查依據實際檢查結果：審查者 prompt 一律寫出 Joy 跑了什麼（指令、結束碼、截斷遮罩後的輸出結尾）或沒跑什麼，審查者維持唯讀；分支 `review-verification`）
 - 最後更新：2026-11-19（執行訊號：實作者說改了檔案但沒有變更時提示一行、Codex 設定警告每次執行只報一次且不當錯誤、權限選單說明 Codex 沙盒差異，分支 `run-signals`）
 - 最後更新：2026-11-19（競賽裁判輸入瘦身：裁判 run 不載入 Claude 內建工具、skills、CLAUDE.md，prompt 的 diff 有上限與註記；新增 core 選填欄位 `RunOptions.promptOnly` 待擁有者審；分支 `judge-input`）
