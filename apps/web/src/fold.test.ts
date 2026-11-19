@@ -101,6 +101,19 @@ describe('foldTimeline', () => {
     expect(kinds(foldTimeline(passing, 'done'))).toEqual(['fold', 'review'])
   })
 
+  it('keeps the warning that the agent claimed changes it never made in view', () => {
+    seq = 0
+    const entries = buildTimeline([
+      event('started', {}, 0),
+      tool('c1', 'cat math.js'),
+      agent('implementer', { type: 'message', text: 'I fixed math.js.' }, 5),
+      event('result.warning', { reason: 'empty_diff_claimed_changes' }, 6),
+    ])
+    const items = foldTimeline(entries, 'done')
+    expect(kinds(items)).toEqual(['fold', 'message', 'step'])
+    expect(items.at(-1)).toMatchObject({ entry: { text: 'agent 說改了檔案，但沒有任何變更' } })
+  })
+
   it('counts rounds over the whole run, steps in the fold, and the time from first to last event', () => {
     const fold = foldTimeline(twoRounds(), 'done')[0]
     if (fold?.kind !== 'fold') throw new Error('expected a fold')
