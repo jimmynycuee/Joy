@@ -99,7 +99,10 @@
 - **Claude 換模型後 resume**：第一輪 haiku，follow-up 帶 `roleOverrides.implementer = sonnet`。兩輪是同一個 session id，模型從 `claude-haiku-5-5` 變成 `claude-sonnet-5-5`，第二輪答出第一輪要它記住的暗號。
 - **Codex 跨出沙盒（找到並修好安全問題）**：`ask` 模式下要 Codex 跑 `curl -sSI https://example.com`。修正前沒有任何核准就連上網路（`HTTP/2 200`）。原因是擁有者的 `~/.codex/config.toml` 設了 `approvals_reviewer = "guardian_subagent"`，codex-cli 0.166.0 的 app-server thread 沿用它（`thread/start` 回應 `approvalsReviewer: "auto_review"`、`networkAccess: false`），升權請求由 Codex 自己的審查子代理批准，Joy 的模式與秘密規則都被繞過。修法：`thread/start`／`thread/resume` 一律送 `approvalsReviewer: 'user'`，`codex exec` 加 `-c approvals_reviewer="user"`（exec 沒人可問，升權就被拒）。修正後實跑：請求以 `run_outside_worktree` 核准卡送到 Joy，核准才執行；拒絕則不執行，Codex 回報「升級權限請求遭拒」。測試：`app-server.test.ts`（start 與兩種 resume 都帶 `approvalsReviewer`）、`args.test.ts`（read-only／workspace-write 都帶），修正前失敗。
 - **compete**：Claude haiku 對 Codex luna、裁判 haiku。兩邊各自完成、互審都核准，裁判給出 `winner` 與理由，任務停在 `review_ready`（`awaitingChoice`）；`POST /choose` 後 `compete.chosen`、另一份 `discarded`，任務 `done`。觀察：裁判一次用了 44,502 input tokens、沒有快取命中，約 US$0.18，比實作者貴很多。
-- **沒驗證到**：compete 的「請裁判合併」（`/merge`）、Codex 的 MCP elicitation、Windows。
+- **compete 的「請裁判合併」**：`POST /merge` 後 `compete.merge_started`，裁判（haiku）在第三個 worktree 重新實作，Codex 審查核准，`compete.merged`，任務回到等待選擇（「合併版好了」）；`/choose` 選合併版後 `compete.chosen`、兩份原始方案 `discarded`，任務 `done`。第二次裁判有快取命中（25,992），約 US$0.08。
+- **Codex 的 MCP 提問**：擁有者加的 stdio MCP server（`scripts/fixtures/mcp-stub.mjs`）在 `ask` 模式下，Codex 呼叫 `ask_peer` 時發 `mcpServer/elicitation/request`，Joy 出核准卡（`toolCall: true`、寫出 server 自己的訊息），核准後工具才跑並回傳 `PEER SAYS: 4`。
+- **找到、尚未修：Codex 會載入擁有者全域的 MCP**：Joy 的 Codex run 會啟動擁有者 `~/.codex/config.toml` 的全部 MCP server（實測 9 個，含 `computer-use`、`node_repl`、`private_investment_*`）、外掛帶的 server（CapCut、Notion、Gmail…）、`codex_apps` 連接器與遠端外掛的 server。上面那次任務裡 Codex 先呼叫了 `mcp__capcut_creation_resource__background_music`，**沒有送任何核准到 Joy**（那次呼叫本身失敗）。Claude 在 #155 用 `--strict-mcp-config` 隔開了，Codex 沒有。已用 app-server 實驗確認可行的修法：`config/read` 讀出生效的 `mcp_servers` 與 `plugins` 名稱，`thread/start` 的 `config` 把不屬於 Joy 的 server 設 `enabled: false`、外掛 `enabled: false`、`features.apps` 與 `features.remote_plugin` 為 false；遠端外掛的 server 不在設定裡，要用 `{ command, enabled: false }` 的停用項目蓋掉（只給 `enabled` 會報 `invalid transport`）。之後 `mcpServerStatus/list` 只剩停用的項目。`codex exec` 要另外處理。
+- **沒驗證到**：Windows。
 
 ### 真實 CLI 冒煙測試（2026-11-19，分支 `real-cli-smoke`）
 
