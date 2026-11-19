@@ -2,6 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-19（執行訊號：實作者說改了檔案但沒有變更時提示一行、Codex 設定警告每次執行只報一次且不當錯誤、權限選單說明 Codex 沙盒差異，分支 `run-signals`）
 - 最後更新：2026-11-19（真實 CLI 冒煙測試：review loop 兩種組合都通過；修好 Claude 在連結資料夾下回報絕對路徑；擁有者確認 core 與 policy 已審；分支 `real-cli-smoke`）
 - 最後更新：2026-11-19（完成的任務可「合併到 main」（本機合併，先確認分支與檔案數）與「在編輯器開啟」（設定 `editor`），分支 `task-actions`）
 - 最後更新：2026-11-19（介面與 bug 修正：輸入框依自身寬度收合、加入專案讀出 repo 的預設分支與 GitHub origin 並在加入時檢查分支、環境檢查文字改給使用者看、首頁指出選的模型缺哪個 CLI、手機任務頁不重複標題；本檔只留近期驗證結果，較早的移到 `docs/status-history.md`；分支 `ui-fixes`）
@@ -89,6 +90,12 @@
 ## 驗證結果
 
 > 2026-11-15 以前的驗證結果在 `docs/status-history.md`。
+
+### 執行訊號（2026-11-19，分支 `run-signals`）
+
+- 單一模式的實作者成功結束、工作副本沒有任何變更、沒有 `file_change` 事件，但最後訊息像在說改了檔案（提到檔案路徑或「修正／fixed／updated」等字）時，記一筆 `result.warning` 事件，討論串顯示一行「agent 說改了檔案，但沒有任何變更」；任務結果不受影響。判斷在 `packages/server/src/empty-change-claim.ts`。review loop 路徑尚未加。
+- Codex 的「忽略 1 個無法辨識的設定」通知（`~/.codex/config.toml` 有過時的 key）改成每次執行只發一次 `status`，不再是兩筆 recoverable `error`（`config-warning.ts`，exec 與 app-server 解析器共用；app-server 的通知方法名 `configWarning`／`warning`／`error` 是依協定推測，尚未用真實輸出確認）。
+- 權限選單「要求核准」的說明加上 Codex 在沙盒內不問、出沙盒才問。
 
 ### 真實 CLI 冒煙測試（2026-11-19，分支 `real-cli-smoke`）
 
