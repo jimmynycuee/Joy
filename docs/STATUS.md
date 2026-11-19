@@ -2,6 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-19（真實 CLI 第三輪：審查看到檢查結果、說改了沒改的提示、auto 權限、換 provider 交接與重做、合併到 main 與開編輯器都通過；修 Claude 多輪 run 的 token 只算最後一輪，分支 `claude-usage-turns`）
 - 最後更新：2026-11-19（`queue-rewind` 的測試改成等 agent 開始才送要排隊的訊息，修掉 macOS／Windows CI 上偶爾失敗；分支 `fix-queue-rewind-flaky`）
 - 最後更新：2026-11-19（審查依據實際檢查結果：審查者 prompt 一律寫出 Joy 跑了什麼（指令、結束碼、截斷遮罩後的輸出結尾）或沒跑什麼，審查者維持唯讀；分支 `review-verification`）
 - 最後更新：2026-11-19（執行訊號：實作者說改了檔案但沒有變更時提示一行、Codex 設定警告每次執行只報一次且不當錯誤、權限選單說明 Codex 沙盒差異，分支 `run-signals`）
@@ -95,6 +96,20 @@
 ## 驗證結果
 
 > 2026-11-15 以前的驗證結果在 `docs/status-history.md`。
+
+### 真實 CLI 驗證第三輪（2026-11-19，分支 `claude-usage-turns`）
+
+暫存 `JOY_HOME`、port 4420、暫存 repo（`math.js` 加 `node test.js`）；所有角色都設成 haiku／gpt-6-luna、`low`。
+
+- **審查看到檢查結果（#164）**：review_loop，`checkCommand: ["node","test.js"]`，任務要求「測試和 `npx eslint .` 都要過」。`checks` 事件有 `command`、結束碼 0、`ok add`；審查者摘要寫出 `node test.js` 通過，並說 `npx eslint .` 不在 Joy 的驗證結果裡、沒有確認。審查者沒有自己跑指令。
+- **說改了檔案其實沒改（#163）**：haiku 照指示只回「I fixed the bug in math.js…」、不改檔，出現一次 `result.warning {reason: empty_diff_claimed_changes}`。
+- **`auto` 權限模式**：`pnpm install && pnpm test` 不用核准；`curl -sI https://example.com` 要核准（`run_outside_worktree`），拒絕後實作者沒有改用其他方式重試，並在回覆說明。這個暫存 repo 沒有 `.gitignore`，`pnpm install` 產生的 `node_modules`、`pnpm-lock.yaml` 進了 diff，被審查者擋下後實作者自己清掉（repo 設定問題，不是 Joy 的）。
+- **換 provider 交接**：haiku 跑完第一輪後，訊息帶 `roleOverrides.implementer = gpt-6-luna`。產生 `task.settings.handoff {from: claude-cli/haiku, to: codex-cli/gpt-6-luna}` 與新的 attempt；luna 答出第一輪記住的代號與改過的檔案。
+- **重做第一輪**：`POST /rewind {messageId: "task"}` 改寫 prompt 後，`task.rewound` 記下捨棄的訊息與 `savedAs` 檢查點，新的一輪從原始狀態做出新 diff（多了 `// rewound`）。
+- **合併到 main 與開編輯器（#159）**：`open-editor` 用設定的指令加參數，最後一個參數是 worktree 路徑；`merge-into-default` 沒有 `confirm` 回 400；確認後建立 `--no-ff` 合併 commit，並更新 checkout；再合併一次回 409 `nothing_to_merge`。
+- **用量（找到並修好）**：直接用 claude-cli 2.1.319（haiku）量。同一個 stream-json 程序裡，每次 `result` 的 `usage` 只算該輪，`total_cost_usd` 與 `modelUsage` 是累計值；同一輪內多次工具呼叫，`usage` 有加總（`num_turns: 3` 時等於三則 assistant 訊息的和）。Joy 原本只取最後一個 `result` 的 `usage`，所以有 steer 或排隊訊息的 run 少算 token（成本正確）。現在 token 逐輪加總，成本取最後一個；假 CLI 改成照實測行為，`parse.test.ts` 新測試在修正前失敗。
+- **觀察（沒改）**：權限預審依 reviewer → judge → assistant_brain… 的順序挑「和實作者不同的 provider」。任務把 reviewer 覆寫成同 provider 時，會選到沒有 API key 的 `openai-api`，預審變成 `unavailable`，退回由擁有者核准，行為安全。
+- **沒驗證到**：Windows；Codex 多輪 `turn.completed` 的 usage 是否累計（Joy 本來就逐輪記）；畫面沒有截圖。
 
 ### 審查依據實際檢查結果（2026-11-19，分支 `review-verification`）
 
@@ -211,7 +226,7 @@
 - **前端**：每一輪結尾在時間軸一行小字（例如「2 分 14 秒 · 38k tokens」，有 cost 再加「· $0.12」；tokens＝輸入＋輸出）。這行是獨立的時間軸項目，完成後收合過程時**保留**（和擁有者訊息一樣）。任務選單的「用量」面板：耗時、等核准、tokens（含「快取」）、估計花費與來源（「CLI 回報」「價目表」），下面依模型、依角色各一份；原本的說明段落拿掉。統計頁（設定 → 統計）新增「各任務用量」表：耗時、Token、花費、模型，表頭可排序，沒回報的顯示「—」。舊任務沒有 tokens／cost／runs 時都不顯示，也不報錯。
 - **測試**：providers（Claude 含快取加總與無成本時沒有來源、`costSource` 兩處）；server `task-usage.test.ts`（10 個：空任務、依模型／角色／輪加總、等核准扣除與沒決定、多輪、裁判併入最後一輪、進行中與未結束、來源 mixed、非數字與壞時間）、`thread-api.test.ts`（review loop 的角色與輪、follow-up 後兩輪、`/api/stats` 的 tasks）、`server.test.ts`（compete 裁判用量）；db `stats.test.ts`（期間／repo／limit、只載入用量事件）；web `usage.test.ts`、`timeline.test.ts`（每輪行的位置、沒有時不出現、`compete.usage` 不顯示）、`fold.test.ts`（收合後保留）；Playwright `thread-api.spec.ts`（面板、每輪行與收合、舊任務）與 `stats.spec.ts`（任務比較與排序）。
 - **驗證**：`pnpm check` 通過（format、lint、typecheck；vitest 1415 passed、4 skipped）。e2e 用不提交的暫時 harness（假 runtime 4402＋Vite 4177，proxy 指向 4402），跑完刪除：`stats`、`thread-api`、`task-page-cleanup`、`declutter`、`compete` 全過，整套 120 個中 118 過；2 個失敗是 harness 造成的（`origin-proxy.spec.ts` 寫死 5173，連線被拒；`t1.8.spec.ts` 存設定要 Origin 5173），與這次改動無關。
-- **沒驗證到**：沒有呼叫真的 Claude Code／Codex，用量欄位只對照錄好的 fixture（Claude `result`、Codex `turn.completed`）；多輪 Claude run 的 `usage`／`total_cost_usd` 是每輪還是累計仍如 `parse.ts` 註解所說沒驗證過；compete 同時有多個 attempt 等核准時，總等待時間是「任何一個在等就算等」，沒有真實並行的測試；深色與手機寬度沒看。
+- **沒驗證到**：沒有呼叫真的 Claude Code／Codex，用量欄位只對照錄好的 fixture（Claude `result`、Codex `turn.completed`）；多輪 Claude run 的 `usage`／`total_cost_usd` 是每輪還是累計（2026-11-19 已實測並修正，見「真實 CLI 驗證第三輪」）；compete 同時有多個 attempt 等核准時，總等待時間是「任何一個在等就算等」，沒有真實並行的測試；深色與手機寬度沒看。
 
 ### 側邊欄：已釘選／專案／最近項目，加入專案選資料夾（2026-11-16，分支 `sidebar-projects`，基於 `main`）
 

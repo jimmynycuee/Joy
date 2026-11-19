@@ -24,6 +24,28 @@ export interface ClaudeParserOptions {
   multiTurn?: boolean
 }
 
+type Usage = Extract<AgentEvent, { type: 'usage' }>
+
+const sum = (a: number | undefined, b: number | undefined) =>
+  a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0)
+
+/**
+ * Measured on claude-cli 2.1.319: in one stream-json process each `result`'s `usage` covers only its own turn, while
+ * `total_cost_usd` is the process total so far. So tokens add up and the latest cost replaces the earlier ones.
+ */
+function addTurnUsage(total: Usage | undefined, turn: Usage): Usage {
+  if (!total) return turn
+  const { costUsd, costSource } = turn.costUsd === undefined ? total : turn
+  return {
+    type: 'usage',
+    ...opt('inputTokens', sum(total.inputTokens, turn.inputTokens)),
+    ...opt('outputTokens', sum(total.outputTokens, turn.outputTokens)),
+    ...opt('cachedInputTokens', sum(total.cachedInputTokens, turn.cachedInputTokens)),
+    ...opt('costUsd', costUsd),
+    ...(costSource ? { costSource } : {}),
+  }
+}
+
 export class ClaudeStreamParser {
   private sessionId: string | undefined
   private done = false
@@ -33,7 +55,7 @@ export class ClaudeStreamParser {
   private readonly pendingFileTools = new Map<string, { path: string; tool: string }>()
   /** Multi-turn: the `done` the run ends with, emitted when the process exits. */
   private lastDone: Extract<AgentEvent, { type: 'done' }> | undefined
-  /** Multi-turn: the latest result's usage, emitted once when the process exits. */
+  /** Multi-turn: the usage of every result so far, emitted once when the process exits. */
   private lastUsage: Extract<AgentEvent, { type: 'usage' }> | undefined
   private results = 0
 
@@ -97,8 +119,6 @@ export class ClaudeStreamParser {
   finish(reason: string, exit: { stopped: boolean } = { stopped: true }): AgentEvent[] {
     if (this.done) return []
     this.done = true
-    // Not verified against a real multi-turn run whether `total_cost_usd` and `usage` are per turn or cumulative; the
-    // Agent SDK reports a query's total, so the last result is taken as the whole run (never summed).
     const usage = this.lastUsage ? [this.lastUsage] : []
     if (this.lastDone && !exit.stopped) return [...this.flushHeld(), ...usage, this.lastDone]
     return [
@@ -239,7 +259,7 @@ export class ClaudeStreamParser {
     }
 
     this.results++
-    this.lastUsage = usage
+    this.lastUsage = addTurnUsage(this.lastUsage, usage)
     const events = this.flushHeld()
     if (this.results === 1) {
       // The task's own work: its outcome is the run's outcome.

@@ -231,6 +231,45 @@ describe('ClaudeStreamParser edge cases', () => {
     ])
   })
 
+  // claude-cli 2.1.319 (measured with haiku): each `result` in one stream-json process carries only its own turn's
+  // `usage`, while `total_cost_usd` is the process total so far.
+  it('adds up every turn of a multi-turn run but takes the last cost as the total', () => {
+    const parser = new ClaudeStreamParser({ cwd: FIXTURE_WORKDIR, multiTurn: true })
+    const turn = (usage: Record<string, number>, cost: number) =>
+      parser.push({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: 'ok',
+        session_id: 's',
+        total_cost_usd: cost,
+        usage,
+      })
+    turn(
+      { input_tokens: 2, cache_creation_input_tokens: 71605, cache_read_input_tokens: 0, output_tokens: 305 },
+      0.0145,
+    )
+    turn(
+      {
+        input_tokens: 2,
+        cache_creation_input_tokens: 2193,
+        cache_read_input_tokens: 69760,
+        output_tokens: 288,
+      },
+      0.0158,
+    )
+    expect(of(parser.finish('exited', { stopped: false }), 'usage')).toEqual([
+      {
+        type: 'usage',
+        inputTokens: 2 + 71605 + 2 + 2193 + 69760,
+        outputTokens: 305 + 288,
+        cachedInputTokens: 69760,
+        costUsd: 0.0158,
+        costSource: 'cli',
+      },
+    ])
+  })
+
   it('reports no cost source when the CLI gave no cost', () => {
     const parser = new ClaudeStreamParser({ cwd: FIXTURE_WORKDIR })
     const events = parser.push({
