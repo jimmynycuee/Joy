@@ -31,18 +31,10 @@ import { THEME_LABELS } from '../theme.js'
 import type { ThemePreference } from '../theme.js'
 import type { DoctorReport, Repo, SecretStatus, Task } from '../types.js'
 import { StatsPanel } from './StatsPage.js'
+import type { RouteSettingsSection } from '../route.js'
 
-export type SettingsSection =
-  | 'general'
-  | 'models'
-  | 'permissions'
-  | 'notifications'
-  | 'projects'
-  | 'plugins'
-  | 'data'
-  | 'stats'
-  | 'archived'
-  | 'advanced'
+// The list lives with the address bar's routes, so every section can be linked to.
+export type SettingsSection = RouteSettingsSection
 
 const SECTIONS: Array<{ id: SettingsSection; label: string }> = [
   { id: 'general', label: '一般' },

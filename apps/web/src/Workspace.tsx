@@ -21,6 +21,8 @@ import type { NewTaskInput } from './pages/NewTaskPage.js'
 import { SettingsPage } from './pages/SettingsPage.js'
 import type { SettingsSection } from './pages/SettingsPage.js'
 import { TaskPage } from './pages/TaskPage.js'
+import { parseRoute, replacesEntry, routeQuery } from './route.js'
+import type { Route } from './route.js'
 import { escapeLeavesSettings, isTypingTarget, shortcutFor } from './shortcuts.js'
 import type { ShortcutAction } from './shortcuts.js'
 import { clearLegacyArchivedIds, readLegacyArchivedIds, readStorage, writeStorage } from './storage.js'
@@ -84,20 +86,25 @@ export function Workspace() {
   const [doctorRetry, setDoctorRetry] = useState(0)
   // Custom workflows from config.yaml (T5.6); the built-in three are the fixed options of the task form.
   const [customWorkflows, setCustomWorkflows] = useState<Array<{ name: string; description?: string }>>([])
-  // A notification opens `/?task=<id>`; start on that task.
-  const [selectedTaskId, setSelectedTaskId] = useState(
-    () => new URLSearchParams(window.location.search).get('task') ?? '',
+  // Start on the page the address names (a notification opens `/?task=<id>`).
+  const [initialRoute] = useState(() => parseRoute(window.location.search))
+  const [selectedTaskId, setSelectedTaskId] = useState(initialRoute.kind === 'task' ? initialRoute.id : '')
+  const [page, setPage] = useState<Page>(
+    initialRoute.kind === 'chat' ? 'assistant' : initialRoute.kind === 'settings' ? 'settings' : 'tasks',
   )
-  const [page, setPage] = useState<Page>('tasks')
-  const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>(
+    initialRoute.kind === 'settings' ? initialRoute.section : 'general',
+  )
   // The one project 設定 → 專案 shows (opened from the sidebar); null shows them all.
-  const [settingsRepoId, setSettingsRepoId] = useState<string | null>(null)
+  const [settingsRepoId, setSettingsRepoId] = useState<string | null>(
+    initialRoute.kind === 'settings' ? initialRoute.repoId : null,
+  )
   const [showTaskForm, setShowTaskForm] = useState(false)
   const [showRepoForm, setShowRepoForm] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
-  const [conversationId, setConversationId] = useState('')
+  const [conversationId, setConversationId] = useState(initialRoute.kind === 'chat' ? initialRoute.id : '')
   // The page 設定 was opened from, so 返回 goes back there (null: nothing to go back to).
   const [pageBeforeSettings, setPageBeforeSettings] = useState<Exclude<Page, 'settings'> | null>(null)
   const [theme, setTheme] = useState<ThemePreference>(readTheme)
@@ -123,20 +130,36 @@ export function Workspace() {
       .catch(() => undefined)
   }, [])
 
+  /** Shows the page an address names: a notification's link, or the browser's back and forward buttons. */
+  const showRoute = useCallback((route: Route) => {
+    if (route.kind === 'task') {
+      setSelectedTaskId(route.id)
+      setShowTaskForm(false)
+      setPage('tasks')
+    } else if (route.kind === 'new-task') {
+      setShowTaskForm(true)
+      setPage('tasks')
+    } else if (route.kind === 'chat') {
+      setConversationId(route.id)
+      setPage('assistant')
+    } else {
+      setSettingsSection(route.section)
+      setSettingsRepoId(route.repoId)
+      setPage('settings')
+    }
+    setDrawerOpen(false)
+  }, [])
+
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return
     const onMessage = (event: MessageEvent<{ type?: string; url?: string }>) => {
       if (event.data?.type !== 'joy-open' || !event.data.url) return
-      const task = new URL(event.data.url, window.location.origin).searchParams.get('task')
-      if (task) {
-        setSelectedTaskId(task)
-        setShowTaskForm(false)
-        setPage('tasks')
-      }
+      const route = parseRoute(new URL(event.data.url, window.location.origin).search)
+      if (route.kind === 'task') showRoute(route)
     }
     navigator.serviceWorker.addEventListener('message', onMessage)
     return () => navigator.serviceWorker.removeEventListener('message', onMessage)
-  }, [])
+  }, [showRoute])
 
   const refreshLists = useCallback(async () => {
     const [repoResponse, taskResponse] = await Promise.all([
@@ -238,6 +261,33 @@ export function Workspace() {
   }, [selectedTaskId])
 
   const composing = page === 'tasks' && (showTaskForm || !selectedTaskId)
+
+  // The address bar follows the open page, so every task and conversation has a link and 上一頁 works.
+  const currentRoute = useMemo<Route>(() => {
+    if (page === 'assistant') return { kind: 'chat', id: conversationId }
+    if (page === 'settings') return { kind: 'settings', section: settingsSection, repoId: settingsRepoId }
+    return composing ? { kind: 'new-task' } : { kind: 'task', id: selectedTaskId }
+  }, [page, conversationId, settingsSection, settingsRepoId, composing, selectedTaskId])
+  const routeShown = useRef<Route | null>(null)
+  useEffect(() => {
+    const previous = routeShown.current
+    routeShown.current = currentRoute
+    const query = routeQuery(currentRoute)
+    if (query === window.location.search) return
+    const url = `${window.location.pathname}${query}${window.location.hash}`
+    // The first page only tidies the address it was opened with; it is not a step to go back to.
+    if (previous === null || replacesEntry(previous, currentRoute)) window.history.replaceState(null, '', url)
+    else window.history.pushState(null, '', url)
+  }, [currentRoute])
+  useEffect(() => {
+    const onPopState = () => {
+      const route = parseRoute(window.location.search)
+      routeShown.current = route
+      showRoute(route)
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [showRoute])
   const setupProblems = doctorReport?.checks.filter((check) => check.status === 'missing').length ?? 0
   const missingClis =
     doctorReport?.checks

@@ -3737,3 +3737,19 @@ summary.checks-head {
     flex-direction: column;
   }
 }
+
+/* The active 最近項目 filter, shown so it is never forgotten; clicking it clears it. */
+.filter-chips {
+  display: flex;
+  padding: 2px 8px 6px;
+}
+.filter-chip {
+  gap: 4px;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-12);
+}
+.filter-chip:hover {
+  filter: brightness(0.96);
+}

@@ -8,6 +8,7 @@ import {
   parseSidebarMemory,
   pinnedRows,
   serializeSidebarMemory,
+  statusCounts,
   tasksOfProject,
   toggleKey,
   unpinnedRows,
@@ -112,6 +113,11 @@ describe('applyFilter', () => {
     expect(ids({ status: 'done', repoId: 'b' })).toEqual([])
     expect(isFiltering({ status: 'all', repoId: 'b' })).toBe(true)
     expect(isFiltering({ status: 'done', repoId: null })).toBe(true)
+  })
+
+  it('counts the tasks behind each status choice, within the chosen project', () => {
+    expect(statusCounts(items, null)).toEqual({ all: 7, waiting: 2, running: 2, done: 1, failed: 2 })
+    expect(statusCounts(items, 'b')).toEqual({ all: 3, waiting: 1, running: 1, done: 0, failed: 1 })
   })
 
   it('treats a status the app does not know as not finished', () => {
