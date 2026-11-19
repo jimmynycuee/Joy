@@ -5,6 +5,7 @@ import { isAbsolute, relative } from 'node:path'
 import type { AgentEvent, FileChangeKind } from '@joy/core'
 import type { Rec } from '../guards.js'
 import { arr, isRecord, num, opt, rec, str } from '../guards.js'
+import { ConfigWarningFilter } from './config-warning.js'
 
 export interface CodexParserOptions {
   cwd?: string
@@ -19,6 +20,7 @@ export class CodexStreamParser {
   private done = false
   private lastMessage: string | undefined
   private readonly announced = new Set<string>()
+  private readonly configWarnings = new ConfigWarningFilter()
 
   constructor(private readonly options: CodexParserOptions = {}) {}
 
@@ -54,10 +56,14 @@ export class CodexStreamParser {
       }
       case 'error':
         // Seen in practice as "Reconnecting... 2/5": a notice, not the end. Fatal errors arrive as turn.failed.
-        return [{ type: 'error', message: str(line.message) ?? 'Codex error', recoverable: true }]
+        return this.notice(str(line.message) ?? 'Codex error')
       default:
         return [{ type: 'raw', source: 'codex-cli', payload: line }]
     }
+  }
+
+  private notice(message: string): AgentEvent[] {
+    return this.configWarnings.take(message) ?? [{ type: 'error', message, recoverable: true }]
   }
 
   finish(reason: string): AgentEvent[] {
@@ -153,7 +159,7 @@ export class CodexStreamParser {
       case 'todo_list':
         return [todoStatus(item)]
       case 'error':
-        return [{ type: 'error', message: str(item.message) ?? 'Codex error', recoverable: true }]
+        return this.notice(str(item.message) ?? 'Codex error')
       default:
         return [{ type: 'raw', source: 'codex-cli', payload: item }]
     }

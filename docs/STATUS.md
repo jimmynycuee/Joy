@@ -2,6 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-19（執行訊號：實作者說改了檔案但沒有變更時提示一行、Codex 設定警告每次執行只報一次且不當錯誤、權限選單說明 Codex 沙盒差異，分支 `run-signals`）
 - 最後更新：2026-11-19（競賽裁判輸入瘦身：裁判 run 不載入 Claude 內建工具、skills、CLAUDE.md，prompt 的 diff 有上限與註記；新增 core 選填欄位 `RunOptions.promptOnly` 待擁有者審；分支 `judge-input`）
 - 最後更新：2026-11-19（Codex 只拿 Joy 給的 MCP：關掉擁有者的 config.toml server、外掛、連接器與遠端外掛；修 `codex exec resume` 的 `--sandbox`；分支 `codex-approvals-reviewer`）
 - 最後更新：2026-11-19（真實 CLI 第二輪：steer、換模型 resume、compete 通過；修掉 Codex 沿用擁有者 `approvals_reviewer` 讓自己的審查子代理繞過 Joy 核准的問題；分支 `codex-approvals-reviewer`）
@@ -92,6 +93,12 @@
 ## 驗證結果
 
 > 2026-11-15 以前的驗證結果在 `docs/status-history.md`。
+
+### 執行訊號（2026-11-19，分支 `run-signals`）
+
+- 單一模式的實作者成功結束、工作副本沒有任何變更、沒有 `file_change` 事件，但最後訊息像在說改了檔案（提到檔案路徑或「修正／fixed／updated」等字）時，記一筆 `result.warning` 事件，討論串顯示一行「agent 說改了檔案，但沒有任何變更」；任務結果不受影響。判斷在 `packages/server/src/empty-change-claim.ts`。review loop 路徑尚未加。
+- Codex 的「忽略 1 個無法辨識的設定」通知（`~/.codex/config.toml` 有過時的 key）改成每次執行只發一次 `status`，不再是兩筆 recoverable `error`（`config-warning.ts`，exec 與 app-server 解析器共用；app-server 的通知方法名 `configWarning`／`warning`／`error` 是依協定推測，尚未用真實輸出確認）。
+- 權限選單「要求核准」的說明加上 Codex 在沙盒內不問、出沙盒才問。
 
 ### 競賽裁判輸入瘦身（2026-11-19，分支 `judge-input`）
 

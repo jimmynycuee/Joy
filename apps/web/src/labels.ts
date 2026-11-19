@@ -61,7 +61,7 @@ export const PERMISSION_LABELS: Record<PermissionMode, string> = {
 }
 
 export const PERMISSION_HINTS: Record<PermissionMode, string> = {
-  ask: '白名單以外都先問',
+  ask: '白名單以外都先問；Codex 在沙盒（只能寫工作副本、不能連網）內不問，要出沙盒才問',
   auto: '只在碰到工作副本以外時才問',
   full: '幾乎不問，只擋密鑰與 Joy 設定',
 }

@@ -147,6 +147,7 @@ import { ApprovalBroker } from './approvals.js'
 import { CLAUDE_SETTINGS_FILE, readClaudeSettingsCommands } from './claude-settings.js'
 import type { TaskAllowOffer } from './approvals.js'
 import { runAssistantTurn, toApiTools } from './assistant.js'
+import { claimsChangesWithoutAny } from './empty-change-claim.js'
 import { rewindHandoffPrompt, switchHandoffPrompt } from './handoff.js'
 import { summarizeTaskUsage, USAGE_EVENT_TYPES } from './task-usage.js'
 import { TASK_ROUND, effectiveEvents, pendingMessages, rewindPoints } from './turns.js'
@@ -6759,6 +6760,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
     }
     let done: Extract<AgentEvent, { type: 'done' }> | undefined
     let failure: string | undefined
+    let fileChangeEvents = 0
     const runStartedAt = Date.now()
     const approvalKey = resolve(workspace.path)
     if (toolHub) codexApprovalHandlers.set(approvalKey, toolHub.codexApproval)
@@ -6772,6 +6774,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         if (event.type === 'session_started') updateAttempt(db, attempt.id, { sessionId: event.sessionId })
         if (event.type === 'error' && !event.recoverable) failure = event.message
         if (event.type === 'done') done = event
+        if (event.type === 'file_change') fileChangeEvents += 1
         publish(task.id, attempt.id, 'agent', { role: 'implementer', round: 1, event })
       }
     } finally {
@@ -6816,6 +6819,17 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       return
     }
     const succeeded = !controller.signal.aborted && !!done && !done.isError && !failure
+    if (
+      succeeded &&
+      claimsChangesWithoutAny({
+        finalMessage: done?.finalMessage,
+        fileChangeEvents,
+        diffFiles: diff.files.length,
+      })
+    ) {
+      // A note for the owner only: the task still succeeds.
+      publish(task.id, attempt.id, 'result.warning', { reason: 'empty_diff_claimed_changes' })
+    }
     if (succeeded) {
       await createCheckpoint(task, attempt, workspace, 1, 'implementer turn')
       // Single mode has no review to feed: the result is shown to the owner, it does not change the outcome.
