@@ -28,7 +28,11 @@ export function buildClaudeArgs(
   // rules, but still applies `.claude/settings.local.json`'s allow rules and runs its hooks: a file a repository can
   // commit would then run commands without reaching Joy. `local` is left out; `project` stays because it also brings
   // the project's CLAUDE.md, skills and commands (checked with the real CLI, docs/spikes/claude-code.md).
-  args.push('--setting-sources', 'user,project')
+  args.push('--setting-sources', opts.promptOnly ? '' : 'user,project')
+  // A run that gets everything in its prompt (the compete judge) needs no built-in tool definitions, no skills and no
+  // CLAUDE.md: they are most of its input tokens. The empty `--setting-sources` above drops CLAUDE.md, skills and
+  // commands (and user/project hooks), `--tools ""` the built-in tools.
+  if (opts.promptOnly) args.push('--tools', '', '--disable-slash-commands')
 
   if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId)
   else if (opts.sessionId) args.push('--session-id', opts.sessionId)
