@@ -80,10 +80,19 @@ codex exec resume --json [-m <model>] <thread_id> <prompt>
 - 長 prompt：`codex exec --help` 寫「If not provided as an argument (or if `-` is used), instructions are read from stdin」，`codex exec resume --help` 寫「If `-` is used, read from stdin」。prompt 超過 16 KB 時，Joy 用 `-` 並把 prompt 寫進 stdin；沒有 stdin 的容器 run 超過 100 KB 時報錯。
 - **未驗證**：app-server 是否自己讀 `localImage` 檔（推測是，因為 Joy 沒送內容）、sandbox 外的路徑是否可讀、`exec --image` 在容器裡是否可用；要錄 fixture。官方文件這次沒有另外查（schema 與 `--help` 已足夠決定做法）。
 
+## 真實錄製（2026-11-19，codex-cli 0.166.0，gpt-6-luna、low）
+
+- `exec --json` 的事件和上表一致。擁有者 `config.toml` 有過時的設定時，每次開頭都有兩則一樣的 `item.completed {type: error}`（「Codex is ignoring 1 unrecognized configuration setting…」），Joy 當成 `status` 只報一次。
+- luna 用 shell（`sed -i`）改檔，**不會產生 `file_change` item**；改了什麼要看 worktree diff。
+- `exec` 沒有互動式核准：`--sandbox workspace-write` 下 `rm math.js` 直接成功。
+- `exec resume` 沿用同一個 thread id。
+- 真實 `app-server`：`initialize` 之後送 `configWarning {summary, details}`，`thread/start` 之後送 `warning {threadId, message}`，兩則文字相同。另有 `remoteControl/status/changed`、`mcpServer/startupStatus/updated`、`account/updated`，Joy 記成 `raw`。
+- `exec --image`：Joy 的 exec transport 附 PNG 與文字檔，模型讀得到圖片（`input_image`）和內嵌的文字檔。
+
 ## 待確認（要在使用者的 Mac 上做）
 
-- [ ] 執行 `node scripts/record-fixtures.mjs codex`，錄下 edit / mcp / resume 的真實事件
-- [ ] 確認 MCP 用 `-c` 注入在 `exec` 模式下可用
+- [x] 執行 `node scripts/record-fixtures.mjs codex`，錄下 edit / mcp / resume 的真實事件（2026-11-19，codex-cli 0.166.0）
+- [x] 確認 MCP 用 `-c` 注入在 `exec` 模式下可用（`mcp` fixture：`ask_peer` 有回應）
 - [ ] Windows 原生是否可用；不行就走 WSL（T4.4）
 - [ ] 確認可用的模型名稱，更新 PLAN §3.3
 - [ ] 錄一次 app-server 的 `turn/steer`（turn 進行中送補充訊息）

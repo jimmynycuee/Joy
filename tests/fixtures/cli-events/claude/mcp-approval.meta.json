@@ -1,6 +1,6 @@
 {
   "cli": "claude",
-  "version": "2.1.317 (Claude Code)",
+  "version": "2.1.319 (Claude Code)",
   "args": [
     "-p",
     "--output-format",
@@ -8,10 +8,12 @@
     "--verbose",
     "--model",
     "haiku",
+    "--effort",
+    "low",
     "--permission-mode",
     "manual",
     "--mcp-config",
-    "<TMP>/joy-mcp-8fc12c74-2195-4c04-992e-f872ef3a0f49.json",
+    "<TMP>/joy-mcp-5d588410-c4bb-4950-9e64-a04b84cd2d68.json",
     "--strict-mcp-config",
     "--permission-prompt-tool",
     "mcp__joy__approve",
@@ -21,6 +23,6 @@
   ],
   "exitCode": 0,
   "signal": null,
-  "recordedAt": "2026-11-03T08:44:27.991Z",
+  "recordedAt": "2026-11-19T09:38:14.873Z",
   "stderrTail": ""
 }
