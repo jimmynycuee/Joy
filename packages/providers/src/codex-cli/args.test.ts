@@ -19,9 +19,20 @@ describe('buildCodexArgs', () => {
       'gpt-6-luna',
       '--sandbox',
       'workspace-write',
+      '-c',
+      'approvals_reviewer="user"',
       '--',
       '-do it',
     ])
+  })
+
+  it("routes escalations to Joy's rules instead of Codex's own auto reviewer", () => {
+    // `approvals_reviewer = "guardian_subagent"` in ~/.codex/config.toml lets a Codex subagent approve network access
+    // and sandbox escapes; `exec` has nobody to ask, so with `user` those requests are refused instead.
+    for (const autonomy of ['read-only', 'workspace-write'] as const) {
+      const args = buildCodexArgs({ ...base, autonomy }, model)
+      expect(args.slice(0, args.indexOf('--'))).toContain('approvals_reviewer="user"')
+    }
   })
 
   it('attaches each image with its own --image before the prompt', () => {

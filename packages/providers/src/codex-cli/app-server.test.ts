@@ -165,6 +165,8 @@ describe('Codex app-server', () => {
       cwd: dir,
       approvalPolicy: 'on-request',
       sandbox: 'workspace-write',
+      // Escalations come to Joy, never to Codex's own reviewer (`approvals_reviewer` in the owner's config.toml).
+      approvalsReviewer: 'user',
       config: {
         mcp_servers: {
           joy: { command: 'node', args: ['tool-hub.mjs'], env: { JOY_TEST: '1' } },
@@ -300,6 +302,7 @@ describe('Codex app-server', () => {
     const events = await collect(provider.run(opts(dir, { resumeSessionId: 'thread-existing' }), model))
     const requests = readLines(rpcPath)
     expect(requests.find((request) => request.method === 'thread/resume')?.params).toMatchObject({
+      approvalsReviewer: 'user',
       threadId: 'thread-existing',
       cwd: dir,
       model: 'gpt-6-luna',
@@ -328,6 +331,7 @@ describe('Codex app-server', () => {
     await collect(provider.run(opts(dir, { resumeSessionId: 'thread-existing' }), switched))
     const requests = readLines(rpcPath)
     expect(requests.find((request) => request.method === 'thread/resume')?.params).toMatchObject({
+      approvalsReviewer: 'user',
       threadId: 'thread-existing',
       model: 'gpt-6.1-sol',
     })

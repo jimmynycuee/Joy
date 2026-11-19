@@ -2,6 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-19（真實 CLI 第二輪：steer、換模型 resume、compete 通過；修掉 Codex 沿用擁有者 `approvals_reviewer` 讓自己的審查子代理繞過 Joy 核准的問題；分支 `codex-approvals-reviewer`）
 - 最後更新：2026-11-19（真實 CLI 冒煙測試：review loop 兩種組合都通過；修好 Claude 在連結資料夾下回報絕對路徑；擁有者確認 core 與 policy 已審；分支 `real-cli-smoke`）
 - 最後更新：2026-11-19（完成的任務可「合併到 main」（本機合併，先確認分支與檔案數）與「在編輯器開啟」（設定 `editor`），分支 `task-actions`）
 - 最後更新：2026-11-19（介面與 bug 修正：輸入框依自身寬度收合、加入專案讀出 repo 的預設分支與 GitHub origin 並在加入時檢查分支、環境檢查文字改給使用者看、首頁指出選的模型缺哪個 CLI、手機任務頁不重複標題；本檔只留近期驗證結果，較早的移到 `docs/status-history.md`；分支 `ui-fixes`）
@@ -89,6 +90,16 @@
 ## 驗證結果
 
 > 2026-11-15 以前的驗證結果在 `docs/status-history.md`。
+
+### 真實 CLI 驗證第二輪：steer、換模型 resume、Codex 升權、compete（2026-11-19，分支 `codex-approvals-reviewer`）
+
+同樣用暫存 `JOY_HOME`、埠 4420 的另一個 Joy，經 API 跑，模型都是 `haiku`／`gpt-6-luna`、`low`（換模型那一步用 `sonnet` `low`）。
+
+- **執行中即時補充（steer）**：Claude 實作者在 `sleep 20` 時收到訊息，`delivery: steer`、`user.message.delivered via steer`。整個任務只有 1 次 provider run、1 個結果，diff 同時有修正和插話要求的 `// steered`。
+- **Claude 換模型後 resume**：第一輪 haiku，follow-up 帶 `roleOverrides.implementer = sonnet`。兩輪是同一個 session id，模型從 `claude-haiku-5-5` 變成 `claude-sonnet-5-5`，第二輪答出第一輪要它記住的暗號。
+- **Codex 跨出沙盒（找到並修好安全問題）**：`ask` 模式下要 Codex 跑 `curl -sSI https://example.com`。修正前沒有任何核准就連上網路（`HTTP/2 200`）。原因是擁有者的 `~/.codex/config.toml` 設了 `approvals_reviewer = "guardian_subagent"`，codex-cli 0.166.0 的 app-server thread 沿用它（`thread/start` 回應 `approvalsReviewer: "auto_review"`、`networkAccess: false`），升權請求由 Codex 自己的審查子代理批准，Joy 的模式與秘密規則都被繞過。修法：`thread/start`／`thread/resume` 一律送 `approvalsReviewer: 'user'`，`codex exec` 加 `-c approvals_reviewer="user"`（exec 沒人可問，升權就被拒）。修正後實跑：請求以 `run_outside_worktree` 核准卡送到 Joy，核准才執行；拒絕則不執行，Codex 回報「升級權限請求遭拒」。測試：`app-server.test.ts`（start 與兩種 resume 都帶 `approvalsReviewer`）、`args.test.ts`（read-only／workspace-write 都帶），修正前失敗。
+- **compete**：Claude haiku 對 Codex luna、裁判 haiku。兩邊各自完成、互審都核准，裁判給出 `winner` 與理由，任務停在 `review_ready`（`awaitingChoice`）；`POST /choose` 後 `compete.chosen`、另一份 `discarded`，任務 `done`。觀察：裁判一次用了 44,502 input tokens、沒有快取命中，約 US$0.18，比實作者貴很多。
+- **沒驗證到**：compete 的「請裁判合併」（`/merge`）、Codex 的 MCP elicitation、Windows。
 
 ### 真實 CLI 冒煙測試（2026-11-19，分支 `real-cli-smoke`）
 

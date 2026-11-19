@@ -27,6 +27,12 @@ export function mcpOverrides(servers: McpServerConfig[]): string[] {
   return out
 }
 
+/**
+ * Not Codex's own reviewer (`approvals_reviewer = "auto_review"` in the owner's config.toml), which approves sandbox
+ * escapes and network access by itself. `exec` has nobody to ask, so such requests are refused instead.
+ */
+const OWNER_REVIEWS = ['-c', 'approvals_reviewer="user"']
+
 /** Builds the `codex` argument list. `outputSchemaPath` is the file written from `opts.outputSchema`. */
 /** `promptOnStdin`: the prompt argument is `-` and the caller writes the prompt to stdin. */
 export function buildCodexArgs(
@@ -41,10 +47,10 @@ export function buildCodexArgs(
 
   switch (opts.autonomy) {
     case 'read-only':
-      args.push('--sandbox', 'read-only')
+      args.push('--sandbox', 'read-only', ...OWNER_REVIEWS)
       break
     case 'workspace-write':
-      args.push('--sandbox', 'workspace-write')
+      args.push('--sandbox', 'workspace-write', ...OWNER_REVIEWS)
       break
     case 'full':
       args.push('--dangerously-bypass-approvals-and-sandbox')

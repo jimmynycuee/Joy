@@ -98,6 +98,9 @@ export class CodexAppServerProvider implements AgentProvider {
         cwd: opts.cwd,
         approvalPolicy: approvalPolicy(opts.autonomy),
         sandbox: sandboxMode(opts.autonomy),
+        // Measured with codex-cli 0.166.0: `approvals_reviewer = "guardian_subagent"` in the owner's config.toml made
+        // Codex approve a network escalation itself in an `ask` task; Joy never saw the request.
+        approvalsReviewer: 'user',
         ...(config ? { config } : {}),
       }
       const thread = opts.resumeSessionId
