@@ -80,6 +80,20 @@ export function applyFilter(items: readonly RecentItem[], filter: RecentFilter):
   })
 }
 
+/** How many tasks each status choice would show, given the project part of the filter. */
+export function statusCounts(
+  items: readonly RecentItem[],
+  repoId: string | null,
+): Record<StatusFilter, number> {
+  const counts: Record<StatusFilter, number> = { all: 0, waiting: 0, running: 0, done: 0, failed: 0 }
+  for (const item of items) {
+    if (item.kind !== 'task' || (repoId !== null && item.task.repoId !== repoId)) continue
+    counts.all += 1
+    counts[statusGroup(item.task)] += 1
+  }
+  return counts
+}
+
 /** What the sidebar remembers between visits (localStorage): folded sections, and projects opened to show their tasks. */
 export interface SidebarMemory {
   /** Section keys (`projects`, `recent`) the owner folded. Both start open. */

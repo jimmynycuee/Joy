@@ -18,6 +18,7 @@ import {
   parseSidebarMemory,
   pinnedRows,
   serializeSidebarMemory,
+  statusCounts,
   tasksOfProject,
   toggleKey,
   unpinnedRows,
@@ -177,7 +178,9 @@ export function Sidebar(props: SidebarProps) {
         : filter,
     [filter, props.repos],
   )
-  const recent = useMemo(() => applyFilter(unpinnedRows(items), activeFilter), [items, activeFilter])
+  const unpinned = useMemo(() => unpinnedRows(items), [items])
+  const recent = useMemo(() => applyFilter(unpinned, activeFilter), [unpinned, activeFilter])
+  const counts = useMemo(() => statusCounts(unpinned, activeFilter.repoId), [unpinned, activeFilter.repoId])
 
   const [memory, setMemory] = useState(() => parseSidebarMemory(readStorage(SIDEBAR_MEMORY_KEY)))
   function remember(next: typeof memory) {
@@ -349,6 +352,8 @@ export function Sidebar(props: SidebarProps) {
   const onNewTask = props.view === 'new-task'
   const onNewChat = props.view === 'assistant' && props.selectedConversationId === ''
   const filtering = isFiltering(activeFilter)
+  const filterRepo = props.repos.find((repo) => repo.id === activeFilter.repoId)
+  const filterRepoName = filterRepo ? repoName(filterRepo.path) : null
   const visibleProjects = props.repos.filter(
     (repo) => !searching || tasksOfProject(items, repo.id).length > 0,
   )
@@ -444,6 +449,7 @@ export function Sidebar(props: SidebarProps) {
                     role="menuitemradio"
                     keepOpen
                     checked={activeFilter.status === status}
+                    hint={String(counts[status])}
                     onSelect={() => setFilter({ ...activeFilter, status })}
                   >
                     {STATUS_FILTER_LABELS[status]}
@@ -476,6 +482,24 @@ export function Sidebar(props: SidebarProps) {
             </Menu>
             <IconButton icon="pencil" label="新對話" className="icon-btn-sm" onClick={props.onNewTask} />
           </SectionHead>
+          {recentOpen && filtering ? (
+            <div className="filter-chips">
+              <button
+                type="button"
+                className="chip chip-accent filter-chip"
+                aria-label="清除篩選"
+                onClick={() => setFilter(NO_FILTER)}
+              >
+                {[
+                  activeFilter.status === 'all' ? null : STATUS_FILTER_LABELS[activeFilter.status],
+                  filterRepoName,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+                <Icon name="x" size={12} />
+              </button>
+            </div>
+          ) : null}
           {recentOpen ? (
             <div className="task-list">
               {nothingYet ? (
