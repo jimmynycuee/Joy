@@ -9,7 +9,8 @@
 //                     with a `result`. A message that arrives mid-turn joins that turn, or with FAKE_STREAM_QUEUE=1
 //                     becomes the next turn. Exits once stdin is closed and every message is answered.
 //                     FAKE_STREAM_FAIL_TURNS: comma-separated turn numbers that end with an error result.
-//                     `total_cost_usd` is cumulative (0.01 per turn) and `usage` grows with each turn.
+//                     As claude-cli 2.1.319 does: `total_cost_usd` is cumulative (0.01 per turn) and `usage` is the
+//                     turn's own (10 in, 5 out).
 //   FAKE_MODE=permission  Claude permission-prompt stand-in (synthetic, not recorded): asks about each tool call in
 //                     FAKE_PERMISSION_ASKS (JSON array of {tool_name, input}). With `--permission-prompt-tool
 //                     mcp__<server>__<tool>` it starts that MCP server from the `--mcp-config` file and calls the tool
@@ -59,7 +60,7 @@ function streamInput() {
         session_id: session,
         result: failed ? `turn ${turns} failed` : `turn ${turns} done`,
         total_cost_usd: Number((0.01 * turns).toFixed(2)),
-        usage: { input_tokens: 10 * turns, output_tokens: 5 * turns },
+        usage: { input_tokens: 10, output_tokens: 5 },
       })
       const next = pending.shift()
       if (next !== undefined) startTurn(next)
