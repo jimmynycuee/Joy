@@ -2,6 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-19（競賽裁判輸入瘦身：裁判 run 不載入 Claude 內建工具、skills、CLAUDE.md，prompt 的 diff 有上限與註記；新增 core 選填欄位 `RunOptions.promptOnly` 待擁有者審；分支 `judge-input`）
 - 最後更新：2026-11-19（Codex 只拿 Joy 給的 MCP：關掉擁有者的 config.toml server、外掛、連接器與遠端外掛；修 `codex exec resume` 的 `--sandbox`；分支 `codex-approvals-reviewer`）
 - 最後更新：2026-11-19（真實 CLI 第二輪：steer、換模型 resume、compete 通過；修掉 Codex 沿用擁有者 `approvals_reviewer` 讓自己的審查子代理繞過 Joy 核准的問題；分支 `codex-approvals-reviewer`）
 - 最後更新：2026-11-19（真實 CLI 冒煙測試：review loop 兩種組合都通過；修好 Claude 在連結資料夾下回報絕對路徑；擁有者確認 core 與 policy 已審；分支 `real-cli-smoke`）
@@ -91,6 +92,19 @@
 ## 驗證結果
 
 > 2026-11-15 以前的驗證結果在 `docs/status-history.md`。
+
+### 競賽裁判輸入瘦身（2026-11-19，分支 `judge-input`）
+
+真實 run（裁判 Claude haiku、low）兩個一行 diff 就用了約 44.5k input token，遠多於實作者。
+
+- **token 去哪了（程式分析，未用真實 CLI 量）**：裁判 prompt 本身很小（兩個一行 diff 約 700 字元，約 170 token；最壞 60k 字元）。其餘是 Claude Code 自己每次 run 都帶的：內建工具定義、系統提示，以及 `--setting-sources user,project` 載入的使用者與專案 CLAUDE.md、skills 清單。裁判沒有掛 MCP（`--strict-mcp-config`），也沒有核准工具。裁判在 repo 本身（不是 worktree）唯讀執行，這些工具它既用不到也看不到 attempt 的檔案。
+- **改動**：`RunOptions` 新增選填 `promptOnly`（**`packages/core` 介面，待擁有者審**）；裁判 run 傳 `promptOnly: true`（仍是 `read-only`、沒有 MCP、沒有核准工具）。Claude provider 對它加 `--tools ""`、`--disable-slash-commands`，並把 `--setting-sources` 改成空字串（不載入 CLAUDE.md、skills、user／project hooks）；其他 provider 忽略它，Codex 沒動。其他角色（實作者、審查者）參數不變。
+- **prompt**：diff 總量上限 `JUDGE_DIFF_CHARS = 40_000`（原本 `MAX_DIFF_CHARS` 60k），短的 diff 整份保留、剩餘額度給長的（原本平均分，短 diff 浪費額度）；被截斷的 attempt 會列出完整的「Changed files」清單與「diff cut: first N of M characters」註記（不再叫它「read the files」，裁判沒有工具）；審查摘要上限 2000 字元。prompt 明說沒有工具。合併（`mergePrompt`）不變。
+- **裁判輸出**：結構化輸出與判斷邏輯不變；若後端沒給 structured output 但 finalMessage 是 JSON（含 code fence），也接受。
+- **量測**（`judgePrompt` 字元數，前→後）：兩個一行 diff 634→699（多一句「沒有工具」）；200k + 5k 的兩個 diff 35,563→40,691（原本 A 只拿 30k、B 的額度用不完；新上限下 A 拿 35k）；兩個都超大最壞 60k→40k。
+- **測試**：`compete.test.ts`（裁判 run 收到 `read-only`、`promptOnly`、無 `mcpServers`／`approvalTool`／resume；小 diff prompt 小、大 diff 有上限、註記與檔案清單；純文字 JSON 答案）、`claude-cli/args.test.ts`（promptOnly 的參數，一般 run 不變）。
+- **沒驗證（需要真實 CLI）**：實際 input token 降多少；`--tools ""` 搭 `--json-schema` 是否仍能回結構化輸出（若不行，上面的純文字 JSON 退路會接住，但值得跑一次確認）；裁判結論品質。驗證方式：compete 任務裁判用 haiku／low 跑一次，看 `compete.usage` 的 input token。
+- **真實 CLI 實測（2026-11-19，協調者補）**：haiku `low` 當裁判、兩個一行 diff：input tokens 44,502 → **6,203**、US$0.18 → **US$0.029**；`--tools ""` 搭 `--json-schema` 仍回結構化判斷，`/choose` 正常。觀察：沒有載入 CLAUDE.md，英文任務的判斷理由是英文。
 
 ### 真實 CLI 驗證第二輪：steer、換模型 resume、Codex 升權、compete（2026-11-19，分支 `codex-approvals-reviewer`）
 
