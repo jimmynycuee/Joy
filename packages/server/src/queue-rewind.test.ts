@@ -244,7 +244,8 @@ describe('messages queued for the end of the turn', () => {
     const wait = gate()
     claude.state.work = (_options, n) => (n === 1 ? wait.promise : undefined)
     const id = await newTask(call, await newRepo(call))
-    await until(call, id, (d) => d.task.status === 'running', 'running')
+    // The agent itself must have started, or under load a queued message joins its first prompt instead.
+    await until(call, id, (d) => d.task.status === 'running' && claude.calls.length >= 1, 'running')
     const sent = await call('POST', `/api/tasks/${id}/messages`, { text: 'later', queue: true })
     const queued = messageId(sent)
     expect((await call('PUT', `/api/tasks/${id}/queued`, { ids: [queued, 'other'] })).status).toBe(409)
@@ -262,7 +263,13 @@ describe('messages queued for the end of the turn', () => {
     const first = await setup()
     first.claude.state.work = (options) => untilAborted(options)
     const id = await newTask(first.call, await newRepo(first.call))
-    await until(first.call, id, (d) => d.task.status === 'running', 'running')
+    // The agent itself must have started, or under load a queued message joins its first prompt instead.
+    await until(
+      first.call,
+      id,
+      (d) => d.task.status === 'running' && first.claude.calls.length >= 1,
+      'running',
+    )
     const a = messageId(await first.call('POST', `/api/tasks/${id}/messages`, { text: 'alpha', queue: true }))
     const b = messageId(await first.call('POST', `/api/tasks/${id}/messages`, { text: 'beta', queue: true }))
     await first.call('PATCH', `/api/tasks/${id}/queued/${a}`, { text: 'alpha two' })
