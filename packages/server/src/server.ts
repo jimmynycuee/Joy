@@ -213,7 +213,8 @@ import type { EditorRunner } from './editor.js'
 import { dependencyInstall as dependencyInstallFor } from '@joy/executor'
 import type { Executor, WorkspaceDiff } from '@joy/core'
 import type {
-  ChecksResult,
+  ChecksOutcome,
+  ChecksSkipped,
   ContestantOutcome,
   ImplementerTools,
   Judgement,
@@ -222,6 +223,7 @@ import type {
 import type { Workflow } from '@joy/orchestrator'
 import {
   BUILT_IN_WORKFLOWS,
+  checksRan,
   approvedPlanPrompt,
   compete,
   findWorkflow,
@@ -3959,12 +3961,13 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
     ws: Workspace,
     round: number,
     signal: AbortSignal,
-  ): Promise<ChecksResult | undefined> {
+  ): Promise<ChecksOutcome | undefined> {
     const argv = getRepo(db, repo.id)?.checkCommand
     if (!argv?.length) return undefined
-    const skip = (reason: string) => {
+    const shown = argv.map((part) => redactor.redact(part))
+    const skip = (reason: string): ChecksSkipped => {
       publish(task.id, attempt.id, 'checks.skipped', { round, reason })
-      return undefined
+      return { skipped: true, reason, command: shown }
     }
     if (!commandRunner) return skip('This executor cannot run commands')
     const config = await configStore.get()
@@ -4031,6 +4034,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       ok: result.exitCode === 0 && !result.timedOut,
       exitCode: result.exitCode,
       outputTail: redactor.redact(output).slice(-MAX_CHECK_OUTPUT_CHARS),
+      command: shown,
       durationMs: Date.now() - startedAt,
       ...(result.timedOut ? { timedOut: true } : {}),
     }
@@ -6820,7 +6824,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       await createCheckpoint(task, attempt, workspace, 1, 'implementer turn')
       // Single mode has no review to feed: the result is shown to the owner, it does not change the outcome.
       const checks = await runProjectChecks(task, repo, attempt, workspace, 1, controller.signal)
-      if (checks) publish(task.id, attempt.id, 'checks', { type: 'checks', round: 1, ...checks })
+      if (checksRan(checks)) publish(task.id, attempt.id, 'checks', { type: 'checks', round: 1, ...checks })
     }
     const status = controller.signal.aborted ? 'cancelled' : succeeded ? 'succeeded' : 'failed'
     updateAttempt(db, attempt.id, { status, diffStats: summarizeDiff(diff) })

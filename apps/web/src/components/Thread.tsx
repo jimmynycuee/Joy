@@ -256,6 +256,7 @@ function ChecksCard({ entry }: { entry: Extract<TimelineEntry, { kind: 'checks' 
         <Icon name={entry.ok ? 'check' : 'alert'} size={14} />
       </span>
       <strong>{verdict}</strong>
+      {entry.command ? <code className="checks-command">{entry.command}</code> : null}
       <span className="muted">{facts.join(' · ')}</span>
     </>
   )

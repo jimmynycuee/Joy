@@ -353,6 +353,7 @@ describe('buildTimeline: thread messages, plans, checks and checkpoints', () => 
         exitCode: 1,
         outputTail: 'FAIL x',
         durationMs: 4200,
+        command: ['pnpm', 'check'],
       }),
       e('checks.skipped', { round: 1, reason: 'The owner did not approve running the checks (denied)' }),
     ])
@@ -364,8 +365,10 @@ describe('buildTimeline: thread messages, plans, checks and checkpoints', () => 
       outputTail: 'FAIL x',
       durationMs: 4200,
       timedOut: false,
+      command: 'pnpm check',
     })
     expect(entries[1]).toMatchObject({ kind: 'step', tone: 'muted' })
+    expect(buildTimeline([e('checks', { ok: true, command: [1, 2] })])[0]).not.toHaveProperty('command')
   })
 
   it('keeps checkpoint creation quiet and shows a restore as a step', () => {

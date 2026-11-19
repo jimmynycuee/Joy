@@ -86,6 +86,21 @@ describe('foldTimeline', () => {
     expect(kept.at(-1)?.kind === 'entry' && kept.at(-1)).toMatchObject({ entry: { round: 2, approve: true } })
   })
 
+  it('keeps the latest project checks in view when they failed, and folds passing ones', () => {
+    seq = 0
+    const checks = (round: number, ok: boolean) =>
+      event('checks', { type: 'checks', round, ok, exitCode: ok ? 0 : 1, outputTail: '' })
+    const failing = buildTimeline([
+      event('started', {}, 0),
+      checks(1, false),
+      review(1, true, 10),
+      agent('implementer', { type: 'message', text: 'Done.' }, 11),
+    ])
+    expect(kinds(foldTimeline(failing, 'done'))).toEqual(['fold', 'checks', 'review', 'message'])
+    const passing = buildTimeline([event('started', {}, 0), checks(1, true), review(1, true, 10)])
+    expect(kinds(foldTimeline(passing, 'done'))).toEqual(['fold', 'review'])
+  })
+
   it('counts rounds over the whole run, steps in the fold, and the time from first to last event', () => {
     const fold = foldTimeline(twoRounds(), 'done')[0]
     if (fold?.kind !== 'fold') throw new Error('expected a fold')

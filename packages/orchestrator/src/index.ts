@@ -10,7 +10,8 @@ export {
   steerMessage,
   withOwnerMessages,
 } from './prompts.js'
-export type { ChecksResult } from './prompts.js'
+export type { ChecksOutcome, ChecksResult, ChecksSkipped } from './prompts.js'
+export { checksRan } from './prompts.js'
 export { parseVerdict, reviewLoop } from './review-loop.js'
 export type { ImplementerTools, LoopEvent, Phase, ReviewLoopDeps, ReviewLoopInput } from './review-loop.js'
 export { JUDGE_SCHEMA, compete, judgePrompt, labelFor, mergePrompt, parseJudgement } from './compete.js'

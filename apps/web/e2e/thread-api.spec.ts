@@ -627,6 +627,7 @@ test('checks show as a step card with collapsible output, and skipped checks as 
         exitCode: 1,
         outputTail: 'FAIL src/login.test.ts\n  expected 1 to be 2',
         durationMs: 4200,
+        command: ['pnpm', 'check'],
       }),
       event(id, 'checks', {
         type: 'checks',
@@ -650,6 +651,7 @@ test('checks show as a step card with collapsible output, and skipped checks as 
   await expect(cards).toHaveCount(2)
   await expect(cards.first()).toContainText('專案檢查失敗')
   await expect(cards.first()).toContainText('結束碼 1')
+  await expect(cards.first().locator('.checks-command')).toHaveText('pnpm check')
   await expect(cards.first()).toContainText('耗時 4 秒')
   await expect(cards.first().locator('pre')).toBeHidden()
   await cards.first().getByText('專案檢查失敗').click()
