@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { errorMessage, request } from '../api.js'
+import { parseAttachments, sendableAttachments } from '../attachments.js'
+import type { AttachmentInfo } from '../attachments.js'
 import {
   AssistantActionsPanel,
   HistorySearch,
@@ -13,6 +15,7 @@ import { Composer } from '../components/Composer.js'
 import { Mascot, MascotMark } from '../components/Mascot.js'
 import { AgentProse, UserBubble } from '../components/Thread.js'
 import { Button, Icon, IconButton } from '../components/ui.js'
+import { useAttachments } from '../hooks/useAttachments.js'
 import { useDraft } from '../storage.js'
 import type { ConversationSummary } from '../types.js'
 
@@ -21,6 +24,18 @@ interface ChatMessage {
   role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
   memoryIds?: string[]
+  /** Files the owner sent with this message. */
+  attachments?: AttachmentInfo[]
+}
+
+/** The messages of an API answer; a message's files are checked like any other attachment list. */
+function parseMessages(value: unknown): ChatMessage[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return (value as ChatMessage[]).map((message) => {
+    const attachments = parseAttachments(message.attachments)
+    const { attachments: _raw, ...rest } = message
+    return attachments.length ? { ...rest, attachments } : rest
+  })
 }
 
 /** Chat with the assistant (T3.1). The conversation list lives in the main sidebar; this is one conversation. */
@@ -43,6 +58,7 @@ export function AssistantPage({
   const [sideOpen, setSideOpen] = useState(() => window.innerWidth >= 1100)
   const draftContext = `conversation:${conversationId || 'new'}`
   const [draft, setDraft, clearDraft] = useDraft(draftContext)
+  const files = useAttachments(draftContext)
   const setDraftRef = useRef(setDraft)
   setDraftRef.current = setDraft
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -63,9 +79,9 @@ export function AssistantPage({
     }
     let cancelled = false
     const load = () =>
-      request<{ messages?: ChatMessage[] }>(`/api/conversations/${encodeURIComponent(conversationId)}`)
+      request<{ messages?: unknown }>(`/api/conversations/${encodeURIComponent(conversationId)}`)
         .then((body) => {
-          if (!cancelled) setMessages(Array.isArray(body.messages) ? body.messages : [])
+          if (!cancelled) setMessages(parseMessages(body.messages) ?? [])
         })
         .catch(() => undefined)
     void load()
@@ -84,7 +100,11 @@ export function AssistantPage({
 
   async function send(): Promise<void> {
     const text = draft.trim()
-    if (!text) return
+    const { ids, blocked } = sendableAttachments(files.items)
+    if (!text || blocked) return
+    const sent: AttachmentInfo[] = files.items.flatMap((item) =>
+      item.id ? [{ id: item.id, name: item.name, mediaType: item.mediaType ?? '', size: item.size }] : [],
+    )
     setFailure('')
     setSending(true)
     let id = conversationId
@@ -95,15 +115,21 @@ export function AssistantPage({
           body: '{}',
         })
         id = created.conversation.id
+        // Emptied before the box switches to the new conversation, which has a draft of its own.
         clearDraft()
+        files.clear()
         onSelectConversation(id)
       } else {
         clearDraft()
+        files.clear()
       }
-      setMessages((current) => [...current, { id: -Date.now(), role: 'user', content: text }])
+      setMessages((current) => [
+        ...current,
+        { id: -Date.now(), role: 'user', content: text, ...(sent.length ? { attachments: sent } : {}) },
+      ])
       await request(`/api/conversations/${encodeURIComponent(id)}/messages`, {
         method: 'POST',
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, ...(ids.length ? { attachments: ids } : {}) }),
       })
     } catch (error) {
       setFailure(errorMessage(error, '助理沒有回應'))
@@ -112,10 +138,11 @@ export function AssistantPage({
     } finally {
       setSending(false)
       if (id) {
-        const body = await request<{ messages?: ChatMessage[] }>(
+        const body = await request<{ messages?: unknown }>(
           `/api/conversations/${encodeURIComponent(id)}`,
         ).catch(() => ({ messages: undefined }))
-        if (Array.isArray(body.messages)) setMessages(body.messages)
+        const loaded = parseMessages(body.messages)
+        if (loaded) setMessages(loaded)
       }
       onConversationsChanged()
       // Joy may have learned something from this message; extraction runs in the background.
@@ -154,7 +181,11 @@ export function AssistantPage({
             ) : (
               messages.map((message) =>
                 message.role === 'user' ? (
-                  <UserBubble key={message.id} text={message.content} />
+                  <UserBubble
+                    key={message.id}
+                    text={message.content}
+                    {...(message.attachments ? { attachments: message.attachments } : {})}
+                  />
                 ) : message.role === 'assistant' ? (
                   <div key={message.id} className="chat-assistant">
                     <MascotMark size={20} className="chat-avatar" />
@@ -212,6 +243,7 @@ export function AssistantPage({
             textareaLabel="訊息"
             sendLabel="送出"
             busy={sending}
+            attachments={{ items: files.items, onAdd: files.add, onRemove: files.remove }}
           />
         </div>
       </section>

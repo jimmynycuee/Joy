@@ -12,6 +12,7 @@ import {
   disableAttachment,
   getAttachment,
   listAttachmentIds,
+  listConversationAttachments,
   listTaskAttachments,
   type AttachmentMediaType,
   type AttachmentRecord,
@@ -166,6 +167,13 @@ export interface ResolvedAttachments {
   missing: AttachmentRecord[]
 }
 
+/** What a file is sent in: a task (its id), or an assistant conversation. */
+export type AttachmentOwner = TaskId | { conversationId: string }
+
+function ownedBy(record: AttachmentRecord, owner: AttachmentOwner): boolean {
+  return typeof owner === 'string' ? record.taskId === owner : record.conversationId === owner.conversationId
+}
+
 /** Where attachment bytes live, and what goes with them. */
 export class AttachmentStore {
   private lastSweep = 0
@@ -226,7 +234,7 @@ export class AttachmentStore {
   async remove(id: string): Promise<AttachmentRecord | undefined> {
     const record = this.get(id)
     if (!record) return undefined
-    if (record.taskId) disableAttachment(this.db, id)
+    if (record.taskId || record.conversationId) disableAttachment(this.db, id)
     else if (!deleteUnusedAttachment(this.db, id)) return undefined
     await rm(this.pathOf(record), { force: true })
     return this.get(id) ?? record
@@ -234,16 +242,17 @@ export class AttachmentStore {
 
   /**
    * Checks the files a message wants to use before anything is created: each exists, is not used yet, and together
-   * (and with what the task already has) they stay within the limits.
+   * (and with what the task or conversation already has) they stay within the limits.
    */
-  checkUnused(ids: readonly string[], taskId?: TaskId): AttachmentRecord[] {
+  checkUnused(ids: readonly string[], owner?: AttachmentOwner): AttachmentRecord[] {
     if (new Set(ids).size !== ids.length) throw new AttachmentError(400, 'An attachment is listed twice')
     if (ids.length > MAX_ATTACHMENTS_PER_MESSAGE)
       throw new AttachmentError(400, `At most ${MAX_ATTACHMENTS_PER_MESSAGE} files per message`)
     const records = ids.map((id) => {
       const record = this.get(id)
       if (!record) throw new AttachmentError(400, `Attachment ${id} was not found; attach the file again`)
-      if (record.taskId) throw new AttachmentError(409, `Attachment ${record.name} was already sent`)
+      if (record.taskId || record.conversationId)
+        throw new AttachmentError(409, `Attachment ${record.name} was already sent`)
       return record
     })
     const bytes = records.reduce((sum, r) => sum + r.size, 0)
@@ -252,17 +261,23 @@ export class AttachmentStore {
         413,
         `The files of one message can be at most ${MAX_MESSAGE_ATTACHMENT_BYTES / 1024 / 1024} MB together`,
       )
-    if (taskId && records.length) {
-      const earlier = listTaskAttachments(this.db, taskId).filter((r) => !r.disabled)
+    if (owner && records.length) {
+      const [what, fresh] =
+        typeof owner === 'string' ? ['A task', 'a new task'] : ['A conversation', 'a new conversation']
+      const earlier = (
+        typeof owner === 'string'
+          ? listTaskAttachments(this.db, owner)
+          : listConversationAttachments(this.db, owner.conversationId)
+      ).filter((r) => !r.disabled)
       if (earlier.length + records.length > MAX_TASK_ATTACHMENTS)
         throw new AttachmentError(
           400,
-          `A task can hold at most ${MAX_TASK_ATTACHMENTS} files; remove some from the thread or start a new task`,
+          `${what} can hold at most ${MAX_TASK_ATTACHMENTS} files; remove some from the thread or start ${fresh}`,
         )
       if (earlier.reduce((sum, r) => sum + r.size, 0) + bytes > MAX_TASK_ATTACHMENT_BYTES)
         throw new AttachmentError(
           413,
-          `A task's files can be at most ${MAX_TASK_ATTACHMENT_BYTES / 1024 / 1024} MB together; remove some from the thread or start a new task`,
+          `${what}'s files can be at most ${MAX_TASK_ATTACHMENT_BYTES / 1024 / 1024} MB together; remove some from the thread or start ${fresh}`,
         )
     }
     return records
@@ -319,11 +334,11 @@ export class AttachmentStore {
   }
 
   /**
-   * Replaces Joy's markers with what the agent should read. Only files of `taskId` count. The most recent files are
+   * Replaces Joy's markers with what the agent should read. Only files of `owner` (a task, or a conversation) count. The most recent files are
    * given in full (at most RUN_MAX_IMAGES images and RUN_MAX_TEXT_BYTES of text), older ones by name; each file once.
    * A removed file is named as removed, a file missing from disk is named as missing (and reported), the run goes on.
    */
-  async resolve(text: string, taskId: TaskId | undefined): Promise<ResolvedAttachments> {
+  async resolve(text: string, owner: AttachmentOwner | undefined): Promise<ResolvedAttachments> {
     const pattern = new RegExp(String.raw`\[\[joy-attachment:${this.nonce}:([0-9a-f-]{36})\]\]`, 'g')
     const matches = [...text.matchAll(pattern)]
     if (!matches.length) return { text, images: [], missing: [] }
@@ -332,7 +347,7 @@ export class AttachmentStore {
       const id = match[1] ?? ''
       if (records.has(id)) continue
       const record = this.get(id)
-      records.set(id, record && taskId && record.taskId === taskId ? record : undefined)
+      records.set(id, record && owner && ownedBy(record, owner) ? record : undefined)
     }
     const full = new Set<string>()
     let images = 0
