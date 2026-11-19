@@ -30,14 +30,14 @@ export function foldTimeline(entries: readonly TimelineEntry[], outcome: 'done' 
     (entry) => entry.kind === 'message' && entry.role !== ROLE_SPEAKERS.reviewer,
   )
   const lastReview = entries.findLast((entry) => entry.kind === 'review')
-  // The owner's own messages and decisions (another model or mode) and what each round took stay in view.
+  // The owner's own messages and decisions (another model or mode), what each round took and warnings stay in view.
   const kept = new Set<TimelineEntry>(
     entries.filter(
       (entry) =>
         entry.kind === 'user' ||
         entry.kind === 'rewound' ||
         entry.kind === 'usage' ||
-        (entry.kind === 'step' && entry.owner),
+        (entry.kind === 'step' && (entry.owner || entry.notice)),
     ),
   )
   if (lastMessage) kept.add(lastMessage)

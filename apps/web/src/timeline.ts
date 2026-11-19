@@ -76,9 +76,10 @@ export type TimelineEntry =
     })
   /**
    * `detail` is Markdown that the step folds away (a past version of the plan). `owner` marks what the owner decided
-   * (another model or mode): it stays in view when a finished task folds its process.
+   * (another model or mode) and `notice` a warning the owner must see: both stay in view when a finished task folds
+   * its process.
    */
-  | (EntryBase & { kind: 'step'; text: string; tone?: string; detail?: string; owner?: true })
+  | (EntryBase & { kind: 'step'; text: string; tone?: string; detail?: string; owner?: true; notice?: true })
   /**
    * `fragment` marks what the stream leaves behind (thinking, a result with no call, bookkeeping events): it shows with
    * the details but is not one of them, so it is not counted.
@@ -452,7 +453,9 @@ export function buildTimeline(
       return
     }
     const tone = STEP_TONES[event.type] ?? policyEventKind(event.type, payload)
-    entries.push({ ...base, kind: 'step', text, ...(tone ? { tone } : {}) })
+    // A run that says it changed files but changed none is something the owner must see after the process folds.
+    const notice = event.type === 'result.warning'
+    entries.push({ ...base, kind: 'step', text, ...(tone ? { tone } : {}), ...(notice ? { notice } : {}) })
   })
   const shown = entries.filter(
     (entry) =>

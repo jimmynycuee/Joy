@@ -371,16 +371,19 @@ export function DiscardButton({ details, onChanged }: { details: TaskDetails; on
   const published = details.events.some((event) => event.type === 'publish.done')
   // Merged and untouched since: the commits are in the default branch, so removing the worktree loses nothing.
   const merged = currentMerge(details.events)
+  // Nothing changed: there is only the worktree to remove, so it is not a destructive discard.
+  const unchanged = diffFrom(details.events)?.files.length === 0
+  const clearOnly = Boolean(merged) || unchanged
   if (!finished || removed || published) return null
   return (
     <div className="action-stack">
       <Button
-        variant={merged ? 'secondary' : 'danger'}
+        variant={clearOnly ? 'secondary' : 'danger'}
         icon="trash"
         onClick={() => {
           if (
             !window.confirm(
-              merged ? '要清除這個任務的工作副本嗎？' : '要丟掉這個任務的工作副本和所有變更嗎？',
+              clearOnly ? '要清除這個任務的工作副本嗎？' : '要丟掉這個任務的工作副本和所有變更嗎？',
             )
           )
             return
@@ -393,7 +396,7 @@ export function DiscardButton({ details, onChanged }: { details: TaskDetails; on
             .catch((error: unknown) => setFailure(errorMessage(error, '無法丟棄')))
         }}
       >
-        {merged ? '清除工作副本' : '丟掉這些變更'}
+        {clearOnly ? '清除工作副本' : '丟掉這些變更'}
       </Button>
       {failure ? <p className="form-error">{failure}</p> : null}
     </div>
@@ -486,7 +489,7 @@ export function PullRequestBar({ details, onChanged }: { details: TaskDetails; o
 export function PublishPanel({ details, onChanged }: { details: TaskDetails; onChanged: () => void }) {
   const [failure, setFailure] = useState('')
   if (details.task.status !== 'done' || !details.repo || details.repo.githubRemote) return null
-  if (publishedPrUrl(details)) return null
+  if (publishedPrUrl(details) || diffFrom(details.events)?.files.length === 0) return null
 
   async function setRemote(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()

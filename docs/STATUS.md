@@ -2,6 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-19（真實 CLI 第四輪：一律允許、附件、專案 hooks 同意、Codex exec 都通過；「說改了沒改」的提示在任務完成收合後仍留在外面，沒有變更時按鈕改成「清除工作副本」並不再要 GitHub 網址，分支 `keep-warning-visible`）
 - 最後更新：2026-11-19（真實 CLI 第三輪：審查看到檢查結果、說改了沒改的提示、auto 權限、換 provider 交接與重做、合併到 main 與開編輯器都通過；修 Claude 多輪 run 的 token 只算最後一輪，分支 `claude-usage-turns`）
 - 最後更新：2026-11-19（`queue-rewind` 的測試改成等 agent 開始才送要排隊的訊息，修掉 macOS／Windows CI 上偶爾失敗；分支 `fix-queue-rewind-flaky`）
 - 最後更新：2026-11-19（審查依據實際檢查結果：審查者 prompt 一律寫出 Joy 跑了什麼（指令、結束碼、截斷遮罩後的輸出結尾）或沒跑什麼，審查者維持唯讀；分支 `review-verification`）
@@ -96,6 +97,25 @@
 ## 驗證結果
 
 > 2026-11-15 以前的驗證結果在 `docs/status-history.md`。
+
+### 真實 CLI 驗證第四輪（2026-11-19，分支 `keep-warning-visible`）
+
+設定和第三輪一樣：暫存 `JOY_HOME`、port 4420、所有角色都用 haiku 或 gpt-6-luna，effort `low`。
+
+- **這個任務內一律允許**：`ask` 模式下，第一次 `node test.js` 選「這個任務內一律允許」，會記下 `task_allow.created {kind: shell, target: "node test.js"}`；之後同一個指令不再問，`node --no-warnings test.js` 會問。用 `DELETE /allows/:id` 撤銷後，下一輪的 `node test.js` 又會問。專案的 `checkCommand` 走 Joy 自己的檢查流程，在 `ask` 模式每輪都會問，也不提供一律允許。
+- **附件**：上傳一張 16×16 紅色 PNG 和一個 `notes.txt`（內容是代號）。Claude haiku 和 Codex luna（app-server）都答「color: red; codeword: HERON」，沒有用任何工具。
+- **專案 hooks 同意**：`.claude/settings.json` 裡放一個 `SessionStart` hook，執行時把一行字寫進標記檔。四個情況都符合預期：
+  - 拒絕：Claude 沒有啟動，任務失敗並說明原因，標記檔不存在。
+  - 核准：hook 執行一次。
+  - 下一個任務：不再問，hook 照樣執行。
+  - 改了 hook 內容並 commit 之後：會再問一次。
+- **Codex exec 模式**（`providers.codex.transport: exec`）：luna 說「已修正 math.js」，但沒有任何變更，Joy 出現 `result.warning`。接續時用的是同一個 session id，也答得出代號 KESTREL。exec 模式下 luna 不會真的改檔，和以前手動跑的結果一樣，是 CLI 本身的行為。
+- **畫面（假資料預覽與暫存 Joy，深色與淺色、桌面與手機寬度）**：檢查卡、每輪用量那一行、審查卡、合併到 main、重做都正常。找到兩個問題並修好：
+  - 任務完成後「過程」會收合，「agent 說改了檔案，但沒有任何變更」原本也會被收進去。現在時間軸的 step 多了 `notice` 標記，收合時會留在外面（`fold.test.ts`）。
+  - 沒有任何變更的任務原本會顯示紅色的「丟掉這些變更」和 GitHub 網址欄位。現在改成次要的「清除工作副本」，也不再要 GitHub 網址（`components/task-panels.test.tsx`）。
+  - 兩個測試在修正前都失敗。修正後我用 Vite 開發伺服器接到暫存 Joy，在手機寬度、淺色模式下截圖確認。
+- **觀察（沒改）**：審查者呼叫結構化輸出的步驟會顯示工具原名 `StructuredOutput`；網頁沒有網址路由，任務頁沒有自己的網址。
+- **沒驗證到**：Windows；Codex exec 搭附件（`codex exec --image`）。
 
 ### 真實 CLI 驗證第三輪（2026-11-19，分支 `claude-usage-turns`）
 
