@@ -32,4 +32,16 @@ describe('codex config warnings', () => {
     ]
     expect(events).toEqual([{ type: 'status', text: WARNING }])
   })
+
+  it('app-server: the pair a real codex-cli 0.166.0 sends becomes one status', () => {
+    // Measured: after `initialize` comes `configWarning`, after `thread/start` a thread-scoped `warning`, same text.
+    const real =
+      'Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  user (/home/me/.codex/config.toml): `features.goal` is ignored.'
+    const parser = new CodexAppServerParser({ cwd: '/work', structured: false })
+    const events = [
+      ...parser.notification('configWarning', { summary: real, details: null }),
+      ...parser.notification('warning', { threadId: '01a1f32a-5f4a-7723-b633-7ccac3cad791', message: real }),
+    ]
+    expect(events).toEqual([{ type: 'status', text: real }])
+  })
 })

@@ -30,7 +30,7 @@ describe('tested CLI versions', () => {
   })
 
   it('warns about untested versions with the re-record command', () => {
-    expect(checkCliVersion('claude', '2.1.317 (Claude Code)').status).toBe('tested')
+    expect(checkCliVersion('claude', '2.1.319 (Claude Code)').status).toBe('tested')
     const newer = checkCliVersion('claude', '2.2.0 (Claude Code)')
     expect(newer).toMatchObject({ status: 'untested', version: '2.2.0' })
     expect(newer.status === 'untested' && newer.repair).toContain('node scripts/record-fixtures.mjs claude')

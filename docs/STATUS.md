@@ -4,6 +4,7 @@
 
 - 最後更新：2026-11-19（助理對話可以附圖片與文字檔：圖片隨訊息交給大腦、文字檔引用進訊息，存下的訊息只留擁有者的話並列出檔案；migration 28 讓附件屬於任務或對話其中之一，分支 `assistant-attachments`）
 - 最後更新：2026-11-19（介面：審查卡與 Joy 工具改用易懂的名稱、側邊欄篩選顯示各狀態數量並把目前條件留在清單上方、任務／對話／設定都有自己的網址（上一頁、下一頁可用），分支 `ui-improvements`）
+- 最後更新：2026-11-19（T0.4 Codex 真實 fixture（exec 的 edit／mcp／resume）與 contract test、確認 app-server 設定警告是 `configWarning`＋`warning` 兩則同文字；T4.6 重錄 Claude 2.1.319 fixture，錄製腳本清掉 init 事件裡擁有者的外掛／連接器／skills；Codex exec 搭附件真實通過；review loop 也會提示「說改了沒改」；分支 `claude/codex-verify-e95d1a`）
 - 最後更新：2026-11-19（真實 CLI 第四輪：一律允許、附件、專案 hooks 同意、Codex exec 都通過；「說改了沒改」的提示在任務完成收合後仍留在外面，沒有變更時按鈕改成「清除工作副本」並不再要 GitHub 網址，分支 `keep-warning-visible`）
 - 最後更新：2026-11-19（真實 CLI 第三輪：審查看到檢查結果、說改了沒改的提示、auto 權限、換 provider 交接與重做、合併到 main 與開編輯器都通過；修 Claude 多輪 run 的 token 只算最後一輪，分支 `claude-usage-turns`）
 - 最後更新：2026-11-19（`queue-rewind` 的測試改成等 agent 開始才送要排隊的訊息，修掉 macOS／Windows CI 上偶爾失敗；分支 `fix-queue-rewind-flaky`）
@@ -116,6 +117,23 @@
 - **網址**：網址列跟著目前頁面走：`?task=<id>`、`?chat=<id>`（新對話是 `?chat`）、`?settings=<section>`（專案可加 `&repo=<id>`），新任務頁是 `/`。用 query string 而不是路徑，因為 server 只在 `/` 提供網頁，通知原本就開 `/?task=<id>`。上一頁、下一頁會換頁；新對話拿到 id、在設定裡切換分頁時改寫目前這一筆而不新增，所以一次上一頁就離開設定。開啟時網址不認得就換成 `/`（`route.ts`）。`SettingsSection` 型別改從 `route.ts` 的清單來，兩邊不會不同步。
 - **驗證**：`tool-calls.test.ts`、`sidebar-groups.test.ts`、`route.test.ts` 新增測試；e2e `sidebar-projects.spec.ts` 加上數量、清除標籤，以及網址、上一頁、下一頁、直接開連結的測試。用假資料預覽（`joy-fake-preview`）在深色桌面寬度點過：點任務網址變成 `?task=…`、上一頁回到前一個任務、篩選標籤顯示「已完成」。
 - **沒驗證到**：手機寬度與淺色模式沒截圖；真實審查者的 `StructuredOutput` 只用單元測試確認。
+
+### 真實 CLI 驗證第五輪：Codex fixture、Claude 重錄、exec 附件、review loop 提示（2026-11-19，分支 `claude/codex-verify-e95d1a`）
+
+本機 Mac、codex-cli 0.166.0、Claude Code 2.1.319；模型一律 gpt-6-luna／haiku、effort `low`。擁有者的 Joy（:4317）與 `~/.joy` 沒動。
+
+- **T0.4 Codex 真實 fixture**：`node scripts/record-fixtures.mjs codex` 錄到 `edit`、`mcp`、`resume-1`、`resume-2`，四個都結束碼 0。`parse.test.ts` 加了對應的 contract test，都通過。實測到的事：
+  - 擁有者的 `config.toml` 有過時的 `features.goal`，每次 `exec` 開頭都有兩則一樣的 `item.completed {type: error}` 設定警告；parser 只報一次 `status`，沒有 `error`。
+  - luna 用 `sed` 改檔，**沒有 `file_change` item**；Joy 靠 worktree diff 判斷，不受影響。
+  - `-c mcp_servers.joy.*` 注入的 MCP 在 `exec` 可用（`ask_peer` 回 `PEER SAYS: 4`）。`exec` 沒有互動式核准，`--sandbox workspace-write` 下 `rm math.js` 直接成功。
+  - `codex exec resume` 用同一個 thread id，答得出 PELICAN。
+  - 錄製沒有隔離擁有者的 Codex 設定，所以 input tokens 很大（edit 15 萬）；fixture 只測事件格式，不影響。
+- **app-server 設定警告的通知名稱**：用腳本啟動真實 `codex app-server`，只送 `initialize` 和 `thread/start`（沒有 turn，不花額度）。實際收到兩則：`initialize` 後一則 `configWarning {summary, details: null}`，`thread/start` 後一則 `warning {threadId, message}`，文字相同（`generate-json-schema` 也只有這兩個名稱）。`app-server-parse.ts` 原本就接這兩個，兩則會合併成一則 `status`，所以不用改程式；`config-warning.test.ts` 補了這個真實形狀的測試。
+- **T4.6 Claude 重錄**：`node scripts/record-fixtures.mjs claude` 用 2.1.319 錄了四個 fixture，contract test 不用改就通過；`TESTED_CLI_VERSIONS.claude` 改成 2.1.319（`doctor.test.ts`、`server.test.ts` 的版本跟著改）。**repo 是公開的**，而這次的 `system/init` 列出擁有者的外掛（含私人 marketplace 名稱）、已連接的 claude.ai 連接器和它們的工具、skills、agents。錄製腳本現在會清掉這些：只留 `joy` MCP、`mcp__joy__*` 工具和 `@builtin` 外掛，skills／slash_commands／agents 清空，scratchpad／socket／記憶路徑／啟動計時換成 `<SCRUBBED>`。Joy 從 init 只讀 session id、model、版本、權限模式、MCP 清單和工具數。`node scripts/record-fixtures.mjs claude --scrub` 可以對已錄的檔案重新清一次，不會呼叫模型。
+- **Codex exec 搭附件**：暫存 `JOY_HOME`、port 4421、`providers.codex.transport: exec`。single 任務附一張 16×16 藍色 PNG 和 `notes.txt`（代號 OSPREY），luna 回「color: blue; codeword: OSPREY」，沒有用工具，任務 `done`。Codex 的 session 紀錄是 `originator: codex_exec`；圖片從 `<JOY_HOME>/attachments/<id>.png`（worktree 外）以 `input_image` 送進去，文字檔內嵌在 prompt 裡。
+- **review loop 的「說改了沒改」**：`result.warning {reason: empty_diff_claimed_changes}` 原本只在 single 模式。現在 review loop 也會判斷，條件是：最後一次寫程式的實作者回合（round ≥ 1，計畫回合不算）成功、整個 run 沒有 `file_change`、結果沒有變更、回覆說有改。提示在 `result` 之前送出。沒有變更時 review loop 本來就以「The implementer made no changes」失敗，這則提示用來說明：模型說它改了，但其實沒改。新測試在修正前失敗（`server.test.ts`，single 與 review_loop 各一，另有一個不該提示的情況）。
+- `pnpm check` 通過（134 個測試檔、1612 個測試）。
+- **沒驗證到**：app-server 跑完整個 turn 時的設定警告（只看到 turn 前那兩則）、`turn/steer` 的真實事件、Windows 原生（T4.4）、容器內的 `exec --image`。Codex 的 `synthetic-edit` fixture 保留，因為真實錄製裡沒有 `file_change`、`todo_list` 和失敗的指令，provider 測試還要靠它。
 
 ### 真實 CLI 驗證第四輪（2026-11-19，分支 `keep-warning-visible`）
 

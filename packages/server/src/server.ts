@@ -5020,6 +5020,9 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
     // had left (the interrupted round itself is done again and still counts once).
     const maxRounds = resume?.interrupted?.maxRounds ?? task.maxRounds
     let implementerRound = 0
+    // For the "said it changed files but did not" note: code-writing turns only (round 0 is the read-only plan).
+    let implementerFileChanges = 0
+    let lastImplementerDone: Extract<AgentEvent, { type: 'done' }> | undefined
     const config = await configStore.get()
     const hubs = implementerToolHubs(task, repo, config, controller.signal)
     try {
@@ -5061,6 +5064,10 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         if (event.type === 'agent' && event.role === 'implementer' && event.event.type === 'done') {
           setImplementerTurn(task.id, false)
           hubs.turnEnded(attempt.id)
+        }
+        if (event.type === 'agent' && event.role === 'implementer' && event.round >= 1) {
+          if (event.event.type === 'file_change') implementerFileChanges += 1
+          if (event.event.type === 'done') lastImplementerDone = event.event
         }
         if (
           event.type === 'result' &&
@@ -5110,6 +5117,24 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
                   ? 'done'
                   : 'review_ready'
           setTaskStatus(db, task.id, taskStatus)
+          if (
+            event.status !== 'cancelled' &&
+            !event.awaitingPlanApproval &&
+            lastImplementerDone &&
+            !lastImplementerDone.isError
+          ) {
+            // A loop stopped for "no changes" carries no diff; read the worktree as single mode does.
+            const diffFiles =
+              event.diff?.files.length ?? (workspace ? (await executor.diff(workspace)).files.length : 0)
+            if (
+              claimsChangesWithoutAny({
+                finalMessage: lastImplementerDone.finalMessage,
+                fileChangeEvents: implementerFileChanges,
+                diffFiles,
+              })
+            )
+              publish(task.id, attempt.id, 'result.warning', { reason: 'empty_diff_claimed_changes' })
+          }
           if (event.awaitingPlanApproval)
             publish(task.id, attempt.id, 'plan.awaiting_approval', {
               plan: event.plan ?? '',

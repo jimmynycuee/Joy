@@ -22,11 +22,11 @@
 - [x] T0.1 monorepo、TypeScript strict、ESLint、Prettier、Vitest、三平台 CI
 - [x] T0.2 `AGENTS.md` / `CLAUDE.md`
 - [x] T0.3 Spike：Claude Code headless（`docs/spikes/claude-code.md`）
-- [ ] T0.4 Spike：Codex（方式已決定，見 `docs/spikes/codex.md`；需在已登入的電腦上錄製真實 fixture，並與已整合的 app-server adapter 完成真實聯調）
+- [x] T0.4 Spike：Codex（`docs/spikes/codex.md`；2026-11-19 在已登入的 Mac 錄到 exec 的真實 fixture 並通過 contract test，app-server 已在真實 CLI 驗證各輪聯調；Windows 原生在 T4.4）
 - [x] T0.5 定稿 `packages/core` 介面
 - [x] T0.6 `packages/db`
 - [x] T1.1 `providers/claude-cli`
-- [x] T1.2 `providers/codex-cli`（依 SDK 型別與合成 fixture 測試；**錄到真實 fixture 後要重跑 contract test**）
+- [x] T1.2 `providers/codex-cli`（依 SDK 型別與合成 fixture 測試；2026-11-19 已用真實 fixture 重跑 contract test）
 - [x] T1.3 `providers/openai-api`
 - [x] T1.4 `executor/worktree`
 - [x] T1.5 `orchestrator/review-loop`
