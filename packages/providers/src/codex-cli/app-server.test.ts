@@ -90,6 +90,70 @@ describe('Codex app-server', () => {
     expect(events).toEqual([{ type: 'file_change', path: 'src/example.ts', kind: 'modify' }])
   })
 
+  describe("the owner's own MCP servers, plugins and connectors", () => {
+    const run = (extraEnv: Record<string, string>, over: Partial<RunOptions> = {}) => {
+      const { dir, env, rpcPath, readLines } = setup(extraEnv)
+      const argsPath = join(dir, 'args.json')
+      const stream = new CodexAppServerProvider({
+        command: process.execPath,
+        argsPrefix: [fakeCodexAppServer],
+        env: { ...env, FAKE_APP_SERVER_ARGS_OUT: argsPath },
+        timeoutMs: 5_000,
+        approvalHandler: () => 'accept',
+      }).run(
+        opts(dir, {
+          mcpServers: [{ name: 'joy', transport: 'stdio', command: 'node', args: ['hub.mjs'] }],
+          ...over,
+        }),
+        model,
+      )
+      return {
+        stream,
+        rpc: () => readLines(rpcPath),
+        args: () => JSON.parse(readFileSync(argsPath, 'utf8')) as string[],
+      }
+    }
+
+    it('are kept out of a Joy run: plugins and connectors off at start, config.toml servers disabled', async () => {
+      const { stream, rpc, args } = run({ FAKE_OWNER_MCP: 'computer-use,private_investment' })
+      const events = await collect(stream)
+      expect(events.at(-1)).toMatchObject({ type: 'done' })
+      expect(args()).toEqual([
+        'app-server',
+        '--disable',
+        'plugins',
+        '--disable',
+        'apps',
+        '--disable',
+        'remote_plugin',
+      ])
+      const start = rpc().find((request) => request.method === 'thread/start')
+      expect((start?.params as { config: unknown }).config).toEqual({
+        mcp_servers: {
+          'computer-use': { enabled: false },
+          private_investment: { enabled: false },
+          joy: { command: 'node', args: ['hub.mjs'] },
+        },
+      })
+    })
+
+    it('stop the run before any turn when a server Joy did not configure still runs', async () => {
+      const { stream, rpc } = run({ FAKE_OWNER_MCP: 'computer-use', FAKE_LEAKED_MCP: 'remote_plugin_server' })
+      const events = await collect(stream)
+      expect(events).toContainEqual(
+        expect.objectContaining({ type: 'error', message: expect.stringContaining('remote_plugin_server') }),
+      )
+      expect(events.at(-1)).toMatchObject({ type: 'done', isError: true })
+      expect(rpc().some((request) => request.method === 'turn/start')).toBe(false)
+    })
+
+    it('stop the run when the app-server cannot say which servers it would load', async () => {
+      const { stream, rpc } = run({ FAKE_APP_SERVER_MODE: 'no-config-read' })
+      await expect(collect(stream)).rejects.toThrow(/MCP/)
+      expect(rpc().some((request) => request.method === 'thread/start')).toBe(false)
+    })
+  })
+
   it('uses the persistent JSON-RPC lifecycle, maps events and answers policy approvals', async () => {
     const { dir, rpcPath, approvalsPath, readLines } = setup()
     const fixture = fixtureFor(dir)
@@ -165,6 +229,8 @@ describe('Codex app-server', () => {
       cwd: dir,
       approvalPolicy: 'on-request',
       sandbox: 'workspace-write',
+      // Escalations come to Joy, never to Codex's own reviewer (`approvals_reviewer` in the owner's config.toml).
+      approvalsReviewer: 'user',
       config: {
         mcp_servers: {
           joy: { command: 'node', args: ['tool-hub.mjs'], env: { JOY_TEST: '1' } },
@@ -300,6 +366,7 @@ describe('Codex app-server', () => {
     const events = await collect(provider.run(opts(dir, { resumeSessionId: 'thread-existing' }), model))
     const requests = readLines(rpcPath)
     expect(requests.find((request) => request.method === 'thread/resume')?.params).toMatchObject({
+      approvalsReviewer: 'user',
       threadId: 'thread-existing',
       cwd: dir,
       model: 'gpt-6-luna',
@@ -328,6 +395,7 @@ describe('Codex app-server', () => {
     await collect(provider.run(opts(dir, { resumeSessionId: 'thread-existing' }), switched))
     const requests = readLines(rpcPath)
     expect(requests.find((request) => request.method === 'thread/resume')?.params).toMatchObject({
+      approvalsReviewer: 'user',
       threadId: 'thread-existing',
       model: 'gpt-6.1-sol',
     })

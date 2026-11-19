@@ -2,6 +2,8 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-19（Codex 只拿 Joy 給的 MCP：關掉擁有者的 config.toml server、外掛、連接器與遠端外掛；修 `codex exec resume` 的 `--sandbox`；分支 `codex-approvals-reviewer`）
+- 最後更新：2026-11-19（真實 CLI 第二輪：steer、換模型 resume、compete 通過；修掉 Codex 沿用擁有者 `approvals_reviewer` 讓自己的審查子代理繞過 Joy 核准的問題；分支 `codex-approvals-reviewer`）
 - 最後更新：2026-11-19（真實 CLI 冒煙測試：review loop 兩種組合都通過；修好 Claude 在連結資料夾下回報絕對路徑；擁有者確認 core 與 policy 已審；分支 `real-cli-smoke`）
 - 最後更新：2026-11-19（完成的任務可「合併到 main」（本機合併，先確認分支與檔案數）與「在編輯器開啟」（設定 `editor`），分支 `task-actions`）
 - 最後更新：2026-11-19（介面與 bug 修正：輸入框依自身寬度收合、加入專案讀出 repo 的預設分支與 GitHub origin 並在加入時檢查分支、環境檢查文字改給使用者看、首頁指出選的模型缺哪個 CLI、手機任務頁不重複標題；本檔只留近期驗證結果，較早的移到 `docs/status-history.md`；分支 `ui-fixes`）
@@ -89,6 +91,21 @@
 ## 驗證結果
 
 > 2026-11-15 以前的驗證結果在 `docs/status-history.md`。
+
+### 真實 CLI 驗證第二輪：steer、換模型 resume、Codex 升權、compete（2026-11-19，分支 `codex-approvals-reviewer`）
+
+同樣用暫存 `JOY_HOME`、埠 4420 的另一個 Joy，經 API 跑，模型都是 `haiku`／`gpt-6-luna`、`low`（換模型那一步用 `sonnet` `low`）。
+
+- **執行中即時補充（steer）**：Claude 實作者在 `sleep 20` 時收到訊息，`delivery: steer`、`user.message.delivered via steer`。整個任務只有 1 次 provider run、1 個結果，diff 同時有修正和插話要求的 `// steered`。
+- **Claude 換模型後 resume**：第一輪 haiku，follow-up 帶 `roleOverrides.implementer = sonnet`。兩輪是同一個 session id，模型從 `claude-haiku-5-5` 變成 `claude-sonnet-5-5`，第二輪答出第一輪要它記住的暗號。
+- **Codex 跨出沙盒（找到並修好安全問題）**：`ask` 模式下要 Codex 跑 `curl -sSI https://example.com`。修正前沒有任何核准就連上網路（`HTTP/2 200`）。原因是擁有者的 `~/.codex/config.toml` 設了 `approvals_reviewer = "guardian_subagent"`，codex-cli 0.166.0 的 app-server thread 沿用它（`thread/start` 回應 `approvalsReviewer: "auto_review"`、`networkAccess: false`），升權請求由 Codex 自己的審查子代理批准，Joy 的模式與秘密規則都被繞過。修法：`thread/start`／`thread/resume` 一律送 `approvalsReviewer: 'user'`，`codex exec` 加 `-c approvals_reviewer="user"`（exec 沒人可問，升權就被拒）。修正後實跑：請求以 `run_outside_worktree` 核准卡送到 Joy，核准才執行；拒絕則不執行，Codex 回報「升級權限請求遭拒」。測試：`app-server.test.ts`（start 與兩種 resume 都帶 `approvalsReviewer`）、`args.test.ts`（read-only／workspace-write 都帶），修正前失敗。
+- **compete**：Claude haiku 對 Codex luna、裁判 haiku。兩邊各自完成、互審都核准，裁判給出 `winner` 與理由，任務停在 `review_ready`（`awaitingChoice`）；`POST /choose` 後 `compete.chosen`、另一份 `discarded`，任務 `done`。觀察：裁判一次用了 44,502 input tokens、沒有快取命中，約 US$0.18，比實作者貴很多。
+- **compete 的「請裁判合併」**：`POST /merge` 後 `compete.merge_started`，裁判（haiku）在第三個 worktree 重新實作，Codex 審查核准，`compete.merged`，任務回到等待選擇（「合併版好了」）；`/choose` 選合併版後 `compete.chosen`、兩份原始方案 `discarded`，任務 `done`。第二次裁判有快取命中（25,992），約 US$0.08。
+- **Codex 的 MCP 提問**：擁有者加的 stdio MCP server（`scripts/fixtures/mcp-stub.mjs`）在 `ask` 模式下，Codex 呼叫 `ask_peer` 時發 `mcpServer/elicitation/request`，Joy 出核准卡（`toolCall: true`、寫出 server 自己的訊息），核准後工具才跑並回傳 `PEER SAYS: 4`。
+- **Codex 會載入擁有者全域的 MCP（已修）**：Joy 的 Codex run 原本會啟動擁有者 `~/.codex/config.toml` 的全部 MCP server（實測 9 個，含 `computer-use`、`node_repl`、`private_investment_*`）、外掛帶的 server（CapCut、Notion、Gmail…）、`codex_apps` 連接器與遠端外掛的 server；Codex 曾呼叫 `mcp__capcut_creation_resource__background_music`，沒有送任何核准到 Joy。修法（等於 Claude 的 `--strict-mcp-config`）：app-server 以 `--disable plugins --disable apps --disable remote_plugin` 啟動（遠端外掛在 thread 層關太晚，實測要在啟動時關）；`config/read` 讀出生效的 `mcp_servers` 名稱，`thread/start`／`thread/resume` 把不屬於 Joy 的都設 `enabled: false`；thread 開好後 `mcpServerStatus/list`，還有非 Joy、非 disabled 的 server 就在任何 turn 之前結束這次 run；`config/read` 失敗也不跑（交給 exec 退路）。`codex exec` 加 `--ignore-user-config --ignore-rules --disable plugins --disable apps --disable remote_plugin`。實跑：同一個 MCP 任務只啟動 `joy` 與 `stub`，Codex 直接用 `stub`。測試：`app-server.test.ts` 3 個（停用與啟動旗標、漏網 server 在 turn 前停下、`config/read` 失敗不開 thread）、`args.test.ts`，修正前都失敗。
+- **順手修：`codex exec resume` 不接受 `--sandbox`**（codex-cli 0.166.0 回 `unexpected argument`），Joy 原本照送，exec 退路的接續一定失敗。改成 `-c sandbox_mode="…"`（`args.test.ts` 新測試，修正前失敗）；真實 `provider.e2e`（app-server 與 exec、各自修 bug 後 resume）兩個都通過。
+- **已知缺口：擁有者的 Codex execpolicy 規則**：`~/.codex/rules/default.rules` 的 `decision="allow"` 規則在 app-server 仍有效。實測 `ask` 模式下 `curl -sS --max-time 2 -I https://example.com`（符合一條 allow 規則）不問 Joy 就連網執行。app-server 沒有 `--ignore-rules`（`ignoreRules` 只在管理者的 `AutoReviewRequirements`），唯一辦法是另給一個沒有 rules 的 `CODEX_HOME`，那會牽動登入憑證的位置，違反「不碰訂閱憑證」，所以沒做。和 Claude 一樣（擁有者自己 `~/.claude/settings.json` 的 allow 規則也不經 Joy），視為擁有者自己的設定；`codex exec` 已加 `--ignore-rules`。專案 `.codex/rules`（repo 自帶的規則）在 app-server 是否生效沒有驗證。
+- **沒驗證到**：Windows。
 
 ### 真實 CLI 冒煙測試（2026-11-19，分支 `real-cli-smoke`）
 

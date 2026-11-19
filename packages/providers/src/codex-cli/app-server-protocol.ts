@@ -33,6 +33,11 @@ export interface ThreadStartParams {
   cwd: string
   approvalPolicy: CodexApprovalPolicy
   sandbox: CodexSandboxMode
+  /**
+   * Who answers approval requests (sandbox escapes, network, MCP). `user` sends them to the client, Joy; the owner's
+   * config.toml may otherwise route them to Codex's own `auto_review` subagent, which approves without Joy's rules.
+   */
+  approvalsReviewer: 'user'
   config?: Record<string, unknown>
 }
 
