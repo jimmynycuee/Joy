@@ -231,7 +231,7 @@ describe('compete', () => {
     )
     expect(judgeProvider.calls).toHaveLength(1)
     const call = judgeProvider.calls[0]
-    expect(call).toMatchObject({ autonomy: 'read-only', promptOnly: true, cwd: '/repo' })
+    expect(call).toMatchObject({ autonomy: 'read-only', promptOnly: true, ephemeral: true, cwd: '/repo' })
     expect(call?.mcpServers).toBeUndefined()
     expect(call?.approvalTool).toBeUndefined()
     expect(call?.resumeSessionId).toBeUndefined()

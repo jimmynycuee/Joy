@@ -5312,6 +5312,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
           cwd: workspace.path,
           prompt,
           autonomy: 'read-only',
+          ephemeral: true,
           outputSchema: POLICY_REVIEW_SCHEMA,
           signal: reviewSignal,
         },
@@ -5570,7 +5571,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
             `Peer question:\n${question}`,
           ].join('\n\n')
           for await (const event of peer.run(
-            { cwd, prompt, autonomy: 'read-only', signal: peerSignal },
+            { cwd, prompt, autonomy: 'read-only', ephemeral: true, signal: peerSignal },
             peerModel,
           )) {
             persistUsageEvent(db, peerKind, event)
@@ -6343,6 +6344,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
           cwd,
           prompt: summaryPrompt(transcript, conversation.summary),
           autonomy: 'read-only',
+          ephemeral: true,
           outputSchema: SUMMARY_SCHEMA,
           signal: AbortSignal.timeout(5 * 60_000),
         },
@@ -6411,6 +6413,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
           cwd,
           prompt: contextSummaryPrompt(transcript, conversation.contextSummary),
           autonomy: 'read-only',
+          ephemeral: true,
           outputSchema: CONTEXT_SUMMARY_SCHEMA,
           signal: AbortSignal.timeout(5 * 60_000),
         },
@@ -6456,6 +6459,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         cwd,
         prompt: extractionPrompt(ownerMessage, existing),
         autonomy: 'read-only',
+        ephemeral: true,
         outputSchema: EXTRACTION_SCHEMA,
         signal: AbortSignal.timeout(5 * 60_000),
       },

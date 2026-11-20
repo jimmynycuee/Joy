@@ -34,6 +34,8 @@ export function buildClaudeArgs(
   // commands (and user/project hooks), `--tools ""` the built-in tools.
   if (opts.promptOnly) args.push('--tools', '', '--disable-slash-commands')
 
+  // A one-off run (reviewer, judge, background) leaves no session file behind, so it stays out of Claude's history.
+  if (opts.ephemeral && !opts.resumeSessionId) args.push('--no-session-persistence')
   if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId)
   else if (opts.sessionId) args.push('--session-id', opts.sessionId)
 

@@ -2,6 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-20（一次性的 run 不再留下 CLI session：審查者、裁判、安全預審、ask_peer 與背景工作（對話摘要、上下文摘要、記憶擷取）帶 `RunOptions.ephemeral`，Codex exec 加 `--ephemeral`、app-server `thread/start` 帶 `ephemeral: true`、Claude 加 `--no-session-persistence`，Codex App 側欄不再塞滿 `You are performing a cross-model...`；實作者與助理對話仍會存檔以便續接；新增 core 選填欄位 `RunOptions.ephemeral` 待擁有者審；分支 `codex-ephemeral-runs`）
 - 最後更新：2026-11-20（助理長對話不再越聊越貴、也不會卡死：OpenAI 請求加 `truncation: 'auto'`；Joy 估算大腦 session 裡的對話量，超過 6 萬 token 且這段對話開的任務都告一段落（沒有在排隊、執行、等核准）時，或超過 30 萬 token 時，在背景把較早的訊息整理成「上下文摘要」並結束 session，下一輪從摘要＋最近 10 則訊息開新 session；門檻在 `config.yaml` 的 `assistant.context`；對話頁在摘要涵蓋到的地方顯示可展開的「以上已整理成摘要」；migration 29，分支 `assistant-context-compaction`）
 - 最後更新：2026-11-19（助理對話可以附圖片與文字檔：圖片隨訊息交給大腦、文字檔引用進訊息，存下的訊息只留擁有者的話並列出檔案；migration 28 讓附件屬於任務或對話其中之一，分支 `assistant-attachments`）
 - 最後更新：2026-11-19（介面：審查卡與 Joy 工具改用易懂的名稱、側邊欄篩選顯示各狀態數量並把目前條件留在清單上方、任務／對話／設定都有自己的網址（上一頁、下一頁可用），分支 `ui-improvements`）
@@ -334,6 +335,7 @@
 
 ## 已確認決策
 
+- 2026-11-20 一次性 run 不存 session（擁有者要求「Codex 聊天窗不要出現很多無用的對話」；以下細節為 agent 決定，新增 `packages/core` 選填欄位 `RunOptions.ephemeral` 待擁有者審）：只有確定不會續接的 run 設 `ephemeral`（審查者、競賽裁判、安全預審、ask_peer、對話摘要、上下文摘要、記憶擷取）；實作者與助理大腦要靠 `resumeSessionId` 接下一輪，不設。provider 在帶 `resumeSessionId` 時忽略 `ephemeral`（續接的 session 本來就存在）。Codex：exec `--ephemeral`、app-server `thread/start` 的 `ephemeral`（codex-cli 0.166.0 `generate-ts` 確認）；Claude：`--no-session-persistence`（2.1.319 `--help`）。已存在的舊 session 不會被刪，由擁有者自己在 Codex App 封存。
 - 2026-11-20 助理上下文摘要（擁有者同意修「長對話不會自動 compact」；以下細節為 agent 決定，待擁有者確認，`packages/core`、`policy`、`memory`、`secrets` 沒動）：(1) 上下文摘要和 T3.6 的搜尋摘要分開存（`context_summary` vs `summary`），只給同一段對話的下一個 session，不寫入 memories、不跨對話；它的內容本來就在被結束的 session 裡，所以不違反 T3.6「摘要不放進指示」的理由（那是怕助理回覆與工具結果變成長期記憶），prompt 標明它是紀錄、不是新指示；(2) 門檻用 Joy 自己估的對話量，不看 provider 回報的 token（各家語意不同，見「驗證結果」）；擁有者決定「任務告一段落才整理，除非超過 300k」，所以分成下限 `summarize_after_tokens`（6 萬，避免很短的對話每次任務結束都整理）與上限 `force_after_tokens`（30 萬），放在 `config.yaml` 的 `assistant.context`；大腦本身的上限若比 30 萬小，仍由 `truncation: 'auto'`／CLI 自己的壓縮擋住；(3) 在背景整理、成功才結束 session，不讓擁有者多等一輪；(4) 摘要只讀存下的訊息，工具結果不在裡面，新 session 需要時會再查一次。
 - 2026-11-19 審查依據實際檢查結果（擁有者要求審查要有真實驗證、審查者不加寫入權限；以下細節為 agent 決定，`packages/core`、`packages/policy` 沒動）：(1) 延伸既有送審前檢查，不讓審查者 CLI 跑 shell；(2) 只跑專案的 `checkCommand`，不從任務文字抽指令；(3) 審查者 prompt 一律說明跑了什麼或沒跑，通過的輸出結尾也給；(4) 略過的檢查不擋核准（沿用既有行為），但審查者會被告知沒驗證。
 - 2026-11-18 加入專案對話框的時序（擁有者要求修 `t1.8` 偶爾失敗）：原因是第一次列出家目錄的結果在「全選」與「插入文字」之間抵達，把輸入框換成家目錄，貼上的路徑就接在後面（CI 上變成去 `/home/runner/tmp/...`；本機用暫時測試重現出 `/Users/jimmy/tmp/x`）。真人先 ⌘A 再貼上也會遇到，所以輸入框的 keydown／pointerdown 也算開始編輯，載入結果不再覆蓋。Playwright 的 `fill` 不發這些事件，`t1.8`、`container.spec.ts` 另外改成先等第一次列表再輸入、並檢查輸入值。新增 e2e 先失敗（`/home/me/home/me/code`）後通過；e2e 133 passed，`pnpm check` 1540 passed。

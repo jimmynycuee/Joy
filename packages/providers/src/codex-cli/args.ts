@@ -55,6 +55,8 @@ export function buildCodexArgs(
     '--disable',
     'remote_plugin',
   )
+  // `--ephemeral`: no session file under CODEX_HOME, so one-off runs stay out of the Codex app's history.
+  if (opts.ephemeral && !opts.resumeSessionId) args.push('--ephemeral')
   args.push('--model', model.model)
   if (model.effort) args.push('-c', `model_reasoning_effort=${q(model.effort)}`)
 

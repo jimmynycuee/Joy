@@ -137,6 +137,18 @@ describe('Codex app-server', () => {
       })
     })
 
+    it('start an ephemeral thread only when the run asks for one', async () => {
+      const once = run({}, { ephemeral: true })
+      expect((await collect(once.stream)).at(-1)).toMatchObject({ type: 'done' })
+      const start = once.rpc().find((request) => request.method === 'thread/start')
+      expect((start?.params as { ephemeral?: boolean }).ephemeral).toBe(true)
+
+      const saved = run({})
+      await collect(saved.stream)
+      const plain = saved.rpc().find((request) => request.method === 'thread/start')
+      expect(plain?.params).not.toHaveProperty('ephemeral')
+    })
+
     it('stop the run before any turn when a server Joy did not configure still runs', async () => {
       const { stream, rpc } = run({ FAKE_OWNER_MCP: 'computer-use', FAKE_LEAKED_MCP: 'remote_plugin_server' })
       const events = await collect(stream)

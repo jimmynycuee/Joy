@@ -343,7 +343,12 @@ async function* review(
   round: number,
   opts: RunOptions,
 ): AsyncGenerator<LoopEvent, ReviewVerdict> {
-  const done = yield* runAgent(p, model, 'reviewer', round, { ...opts, outputSchema: REVIEW_SCHEMA })
+  // Each review starts fresh and is never resumed, so its session need not be saved.
+  const done = yield* runAgent(p, model, 'reviewer', round, {
+    ...opts,
+    outputSchema: REVIEW_SCHEMA,
+    ephemeral: true,
+  })
   const verdict = parseVerdict(done.structured ?? tryJson(done.finalMessage))
   if (!verdict) throw new StopLoop('failed', 'The reviewer did not return a valid structured review')
   return verdict

@@ -335,6 +335,7 @@ async function* runJudge(
       autonomy: 'read-only',
       // The prompt carries the task, diffs and reviews; the judge needs no tools, MCP servers or project instructions.
       promptOnly: true,
+      ephemeral: true,
       outputSchema: JUDGE_SCHEMA,
       signal: input.signal,
     },
