@@ -37,6 +37,8 @@ import {
   createMemory,
   createRepo,
   createTask,
+  getConversation,
+  listMessages,
   openDatabase,
   setTaskStatus,
   updateAttempt,
@@ -176,6 +178,8 @@ function fixture(
     quotaResumeBufferMs?: number
     taskTimeLimitMs?: number
     assistantApiProvider?: JoyServerOptions['assistantApiProvider']
+    /** Assistant background work (memory extraction, search summaries). */
+    assistant?: Pick<JoyServerOptions, 'memoryExtraction' | 'conversationSummaries'>
     schedulerClock?: JoyServerOptions['schedulerClock']
     /** A real executor instead of the fake (tests that need git worktrees). */
     executor?: Executor
@@ -263,6 +267,7 @@ function fixture(
       : {}),
     ...(options.taskTimeLimitMs !== undefined ? { taskTimeLimitMs: options.taskTimeLimitMs } : {}),
     ...(options.assistantApiProvider ? { assistantApiProvider: options.assistantApiProvider } : {}),
+    ...options.assistant,
     ...(options.schedulerClock ? { schedulerClock: options.schedulerClock } : {}),
     ...(options.issueSource ? { issueSource: options.issueSource } : {}),
     ...(options.containerCommands ? { containerCommands: options.containerCommands } : {}),
@@ -363,6 +368,17 @@ function routing(kind: ProviderKind): AgentProvider & { calls: RunOptions[] } {
 function untilAborted(signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve()
   return new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
+}
+
+/** Sets `assistant.context` in the config; the rest keeps its defaults. */
+async function useContextLimits(
+  configStore: ConfigStore,
+  limits: { summarize_after_tokens: number; force_after_tokens?: number; keep_messages: number },
+) {
+  await configStore.update((config) => ({
+    ...config,
+    assistant: { context: { force_after_tokens: 300_000, ...limits } },
+  }))
 }
 
 async function waitForStatus(
@@ -3927,6 +3943,253 @@ describe('Joy local server', () => {
       memories: Array<{ content: string }>
     }
     expect(listed.memories.map((m) => m.content)).toEqual(['Works in Tainan'])
+  })
+
+  it('starts a new brain session from a summary once a conversation gets long', async () => {
+    const prompts: Array<{ prompt: string; resumed: boolean }> = []
+    const assistantApiProvider = (): AgentProvider => ({
+      ...scriptedProvider('openai-api', []).provider,
+      async *run(options: RunOptions) {
+        prompts.push({ prompt: options.prompt, resumed: Boolean(options.resumeSessionId) })
+        // Only this turn's own message: a new session's prompt also quotes earlier ones.
+        if (options.prompt.endsWith('look it all up')) {
+          // A large tool result fills the session without adding to the stored messages.
+          yield { type: 'tool_call', id: 't', name: 'list_tasks', input: {} }
+          yield { type: 'tool_result', id: 't', output: 'y'.repeat(8000), isError: false }
+        }
+        yield { type: 'done', sessionId: `s${prompts.length}`, isError: false, finalMessage: 'ok' }
+      },
+    })
+    const summaryPrompts: string[] = []
+    // The first summary comes back empty: the session must go on until a later try works.
+    const answers = ['', 'Owner chose SQLite for Joy; task 42 is open.']
+    const background: AgentProvider = {
+      ...scriptedProvider('openai-api', []).provider,
+      async *run(options: RunOptions) {
+        summaryPrompts.push(options.prompt)
+        const summary = answers.shift() ?? ''
+        yield { type: 'done', sessionId: 'bg', isError: false, structured: { summary } }
+      },
+    }
+    const { serverPromise, db, configStore } = fixture({
+      assistantApiProvider,
+      providers: { 'openai-api': background },
+      assistant: { memoryExtraction: false, conversationSummaries: false },
+    })
+    await useContextLimits(configStore, { summarize_after_tokens: 1500, keep_messages: 6 })
+    const { origin } = await start(serverPromise)
+    const id = (
+      (await (await postJson(`${origin}/api/conversations`, {})).json()) as { conversation: { id: string } }
+    ).conversation.id
+    const send = async (text: string) => {
+      const response = await postJson(`${origin}/api/conversations/${id}/messages`, { text })
+      expect(response.status).toBe(200)
+    }
+    const waitFor = async (check: () => boolean) => {
+      for (let i = 0; i < 200 && !check(); i++) await new Promise((r) => setTimeout(r, 10))
+      expect(check()).toBe(true)
+    }
+
+    for (const text of ['first: use SQLite?', 'second: yes SQLite', 'third: open task 42', 'fourth: thanks'])
+      await send(text)
+    expect(prompts.map((p) => p.resumed)).toEqual([false, true, true, true])
+    expect(summaryPrompts).toEqual([])
+    expect(getConversation(db, id)?.contextTokens).toBeLessThan(1500)
+
+    await send('fifth: look it all up')
+    await waitFor(() => summaryPrompts.length === 1)
+    // Summarizing failed, so nothing changed: the session goes on.
+    await send('sixth: once more, look it all up')
+    expect(prompts[5]?.resumed).toBe(true)
+    await waitFor(() => getConversation(db, id)?.contextSummary !== undefined)
+
+    // The second try covered every message but the latest six, i.e. the first three exchanges.
+    const messages = listMessages(db, id)
+    expect(summaryPrompts[1]).toContain('Owner: first: use SQLite?')
+    expect(summaryPrompts[1]).toContain('Owner: third: open task 42')
+    expect(summaryPrompts[1]).not.toContain('fourth: thanks')
+    const stored = getConversation(db, id)
+    expect(stored).toMatchObject({
+      contextSummary: 'Owner chose SQLite for Joy; task 42 is open.',
+      contextThrough: messages[5]?.id,
+    })
+    expect(stored?.sessionId).toBeUndefined()
+    expect(stored?.contextTokens).toBeUndefined()
+
+    await send('seventh: where were we?')
+    const fresh = prompts[6]
+    expect(fresh?.resumed).toBe(false)
+    expect(fresh?.prompt).toContain('Owner chose SQLite for Joy; task 42 is open.')
+    expect(fresh?.prompt).toContain('Messages since then:')
+    expect(fresh?.prompt).toContain('Owner: fourth: thanks')
+    expect(fresh?.prompt).not.toContain('first: use SQLite?')
+    expect(fresh?.prompt).not.toContain('y'.repeat(100))
+    expect(fresh?.prompt).toMatch(/Owner: seventh: where were we\?$/)
+    // The new session is small again and goes on as usual.
+    expect(getConversation(db, id)?.contextTokens).toBeLessThan(1500)
+    await send('eighth: ok')
+    expect(prompts[7]?.resumed).toBe(true)
+    expect(summaryPrompts).toHaveLength(2)
+
+    const body = (await (await fetch(`${origin}/api/conversations/${id}`)).json()) as {
+      conversation: { contextSummary?: string; contextThrough?: number }
+    }
+    expect(body.conversation).toMatchObject({
+      contextSummary: 'Owner chose SQLite for Joy; task 42 is open.',
+      contextThrough: messages[5]?.id,
+    })
+  })
+
+  it('starts over with the latest messages when a short conversation fills the session with tool results', async () => {
+    const prompts: Array<{ prompt: string; resumed: boolean }> = []
+    const assistantApiProvider = (): AgentProvider => ({
+      ...scriptedProvider('openai-api', []).provider,
+      async *run(options: RunOptions) {
+        prompts.push({ prompt: options.prompt, resumed: Boolean(options.resumeSessionId) })
+        yield { type: 'tool_call', id: 't', name: 'list_tasks', input: {} }
+        yield { type: 'tool_result', id: 't', output: 'y'.repeat(8000), isError: false }
+        yield { type: 'done', sessionId: `s${prompts.length}`, isError: false, finalMessage: 'ok' }
+      },
+    })
+    const background: AgentProvider = {
+      ...scriptedProvider('openai-api', []).provider,
+      // eslint-disable-next-line require-yield
+      async *run() {
+        throw new Error('nothing to summarize, so the background model must not run')
+      },
+    }
+    const { serverPromise, db, configStore } = fixture({
+      assistantApiProvider,
+      providers: { 'openai-api': background },
+      assistant: { memoryExtraction: false, conversationSummaries: false },
+    })
+    await useContextLimits(configStore, { summarize_after_tokens: 1500, keep_messages: 6 })
+    const { origin } = await start(serverPromise)
+    const id = (
+      (await (await postJson(`${origin}/api/conversations`, {})).json()) as { conversation: { id: string } }
+    ).conversation.id
+    await postJson(`${origin}/api/conversations/${id}/messages`, { text: 'show me everything' })
+    for (let i = 0; i < 200 && getConversation(db, id)?.sessionId; i++)
+      await new Promise((r) => setTimeout(r, 10))
+    expect(getConversation(db, id)?.sessionId).toBeUndefined()
+    expect(getConversation(db, id)?.contextSummary).toBeUndefined()
+    await postJson(`${origin}/api/conversations/${id}/messages`, { text: 'and now?' })
+    expect(prompts[1]?.resumed).toBe(false)
+    expect(prompts[1]?.prompt).toContain('Conversation so far:')
+    expect(prompts[1]?.prompt).toContain('Owner: show me everything')
+  })
+
+  it('waits for the tasks a conversation started to end before summarizing it, unless it is far too long', async () => {
+    const prompts: Array<{ prompt: string; resumed: boolean }> = []
+    const created: string[] = []
+    const assistantApiProvider = (tools: ApiTool[]): AgentProvider => ({
+      ...scriptedProvider('openai-api', []).provider,
+      async *run(options: RunOptions) {
+        prompts.push({ prompt: options.prompt, resumed: Boolean(options.resumeSessionId) })
+        if (options.prompt.endsWith('start the fix')) {
+          const repos = (await tools.find((t) => t.name === 'list_repos')?.run({}, options.signal)) as {
+            repos: Array<{ id: string }>
+          }
+          const task = (await tools
+            .find((t) => t.name === 'create_task')
+            ?.run(
+              { repo_id: repos.repos[0]?.id, title: 'Fix add', prompt: 'Fix add()', mode: 'single' },
+              options.signal,
+            )) as {
+            id: string
+          }
+          created.push(task.id)
+        }
+        const size = options.prompt.endsWith('look it all up')
+          ? 8000
+          : options.prompt.endsWith('read everything')
+            ? 90_000
+            : 0
+        if (size) {
+          yield { type: 'tool_call', id: 't', name: 'list_tasks', input: {} }
+          yield { type: 'tool_result', id: 't', output: 'y'.repeat(size), isError: false }
+        }
+        yield { type: 'done', sessionId: `s${prompts.length}`, isError: false, finalMessage: 'ok' }
+      },
+    })
+    const summaryPrompts: string[] = []
+    const answers = ['Fixing add() in the repo.', 'Second fix under way.']
+    const background: AgentProvider = {
+      ...scriptedProvider('openai-api', []).provider,
+      async *run(options: RunOptions) {
+        // A finished task also has other background work (e.g. project notes); answer only the context summaries.
+        if (!options.prompt.startsWith('A new session of Joy')) {
+          yield { type: 'done', sessionId: 'bg', isError: false, structured: {} }
+          return
+        }
+        summaryPrompts.push(options.prompt)
+        yield {
+          type: 'done',
+          sessionId: 'bg',
+          isError: false,
+          structured: { summary: answers.shift() ?? '' },
+        }
+      },
+    }
+    // The coding task keeps working until the test lets it finish.
+    const implementer = new FakeProvider('claude-cli')
+    let release = () => {}
+    implementer.onRun = () =>
+      new Promise<void>((resolve) => {
+        release = resolve
+      })
+    const { serverPromise, db, configStore } = fixture({
+      implementer,
+      assistantApiProvider,
+      providers: { 'openai-api': background },
+      assistant: { memoryExtraction: false, conversationSummaries: false },
+    })
+    await useContextLimits(configStore, {
+      summarize_after_tokens: 1500,
+      force_after_tokens: 20_000,
+      keep_messages: 2,
+    })
+    const { origin } = await start(serverPromise)
+    await postJson(`${origin}/api/repos`, { path: '/tmp/pause-repo', defaultBranch: 'main' })
+    const id = (
+      (await (await postJson(`${origin}/api/conversations`, {})).json()) as { conversation: { id: string } }
+    ).conversation.id
+    const send = async (text: string) => {
+      expect((await postJson(`${origin}/api/conversations/${id}/messages`, { text })).status).toBe(200)
+    }
+    const waitFor = async (check: () => boolean) => {
+      for (let i = 0; i < 300 && !check(); i++) await new Promise((r) => setTimeout(r, 10))
+      expect(check()).toBe(true)
+    }
+
+    await send('please start the fix')
+    await waitForStatus(origin, created[0] ?? '', 'running', 5_000)
+    await send('meanwhile look it all up')
+    expect(getConversation(db, id)?.contextTokens).toBeGreaterThan(1500)
+    // Past the threshold but a task is at work: the session goes on as it is.
+    await new Promise((r) => setTimeout(r, 100))
+    expect(summaryPrompts).toEqual([])
+    await send('still there?')
+    expect(prompts[2]?.resumed).toBe(true)
+
+    // The task ending is the pause: the conversation is summarized now, without another message.
+    release()
+    await waitForStatus(origin, created[0] ?? '', 'done', 5_000)
+    await waitFor(() => getConversation(db, id)?.contextSummary === 'Fixing add() in the repo.')
+    expect(getConversation(db, id)?.sessionId).toBeUndefined()
+
+    // Far past the hard limit, a task at work does not hold the summary back.
+    await send('now start the fix')
+    await waitForStatus(origin, created[1] ?? '', 'running', 5_000)
+    expect(prompts[3]?.resumed).toBe(false)
+    await send('read everything')
+    expect(getConversation(db, id)?.contextTokens).toBeGreaterThan(20_000)
+    await waitFor(() => getConversation(db, id)?.contextSummary === 'Second fix under way.')
+    expect(summaryPrompts[1]).toContain(
+      'Summary of what came before these messages (fold it in):\nFixing add()',
+    )
+    release()
+    await waitForStatus(origin, created[1] ?? '', 'done', 5_000)
   })
 
   it("learns memories only from the owner's words and uses them in new conversations", async () => {

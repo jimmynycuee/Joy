@@ -2,18 +2,26 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   appendMessage,
   createConversation,
+  endConversationSession,
   getConversation,
   listConversations,
   listMessages,
   resetSessionsUsingMemory,
   searchHistory,
+  setConversationContext,
   setConversationSummary,
   setConversationTitle,
   updateConversationSession,
 } from './conversations.js'
 import type { Database } from './database.js'
 import { openDatabase } from './database.js'
-import { createRepo, createTask, getTask } from './repositories.js'
+import {
+  createRepo,
+  createTask,
+  getTask,
+  hasActiveTasksFromConversation,
+  setTaskStatus,
+} from './repositories.js'
 import type { RepoId, TaskId } from '@joy/core'
 
 const databases: Database[] = []
@@ -46,6 +54,76 @@ describe('conversations', () => {
     })
   })
 
+  it('stores the context summary and ends the brain session so the next turn starts from it', () => {
+    const db = fresh()
+    createConversation(db, { id: 'c1', channel: 'web' })
+    const first = appendMessage(db, 'c1', 'user', 'hi')
+    updateConversationSession(db, 'c1', {
+      provider: 'openai-api',
+      model: 'gpt-6-luna',
+      sessionId: 'resp_1',
+      memoryIds: ['m1'],
+      contextTokens: 41_000,
+    })
+    expect(getConversation(db, 'c1')?.contextTokens).toBe(41_000)
+    expect(setConversationContext(db, 'c1', 'Owner said hi.', first.id)).toBe(true)
+    const stored = getConversation(db, 'c1')
+    expect(stored).toMatchObject({
+      contextSummary: 'Owner said hi.',
+      contextThrough: first.id,
+      memoryIds: [],
+    })
+    expect(stored?.sessionId).toBeUndefined()
+    expect(stored?.contextTokens).toBeUndefined()
+    // The search summary is a different thing and stays untouched.
+    expect(stored?.summary).toBeUndefined()
+    expect(setConversationContext(db, 'missing', 'x', 1)).toBe(false)
+  })
+
+  it('ends a brain session without touching the context summary', () => {
+    const db = fresh()
+    createConversation(db, { id: 'c1', channel: 'web' })
+    const first = appendMessage(db, 'c1', 'user', 'hi')
+    setConversationContext(db, 'c1', 'Owner said hi.', first.id)
+    updateConversationSession(db, 'c1', {
+      provider: 'openai-api',
+      model: 'gpt-6-luna',
+      sessionId: 'resp_2',
+      contextTokens: 50_000,
+    })
+    expect(endConversationSession(db, 'c1')).toBe(true)
+    const stored = getConversation(db, 'c1')
+    expect(stored).toMatchObject({ contextSummary: 'Owner said hi.', contextThrough: first.id })
+    expect(stored?.sessionId).toBeUndefined()
+    expect(stored?.contextTokens).toBeUndefined()
+    // Without a session there is nothing for the estimate to describe.
+    updateConversationSession(db, 'c1', {
+      provider: 'openai-api',
+      model: 'gpt-6-luna',
+      sessionId: null,
+      contextTokens: 10,
+    })
+    expect(getConversation(db, 'c1')?.contextTokens).toBeUndefined()
+    expect(endConversationSession(db, 'missing')).toBe(false)
+  })
+
+  it('keeps the context summary and the message it covers up to together', () => {
+    const db = fresh()
+    createConversation(db, { id: 'c1', channel: 'web' })
+    expect(() => db.prepare("UPDATE conversations SET context_summary = 'x' WHERE id = 'c1'").run()).toThrow(
+      /CHECK/,
+    )
+    expect(() => db.prepare("UPDATE conversations SET context_through = 3 WHERE id = 'c1'").run()).toThrow(
+      /CHECK/,
+    )
+    expect(() =>
+      db.prepare("UPDATE conversations SET context_summary = '', context_through = 3 WHERE id = 'c1'").run(),
+    ).toThrow(/CHECK/)
+    expect(() => db.prepare("UPDATE conversations SET context_tokens = -1 WHERE id = 'c1'").run()).toThrow(
+      /CHECK/,
+    )
+  })
+
   it('lists the most recently active conversation first', () => {
     const db = fresh()
     createConversation(db, { id: 'old', channel: 'web' })
@@ -75,6 +153,20 @@ describe('conversations', () => {
       originConversationId: 'c1',
     })
     expect(getTask(db, 't1' as TaskId)?.originConversationId).toBe('c1')
+    // A task still at work means the conversation is not at a pause.
+    for (const [status, active] of [
+      ['queued', true],
+      ['running', true],
+      ['awaiting_approval', true],
+      ['review_ready', false],
+      ['done', false],
+      ['failed', false],
+      ['cancelled', false],
+    ] as const) {
+      setTaskStatus(db, 't1' as TaskId, status)
+      expect(hasActiveTasksFromConversation(db, 'c1'), status).toBe(active)
+    }
+    expect(hasActiveTasksFromConversation(db, 'other')).toBe(false)
     db.prepare("DELETE FROM conversations WHERE id = 'c1'").run()
     expect(getTask(db, 't1' as TaskId)?.originConversationId).toBeUndefined()
   })

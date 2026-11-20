@@ -101,6 +101,7 @@ describe('OpenAiApiProvider', () => {
     expect(api.requests[0]?.body).toMatchObject({
       model: 'gpt-6-luna',
       stream: true,
+      truncation: 'auto',
       reasoning: { effort: 'low' },
     })
   })
@@ -207,8 +208,10 @@ describe('OpenAiApiProvider', () => {
     const provider = new OpenAiApiProvider({ apiKey: async () => 'k', baseUrl: api.baseUrl })
     const schema = { type: 'object', properties: { approve: { type: 'boolean' } } }
     const events = await collect(provider.run(opts({ resumeSessionId: 'r8', outputSchema: schema }), model))
+    // A resumed chain is the one that can outgrow the context window: it must ask the API to drop the oldest items.
     expect(api.requests[0]?.body).toMatchObject({
       previous_response_id: 'r8',
+      truncation: 'auto',
       text: { format: { type: 'json_schema', schema } },
     })
     expect(events.at(-1)).toMatchObject({ structured: { approve: true } })

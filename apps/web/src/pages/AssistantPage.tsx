@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { errorMessage, request } from '../api.js'
 import { parseAttachments, sendableAttachments } from '../attachments.js'
 import type { AttachmentInfo } from '../attachments.js'
@@ -15,6 +15,8 @@ import { Composer } from '../components/Composer.js'
 import { Mascot, MascotMark } from '../components/Mascot.js'
 import { AgentProse, UserBubble } from '../components/Thread.js'
 import { Button, Icon, IconButton } from '../components/ui.js'
+import { contextDividerIndex, parseConversationContext } from '../context-summary.js'
+import type { ConversationContext } from '../context-summary.js'
 import { useAttachments } from '../hooks/useAttachments.js'
 import { useDraft } from '../storage.js'
 import type { ConversationSummary } from '../types.js'
@@ -52,6 +54,7 @@ export function AssistantPage({
   onError: (message: string) => void
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [context, setContext] = useState<ConversationContext | undefined>()
   const [sending, setSending] = useState(false)
   const [failure, setFailure] = useState('')
   const [memories, setMemories] = useState<MemoryItem[]>([])
@@ -75,13 +78,18 @@ export function AssistantPage({
   useEffect(() => {
     if (!conversationId) {
       setMessages([])
+      setContext(undefined)
       return
     }
     let cancelled = false
     const load = () =>
-      request<{ messages?: unknown }>(`/api/conversations/${encodeURIComponent(conversationId)}`)
+      request<{ messages?: unknown; conversation?: unknown }>(
+        `/api/conversations/${encodeURIComponent(conversationId)}`,
+      )
         .then((body) => {
-          if (!cancelled) setMessages(parseMessages(body.messages) ?? [])
+          if (cancelled) return
+          setMessages(parseMessages(body.messages) ?? [])
+          setContext(parseConversationContext(body.conversation))
         })
         .catch(() => undefined)
     void load()
@@ -138,11 +146,14 @@ export function AssistantPage({
     } finally {
       setSending(false)
       if (id) {
-        const body = await request<{ messages?: unknown }>(
+        const body = await request<{ messages?: unknown; conversation?: unknown }>(
           `/api/conversations/${encodeURIComponent(id)}`,
-        ).catch(() => ({ messages: undefined }))
+        ).catch(() => ({ messages: undefined, conversation: undefined }))
         const loaded = parseMessages(body.messages)
-        if (loaded) setMessages(loaded)
+        if (loaded) {
+          setMessages(loaded)
+          setContext(parseConversationContext(body.conversation))
+        }
       }
       onConversationsChanged()
       // Joy may have learned something from this message; extraction runs in the background.
@@ -154,6 +165,8 @@ export function AssistantPage({
     setFailure(message)
     onError(message)
   }
+  // Messages above this point reach the brain only as the summary.
+  const dividerAt = context ? contextDividerIndex(messages, context.through) : -1
 
   return (
     <main className="assistant-page" data-testid="assistant-page">
@@ -179,50 +192,58 @@ export function AssistantPage({
                 <h2>跟 Joy 聊聊</h2>
               </div>
             ) : (
-              messages.map((message) =>
-                message.role === 'user' ? (
-                  <UserBubble
-                    key={message.id}
-                    text={message.content}
-                    {...(message.attachments ? { attachments: message.attachments } : {})}
-                  />
-                ) : message.role === 'assistant' ? (
-                  <div key={message.id} className="chat-assistant">
-                    <MascotMark size={20} className="chat-avatar" />
-                    <AgentProse text={message.content} />
-                    {message.memoryIds?.length ? (
-                      <div className="memory-chips" aria-label="用到的記憶">
-                        {message.memoryIds.map((id) => {
-                          const memory = memories.find((m) => m.id === id)
-                          return memory ? (
-                            <span key={id} className="chip">
-                              {memory.content}
-                              <IconButton
-                                icon="x"
-                                label={`忘記：${memory.content}`}
-                                className="icon-btn-inline"
-                                onClick={() => void deleteMemory(id, loadMemories, report)}
-                              />
-                            </span>
-                          ) : (
-                            <span key={id} className="chip chip-muted">
-                              已刪除的記憶
-                            </span>
-                          )
-                        })}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : (
-                  <p
-                    key={message.id}
-                    className={message.role === 'system' ? 'chat-note chat-error' : 'chat-note'}
-                  >
-                    {message.role === 'system' ? <Icon name="alert" size={14} /> : null}
-                    {message.content}
-                  </p>
-                ),
-              )
+              messages.map((message, index) => (
+                <Fragment key={message.id}>
+                  {message.role === 'user' ? (
+                    <UserBubble
+                      key={message.id}
+                      text={message.content}
+                      {...(message.attachments ? { attachments: message.attachments } : {})}
+                    />
+                  ) : message.role === 'assistant' ? (
+                    <div key={message.id} className="chat-assistant">
+                      <MascotMark size={20} className="chat-avatar" />
+                      <AgentProse text={message.content} />
+                      {message.memoryIds?.length ? (
+                        <div className="memory-chips" aria-label="用到的記憶">
+                          {message.memoryIds.map((id) => {
+                            const memory = memories.find((m) => m.id === id)
+                            return memory ? (
+                              <span key={id} className="chip">
+                                {memory.content}
+                                <IconButton
+                                  icon="x"
+                                  label={`忘記：${memory.content}`}
+                                  className="icon-btn-inline"
+                                  onClick={() => void deleteMemory(id, loadMemories, report)}
+                                />
+                              </span>
+                            ) : (
+                              <span key={id} className="chip chip-muted">
+                                已刪除的記憶
+                              </span>
+                            )
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <p
+                      key={message.id}
+                      className={message.role === 'system' ? 'chat-note chat-error' : 'chat-note'}
+                    >
+                      {message.role === 'system' ? <Icon name="alert" size={14} /> : null}
+                      {message.content}
+                    </p>
+                  )}
+                  {context && index === dividerAt ? (
+                    <details className="context-divider" data-testid="context-divider">
+                      <summary>以上已整理成摘要</summary>
+                      <p>{context.summary}</p>
+                    </details>
+                  ) : null}
+                </Fragment>
+              ))
             )}
             {sending ? (
               <div className="running-indicator" role="status">

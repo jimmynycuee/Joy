@@ -16,6 +16,12 @@ export interface ConversationRecord {
   summary?: string
   /** Id of the last message the summary covers. */
   summaryThrough?: number
+  /** What a new brain session is told about the messages up to `contextThrough`, in place of those messages. */
+  contextSummary?: string
+  /** Id of the last message `contextSummary` covers. */
+  contextThrough?: number
+  /** About how many tokens of conversation the current brain session holds (Joy's estimate). */
+  contextTokens?: number
   createdAt: string
   updatedAt?: string
   /** When the owner pinned it to the top of the sidebar; absent when not pinned. */
@@ -42,6 +48,9 @@ interface ConversationRow {
   memory_ids: string | null
   summary: string | null
   summary_through: number | null
+  context_summary: string | null
+  context_through: number | null
+  context_tokens: number | null
   created_at: string
   updated_at: string | null
   pinned_at: string | null
@@ -88,17 +97,40 @@ export function listConversations(db: Database): ConversationRecord[] {
 export function updateConversationSession(
   db: Database,
   id: string,
-  session: { provider: ProviderKind; model: string; sessionId: string | null; memoryIds?: string[] },
+  session: {
+    provider: ProviderKind
+    model: string
+    sessionId: string | null
+    memoryIds?: string[]
+    /** Joy's estimate of the conversation tokens the session holds after this turn. */
+    contextTokens?: number
+  },
 ): void {
   db.prepare(
-    `UPDATE conversations SET brain_provider = ?, brain_model = ?, session_id = ?, memory_ids = ?,
+    `UPDATE conversations SET brain_provider = ?, brain_model = ?, session_id = ?, memory_ids = ?, context_tokens = ?,
        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`,
   ).run(
     session.provider,
     session.model,
     session.sessionId,
     session.sessionId && session.memoryIds?.length ? JSON.stringify(session.memoryIds) : null,
+    session.sessionId && session.contextTokens !== undefined
+      ? Math.max(0, Math.round(session.contextTokens))
+      : null,
     id,
+  )
+}
+
+/** Ends the brain session, so the next turn starts a new one. Returns false when the conversation does not exist. */
+export function endConversationSession(db: Database, id: string): boolean {
+  return (
+    Number(
+      db
+        .prepare(
+          'UPDATE conversations SET session_id = NULL, memory_ids = NULL, context_tokens = NULL WHERE id = ?',
+        )
+        .run(id).changes,
+    ) > 0
   )
 }
 
@@ -114,6 +146,30 @@ export function resetSessionsUsingMemory(db: Database, memoryId: string): number
          WHERE memory_ids IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(memory_ids) WHERE value = ?)`,
       )
       .run(memoryId).changes,
+  )
+}
+
+/**
+ * Stores what the next brain session is told about the messages up to `throughMessageId` and ends the current
+ * session, so the next turn starts small: this summary plus the later messages. Returns false when the
+ * conversation does not exist.
+ */
+export function setConversationContext(
+  db: Database,
+  id: string,
+  summary: string,
+  throughMessageId: number,
+): boolean {
+  return (
+    Number(
+      db
+        .prepare(
+          `UPDATE conversations SET context_summary = ?, context_through = ?,
+             session_id = NULL, memory_ids = NULL, context_tokens = NULL
+           WHERE id = ?`,
+        )
+        .run(summary, throughMessageId, id).changes,
+    ) > 0
   )
 }
 
@@ -266,6 +322,10 @@ function mapConversation(row: ConversationRow): ConversationRecord {
     memoryIds: parseIds(row.memory_ids),
     ...(row.summary ? { summary: row.summary } : {}),
     ...(row.summary_through !== null ? { summaryThrough: row.summary_through } : {}),
+    ...(row.context_summary !== null && row.context_through !== null
+      ? { contextSummary: row.context_summary, contextThrough: row.context_through }
+      : {}),
+    ...(row.context_tokens !== null ? { contextTokens: row.context_tokens } : {}),
     createdAt: row.created_at,
     ...(row.updated_at ? { updatedAt: row.updated_at } : {}),
     ...(row.pinned_at ? { pinnedAt: row.pinned_at } : {}),
