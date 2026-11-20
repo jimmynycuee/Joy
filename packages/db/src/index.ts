@@ -16,6 +16,7 @@ export {
   getAttempt,
   getRepo,
   getTask,
+  hasActiveTasksFromConversation,
   interruptRunningWork,
   isRepoColor,
   MAX_PROJECT_INSTRUCTIONS,

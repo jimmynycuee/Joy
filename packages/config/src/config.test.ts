@@ -33,6 +33,28 @@ describe('parseConfig', () => {
     expect(() => parseConfig('tool_hub: { max_ask_peer_calls: 101 }')).toThrow(/tool_hub.max_ask_peer_calls/)
   })
 
+  it('summarizes long assistant conversations at a pause past 60k, and always past 300k', () => {
+    expect(parseConfig('').assistant.context).toEqual({
+      summarize_after_tokens: 60_000,
+      force_after_tokens: 300_000,
+      keep_messages: 10,
+    })
+    expect(
+      parseConfig('assistant: { context: { summarize_after_tokens: 100000 } }').assistant.context,
+    ).toEqual({
+      summarize_after_tokens: 100_000,
+      force_after_tokens: 300_000,
+      keep_messages: 10,
+    })
+    expect(() =>
+      parseConfig('assistant: { context: { summarize_after_tokens: 400000, force_after_tokens: 300000 } }'),
+    ).toThrow(/force_after_tokens/)
+    expect(() => parseConfig('assistant: { context: { keep_messages: 51 } }')).toThrow(/keep_messages/)
+    expect(() => parseConfig('assistant: { context: { summarize_after_tokens: 10 } }')).toThrow(
+      /summarize_after_tokens/,
+    )
+  })
+
   it('defaults the editor to the VS Code CLI and accepts another command with arguments', () => {
     expect(parseConfig('').editor).toEqual({ command: 'code', args: [] })
     expect(parseConfig('editor: { command: cursor, args: [--reuse-window] }').editor).toEqual({

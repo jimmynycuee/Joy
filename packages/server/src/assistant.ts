@@ -44,14 +44,9 @@ export const ASSISTANT_INSTRUCTIONS = [
   'Answer briefly and concretely. Reply in the language the owner writes in.',
 ].join('\n')
 
-/**
- * Once the brain session holds about this many tokens of conversation, Joy summarizes the older messages and the
- * next turn starts a new session from that summary. Every turn sends the whole session again, so a long one costs
- * more each time; the CLIs and the OpenAI API only shorten a session when it hits the model's limit.
- */
-export const ASSISTANT_CONTEXT_TOKENS = 40_000
-/** The latest messages a new session still gets word for word after a summary. */
-export const CONTEXT_KEEP_MESSAGES = 6
+// When a brain session gets long (config `assistant.context`), Joy summarizes the older messages and the next turn
+// starts a new session from that summary. Every turn sends the whole session again, so a long one costs more each
+// time; the CLIs and the OpenAI API only shorten a session when it hits the model's limit.
 export const MAX_CONTEXT_SUMMARY_LENGTH = 6000
 /** Most conversation text one summary request reads; the summary so far stands for anything older. */
 export const MAX_CONTEXT_SUMMARY_INPUT = 160_000

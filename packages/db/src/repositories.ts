@@ -397,6 +397,18 @@ export function getTask(db: Database, id: TaskId): StoredTask | undefined {
   return row ? mapTask(row) : undefined
 }
 
+/** Whether a task this conversation started is still at work: queued, running or waiting for an approval. */
+export function hasActiveTasksFromConversation(db: Database, conversationId: string): boolean {
+  return (
+    db
+      .prepare(
+        `SELECT 1 FROM tasks WHERE origin_conversation_id = ?
+           AND status IN ('queued', 'running', 'awaiting_approval') LIMIT 1`,
+      )
+      .get(conversationId) !== undefined
+  )
+}
+
 /** Every task by default; `archived: false` leaves archived ones out. */
 export function listTasks(db: Database, filter: { archived?: boolean } = {}): StoredTask[] {
   const where = filter.archived === undefined ? '' : ` WHERE archived = ${filter.archived ? 1 : 0}`

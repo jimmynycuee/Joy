@@ -15,7 +15,13 @@ import {
 } from './conversations.js'
 import type { Database } from './database.js'
 import { openDatabase } from './database.js'
-import { createRepo, createTask, getTask } from './repositories.js'
+import {
+  createRepo,
+  createTask,
+  getTask,
+  hasActiveTasksFromConversation,
+  setTaskStatus,
+} from './repositories.js'
 import type { RepoId, TaskId } from '@joy/core'
 
 const databases: Database[] = []
@@ -147,6 +153,20 @@ describe('conversations', () => {
       originConversationId: 'c1',
     })
     expect(getTask(db, 't1' as TaskId)?.originConversationId).toBe('c1')
+    // A task still at work means the conversation is not at a pause.
+    for (const [status, active] of [
+      ['queued', true],
+      ['running', true],
+      ['awaiting_approval', true],
+      ['review_ready', false],
+      ['done', false],
+      ['failed', false],
+      ['cancelled', false],
+    ] as const) {
+      setTaskStatus(db, 't1' as TaskId, status)
+      expect(hasActiveTasksFromConversation(db, 'c1'), status).toBe(active)
+    }
+    expect(hasActiveTasksFromConversation(db, 'other')).toBe(false)
     db.prepare("DELETE FROM conversations WHERE id = 'c1'").run()
     expect(getTask(db, 't1' as TaskId)?.originConversationId).toBeUndefined()
   })

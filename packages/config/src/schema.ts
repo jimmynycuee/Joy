@@ -216,6 +216,30 @@ export const configSchema = z.strictObject({
   tool_hub: z
     .strictObject({ max_ask_peer_calls: z.number().int().min(1).max(100).default(5) })
     .default({ max_ask_peer_calls: 5 }),
+  assistant: z
+    .strictObject({
+      /**
+       * When a long assistant conversation is folded into a summary and its brain starts a new session. Token counts
+       * are Joy's estimate of the conversation the session holds, not counting the brain's own system prompt and tools.
+       */
+      context: z
+        .strictObject({
+          /** Summarize once past this, but only at a pause: no task this conversation started is still at work. */
+          summarize_after_tokens: z.number().int().min(1000).max(10_000_000).default(60_000),
+          /** Summarize past this even while tasks are at work. */
+          force_after_tokens: z.number().int().min(1000).max(10_000_000).default(300_000),
+          /** The latest messages a new session still gets word for word. */
+          keep_messages: z.number().int().min(0).max(50).default(10),
+        })
+        .refine((context) => context.force_after_tokens >= context.summarize_after_tokens, {
+          message: 'force_after_tokens must be at least summarize_after_tokens',
+          path: ['force_after_tokens'],
+        })
+        .default({ summarize_after_tokens: 60_000, force_after_tokens: 300_000, keep_messages: 10 }),
+    })
+    .default({
+      context: { summarize_after_tokens: 60_000, force_after_tokens: 300_000, keep_messages: 10 },
+    }),
   providers: z
     .strictObject({
       claude: cliPath.default({}),

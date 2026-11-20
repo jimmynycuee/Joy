@@ -79,6 +79,7 @@ import {
   listSchedules,
   listProjectNotes,
   getTask,
+  hasActiveTasksFromConversation,
   interruptRunningWork,
   latestAttempt,
   listApprovals,
@@ -151,8 +152,6 @@ import { ApprovalBroker } from './approvals.js'
 import { CLAUDE_SETTINGS_FILE, readClaudeSettingsCommands } from './claude-settings.js'
 import type { TaskAllowOffer } from './approvals.js'
 import {
-  ASSISTANT_CONTEXT_TOKENS,
-  CONTEXT_KEEP_MESSAGES,
   CONTEXT_SUMMARY_SCHEMA,
   MAX_CONTEXT_SUMMARY_INPUT,
   contextSummaryPrompt,
@@ -674,11 +673,6 @@ export interface JoyServerOptions {
   logger?: Logger
   /** Summarize conversations for history search (T3.6). Default true. */
   conversationSummaries?: boolean
-  /**
-   * Start a new assistant brain session from a summary once the current one holds about this many tokens of
-   * conversation (tests). Default `ASSISTANT_CONTEXT_TOKENS`.
-   */
-  assistantContextTokens?: number
   /** Overrides budget.per_task.max_minutes (tests). */
   taskTimeLimitMs?: number
   /** Replaces the GitHub publisher (tests). */
@@ -1239,6 +1233,9 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       'assistant',
       redactor.redact(`Task "${task.title}" ${outcome}. Open it in the workspace to see the changes.`),
     )
+    // A task ending may be the pause a long conversation was waiting for to be summarized.
+    const conversationId = task.originConversationId
+    backgroundJob('context summary', () => compactIfDue(conversationId))
   }
   // Assigned once Telegram is set up below; results published before then are not announced.
   let notifyResult: (taskId: TaskId, payload: unknown) => void = () => {}
@@ -6364,29 +6361,44 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
   const compacting = new Set<string>()
 
   /**
+   * Summarizes a long conversation at a pause: past `summarize_after_tokens` once no task it started is still at
+   * work (checked after each turn and when such a task ends), and past `force_after_tokens` regardless.
+   */
+  async function compactIfDue(conversationId: string): Promise<void> {
+    const tokens = getConversation(db, conversationId)?.contextTokens
+    if (tokens === undefined) return
+    const limits = (await configStore.get()).assistant.context
+    if (tokens < limits.summarize_after_tokens) return
+    if (tokens < limits.force_after_tokens && hasActiveTasksFromConversation(db, conversationId)) return
+    await compactConversation(conversationId, limits.keep_messages)
+  }
+
+  /**
    * The brain session of this conversation got long: fold the older messages into the context summary and end the
    * session, so the next turn starts a new one from the summary and the latest messages. Until the summary is
-   * stored the session goes on; when summarizing fails, the next long turn tries again.
+   * stored the session goes on; when summarizing fails, the next check tries again.
    */
-  async function compactConversation(conversationId: string): Promise<void> {
+  async function compactConversation(conversationId: string, keepMessages: number): Promise<void> {
     const conversation = getConversation(db, conversationId)
     if (!conversation?.sessionId || compacting.has(conversationId)) return
     const spoken = listMessages(db, conversationId).filter(
       (m) => (m.role === 'user' || m.role === 'assistant') && m.id > (conversation.contextThrough ?? 0),
     )
-    const older = spoken.slice(0, Math.max(0, spoken.length - CONTEXT_KEEP_MESSAGES))
+    const older = spoken.slice(0, Math.max(0, spoken.length - keepMessages))
     const through = older.at(-1)
     if (!through) {
       // Few messages but large tool results: the latest messages word for word are already a small start.
       endConversationSession(db, conversationId)
       return
     }
-    const config = await configStore.get()
-    const model = resolveRole('background', config.roles as RoleConfig, {})
-    const provider = providers[model.provider]
-    if (!provider) return
+    // Claimed before the first await: a second check arriving meanwhile (a turn and a task ending together) must not
+    // summarize the same messages again and overwrite this summary.
     compacting.add(conversationId)
     try {
+      const config = await configStore.get()
+      const model = resolveRole('background', config.roles as RoleConfig, {})
+      const provider = providers[model.provider]
+      if (!provider) return
       const cwd = join(home, 'assistant')
       await mkdir(cwd, { recursive: true, mode: 0o700 })
       const transcript = newestWithin(older, MAX_CONTEXT_SUMMARY_INPUT).map((m) => ({
@@ -6652,8 +6664,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         memoryIds,
         contextTokens,
       })
-      if (sessionId && contextTokens >= (options.assistantContextTokens ?? ASSISTANT_CONTEXT_TOKENS))
-        backgroundJob('context summary', () => compactConversation(conversationId))
+      if (sessionId) backgroundJob('context summary', () => compactIfDue(conversationId))
       if (!conversation.title) setConversationTitle(db, conversationId, redactor.redact(text).slice(0, 60))
       if (options.conversationSummaries ?? true)
         backgroundJob('summary', () => summarizeConversation(conversationId))
