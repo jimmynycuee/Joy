@@ -39,9 +39,11 @@ export interface ThreadStartParams {
    */
   approvalsReviewer: 'user'
   config?: Record<string, unknown>
+  /** Not saved under CODEX_HOME (`ThreadStartParams.ephemeral`, codex-cli 0.166.0), so it stays out of Codex's history. */
+  ephemeral?: boolean
 }
 
-export interface ThreadResumeParams extends ThreadStartParams {
+export interface ThreadResumeParams extends Omit<ThreadStartParams, 'ephemeral'> {
   threadId: string
 }
 

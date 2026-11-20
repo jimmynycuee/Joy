@@ -1510,6 +1510,8 @@ describe('Joy local server', () => {
     })
     expect(reviewer.calls[0]?.prompt).toContain('cross-model safety pre-review')
     expect(reviewer.calls[0]?.mcpServers).toBeUndefined()
+    // One-off runs (the pre-review and the peer's answer) are never resumed, so they leave no CLI session behind.
+    expect(reviewer.calls.every((call) => call.ephemeral === true)).toBe(true)
     expect(result.events.map((event) => (event as { type?: string }).type)).toContain('policy.pre_review')
     expect(
       result.events.filter((event) => (event as { type?: string }).type === 'tool_hub.ask_peer'),

@@ -85,6 +85,16 @@ describe('buildClaudeArgs', () => {
     }
   })
 
+  it('an ephemeral run saves no session, unless it resumes one', () => {
+    const args = buildClaudeArgs({ ...base, ephemeral: true }, model)
+    expect(args).toContain('--no-session-persistence')
+    expect(args.indexOf('--no-session-persistence')).toBeLessThan(args.indexOf('--'))
+    expect(buildClaudeArgs(base, model)).not.toContain('--no-session-persistence')
+    expect(buildClaudeArgs({ ...base, ephemeral: true, resumeSessionId: 's1' }, model)).not.toContain(
+      '--no-session-persistence',
+    )
+  })
+
   it('a prompt-only run (the compete judge) drops the built-in tools, skills and CLAUDE.md, and stays read-only', () => {
     const args = buildClaudeArgs({ ...base, autonomy: 'read-only', promptOnly: true }, model, undefined)
     const valueOf = (flag: string) => args[args.indexOf(flag) + 1]

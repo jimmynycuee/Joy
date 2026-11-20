@@ -130,6 +130,11 @@ export interface RunOptions {
    * run. Backends that cannot do this ignore it.
    */
   promptOnly?: boolean
+  /**
+   * Nobody will resume this run (reviewer, judge, background jobs): a backend may skip saving the session, so one-off
+   * runs do not pile up in the CLI's own history. Backends that cannot do this ignore it.
+   */
+  ephemeral?: boolean
   /** Final answer must match this JSON Schema (used for structured review findings). */
   outputSchema?: object
   signal: AbortSignal

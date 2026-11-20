@@ -108,7 +108,10 @@ export class CodexAppServerProvider implements AgentProvider {
             ...common,
             threadId: opts.resumeSessionId,
           } satisfies ThreadResumeParams)
-        : await client.request('thread/start', common)
+        : await client.request('thread/start', {
+            ...common,
+            ...(opts.ephemeral ? { ephemeral: true } : {}),
+          } satisfies ThreadStartParams)
       sessionId = str(rec(rec(thread)?.thread)?.id) ?? ''
       if (!sessionId) throw new Error('Codex app-server did not return a thread id')
       await assertOnlyJoyServers(client, sessionId, opts.mcpServers)

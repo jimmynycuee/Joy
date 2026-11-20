@@ -109,7 +109,13 @@ describe('reviewLoop', () => {
     expect(result).toMatchObject({ type: 'result', status: 'succeeded', approved: true, rounds: 1 })
     expect(impl.calls[0]).toMatchObject({ cwd: '/wt/t1-a1', autonomy: 'workspace-write' })
     expect(impl.calls[0]?.sessionId).toMatch(/^[0-9a-f-]{36}$/)
-    expect(rev.calls[0]).toMatchObject({ autonomy: 'read-only', outputSchema: expect.any(Object) })
+    expect(rev.calls[0]).toMatchObject({
+      autonomy: 'read-only',
+      outputSchema: expect.any(Object),
+      ephemeral: true,
+    })
+    // The implementer's session is resumed for the next round, so it must be saved.
+    expect(impl.calls[0]?.ephemeral).toBeUndefined()
     expect(rev.calls[0]?.prompt).toContain('+a + b')
     expect(events.filter((e) => e.type === 'phase').map((e) => (e as { phase: string }).phase)).toEqual([
       'preparing',

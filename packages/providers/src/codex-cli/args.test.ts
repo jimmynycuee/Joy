@@ -34,6 +34,16 @@ describe('buildCodexArgs', () => {
     ])
   })
 
+  it('an ephemeral run saves no session under CODEX_HOME, unless it resumes one', () => {
+    const args = buildCodexArgs({ ...base, ephemeral: true }, model)
+    expect(args).toContain('--ephemeral')
+    expect(args.indexOf('--ephemeral')).toBeLessThan(args.indexOf('--'))
+    expect(buildCodexArgs(base, model)).not.toContain('--ephemeral')
+    expect(buildCodexArgs({ ...base, ephemeral: true, resumeSessionId: 's1' }, model)).not.toContain(
+      '--ephemeral',
+    )
+  })
+
   it("routes escalations to Joy's rules instead of Codex's own auto reviewer", () => {
     // `approvals_reviewer = "guardian_subagent"` in ~/.codex/config.toml lets a Codex subagent approve network access
     // and sandbox escapes; `exec` has nobody to ask, so with `user` those requests are refused instead.
