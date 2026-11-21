@@ -15,7 +15,7 @@
 
 | 工具                                                        | 用途                         | 檢查                          |
 | ----------------------------------------------------------- | ---------------------------- | ----------------------------- |
-| Node.js 22.13 以上                                          | 執行 Joy                     | `node --version`              |
+| Node.js 22.13 以上（`.nvmrc` 固定 22，`nvm use`）           | 執行 Joy；Node 25 會被擋     | `node --version`              |
 | pnpm 10（`corepack enable` 即可）                           | 安裝套件                     | `pnpm --version`              |
 | Git                                                         | 每個任務在獨立 worktree 進行 | `git --version`               |
 | [Claude Code](https://docs.anthropic.com/claude-code)，登入 | 實作或審查（用你的訂閱）     | `claude --version`            |
