@@ -5,7 +5,9 @@ import globals from 'globals'
 import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
-  { ignores: ['**/dist/**', '**/node_modules/**', '**/coverage/**'] },
+  // `.claude/` holds Claude Code's own files, including agent worktrees: whole copies of this repo with their own
+  // tsconfig files, which would otherwise be linted twice and confuse typescript-eslint's project lookup.
+  { ignores: ['**/dist/**', '**/node_modules/**', '**/coverage/**', '.claude/**'] },
   js.configs.recommended,
   ...tseslint.configs.strict,
   {
