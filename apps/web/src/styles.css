@@ -1802,6 +1802,97 @@ svg {
   border-top: 1px solid var(--border);
   border-radius: 0;
 }
+/* Line numbers come from data-line, so the line's text (what tests and copy see) stays the diff line itself. */
+.diff-file-code .diff-line {
+  position: relative;
+  padding-left: 56px;
+}
+.diff-file-code .diff-line::before {
+  content: attr(data-line);
+  position: absolute;
+  left: 0;
+  width: 34px;
+  text-align: right;
+  color: var(--faint);
+}
+.diff-comment-add {
+  position: absolute;
+  left: 38px;
+  top: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--bg);
+  opacity: 0;
+  transform: translateY(-50%);
+}
+.diff-line:hover .diff-comment-add,
+.diff-comment-add:focus-visible {
+  opacity: 1;
+}
+.diff-comment,
+.diff-comment-form {
+  display: flex;
+  gap: 8px;
+  max-width: 480px;
+  margin: 4px 12px 6px 56px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  /* The page's own font, not the diff's monospace one it sits in. */
+  font-family:
+    Inter, 'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', ui-sans-serif, system-ui, sans-serif;
+  font-size: var(--fs-13);
+  white-space: pre-wrap;
+}
+.diff-comment {
+  align-items: flex-start;
+}
+.diff-comment-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.diff-comment .icon-btn {
+  flex: none;
+  width: 22px;
+  height: 22px;
+}
+.diff-comment-form {
+  flex-direction: column;
+}
+.diff-comment-form textarea {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+}
+.diff-comment-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.diff-comments-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 6px 8px 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  font-size: var(--fs-13);
+}
+.diff-comments-bar .btn {
+  margin-left: auto;
+}
 .diff-more,
 .diff-fold-all {
   border: 0;

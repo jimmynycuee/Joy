@@ -2,6 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-23（diff 逐行留言：變更面板每行有行號，滑過可留言，留言存在這個瀏覽器，「送出留言」把全部整理成一則訊息交給任務（執行中就排隊）；分支 `diff-line-comments`）
 - 最後更新：2026-11-20（一次性的 run 不再留下 CLI session：審查者、裁判、安全預審、ask_peer 與背景工作（對話摘要、上下文摘要、記憶擷取）帶 `RunOptions.ephemeral`，Codex exec 加 `--ephemeral`、app-server `thread/start` 帶 `ephemeral: true`、Claude 加 `--no-session-persistence`，Codex App 側欄不再塞滿 `You are performing a cross-model...`；實作者與助理對話仍會存檔以便續接；新增 core 選填欄位 `RunOptions.ephemeral`，擁有者已確認；分支 `codex-ephemeral-runs`）
 - 最後更新：2026-11-20（助理長對話不再越聊越貴、也不會卡死：OpenAI 請求加 `truncation: 'auto'`；Joy 估算大腦 session 裡的對話量，超過 6 萬 token 且這段對話開的任務都告一段落（沒有在排隊、執行、等核准）時，或超過 30 萬 token 時，在背景把較早的訊息整理成「上下文摘要」並結束 session，下一輪從摘要＋最近 10 則訊息開新 session；門檻在 `config.yaml` 的 `assistant.context`；對話頁在摘要涵蓋到的地方顯示可展開的「以上已整理成摘要」；migration 29，分支 `assistant-context-compaction`）
 - 最後更新：2026-11-19（助理對話可以附圖片與文字檔：圖片隨訊息交給大腦、文字檔引用進訊息，存下的訊息只留擁有者的話並列出檔案；migration 28 讓附件屬於任務或對話其中之一，分支 `assistant-attachments`）
@@ -101,6 +102,12 @@
 - 無。
 
 ## 驗證結果
+
+### Diff 逐行留言（2026-11-23，分支 `diff-line-comments`）
+
+- **做法**：`numberDiffLines` 依 hunk 標頭算新舊行號（行號用 `data-line` 加 CSS 顯示，不進行的文字）；新增與未變的行留言指向新檔行號，刪除的行指向舊檔。留言像草稿一樣存在 localStorage（`joy.diffComments.<taskId>`）。「送出留言」用 `diffCommentsMessage` 整理成一則訊息（檔案、行號、引用該行、意見），走 `POST /api/tasks/:id/messages`，任務在跑時排隊，跟輸入框一樣。比賽任務與工作副本已移除的任務沒有留言按鈕。server 沒改。
+- **測試**：`diff-comments.test.ts`（行號、留言目標、訊息格式與排序、localStorage 驗證）；e2e `diff-comments.spec.ts`（行號、新增／刪除行留言、Esc 取消、⌘Enter 存、重新整理後還在、刪除、送出內容、無法接續的任務沒有按鈕）；fake-preview 實際走過一次（送出後任務跑第 2 輪）。
+- **沒驗證到**：真實 agent 收到留言後的處理品質。
 
 ### 助理長對話：上下文摘要（2026-11-20，分支 `assistant-context-compaction`）
 
