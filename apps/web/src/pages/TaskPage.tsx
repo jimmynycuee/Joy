@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, errorMessage, request } from '../api.js'
 import { DiffBrowser, DiffStat } from '../components/DiffView.js'
+import type { DiffCommentControls } from '../components/DiffView.js'
+import { diffCommentsMessage } from '../diff-comments.js'
+import { useDiffComments } from '../hooks/useDiffComments.js'
+import { deliveryRequest } from '../queue.js'
 import { CheckpointsPanel } from '../components/CheckpointsPanel.js'
 import { Mascot } from '../components/Mascot.js'
 import { Menu, MenuItem, MenuSeparator, SubMenu } from '../components/Menu.js'
@@ -108,6 +112,40 @@ export function TaskPage({
   // Closed while there is nothing to see; opens by itself when a diff appears, until the owner decides otherwise.
   const hasDiff = Boolean(diff && diff.files.length > 0)
   const paneOpen = changesOpen ?? hasDiff
+  const diffComments = useDiffComments(task.id)
+  const [sendingComments, setSendingComments] = useState(false)
+
+  /** All diff comments as one message, delivered like the composer's (queued while the agent works). */
+  async function sendComments(): Promise<void> {
+    setSendingComments(true)
+    try {
+      const busy = working || task.status === 'awaiting_approval'
+      await request(`/api/tasks/${encodeURIComponent(task.id)}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({
+          text: diffCommentsMessage(diffComments.items),
+          ...deliveryRequest(busy, false),
+        }),
+      })
+      diffComments.clear()
+      onChanged()
+    } catch (error) {
+      // The comments stay, so the owner can send them again.
+      const status = error instanceof ApiError ? error.status : undefined
+      onError(ownerActionError(status, errorMessage(error, ''), '無法送出留言'))
+    } finally {
+      setSendingComments(false)
+    }
+  }
+  const commentControls: DiffCommentControls | undefined = canAskAgent
+    ? {
+        items: diffComments.items,
+        onAdd: diffComments.add,
+        onRemove: diffComments.remove,
+        onSend: () => void sendComments(),
+        sending: sendingComments,
+      }
+    : undefined
 
   // A finished task reads from the top: what was asked, what the agent concluded, the last review. The process folds
   // away. A plan waiting for a decision and a compete task (two attempts side by side) stay open.
@@ -396,7 +434,11 @@ export function TaskPage({
               <IconButton icon="x" label="關閉變更面板" onClick={() => onToggleChanges(false)} />
             </div>
             {diff && hasDiff ? (
-              <DiffBrowser diff={diff} actions={<PullRequestBar details={details} onChanged={onChanged} />} />
+              <DiffBrowser
+                diff={diff}
+                actions={<PullRequestBar details={details} onChanged={onChanged} />}
+                {...(commentControls ? { comments: commentControls } : {})}
+              />
             ) : (
               <>
                 <PullRequestBar details={details} onChanged={onChanged} />
