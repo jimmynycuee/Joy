@@ -131,3 +131,33 @@ export function formatSize(chars: number): string {
     ? `${(chars / 1_000_000).toFixed(1)} MB`
     : `${Math.max(1, Math.round(chars / 1000))} KB`
 }
+
+/** One line of a file's diff with its line number in the old and the new file (none for headers). */
+export interface NumberedDiffLine {
+  text: string
+  kind: DiffLineKind
+  oldLine?: number
+  newLine?: number
+}
+
+/** Numbers a file's diff lines from its hunk headers (`@@ -a,b +c,d @@`). */
+export function numberDiffLines(lines: readonly string[]): NumberedDiffLine[] {
+  let oldLine = 0
+  let newLine = 0
+  let inHunk = false
+  return lines.map((text) => {
+    const kind = classifyDiffLine(text)
+    if (kind === 'hunk') {
+      const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(text)
+      inHunk = Boolean(match)
+      oldLine = Number(match?.[1] ?? 0)
+      newLine = Number(match?.[2] ?? 0)
+      return { text, kind }
+    }
+    // Headers before the first hunk, and "\ No newline at end of file", have no line of their own.
+    if (!inHunk || kind === 'meta' || text.startsWith('\\')) return { text, kind }
+    if (kind === 'added') return { text, kind, newLine: newLine++ }
+    if (kind === 'removed') return { text, kind, oldLine: oldLine++ }
+    return { text, kind, oldLine: oldLine++, newLine: newLine++ }
+  })
+}
