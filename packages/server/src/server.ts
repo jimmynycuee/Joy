@@ -275,6 +275,7 @@ import {
 } from '@joy/tools'
 import type { ToolHubBudget, ToolHubDispatcher } from '@joy/tools'
 import { effortCompatibilityError } from '@joy/model-effort'
+import { smallChangeReviewer } from './review-strength.js'
 import {
   classifyCheckCommand,
   classifyClaudeToolAction,
@@ -5048,6 +5049,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
     let lastImplementerDone: Extract<AgentEvent, { type: 'done' }> | undefined
     const config = await configStore.get()
     const hubs = implementerToolHubs(task, repo, config, controller.signal)
+    const lightReviewer = smallChangeReviewer(reviewer, config.review)
     try {
       for await (const event of reviewLoop(
         {
@@ -5067,6 +5069,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
           reviewBrief: () => taskBrief(task),
           implementerTools: (ws) => hubs.tools(attempt, implementer, ws),
           runChecks: (ws, round) => runProjectChecks(task, repo, attempt, ws, round, controller.signal),
+          ...(lightReviewer ? { smallChangeReviewer: lightReviewer } : {}),
           ...(resume ? { resumeWorkspace: resume.workspace } : {}),
           ...(resume?.sessionId ? { resumeSessionId: resume.sessionId } : {}),
           ...(resume && planning ? { replanPrompt: resume.prompt ?? planPrompt(brief) } : {}),

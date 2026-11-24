@@ -117,7 +117,11 @@ class FakeExecutor {
 async function setup() {
   const home = mkdtempSync(join(tmpdir(), 'joy-switch-'))
   dirs.push(home)
-  writeFileSync(join(home, 'config.yaml'), 'approvals:\n  on_timeout: deny\n')
+  // Small-change reviews would lower the reviewer's effort; these tests check the configured reviewer is kept.
+  writeFileSync(
+    join(home, 'config.yaml'),
+    'approvals:\n  on_timeout: deny\nreview:\n  small_change_max_lines: 0\n',
+  )
   const db = openDatabase(':memory:')
   databases.push(db)
   const redactor = new Redactor()
