@@ -95,6 +95,12 @@ export interface ReviewLoopInput {
    * `{ skipped }` = there is one but it did not run. Either way the reviewer is told nothing was verified.
    */
   runChecks?: (ws: Workspace, round: number) => Promise<ChecksOutcome | undefined>
+  /**
+   * A lighter reviewer (same provider and model, lower effort) for a change small enough that a full-effort review
+   * mostly costs tokens: at most `maxChangedLines` added plus deleted lines, or documentation only. Decided again for
+   * each review from the whole diff, so a change that grows gets the full reviewer.
+   */
+  smallChangeReviewer?: { model: ModelRef; maxChangedLines: number }
 }
 
 export interface ImplementerTools {
@@ -241,10 +247,14 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
       const checks = checksRan(outcome) ? outcome : undefined
       if (checks) yield { type: 'checks', round: rounds, ...checks }
 
-      yield { type: 'phase', phase: 'reviewing', round: rounds, role: 'reviewer', model: input.reviewer }
+      const reviewModel =
+        input.smallChangeReviewer && isSmallChange(diff, input.smallChangeReviewer.maxChangedLines)
+          ? input.smallChangeReviewer.model
+          : input.reviewer
+      yield { type: 'phase', phase: 'reviewing', round: rounds, role: 'reviewer', model: reviewModel }
       const verdict = yield* review(
-        reviewer,
-        input.reviewer,
+        provider(deps, reviewModel),
+        reviewModel,
         rounds,
         base({
           prompt: reviewPrompt(reviewBrief(), diff.patch, outcome, previous),
@@ -307,6 +317,17 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
       yield { type: 'result', status: 'failed', approved: false, rounds, reason: (err as Error).message }
     }
   }
+}
+
+const DOC_FILE = /\.(md|mdx|markdown|txt|rst|adoc)$/i
+
+/** Few changed lines, or documentation only (renames included: both paths must be docs). */
+export function isSmallChange(diff: WorkspaceDiff, maxChangedLines: number): boolean {
+  if (diff.files.length === 0) return false
+  const docsOnly = diff.files.every((f) => DOC_FILE.test(f.path) && (!f.oldPath || DOC_FILE.test(f.oldPath)))
+  if (docsOnly) return true
+  const changed = diff.files.reduce((sum, f) => sum + f.additions + f.deletions, 0)
+  return changed <= maxChangedLines
 }
 
 function provider(deps: ReviewLoopDeps, model: ModelRef): AgentProvider {

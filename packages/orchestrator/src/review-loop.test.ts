@@ -13,13 +13,14 @@ import type {
 } from '@joy/core'
 import { describe, expect, it } from 'vitest'
 import type { LoopEvent, ReviewLoopInput } from './review-loop.js'
-import { parseVerdict, reviewLoop } from './review-loop.js'
+import { isSmallChange, parseVerdict, reviewLoop } from './review-loop.js'
 
 type Script = (opts: RunOptions) => AgentEvent[]
 
 /** A provider that answers each run() with the next scripted event list and records what it was asked. */
 class FakeProvider implements AgentProvider {
   readonly calls: RunOptions[] = []
+  readonly models: ModelRef[] = []
   readonly capabilities = {
     codeEdit: true,
     tools: true,
@@ -33,8 +34,9 @@ class FakeProvider implements AgentProvider {
     readonly kind: ProviderKind,
     private readonly scripts: Script[],
   ) {}
-  async *run(opts: RunOptions): AsyncGenerator<AgentEvent> {
+  async *run(opts: RunOptions, model: ModelRef): AsyncGenerator<AgentEvent> {
     this.calls.push(opts)
+    this.models.push(model)
     const script = this.scripts[this.calls.length - 1]
     if (!script) throw new Error(`${this.kind}: no script for call ${this.calls.length}`)
     for (const e of script(opts)) yield e
@@ -175,6 +177,29 @@ describe('reviewLoop', () => {
     expect(followUp).not.toContain('+helper()')
     expect(followUp).toContain('already reviewed; read them if you need context): util.js')
     expect(followUp).toContain('no longer changed (their changes were undone): old.js')
+  })
+
+  it('gives a small change the lighter reviewer and a grown one the full reviewer', async () => {
+    const full: ModelRef = { ...codex, effort: 'high' }
+    const light: ModelRef = { ...codex, effort: 'low' }
+    const big: WorkspaceDiff = {
+      files: [{ path: 'math.js', status: 'modified', additions: 30, deletions: 5 }],
+      patch: '+big',
+    }
+    const impl = new FakeProvider('claude-cli', [() => ok('s1'), () => ok('s1')])
+    const rev = new FakeProvider('codex-cli', [verdict(false, [major]), verdict(true)])
+    const { events, result } = await run(
+      input({ reviewer: full, smallChangeReviewer: { model: light, maxChangedLines: 20 } }),
+      impl,
+      rev,
+      new FakeExecutor([changed(), big]),
+    )
+    expect(result).toMatchObject({ approved: true, rounds: 2 })
+    expect(rev.models).toEqual([light, full])
+    expect(events.flatMap((e) => (e.type === 'phase' && e.phase === 'reviewing' ? [e.model] : []))).toEqual([
+      light,
+      full,
+    ])
   })
 
   it('stops after maxRounds and leaves the decision to a human', async () => {
@@ -606,5 +631,29 @@ describe('parseVerdict', () => {
   it('rejects output without a boolean approve', () => {
     expect(parseVerdict({ summary: 'x' })).toBeUndefined()
     expect(parseVerdict('yes')).toBeUndefined()
+  })
+})
+
+describe('isSmallChange', () => {
+  const file = (path: string, additions: number, deletions = 0, oldPath?: string) => ({
+    path,
+    status: 'modified' as const,
+    additions,
+    deletions,
+    ...(oldPath ? { oldPath } : {}),
+  })
+  it('counts added and deleted lines across files', () => {
+    expect(isSmallChange({ files: [file('a.ts', 10, 5), file('b.ts', 5)], patch: '' }, 20)).toBe(true)
+    expect(isSmallChange({ files: [file('a.ts', 10, 6), file('b.ts', 5)], patch: '' }, 20)).toBe(false)
+  })
+  it('treats documentation-only changes as small, whatever their size', () => {
+    expect(isSmallChange({ files: [file('README.md', 400), file('docs/x.txt', 50)], patch: '' }, 20)).toBe(
+      true,
+    )
+    expect(isSmallChange({ files: [file('README.md', 400), file('a.ts', 1)], patch: '' }, 20)).toBe(false)
+    expect(isSmallChange({ files: [file('notes.md', 400, 0, 'run.sh')], patch: '' }, 20)).toBe(false)
+  })
+  it('never calls an empty diff small', () => {
+    expect(isSmallChange({ files: [], patch: '' }, 20)).toBe(false)
   })
 })

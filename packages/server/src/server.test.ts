@@ -21,6 +21,7 @@ import type {
   AgentProvider,
   AttemptId,
   Executor,
+  ModelRef,
   ProviderKind,
   RepoId,
   RunOptions,
@@ -99,6 +100,7 @@ const diff: WorkspaceDiff = {
 
 class FakeProvider implements AgentProvider {
   readonly calls: RunOptions[] = []
+  readonly models: ModelRef[] = []
   onRun?: (options: RunOptions) => Promise<void>
   waitForAbort = false
   readonly capabilities = {
@@ -116,8 +118,9 @@ class FakeProvider implements AgentProvider {
     private readonly output: AgentEvent[] = [],
   ) {}
 
-  async *run(options: RunOptions): AsyncGenerator<AgentEvent> {
+  async *run(options: RunOptions, model: ModelRef): AsyncGenerator<AgentEvent> {
     this.calls.push(options)
+    this.models.push(model)
     await this.onRun?.(options)
     const sessionId = options.resumeSessionId ?? `session-${this.calls.length}`
     if (!options.resumeSessionId) yield { type: 'session_started', sessionId }
@@ -1421,6 +1424,50 @@ describe('Joy local server', () => {
     const tauriSocket = await tryWebSocket(`${websocket}/ws?taskId=${task.id}`, 'tauri://localhost')
     expect(tauriSocket.status).toBe(101)
     expect(tauriSocket.messages[0]).toMatchObject({ type: 'snapshot', task: { id: task.id } })
+  })
+
+  it('reviews a small change with the same reviewer model at low effort, unless that is turned off', async () => {
+    for (const [maxLines, effort] of [
+      [20, 'low'],
+      [0, 'medium'],
+    ] as const) {
+      const home = mkdtempSync(join(tmpdir(), 'joy-small-review-'))
+      dirs.push(home)
+      const configStore = new ConfigStore(join(home, 'config.yaml'))
+      await configStore.update((config) => ({
+        ...config,
+        review: { ...config.review, small_change_max_lines: maxLines },
+      }))
+      const reviewer = new FakeProvider('codex-cli', [
+        {
+          type: 'done',
+          sessionId: 'r',
+          isError: false,
+          structured: { approve: true, summary: 'ok', findings: [] },
+        },
+      ])
+      const { serverPromise } = fixture({ reviewer, configStore })
+      const { origin, server } = await start(serverPromise)
+      const repoResponse = await postJson(`${origin}/api/repos`, {
+        path: '/tmp/small',
+        defaultBranch: 'main',
+      })
+      const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+      const taskResponse = await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: 'Small',
+        prompt: 'p',
+        mode: 'review_loop',
+        roleOverrides: {
+          implementer: { provider: 'claude-cli', model: 'haiku', effort: 'low' },
+          reviewer: { provider: 'codex-cli', model: 'gpt-6.1-sol', effort: 'medium' },
+        },
+      })
+      const { task } = (await taskResponse.json()) as { task: { id: string } }
+      await waitForStatus(origin, task.id, 'done')
+      expect(reviewer.models.at(-1)).toEqual({ provider: 'codex-cli', model: 'gpt-6.1-sol', effort })
+      await server.close()
+    }
   })
 
   it('exposes a task-scoped Tool Hub to CLI runs with authentication, shared read-only peers, and limits', async () => {

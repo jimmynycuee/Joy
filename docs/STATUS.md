@@ -2,9 +2,10 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-25（審查強度依變更大小調整：加減行數合計 ≤ 20 行或只改文件的變更，由同一個審查模型用 `low` effort 審；每輪依整份 diff 重新判斷，變大就回到原本設定；`config.yaml` 的 `review.small_change_max_lines`（0 關閉）與 `review.small_change_effort`；擁有者確認 #173 的記憶擷取 prompt；分支 `adaptive-review`）
 - 最後更新：2026-11-24（審查第 2 輪起不再整份重看：審查者拿到自己上一輪的意見、實作者的回覆，只送上一輪之後 diff 有變的檔案，沒變的只列檔名；分支 `review-followup-rounds`）
 - 最後更新：2026-11-23（diff 逐行留言：變更面板每行有行號，滑過可留言，留言存在這個瀏覽器，「送出留言」把全部整理成一則訊息交給任務（執行中就排隊）；分支 `diff-line-comments`）
-- 最後更新：2026-11-23（省 token：安全預審、對話摘要、上下文摘要、記憶擷取改帶 `promptOnly`（Claude 不載入內建工具、skills、CLAUDE.md）；記憶擷取不再每則訊息跑一次，改成對話安靜 60 秒（或累積 8 則）後一次讀完；`.claude/` 不再被 prettier／eslint 檢查，本機 `pnpm check` 不會被殘留 worktree 弄壞；**`packages/memory` 的擷取 prompt 待擁有者審**；分支 `token-savings`）
+- 最後更新：2026-11-23（省 token：安全預審、對話摘要、上下文摘要、記憶擷取改帶 `promptOnly`（Claude 不載入內建工具、skills、CLAUDE.md）；記憶擷取不再每則訊息跑一次，改成對話安靜 60 秒（或累積 8 則）後一次讀完；`.claude/` 不再被 prettier／eslint 檢查，本機 `pnpm check` 不會被殘留 worktree 弄壞；**`packages/memory` 的擷取 prompt 已經擁有者確認（2026-11-25）**；分支 `token-savings`）
 - 最後更新：2026-11-20（一次性的 run 不再留下 CLI session：審查者、裁判、安全預審、ask_peer 與背景工作（對話摘要、上下文摘要、記憶擷取）帶 `RunOptions.ephemeral`，Codex exec 加 `--ephemeral`、app-server `thread/start` 帶 `ephemeral: true`、Claude 加 `--no-session-persistence`，Codex App 側欄不再塞滿 `You are performing a cross-model...`；實作者與助理對話仍會存檔以便續接；新增 core 選填欄位 `RunOptions.ephemeral`，擁有者已確認；分支 `codex-ephemeral-runs`）
 - 最後更新：2026-11-20（助理長對話不再越聊越貴、也不會卡死：OpenAI 請求加 `truncation: 'auto'`；Joy 估算大腦 session 裡的對話量，超過 6 萬 token 且這段對話開的任務都告一段落（沒有在排隊、執行、等核准）時，或超過 30 萬 token 時，在背景把較早的訊息整理成「上下文摘要」並結束 session，下一輪從摘要＋最近 10 則訊息開新 session；門檻在 `config.yaml` 的 `assistant.context`；對話頁在摘要涵蓋到的地方顯示可展開的「以上已整理成摘要」；migration 29，分支 `assistant-context-compaction`）
 - 最後更新：2026-11-19（助理對話可以附圖片與文字檔：圖片隨訊息交給大腦、文字檔引用進訊息，存下的訊息只留擁有者的話並列出檔案；migration 28 讓附件屬於任務或對話其中之一，分支 `assistant-attachments`）
@@ -105,6 +106,13 @@
 - 無。
 
 ## 驗證結果
+
+### 審查強度依變更大小調整（2026-11-25，分支 `adaptive-review`）
+
+- **問題**：不管改一行還是改三百行，審查者都用同一個 effort（預設 Codex `gpt-6.1-sol` medium），小改動的審查大多是在花 token。
+- **做法**：`packages/orchestrator` 的 `isSmallChange`：加減行數合計不超過門檻，或每個檔案（改名的話新舊路徑都算）都是 `.md`／`.mdx`／`.markdown`／`.txt`／`.rst`／`.adoc`，就算小改動；空 diff 不算。`ReviewLoopInput.smallChangeReviewer` 有設時，小改動的那一輪審查改用它，`phase` 事件記下實際用的 model。每輪都依整份 diff 重新判斷。server 的 `smallChangeReviewer`（`review-strength.ts`）只換 effort、不換 provider 或模型，所以審查紀錄、usage 歸屬、跨模型檢查都不受影響；設定的 effort 不比原本低，或那個模型不支援該 effort 時就不用。比賽的合併審查不套用。不跳過審查。
+- **測試**：orchestrator（第 1 輪小改動用輕量審查、第 2 輪變大回到原本的審查者；行數、只改文件、改名、空 diff）；server `review-strength.test.ts`（預設、關閉、不會更輕、模型不支援）與 `server.test.ts`（預設 low、`small_change_max_lines: 0` 時維持 medium）；config（預設值與驗證）。`composer-switch.test.ts` 關掉這個設定，因為它驗的是換手後審查者設定被保留。根目錄 `pnpm check` 通過（1662 tests）。
+- **沒驗證到**：真實模型用 low effort 審小改動時，漏看的比例與省下的 token。
 
 ### 審查第 2 輪起只看改過的部分（2026-11-24，分支 `review-followup-rounds`）
 
@@ -359,7 +367,8 @@
 
 ## 已確認決策
 
-- 2026-11-23 省 token（擁有者選「先做 token 修正」；以下細節為 agent 決定，`packages/memory` 的擷取 prompt 待擁有者審，`core`、`policy`、`secrets` 沒動）：(1) 安全預審與三種背景工作帶 `promptOnly`，`ask_peer`、審查者、實作者不變；(2) 記憶擷取在對話安靜 60 秒或累積 8 則後一次跑，存在記憶體裡（Joy 正常停止會先讀完，當機才會漏掉那段）；不加 migration；(3) `.claude/` 不進 prettier／eslint。
+- 2026-11-25 審查強度依變更大小調整（擁有者說「繼續做下一個優化」；以下細節為 agent 決定，`core`、`policy`、`memory` 沒動）：只降 effort、不換模型也不跳過審查，避免換模型後變成同模型審查或紀錄錯置；門檻 20 行與只改文件可在 `config.yaml` 調整或關閉。同日擁有者對 #173 記憶擷取 prompt 待審的提醒回覆「沒問題」，視為已審。
+- 2026-11-23 省 token（擁有者選「先做 token 修正」；以下細節為 agent 決定，`packages/memory` 的擷取 prompt 已於 2026-11-25 經擁有者確認，`core`、`policy`、`secrets` 沒動）：(1) 安全預審與三種背景工作帶 `promptOnly`，`ask_peer`、審查者、實作者不變；(2) 記憶擷取在對話安靜 60 秒或累積 8 則後一次跑，存在記憶體裡（Joy 正常停止會先讀完，當機才會漏掉那段）；不加 migration；(3) `.claude/` 不進 prettier／eslint。
 - 2026-11-20 一次性 run 不存 session（擁有者要求「Codex 聊天窗不要出現很多無用的對話」；以下細節為 agent 決定，新增 `packages/core` 選填欄位 `RunOptions.ephemeral`，2026-11-20 擁有者確認沒問題）：只有確定不會續接的 run 設 `ephemeral`（審查者、競賽裁判、安全預審、ask_peer、對話摘要、上下文摘要、記憶擷取）；實作者與助理大腦要靠 `resumeSessionId` 接下一輪，不設。provider 在帶 `resumeSessionId` 時忽略 `ephemeral`（續接的 session 本來就存在）。Codex：exec `--ephemeral`、app-server `thread/start` 的 `ephemeral`（codex-cli 0.166.0 `generate-ts` 確認）；Claude：`--no-session-persistence`（2.1.319 `--help`）。已存在的舊 session 不會被刪，由擁有者自己在 Codex App 封存。
 - 2026-11-20 助理上下文摘要（擁有者同意修「長對話不會自動 compact」；以下細節為 agent 決定，待擁有者確認，`packages/core`、`policy`、`memory`、`secrets` 沒動）：(1) 上下文摘要和 T3.6 的搜尋摘要分開存（`context_summary` vs `summary`），只給同一段對話的下一個 session，不寫入 memories、不跨對話；它的內容本來就在被結束的 session 裡，所以不違反 T3.6「摘要不放進指示」的理由（那是怕助理回覆與工具結果變成長期記憶），prompt 標明它是紀錄、不是新指示；(2) 門檻用 Joy 自己估的對話量，不看 provider 回報的 token（各家語意不同，見「驗證結果」）；擁有者決定「任務告一段落才整理，除非超過 300k」，所以分成下限 `summarize_after_tokens`（6 萬，避免很短的對話每次任務結束都整理）與上限 `force_after_tokens`（30 萬），放在 `config.yaml` 的 `assistant.context`；大腦本身的上限若比 30 萬小，仍由 `truncation: 'auto'`／CLI 自己的壓縮擋住；(3) 在背景整理、成功才結束 session，不讓擁有者多等一輪；(4) 摘要只讀存下的訊息，工具結果不在裡面，新 session 需要時會再查一次。
 - 2026-11-19 審查依據實際檢查結果（擁有者要求審查要有真實驗證、審查者不加寫入權限；以下細節為 agent 決定，`packages/core`、`packages/policy` 沒動）：(1) 延伸既有送審前檢查，不讓審查者 CLI 跑 shell；(2) 只跑專案的 `checkCommand`，不從任務文字抽指令；(3) 審查者 prompt 一律說明跑了什麼或沒跑，通過的輸出結尾也給；(4) 略過的檢查不擋核准（沿用既有行為），但審查者會被告知沒驗證。

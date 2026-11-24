@@ -216,6 +216,16 @@ export const configSchema = z.strictObject({
   tool_hub: z
     .strictObject({ max_ask_peer_calls: z.number().int().min(1).max(100).default(5) })
     .default({ max_ask_peer_calls: 5 }),
+  review: z
+    .strictObject({
+      /**
+       * A change of at most this many added plus deleted lines, or one that only touches documentation, is reviewed
+       * by the same reviewer model at `small_change_effort`. 0 turns it off.
+       */
+      small_change_max_lines: z.number().int().min(0).max(10_000).default(20),
+      small_change_effort: z.enum(EFFORTS).default('low'),
+    })
+    .default({ small_change_max_lines: 20, small_change_effort: 'low' }),
   assistant: z
     .strictObject({
       /**

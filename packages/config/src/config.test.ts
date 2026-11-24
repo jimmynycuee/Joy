@@ -33,6 +33,15 @@ describe('parseConfig', () => {
     expect(() => parseConfig('tool_hub: { max_ask_peer_calls: 101 }')).toThrow(/tool_hub.max_ask_peer_calls/)
   })
 
+  it('reviews changes of up to 20 lines at low effort by default, and validates the setting', () => {
+    expect(parseConfig('').review).toEqual({ small_change_max_lines: 20, small_change_effort: 'low' })
+    expect(parseConfig('review: { small_change_max_lines: 0 }').review.small_change_max_lines).toBe(0)
+    expect(() => parseConfig('review: { small_change_max_lines: -1 }')).toThrow(
+      /review.small_change_max_lines/,
+    )
+    expect(() => parseConfig('review: { small_change_effort: none }')).toThrow(/review.small_change_effort/)
+  })
+
   it('summarizes long assistant conversations at a pause past 60k, and always past 300k', () => {
     expect(parseConfig('').assistant.context).toEqual({
       summarize_after_tokens: 60_000,
