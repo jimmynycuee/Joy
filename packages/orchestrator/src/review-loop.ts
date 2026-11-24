@@ -27,7 +27,7 @@ import {
   withOwnerMessages,
 } from './prompts.js'
 import { checksRan } from './prompts.js'
-import type { ChecksOutcome, ChecksResult } from './prompts.js'
+import type { ChecksOutcome, ChecksResult, PreviousReview } from './prompts.js'
 
 export type Phase = 'preparing' | 'planning' | 'plan_review' | 'implementing' | 'reviewing' | 'fixing'
 
@@ -229,6 +229,8 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
       }),
     )
     session = implemented.sessionId || session
+    // Set after each review that asked for changes; the next review only checks what changed since.
+    let previous: PreviousReview | undefined
 
     for (rounds = first; ; rounds++) {
       const diff = await deps.executor.diff(ws)
@@ -245,7 +247,7 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
         input.reviewer,
         rounds,
         base({
-          prompt: reviewPrompt(reviewBrief(), diff.patch, outcome),
+          prompt: reviewPrompt(reviewBrief(), diff.patch, outcome, previous),
           autonomy: 'read-only',
         }),
       )
@@ -290,6 +292,11 @@ export async function* reviewLoop(input: ReviewLoopInput, deps: ReviewLoopDeps):
         }),
       )
       session = fixed.sessionId || session
+      previous = {
+        verdict,
+        patch: diff.patch,
+        ...(fixed.finalMessage ? { reply: fixed.finalMessage } : {}),
+      }
     }
   } catch (err) {
     if (input.signal.aborted) {

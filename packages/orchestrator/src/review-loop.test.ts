@@ -134,6 +134,49 @@ describe('reviewLoop', () => {
     expect(events.filter((e) => e.type === 'review')).toHaveLength(2)
   })
 
+  it('gives a follow-up review its findings, the reply and only the files that changed since', async () => {
+    const file = (path: string, line: string) =>
+      [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, '@@ -1 +1 @@', `+${line}`].join(
+        '\n',
+      )
+    const files = (paths: string[]) =>
+      paths.map((path) => ({ path, status: 'modified' as const, additions: 1, deletions: 0 }))
+    const first: WorkspaceDiff = {
+      files: files(['math.js', 'util.js', 'old.js']),
+      patch: [file('math.js', 'add()'), file('util.js', 'helper()'), file('old.js', 'gone()')].join('\n'),
+    }
+    const second: WorkspaceDiff = {
+      files: files(['math.js', 'util.js', 'new.js']),
+      patch: [
+        file('math.js', 'add() // NaN safe'),
+        file('util.js', 'helper()'),
+        file('new.js', 'fresh()'),
+      ].join('\n'),
+    }
+    const impl = new FakeProvider('claude-cli', [
+      () => ok('s1'),
+      () => ok('s1', 'Handled NaN; kept the helper as is because it is shared.'),
+    ])
+    const rev = new FakeProvider('codex-cli', [verdict(false, [major]), verdict(true)])
+    const { result } = await run(input(), impl, rev, new FakeExecutor([first, second]))
+    expect(result).toMatchObject({ status: 'succeeded', approved: true, rounds: 2 })
+
+    const firstReview = rev.calls[0]?.prompt ?? ''
+    expect(firstReview).not.toContain('follow-up review')
+    expect(firstReview).toContain('+helper()')
+
+    const followUp = rev.calls[1]?.prompt ?? ''
+    expect(followUp).toContain('This is a follow-up review')
+    expect(followUp).toContain('[major] math.js:2: handle NaN')
+    expect(followUp).toContain('Handled NaN; kept the helper as is because it is shared.')
+    expect(followUp).toContain('+add() // NaN safe')
+    expect(followUp).toContain('+fresh()')
+    // util.js did not change since the last review: named, not repeated.
+    expect(followUp).not.toContain('+helper()')
+    expect(followUp).toContain('already reviewed; read them if you need context): util.js')
+    expect(followUp).toContain('no longer changed (their changes were undone): old.js')
+  })
+
   it('stops after maxRounds and leaves the decision to a human', async () => {
     const impl = new FakeProvider('claude-cli', [() => ok('s1'), () => ok('s1')])
     const rev = new FakeProvider('codex-cli', [verdict(false, [major]), verdict(false, [major])])

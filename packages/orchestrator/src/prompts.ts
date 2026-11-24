@@ -137,8 +137,97 @@ function verificationSection(checks: ChecksOutcome | undefined): string {
   ].join('\n')
 }
 
-export function reviewPrompt(task: string, patch: string, checks?: ChecksOutcome): string {
+/** What the reviewer said last round, the diff it saw, and the implementer's answer, for a follow-up review. */
+export interface PreviousReview {
+  verdict: ReviewVerdict
+  patch: string
+  /** The implementer's final message after fixing (it may explain findings it disagreed with). */
+  reply?: string
+}
+
+/** A `git diff` split per file, keyed by the file's new path (or old path for a deletion). */
+export function splitPatch(patch: string): Map<string, string> {
+  const chunks = patch.split(/(?=^diff --git )/m).filter((chunk) => chunk.trim())
+  return new Map(
+    chunks.map((chunk, index) => {
+      const header = /^diff --git a\/(.+) b\/(.+)$/m.exec(chunk)
+      return [header?.[2] ?? header?.[1] ?? `file-${index + 1}`, chunk.replace(/\n*$/, '\n')]
+    }),
+  )
+}
+
+/**
+ * The part of this round's diff the reviewer has not seen: files whose diff changed since its last review, files
+ * that are new to the diff, and the names of files whose changes were undone. Unchanged files are named only.
+ */
+export function patchSinceLastReview(
+  previous: string,
+  current: string,
+): { patch: string; unchanged: string[]; reverted: string[] } {
+  const before = splitPatch(previous)
+  const now = splitPatch(current)
+  const changed: string[] = []
+  const unchanged: string[] = []
+  for (const [path, chunk] of now) {
+    if (before.get(path) === chunk) unchanged.push(path)
+    else changed.push(chunk)
+  }
+  const reverted = [...before.keys()].filter((path) => !now.has(path))
+  return { patch: changed.join(''), unchanged, reverted }
+}
+
+function diffBlock(patch: string, label: string): string[] {
   const cut = patch.length > MAX_DIFF_CHARS
+  return [
+    `${label}${cut ? ` (first ${MAX_DIFF_CHARS} characters of ${patch.length})` : ''}:`,
+    '```diff',
+    cut ? patch.slice(0, MAX_DIFF_CHARS) : patch,
+    '```',
+  ]
+}
+
+/**
+ * From the second review on, the reviewer (a fresh run) gets its own earlier findings, the implementer's answer and
+ * only the files whose diff changed: it checks the fixes instead of reading the whole change again, and does not
+ * keep finding new nits in code it already passed.
+ */
+function followUpSection(previous: PreviousReview, patch: string): string[] {
+  const since = patchSinceLastReview(previous.patch, patch)
+  return [
+    previous.verdict.approve
+      ? 'This is a follow-up review. You approved an earlier version of this change, but the project checks failed and the implementer changed it again.'
+      : 'This is a follow-up review. You reviewed an earlier version of this change and did not approve it.',
+    `Your previous summary: ${previous.verdict.summary}`,
+    'Your previous findings:',
+    formatFindings(previous.verdict),
+    ...(previous.reply?.trim()
+      ? ['', "The implementer's answer (it may explain findings it disagreed with):", previous.reply.trim()]
+      : []),
+    '',
+    'Check whether each previous blocker and major finding is now resolved, or convincingly answered.',
+    'Raise new findings only for code that changed since your last review, unless you find a blocker elsewhere.',
+    'Approve when the blockers and majors are resolved and nothing new must change.',
+    '',
+    ...(since.unchanged.length
+      ? [
+          `Files whose diff is the same as in your last review (already reviewed; read them if you need context): ${since.unchanged.join(', ')}`,
+        ]
+      : []),
+    ...(since.reverted.length
+      ? [`Files that are no longer changed (their changes were undone): ${since.reverted.join(', ')}`]
+      : []),
+    ...(since.patch
+      ? diffBlock(since.patch, 'Diff of the files that changed since your last review')
+      : ['No file diff changed since your last review.']),
+  ]
+}
+
+export function reviewPrompt(
+  task: string,
+  patch: string,
+  checks?: ChecksOutcome,
+  previous?: PreviousReview,
+): string {
   return [
     'You are reviewing a change written by another engineer (a different AI model). Be specific and skeptical:',
     'look for bugs, missing edge cases, broken tests, security problems and needless complexity.',
@@ -149,10 +238,7 @@ export function reviewPrompt(task: string, patch: string, checks?: ChecksOutcome
     '',
     verificationSection(checks),
     '',
-    `Diff${cut ? ` (first ${MAX_DIFF_CHARS} characters of ${patch.length})` : ''}:`,
-    '```diff',
-    cut ? patch.slice(0, MAX_DIFF_CHARS) : patch,
-    '```',
+    ...(previous ? followUpSection(previous, patch) : diffBlock(patch, 'Diff')),
   ].join('\n')
 }
 
