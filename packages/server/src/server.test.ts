@@ -179,7 +179,10 @@ function fixture(
     taskTimeLimitMs?: number
     assistantApiProvider?: JoyServerOptions['assistantApiProvider']
     /** Assistant background work (memory extraction, search summaries). */
-    assistant?: Pick<JoyServerOptions, 'memoryExtraction' | 'conversationSummaries'>
+    assistant?: Pick<
+      JoyServerOptions,
+      'memoryExtraction' | 'conversationSummaries' | 'memoryExtractionDelayMs'
+    >
     schedulerClock?: JoyServerOptions['schedulerClock']
     /** A real executor instead of the fake (tests that need git worktrees). */
     executor?: Executor
@@ -267,6 +270,8 @@ function fixture(
       : {}),
     ...(options.taskTimeLimitMs !== undefined ? { taskTimeLimitMs: options.taskTimeLimitMs } : {}),
     ...(options.assistantApiProvider ? { assistantApiProvider: options.assistantApiProvider } : {}),
+    // Most tests look at one message's memories right away; the quiet-period batching has its own test.
+    memoryExtractionDelayMs: 0,
     ...options.assistant,
     ...(options.schedulerClock ? { schedulerClock: options.schedulerClock } : {}),
     ...(options.issueSource ? { issueSource: options.issueSource } : {}),
@@ -1512,6 +1517,9 @@ describe('Joy local server', () => {
     expect(reviewer.calls[0]?.mcpServers).toBeUndefined()
     // One-off runs (the pre-review and the peer's answer) are never resumed, so they leave no CLI session behind.
     expect(reviewer.calls.every((call) => call.ephemeral === true)).toBe(true)
+    // The pre-review has everything in its prompt; the peer may read the worktree, so it keeps its tools.
+    expect(reviewer.calls[0]?.promptOnly).toBe(true)
+    expect(reviewer.calls[1]?.promptOnly).toBeUndefined()
     expect(result.events.map((event) => (event as { type?: string }).type)).toContain('policy.pre_review')
     expect(
       result.events.filter((event) => (event as { type?: string }).type === 'tool_hub.ask_peer'),
@@ -3762,8 +3770,10 @@ describe('Joy local server', () => {
       },
     })
     const summaryPrompts: string[] = []
+    const backgroundRuns: RunOptions[] = []
     // The background role also runs memory extraction; answer each kind of request in turn.
     const backgroundStep = (options: RunOptions): AgentEvent[] => {
+      backgroundRuns.push(options)
       if (!options.prompt.startsWith('Summarize'))
         return [{ type: 'done', sessionId: 'm', isError: false, structured: { memories: [] } }]
       summaryPrompts.push(options.prompt)
@@ -3794,6 +3804,9 @@ describe('Joy local server', () => {
     await postJson(`${origin}/api/conversations/${old}/messages`, { text: 'Then SQLite it is' })
     for (let i = 0; i < 100 && summaryPrompts.length === 0; i++) await new Promise((r) => setTimeout(r, 10))
     expect(summaryPrompts[0]).toContain('Owner: Should Joy use Postgres?')
+    // Summaries and memory extraction get all they read in the prompt: no CLI tools, skills or CLAUDE.md.
+    expect(backgroundRuns.length).toBeGreaterThan(1)
+    expect(backgroundRuns.every((run) => run.promptOnly === true && run.ephemeral === true)).toBe(true)
     // Pretend that conversation happened a month ago.
     db.prepare("UPDATE messages SET ts = '2026-10-06T09:00:00.000Z' WHERE conversation_id = ?").run(old)
 
@@ -3963,12 +3976,14 @@ describe('Joy local server', () => {
       },
     })
     const summaryPrompts: string[] = []
+    const summaryRuns: RunOptions[] = []
     // The first summary comes back empty: the session must go on until a later try works.
     const answers = ['', 'Owner chose SQLite for Joy; task 42 is open.']
     const background: AgentProvider = {
       ...scriptedProvider('openai-api', []).provider,
       async *run(options: RunOptions) {
         summaryPrompts.push(options.prompt)
+        summaryRuns.push(options)
         const summary = answers.shift() ?? ''
         yield { type: 'done', sessionId: 'bg', isError: false, structured: { summary } }
       },
@@ -4032,6 +4047,7 @@ describe('Joy local server', () => {
     await send('eighth: ok')
     expect(prompts[7]?.resumed).toBe(true)
     expect(summaryPrompts).toHaveLength(2)
+    expect(summaryRuns.every((run) => run.promptOnly === true)).toBe(true)
 
     const body = (await (await fetch(`${origin}/api/conversations/${id}`)).json()) as {
       conversation: { contextSummary?: string; contextThrough?: number }
@@ -4261,6 +4277,80 @@ describe('Joy local server', () => {
     }
     await postJson(`${origin}/api/conversations/${second.conversation.id}/messages`, { text: 'Hi again' })
     expect(brainPrompts.at(-1)).toContain('- Prefers small pull requests')
+  })
+
+  it('reads the owner messages for memories in one run once the conversation goes quiet', async () => {
+    const assistantApiProvider = (): AgentProvider => ({
+      ...scriptedProvider('openai-api', []).provider,
+      async *run() {
+        yield { type: 'done', sessionId: 'b', isError: false, finalMessage: 'ok' }
+      },
+    })
+    const extractorPrompts: string[] = []
+    const background = scriptedProvider('openai-api', [
+      (options) => {
+        extractorPrompts.push(options.prompt)
+        return [{ type: 'done', sessionId: 'x', isError: false, structured: { memories: [] } }]
+      },
+    ])
+    const { serverPromise } = fixture({
+      assistantApiProvider,
+      providers: { 'openai-api': background.provider },
+      assistant: { conversationSummaries: false, memoryExtractionDelayMs: 1_000 },
+    })
+    const { origin } = await start(serverPromise)
+    const { conversation } = (await (await postJson(`${origin}/api/conversations`, {})).json()) as {
+      conversation: { id: string }
+    }
+    for (const text of ['I live in Taipei', 'What is on today?', 'Actually I moved to Tainan'])
+      await postJson(`${origin}/api/conversations/${conversation.id}/messages`, { text })
+    // Still talking: nothing has been read yet.
+    expect(extractorPrompts).toEqual([])
+    for (let i = 0; i < 300 && extractorPrompts.length === 0; i++) await new Promise((r) => setTimeout(r, 10))
+    expect(extractorPrompts).toHaveLength(1)
+    expect(extractorPrompts[0]).toMatch(
+      /I live in Taipei\n"""\n"""\nWhat is on today\?\n"""\n"""\nActually I moved to Tainan/,
+    )
+  })
+
+  it('reads a busy conversation for memories every eight messages, and what is left when Joy stops', async () => {
+    const assistantApiProvider = (): AgentProvider => ({
+      ...scriptedProvider('openai-api', []).provider,
+      async *run() {
+        yield { type: 'done', sessionId: 'b', isError: false, finalMessage: 'ok' }
+      },
+    })
+    const extractorPrompts: string[] = []
+    const background = scriptedProvider('openai-api', [
+      (options) => {
+        extractorPrompts.push(options.prompt)
+        return [{ type: 'done', sessionId: 'x', isError: false, structured: { memories: [] } }]
+      },
+    ])
+    const { serverPromise } = fixture({
+      assistantApiProvider,
+      providers: { 'openai-api': background.provider },
+      assistant: { conversationSummaries: false, memoryExtractionDelayMs: 60_000 },
+    })
+    const { server, origin } = await start(serverPromise)
+    const { conversation } = (await (await postJson(`${origin}/api/conversations`, {})).json()) as {
+      conversation: { id: string }
+    }
+    const send = (text: string) =>
+      postJson(`${origin}/api/conversations/${conversation.id}/messages`, { text })
+    for (let n = 1; n <= 8; n++) await send(`message ${n}`)
+    for (let i = 0; i < 300 && extractorPrompts.length === 0; i++) await new Promise((r) => setTimeout(r, 10))
+    expect(extractorPrompts).toHaveLength(1)
+    expect(extractorPrompts[0]).toContain('message 1\n')
+    expect(extractorPrompts[0]).toContain('message 8\n')
+
+    await send('message 9')
+    expect(extractorPrompts).toHaveLength(1)
+    // Stopping Joy reads the waiting message instead of dropping it.
+    await server.close()
+    expect(extractorPrompts).toHaveLength(2)
+    expect(extractorPrompts[1]).toContain('message 9\n')
+    expect(extractorPrompts[1]).not.toContain('message 8\n')
   })
 
   it('records a failed assistant turn and reports it', async () => {

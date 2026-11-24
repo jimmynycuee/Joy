@@ -661,6 +661,8 @@ export interface JoyServerOptions {
   assistantApiProvider?: (tools: ApiTool[]) => AgentProvider
   /** Learn memories from the owner's chat messages (T3.3). Default true. */
   memoryExtraction?: boolean
+  /** How long a conversation must be quiet before its new owner messages are read for memories. Default 60 s. */
+  memoryExtractionDelayMs?: number
   /** Clock for reminders and recurring schedules (tests). */
   schedulerClock?: Clock
   /** Where GitHub issues are read from (tests); defaults to the logged-in GitHub CLI. */
@@ -778,6 +780,13 @@ type ContinuationKind = 'follow_up' | 'replan' | 'plan_approved'
 const CONTINUABLE_STATUSES = new Set<TaskStatus>(['done', 'review_ready', 'failed', 'cancelled'])
 const PLAN_EVENTS = new Set(['plan.awaiting_approval', 'plan.approved', 'plan.rejected'])
 const MAX_QUEUED_MESSAGES = 20
+/**
+ * Memory extraction waits for this much quiet in a conversation, then reads every new owner message in one run: most
+ * messages hold nothing to remember, and one run per message cost a background call each time.
+ */
+const MEMORY_EXTRACTION_DELAY_MS = 60_000
+/** A long, busy conversation does not wait for a pause forever: this many pending messages are read at once. */
+const MEMORY_EXTRACTION_BATCH = 8
 /** How many tasks the stats page compares. */
 const STATS_TASK_LIMIT = 50
 
@@ -5312,6 +5321,9 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
           cwd: workspace.path,
           prompt,
           autonomy: 'read-only',
+          // Everything it judges is in the prompt and it must not run tools: no tool definitions, skills or
+          // CLAUDE.md, which were most of its input tokens.
+          promptOnly: true,
           ephemeral: true,
           outputSchema: POLICY_REVIEW_SCHEMA,
           signal: reviewSignal,
@@ -6344,6 +6356,8 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
           cwd,
           prompt: summaryPrompt(transcript, conversation.summary),
           autonomy: 'read-only',
+          // Background jobs get all they read in the prompt; a CLI's own tools and instructions would cost more.
+          promptOnly: true,
           ephemeral: true,
           outputSchema: SUMMARY_SCHEMA,
           signal: AbortSignal.timeout(5 * 60_000),
@@ -6413,6 +6427,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
           cwd,
           prompt: contextSummaryPrompt(transcript, conversation.contextSummary),
           autonomy: 'read-only',
+          promptOnly: true,
           ephemeral: true,
           outputSchema: CONTEXT_SUMMARY_SCHEMA,
           signal: AbortSignal.timeout(5 * 60_000),
@@ -6441,11 +6456,37 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
     resetSessionsUsingMemory(db, id)
   }
 
+  /** Owner messages per conversation that no memory extraction has read yet. */
+  const pendingMemory = new Map<string, { messages: string[]; timer?: NodeJS.Timeout }>()
+  const memoryExtractionDelayMs = options.memoryExtractionDelayMs ?? MEMORY_EXTRACTION_DELAY_MS
+
+  /** Adds an owner message for memory extraction, which runs once the conversation has been quiet for a while. */
+  function queueMemoryExtraction(conversationId: string, ownerMessage: string): void {
+    const pending = pendingMemory.get(conversationId) ?? { messages: [] }
+    pendingMemory.set(conversationId, pending)
+    pending.messages.push(ownerMessage)
+    clearTimeout(pending.timer)
+    if (memoryExtractionDelayMs <= 0 || pending.messages.length >= MEMORY_EXTRACTION_BATCH) {
+      flushMemoryExtraction(conversationId)
+      return
+    }
+    pending.timer = setTimeout(() => flushMemoryExtraction(conversationId), memoryExtractionDelayMs)
+    pending.timer.unref()
+  }
+
+  function flushMemoryExtraction(conversationId: string): void {
+    const pending = pendingMemory.get(conversationId)
+    if (!pending) return
+    pendingMemory.delete(conversationId)
+    clearTimeout(pending.timer)
+    backgroundJob('memory', () => learnFromOwner(pending.messages))
+  }
+
   /**
-   * Asks the background model what is worth remembering from the owner's own message, then stores it under the
+   * Asks the background model what is worth remembering from the owner's own messages, then stores it under the
    * memory rules (packages/memory). Only the owner's words reach this: never tool output, mail or task content.
    */
-  async function learnFromOwner(ownerMessage: string): Promise<void> {
+  async function learnFromOwner(messages: readonly string[]): Promise<void> {
     const config = await configStore.get()
     const model = resolveRole('background', config.roles as RoleConfig, {})
     const provider = providers[model.provider]
@@ -6457,8 +6498,9 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
     for await (const event of provider.run(
       {
         cwd,
-        prompt: extractionPrompt(ownerMessage, existing),
+        prompt: extractionPrompt(messages, existing),
         autonomy: 'read-only',
+        promptOnly: true,
         ephemeral: true,
         outputSchema: EXTRACTION_SCHEMA,
         signal: AbortSignal.timeout(5 * 60_000),
@@ -6469,7 +6511,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       if (event.type === 'done') done = event
     }
     if (!done || done.isError) return
-    applyExtraction(db, parseExtraction(done.structured), { ownerMessage, redactor })
+    applyExtraction(db, parseExtraction(done.structured), { ownerMessage: messages.join('\n\n'), redactor })
     // A corrected fact replaces the old one; sessions that were told the old one start over.
     for (const memory of existing)
       if (getMemory(db, memory.id)?.supersededBy) forgetMemoryInSessions(memory.id)
@@ -6672,8 +6714,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       if (!conversation.title) setConversationTitle(db, conversationId, redactor.redact(text).slice(0, 60))
       if (options.conversationSummaries ?? true)
         backgroundJob('summary', () => summarizeConversation(conversationId))
-      if (options.memoryExtraction ?? true)
-        backgroundJob('memory', () => learnFromOwner(redactor.redact(text)))
+      if (options.memoryExtraction ?? true) queueMemoryExtraction(conversationId, redactor.redact(text))
       return { message: reply, conversation: getConversation(db, conversationId) }
     } finally {
       closeBridge()
@@ -7240,6 +7281,8 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       await issuePolling?.catch(() => undefined)
       await telegram?.stop()
       for (const timer of quotaTimers.values()) clearTimeout(timer)
+      // Messages still waiting for a quiet moment are read now rather than lost.
+      for (const conversationId of [...pendingMemory.keys()]) flushMemoryExtraction(conversationId)
       await Promise.allSettled([...memoryJobs])
       const activeTasks = [...running.values()]
       for (const active of activeTasks) active.controller.abort()
