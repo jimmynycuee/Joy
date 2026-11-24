@@ -27,6 +27,31 @@ test('model stats can be filtered by period and repository', async ({ page }) =>
             ],
             reviewers: [{ provider: 'codex-cli', model: 'gpt-6', reviews: 6, approvals: 3, findings: 7 }],
           },
+          ...(filtered
+            ? {}
+            : {
+                roles: [
+                  {
+                    role: 'implementer',
+                    provider: 'claude-cli',
+                    model: 'opus',
+                    inputTokens: 750_000,
+                    cachedInputTokens: 600_000,
+                    outputTokens: 50_000,
+                    costUsd: 4.5,
+                  },
+                  {
+                    role: 'safety_review',
+                    provider: 'codex-cli',
+                    model: 'gpt-6',
+                    inputTokens: 200_000,
+                    cachedInputTokens: 0,
+                    outputTokens: 0,
+                    costUsd: 0,
+                  },
+                ],
+                rolesSince: '2026-11-20',
+              }),
           tasks: [
             {
               id: 't-new',
@@ -86,10 +111,19 @@ test('model stats can be filtered by period and repository', async ({ page }) =>
   await expect(implementers).toContainText('75% (3/4)')
   await expect(implementers).toContainText('15 分鐘')
   await expect(page.getByLabel('審查者統計')).toContainText('codex-cli · gpt-6')
+  const roles = page.getByLabel('各角色用量')
+  await expect(roles.locator('tbody tr').nth(0)).toContainText('實作')
+  await expect(roles.locator('tbody tr').nth(0)).toContainText('80%')
+  await expect(roles.locator('tbody tr').nth(0)).toContainText('750k（快取 600k）')
+  await expect(roles.locator('tbody tr').nth(0)).toContainText('$4.50')
+  await expect(roles.locator('tbody tr').nth(1)).toContainText('安全預審')
+  await expect(page.getByText('2026-11-20 起')).toBeVisible()
 
   await page.getByLabel('從').fill('2026-11-01')
   await page.getByRole('combobox', { name: '專案' }).selectOption('joy')
   await expect(implementers.locator('tbody tr td').nth(2)).toHaveText('2')
+  // The assistant's work belongs to no repository, so the split is not shown for one.
+  await expect(roles).toHaveCount(0)
   expect(queries.at(-1)).toBe('?from=2026-11-01&repoId=joy')
 })
 
