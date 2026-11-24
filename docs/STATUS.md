@@ -2,6 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-24（審查第 2 輪起不再整份重看：審查者拿到自己上一輪的意見、實作者的回覆，只送上一輪之後 diff 有變的檔案，沒變的只列檔名；分支 `review-followup-rounds`）
 - 最後更新：2026-11-20（一次性的 run 不再留下 CLI session：審查者、裁判、安全預審、ask_peer 與背景工作（對話摘要、上下文摘要、記憶擷取）帶 `RunOptions.ephemeral`，Codex exec 加 `--ephemeral`、app-server `thread/start` 帶 `ephemeral: true`、Claude 加 `--no-session-persistence`，Codex App 側欄不再塞滿 `You are performing a cross-model...`；實作者與助理對話仍會存檔以便續接；新增 core 選填欄位 `RunOptions.ephemeral`，擁有者已確認；分支 `codex-ephemeral-runs`）
 - 最後更新：2026-11-20（助理長對話不再越聊越貴、也不會卡死：OpenAI 請求加 `truncation: 'auto'`；Joy 估算大腦 session 裡的對話量，超過 6 萬 token 且這段對話開的任務都告一段落（沒有在排隊、執行、等核准）時，或超過 30 萬 token 時，在背景把較早的訊息整理成「上下文摘要」並結束 session，下一輪從摘要＋最近 10 則訊息開新 session；門檻在 `config.yaml` 的 `assistant.context`；對話頁在摘要涵蓋到的地方顯示可展開的「以上已整理成摘要」；migration 29，分支 `assistant-context-compaction`）
 - 最後更新：2026-11-19（助理對話可以附圖片與文字檔：圖片隨訊息交給大腦、文字檔引用進訊息，存下的訊息只留擁有者的話並列出檔案；migration 28 讓附件屬於任務或對話其中之一，分支 `assistant-attachments`）
@@ -101,6 +102,13 @@
 - 無。
 
 ## 驗證結果
+
+### 審查第 2 輪起只看改過的部分（2026-11-24，分支 `review-followup-rounds`）
+
+- **問題**：每輪審查都是全新 run（ephemeral），重送整份 diff（上限 6 萬字元），也不知道自己上一輪說過什麼，容易重讀已通過的檔案、每輪挑新的小毛病而拖長輪數。
+- **做法**（只動 `packages/orchestrator`，`core` 沒動）：review loop 記下上一輪的審查結果、diff 和實作者修完後的回覆。下一輪的 `reviewPrompt` 帶 `PreviousReview`：列出上一輪摘要與 findings、實作者回覆，要求先確認每個 blocker／major 是否解決，新問題只針對改過的程式（blocker 例外）。diff 依檔案切開比對（`splitPatch`、`patchSinceLastReview`）：只送內容有變或新加入的檔案，沒變的列檔名（審查者可自己讀），改回去的檔案另外列出。上一輪是「審查通過但檢查失敗」時，提示文字也照實說。第一輪與接續任務的第一輪不變。
+- **測試**：`review-loop.test.ts`（第 2 輪 prompt 有上一輪 findings、回覆、改過與新增的檔案，沒改的只列名，移除的另列）；`prompts.test.ts`（切檔、結尾換行不影響比對、沒有任何變動、長 diff 上限、通過但檢查失敗的說法）。`pnpm test` 1646 通過。
+- **沒驗證到**：真實模型的審查輪數與 token 是否真的下降。
 
 ### 助理長對話：上下文摘要（2026-11-20，分支 `assistant-context-compaction`）
 
