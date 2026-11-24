@@ -166,3 +166,56 @@ export function sortStatTasks(tasks: readonly StatTask[], sort: TaskSort): StatT
     .sort((a, b) => (b.value ?? -1) - (a.value ?? -1) || a.index - b.index)
     .map(({ task }) => task)
 }
+
+/** What one kind of work cost on one model over the chosen period (settings → stats). */
+export interface RoleTotal {
+  role: string
+  provider: string
+  model: string
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+  costUsd: number
+}
+
+export const USAGE_ROLE_LABELS: Record<string, string> = {
+  implementer: '實作',
+  reviewer: '審查',
+  judge: '裁判',
+  assistant: '助理',
+  background: '背景工作',
+  safety_review: '安全預審',
+  peer: '請教另一個模型',
+}
+
+export function parseRoleTotals(value: unknown): RoleTotal[] {
+  return list(value, (item) => {
+    const fields = record(item)
+    if (
+      typeof fields?.role !== 'string' ||
+      typeof fields.provider !== 'string' ||
+      typeof fields.model !== 'string'
+    )
+      return null
+    return {
+      role: fields.role,
+      provider: fields.provider,
+      model: fields.model,
+      inputTokens: number(fields.inputTokens) ?? 0,
+      cachedInputTokens: number(fields.cachedInputTokens) ?? 0,
+      outputTokens: number(fields.outputTokens) ?? 0,
+      costUsd: number(fields.costUsd) ?? 0,
+    }
+  })
+}
+
+/** Each row's share of every token in the list, as a whole percent ('< 1%' for a sliver). */
+export function tokenShares(rows: readonly RoleTotal[]): string[] {
+  const tokens = rows.map((row) => row.inputTokens + row.outputTokens)
+  const all = tokens.reduce((sum, count) => sum + count, 0)
+  return tokens.map((count) => {
+    if (all === 0) return '—'
+    const percent = (count / all) * 100
+    return count > 0 && percent < 1 ? '< 1%' : `${Math.round(percent)}%`
+  })
+}

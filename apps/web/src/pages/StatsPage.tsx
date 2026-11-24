@@ -7,11 +7,14 @@ import {
   formatCost,
   formatSpent,
   formatTokens,
+  parseRoleTotals,
   parseStatTasks,
   sortStatTasks,
+  tokenShares,
   totalTokens,
+  USAGE_ROLE_LABELS,
 } from '../usage.js'
-import type { StatTask, TaskSort } from '../usage.js'
+import type { RoleTotal, StatTask, TaskSort } from '../usage.js'
 
 interface ImplementerStat {
   provider: string
@@ -41,6 +44,8 @@ export function StatsPanel(props: { repos: Repo[] }) {
     null,
   )
   const [tasks, setTasks] = useState<StatTask[]>([])
+  // null: the server left them out (a repository is chosen; the assistant's work belongs to none).
+  const [roles, setRoles] = useState<{ rows: RoleTotal[]; since: string | null } | null>(null)
   const [sort, setSort] = useState<TaskSort>('recent')
   const [failure, setFailure] = useState('')
 
@@ -50,6 +55,8 @@ export function StatsPanel(props: { repos: Repo[] }) {
     request<{
       stats?: { implementers?: ImplementerStat[]; reviewers?: ReviewerStat[] }
       tasks?: unknown
+      roles?: unknown
+      rolesSince?: unknown
     }>(`/api/stats?${query}`)
       .then((body) => {
         if (cancelled) return
@@ -59,6 +66,14 @@ export function StatsPanel(props: { repos: Repo[] }) {
           reviewers: Array.isArray(body.stats?.reviewers) ? body.stats.reviewers : [],
         })
         setTasks(parseStatTasks(body.tasks))
+        setRoles(
+          body.roles === undefined
+            ? null
+            : {
+                rows: parseRoleTotals(body.roles),
+                since: typeof body.rolesSince === 'string' ? body.rolesSince : null,
+              },
+        )
       })
       .catch((error: unknown) => {
         if (!cancelled) setFailure(errorMessage(error, '無法載入統計'))
@@ -100,6 +115,7 @@ export function StatsPanel(props: { repos: Repo[] }) {
         </label>
       </form>
       {failure ? <p className="form-error">{failure}</p> : null}
+      {roles ? <RoleUsageTable rows={roles.rows} since={roles.since} /> : null}
       <section className="card">
         <h2>擔任實作者</h2>
         {stats && stats.implementers.length === 0 ? <p className="muted">沒有紀錄</p> : null}
@@ -174,6 +190,53 @@ export function StatsPanel(props: { repos: Repo[] }) {
       </section>
       {tasks.length > 0 ? <TaskUsageTable tasks={tasks} sort={sort} onSort={setSort} /> : null}
     </>
+  )
+}
+
+/** Where the tokens went: each kind of work on each model, with its share of all of them. */
+function RoleUsageTable(props: { rows: RoleTotal[]; since: string | null }) {
+  const shares = tokenShares(props.rows)
+  return (
+    <section className="card">
+      <h2>用量分布</h2>
+      {props.since ? <p className="muted">{props.since} 起</p> : null}
+      {props.rows.length === 0 ? <p className="muted">沒有紀錄</p> : null}
+      {props.rows.length ? (
+        <div className="table-wrap">
+          <table className="stats-table" aria-label="各角色用量">
+            <thead>
+              <tr>
+                <th>工作</th>
+                <th>模型</th>
+                <th>占比</th>
+                <th>輸入</th>
+                <th>輸出</th>
+                <th>費用</th>
+              </tr>
+            </thead>
+            <tbody>
+              {props.rows.map((row, index) => (
+                <tr key={`${row.role}/${row.provider}/${row.model}`}>
+                  <td>{USAGE_ROLE_LABELS[row.role] ?? row.role}</td>
+                  <td>
+                    {row.provider} · {row.model}
+                  </td>
+                  <td>{shares[index]}</td>
+                  <td>
+                    {formatTokens(row.inputTokens)}
+                    {row.cachedInputTokens > 0 ? (
+                      <span className="muted">（快取 {formatTokens(row.cachedInputTokens)}）</span>
+                    ) : null}
+                  </td>
+                  <td>{formatTokens(row.outputTokens)}</td>
+                  <td>{row.costUsd > 0 ? formatCost(row.costUsd) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </section>
   )
 }
 

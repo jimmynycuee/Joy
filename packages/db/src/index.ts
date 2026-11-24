@@ -3,6 +3,8 @@ export { lockHome } from './home-lock.js'
 export type { HomeLock } from './home-lock.js'
 export type { Database, OpenOptions } from './database.js'
 export { LATEST_VERSION, MIGRATIONS } from './migrations.js'
+export { USAGE_ROLES, addRoleUsage, firstRoleUsageDay, roleUsageTotals } from './role-usage.js'
+export type { RoleUsageIncrement, RoleUsageTotal, UsageRole } from './role-usage.js'
 export type { Migration } from './migrations.js'
 export {
   addUsage,

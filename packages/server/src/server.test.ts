@@ -3731,6 +3731,68 @@ describe('Joy local server', () => {
     expect((await get('?from=last-week')).status).toBe(400)
   })
 
+  it('adds up tokens by role and model across tasks, and leaves them out for one repository', async () => {
+    const implementer = new FakeProvider('claude-cli', [
+      { type: 'usage', inputTokens: 1000, cachedInputTokens: 800, outputTokens: 50, costUsd: 0.02 },
+      { type: 'done', sessionId: 'i', isError: false },
+    ])
+    const reviewer = new FakeProvider('codex-cli', [
+      { type: 'usage', inputTokens: 300, outputTokens: 20 },
+      {
+        type: 'done',
+        sessionId: 'r',
+        isError: false,
+        structured: { approve: true, summary: 'ok', findings: [] },
+      },
+    ])
+    const { serverPromise } = fixture({ implementer, reviewer })
+    const { origin } = await start(serverPromise)
+    const repoResponse = await postJson(`${origin}/api/repos`, { path: '/tmp/roles', defaultBranch: 'main' })
+    const { repo } = (await repoResponse.json()) as { repo: { id: string } }
+    const taskResponse = await postJson(`${origin}/api/tasks`, {
+      repoId: repo.id,
+      title: 'Roles',
+      prompt: 'p',
+      mode: 'review_loop',
+      roleOverrides: {
+        implementer: { provider: 'claude-cli', model: 'haiku', effort: 'low' },
+        reviewer: { provider: 'codex-cli', model: 'gpt-6-luna', effort: 'low' },
+      },
+    })
+    const { task } = (await taskResponse.json()) as { task: { id: string } }
+    await waitForStatus(origin, task.id, 'done')
+    const stats = async (query = '') =>
+      (await (await fetch(`${origin}/api/stats${query}`)).json()) as {
+        roles?: unknown[]
+        rolesSince?: string | null
+      }
+    const today = new Date().toISOString().slice(0, 10)
+    const all = await stats()
+    expect(all.roles).toEqual([
+      {
+        role: 'implementer',
+        provider: 'claude-cli',
+        model: 'haiku',
+        inputTokens: 1000,
+        cachedInputTokens: 800,
+        outputTokens: 50,
+        costUsd: 0.02,
+      },
+      {
+        role: 'reviewer',
+        provider: 'codex-cli',
+        model: 'gpt-6-luna',
+        inputTokens: 300,
+        cachedInputTokens: 0,
+        outputTokens: 20,
+        costUsd: 0,
+      },
+    ])
+    expect(all.rolesSince).toBe(today)
+    expect((await stats('?from=2000-01-01&to=2000-01-02')).roles).toEqual([])
+    expect((await stats(`?repoId=${repo.id}`)).roles).toBeUndefined()
+  })
+
   it('keeps reminders and schedules across a restart and catches up once after sleeping', async () => {
     let now = new Date(2026, 10, 6, 9, 30)
     const schedulerClock = { now: () => new Date(now), setTimeout: () => 0, clearTimeout: () => undefined }

@@ -4,10 +4,12 @@ import {
   formatCost,
   formatSpent,
   formatTokens,
+  parseRoleTotals,
   parseStatTasks,
   parseUsage,
   runLine,
   sortStatTasks,
+  tokenShares,
   totalTokens,
 } from './usage.js'
 
@@ -168,5 +170,37 @@ describe('the tasks of the stats page', () => {
     expect(sortStatTasks(tasks, 'duration').map((task) => task.id)).toEqual(['c', 'a', 'b'])
     expect(sortStatTasks(tasks, 'tokens').map((task) => task.id)).toEqual(['b', 'c', 'a'])
     expect(sortStatTasks(tasks, 'cost').map((task) => task.id)).toEqual(['b', 'c', 'a'])
+  })
+})
+
+describe('usage by role', () => {
+  const row = (role: string, inputTokens: number, outputTokens = 0) => ({
+    role,
+    provider: 'codex-cli',
+    model: 'gpt-6.1-sol',
+    inputTokens,
+    cachedInputTokens: 0,
+    outputTokens,
+    costUsd: 0,
+  })
+
+  it('keeps well-formed rows and fills missing counts with 0', () => {
+    expect(
+      parseRoleTotals([
+        { role: 'reviewer', provider: 'codex-cli', model: 'gpt-6.1-sol', inputTokens: 5, costUsd: 'x' },
+        { role: 'reviewer', provider: 'codex-cli' },
+        'nope',
+      ]),
+    ).toEqual([row('reviewer', 5)])
+    expect(parseRoleTotals(undefined)).toEqual([])
+  })
+
+  it('gives each row its share of all tokens', () => {
+    expect(tokenShares([row('implementer', 700, 100), row('reviewer', 199), row('background', 1)])).toEqual([
+      '80%',
+      '20%',
+      '< 1%',
+    ])
+    expect(tokenShares([row('assistant', 0)])).toEqual(['—'])
   })
 })

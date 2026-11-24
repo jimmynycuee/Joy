@@ -2,6 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-25（各角色 token 統計：設定 → 統計多了「用量分布」，列出實作、審查、裁判、助理、背景工作、安全預審、請教另一個模型各在哪個模型花了多少 token、占比與費用，跨所有任務也含助理；選了專案時不顯示（助理的工作不屬於任何專案）；migration 30 新表 `role_usage`，從上線那天開始記；分支 `role-token-stats`）
 - 最後更新：2026-11-25（審查強度依變更大小調整：加減行數合計 ≤ 20 行或只改文件的變更，由同一個審查模型用 `low` effort 審；每輪依整份 diff 重新判斷，變大就回到原本設定；`config.yaml` 的 `review.small_change_max_lines`（0 關閉）與 `review.small_change_effort`；擁有者確認 #173 的記憶擷取 prompt；分支 `adaptive-review`）
 - 最後更新：2026-11-24（審查第 2 輪起不再整份重看：審查者拿到自己上一輪的意見、實作者的回覆，只送上一輪之後 diff 有變的檔案，沒變的只列檔名；分支 `review-followup-rounds`）
 - 最後更新：2026-11-23（diff 逐行留言：變更面板每行有行號，滑過可留言，留言存在這個瀏覽器，「送出留言」把全部整理成一則訊息交給任務（執行中就排隊）；分支 `diff-line-comments`）
@@ -106,6 +107,13 @@
 - 無。
 
 ## 驗證結果
+
+### 各角色 token 統計（2026-11-25，分支 `role-token-stats`）
+
+- **問題**：任務頁已經有該任務各角色的用量，但全域只有 `usage` 表（provider × 天），看不出 token 花在實作、審查還是助理與背景工作，也看不出輕量審查省了多少。
+- **做法**：migration 30 新表 `role_usage`（role × provider × model × 天，STRICT，role 有 CHECK：`implementer`、`reviewer`、`judge`、`assistant`、`background`、`safety_review`、`peer`；計數不能為負）。不回填，舊用量沒有角色可歸。server 的 `persistUsageEvent` 改成帶角色與 model，同時寫 `usage`（預算、額度照舊）與 `role_usage`；十個呼叫點各自標好角色。`GET /api/stats` 沒選專案時多回 `roles`（依期間加總、依角色再依 token 排序）與 `rolesSince`。網頁統計頁最上面的「用量分布」表：工作、模型、占比、輸入（含快取）、輸出、費用。
+- **測試**：db `role-usage.test.ts`（加總與排序、期間含頭尾、只收計數與已知角色）；server（review loop 任務的實作與審查各自記到對的模型、期間外為空、選專案時不回）；web `usage.test.ts`（解析、占比）；e2e `stats.spec.ts`（表格內容、快取、起始日、選專案後消失）。fake-preview 看過空狀態。根目錄 `pnpm check` 通過（1668 tests）。
+- **沒驗證到**：真實 CLI 回報的 token 量；助理與背景工作的記錄只靠呼叫點標註，沒有個別的整合測試。
 
 ### 審查強度依變更大小調整（2026-11-25，分支 `adaptive-review`）
 
@@ -367,6 +375,7 @@
 
 ## 已確認決策
 
+- 2026-11-25 各角色 token 統計（擁有者選「各角色 token 統計」；以下細節為 agent 決定，`core`、`policy`、`memory` 沒動）：另開 `role_usage` 表而不是在 `usage` 加欄位，因為 `usage` 的主鍵與月預算計算依賴它；安全預審與 ask_peer 跟一般審查分開算；選專案時不顯示，避免把助理用量算進某個專案。
 - 2026-11-25 審查強度依變更大小調整（擁有者說「繼續做下一個優化」；以下細節為 agent 決定，`core`、`policy`、`memory` 沒動）：只降 effort、不換模型也不跳過審查，避免換模型後變成同模型審查或紀錄錯置；門檻 20 行與只改文件可在 `config.yaml` 調整或關閉。同日擁有者對 #173 記憶擷取 prompt 待審的提醒回覆「沒問題」，視為已審。
 - 2026-11-23 省 token（擁有者選「先做 token 修正」；以下細節為 agent 決定，`packages/memory` 的擷取 prompt 已於 2026-11-25 經擁有者確認，`core`、`policy`、`secrets` 沒動）：(1) 安全預審與三種背景工作帶 `promptOnly`，`ask_peer`、審查者、實作者不變；(2) 記憶擷取在對話安靜 60 秒或累積 8 則後一次跑，存在記憶體裡（Joy 正常停止會先讀完，當機才會漏掉那段）；不加 migration；(3) `.claude/` 不進 prettier／eslint。
 - 2026-11-20 一次性 run 不存 session（擁有者要求「Codex 聊天窗不要出現很多無用的對話」；以下細節為 agent 決定，新增 `packages/core` 選填欄位 `RunOptions.ephemeral`，2026-11-20 擁有者確認沒問題）：只有確定不會續接的 run 設 `ephemeral`（審查者、競賽裁判、安全預審、ask_peer、對話摘要、上下文摘要、記憶擷取）；實作者與助理大腦要靠 `resumeSessionId` 接下一輪，不設。provider 在帶 `resumeSessionId` 時忽略 `ephemeral`（續接的 session 本來就存在）。Codex：exec `--ephemeral`、app-server `thread/start` 的 `ephemeral`（codex-cli 0.166.0 `generate-ts` 確認）；Claude：`--no-session-persistence`（2.1.319 `--help`）。已存在的舊 session 不會被刪，由擁有者自己在 Codex App 封存。

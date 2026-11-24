@@ -106,6 +106,9 @@ import {
   listTasksCreated,
   listTasks,
   listUsage,
+  addRoleUsage,
+  firstRoleUsageDay,
+  roleUsageTotals,
   MAX_PROJECT_INSTRUCTIONS,
   REPO_COLORS,
   modelStats,
@@ -147,6 +150,7 @@ import type {
   StoredTask,
   TaskAllowRecord,
   TaskEventRecord,
+  UsageRole,
 } from '@joy/db'
 import { ApprovalBroker } from './approvals.js'
 import { CLAUDE_SETTINGS_FILE, readClaudeSettingsCommands } from './claude-settings.js'
@@ -2721,6 +2725,16 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       }
       json(res, 200, {
         stats: modelStats(db, period),
+        // Every kind of work, the assistant's included, so not per repository.
+        ...(filter.repoId
+          ? {}
+          : {
+              roles: roleUsageTotals(db, {
+                ...(filter.from ? { from: filter.from } : {}),
+                ...(filter.to ? { to: filter.to } : {}),
+              }),
+              rolesSince: firstRoleUsageDay(db) ?? null,
+            }),
         // The latest tasks of the period with what each cost, to compare them (a task with nothing recorded has no
         // tokens or cost).
         tasks: listTasksCreated(db, period, STATS_TASK_LIMIT).map((task) => {
@@ -4664,7 +4678,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       updateAttempt(db, attempt.id, { status: phaseStatus(event.phase) })
     } else if (event.type === 'agent') {
       const model = event.role === 'reviewer' ? reviewer : implementer
-      persistUsageEvent(db, model.provider, event.event)
+      persistUsageEvent(db, event.role === 'reviewer' ? 'reviewer' : 'implementer', model, event.event)
       if (event.role === 'implementer' && event.event.type === 'session_started') {
         updateAttempt(db, attempt.id, { sessionId: event.event.sessionId })
       }
@@ -4781,7 +4795,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         } else if (event.type === 'judging') {
           publishTaskLevel(task.id, 'compete.judging', { model: event.model })
         } else if (event.type === 'judge_agent') {
-          persistUsageEvent(db, judge.provider, event.event)
+          persistUsageEvent(db, 'judge', judge, event.event)
           // The judge runs outside any attempt; its usage is kept with the task like the contestants'.
           if (event.event.type === 'usage')
             publishTaskLevel(task.id, 'compete.usage', { role: 'judge', model: judge, event: event.event })
@@ -5333,7 +5347,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         },
         reviewer.model,
       )) {
-        persistUsageEvent(db, reviewer.model.provider, event)
+        persistUsageEvent(db, 'safety_review', reviewer.model, event)
         if (event.type === 'error' && !event.recoverable) throw new Error(redactor.redact(event.message))
         if (event.type === 'done') done = event
       }
@@ -5589,7 +5603,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
             { cwd, prompt, autonomy: 'read-only', ephemeral: true, signal: peerSignal },
             peerModel,
           )) {
-            persistUsageEvent(db, peerKind, event)
+            persistUsageEvent(db, 'peer', peerModel, event)
             if (event.type === 'message') finalMessage += event.text
             if (event.type === 'error' && !event.recoverable) {
               throw new Error(redactor.redact(event.message))
@@ -6367,7 +6381,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         },
         model,
       )) {
-        persistUsageEvent(db, model.provider, event)
+        persistUsageEvent(db, 'background', model, event)
         if (event.type === 'done') done = event
       }
       const summary = done && !done.isError ? parseSummary(done.structured) : undefined
@@ -6437,7 +6451,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         },
         model,
       )) {
-        persistUsageEvent(db, model.provider, event)
+        persistUsageEvent(db, 'background', model, event)
         if (event.type === 'done') done = event
       }
       const summary = done && !done.isError ? parseContextSummary(done.structured) : undefined
@@ -6510,7 +6524,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       },
       model,
     )) {
-      persistUsageEvent(db, model.provider, event)
+      persistUsageEvent(db, 'background', model, event)
       if (event.type === 'done') done = event
     }
     if (!done || done.isError) return
@@ -6700,7 +6714,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         appendMessage(db, conversationId, 'system', message)
         throw new HttpError(502, message)
       }
-      for (const event of result.events) persistUsageEvent(db, brain.provider, event)
+      for (const event of result.events) persistUsageEvent(db, 'assistant', brain, event)
       const reply = appendMessage(db, conversationId, 'assistant', redactor.redact(result.reply), memoryIds)
       // A memory this session holds was edited or deleted while the brain answered: do not keep the session.
       const stale = memoryEpoch !== epochAtStart && memoryIds.some((id) => staleMemories.has(id))
@@ -6969,7 +6983,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
     setImplementerTurn(task.id, true)
     try {
       for await (const event of provider.run(options, model)) {
-        persistUsageEvent(db, model.provider, event)
+        persistUsageEvent(db, 'implementer', model, event)
         if (event.type === 'quota') noteQuota(model.provider, event)
         if (event.type === 'usage') chargeTask(task.id, model.provider, event)
         if (event.type === 'session_started') updateAttempt(db, attempt.id, { sessionId: event.sessionId })
@@ -7095,7 +7109,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         },
         model,
       )) {
-        persistUsageEvent(db, model.provider, event)
+        persistUsageEvent(db, 'implementer', model, event)
         if (event.type === 'quota') noteQuota(model.provider, event)
         if (event.type === 'usage') chargeTask(task.id, model.provider, event)
         if (event.type === 'session_started') updateAttempt(db, attempt.id, { sessionId: event.sessionId })
@@ -7307,10 +7321,21 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
   }
 }
 
-function persistUsageEvent(db: Database, provider: ProviderKind, event: AgentEvent): void {
+/** Counts an agent's usage for its provider (budgets, quota) and for the kind of work it did (settings → stats). */
+function persistUsageEvent(db: Database, role: UsageRole, model: ModelRef, event: AgentEvent): void {
+  const provider = model.provider
   if (event.type === 'usage') {
     if (event.inputTokens === undefined && event.outputTokens === undefined && event.costUsd === undefined)
       return
+    addRoleUsage(db, {
+      role,
+      provider,
+      model: model.model,
+      ...(event.inputTokens !== undefined ? { inputTokens: event.inputTokens } : {}),
+      ...(event.cachedInputTokens !== undefined ? { cachedInputTokens: event.cachedInputTokens } : {}),
+      ...(event.outputTokens !== undefined ? { outputTokens: event.outputTokens } : {}),
+      ...(event.costUsd !== undefined ? { costUsd: event.costUsd } : {}),
+    })
     addUsage(db, {
       provider,
       ...(event.inputTokens !== undefined ? { inputTokens: event.inputTokens } : {}),

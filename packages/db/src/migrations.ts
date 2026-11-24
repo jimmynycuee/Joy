@@ -618,6 +618,26 @@ export const MIGRATIONS: readonly Migration[] = [
         CHECK (context_tokens IS NULL OR context_tokens >= 0);
     `,
   },
+  {
+    version: 30,
+    name: 'token usage by role and model',
+    sql: /* sql */ `
+      -- What each kind of work cost, by day: the usage table only knows the provider. Starts empty; older usage has no
+      -- role to put it under.
+      CREATE TABLE role_usage (
+        role                TEXT NOT NULL CHECK (role IN (
+                              'implementer', 'reviewer', 'judge', 'assistant', 'background', 'safety_review', 'peer')),
+        provider            TEXT NOT NULL,
+        model               TEXT NOT NULL,
+        day                 TEXT NOT NULL CHECK (day GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+        input_tokens        INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+        cached_input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (cached_input_tokens >= 0),
+        output_tokens       INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+        cost_usd            REAL NOT NULL DEFAULT 0 CHECK (cost_usd >= 0),
+        PRIMARY KEY (role, provider, model, day)
+      ) STRICT;
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
