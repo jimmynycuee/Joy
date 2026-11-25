@@ -672,7 +672,7 @@ async function install(options: ServiceOptions, deps: ServiceDeps): Promise<numb
   }
   await runSteps(plan.install, deps)
   deps.out(`已安裝。Joy 會在登入時自動啟動；現在就可以開 http://127.0.0.1:${options.port}`)
-  deps.out(`第一次打開要貼上存取權杖，它在 ${p.join(options.joyHome, 'api-token')}（網頁上有說明）。`)
+  deps.out('用 pnpm joy open 打開，會自動帶入存取權杖。')
   if (plan.logs.length) deps.out(`紀錄：${plan.logs.join('、')}`)
   deps.out('查看狀態：pnpm joy service status；移除：pnpm joy service uninstall')
   if (options.platform === 'linux')

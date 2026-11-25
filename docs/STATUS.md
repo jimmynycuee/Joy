@@ -2,17 +2,19 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-25（`pnpm joy open`：用預設瀏覽器打開 Joy 並自動帶入存取權杖，不用再到 `~/.joy` 找檔案貼上；權杖放在網址 `#` 後面（不會送到任何 server），經由只有你能讀的暫時網頁交給瀏覽器（不出現在指令列），網頁存好後立刻從網址列與瀏覽紀錄拿掉；權杖交接屬於 secret handling，擁有者已審；分支 `joy-open-token`）
 - 最後更新：2026-11-25（排程考慮額度：排程與 GitHub 議題標籤開的任務，若要用的 provider 額度已用到 `fallback.defer_unattended_at`（預設 90%）或已用完，先排隊、等該額度重置後自己開始；你自己開的任務照常跑；review loop、助理、背景工作、ask_peer 的額度回報現在也會記下（之前只有 single 模式記）；分支 `quota-aware-scheduling`）
 - 最後更新：2026-11-25（`docs/STATUS.md` 瘦身：174KB → 約 64KB。較早的「最後更新」、2026-11-20 以前的驗證結果與各 ticket 的驗證紀錄原文移到 `docs/status-history.md`（新的在前）；`AGENTS.md` 規定本檔最多 6 行「最後更新」、6 節驗證結果；分支 `slim-status`）
 - 最後更新：2026-11-25（變更面板不再顯示 git 的檔頭（`diff --git`、`index`、`---`／`+++`、新增／刪除檔案模式、改名與相似度），檔名列已經說了這些；新增或刪除的檔案在檔名旁標「新檔案」／「已刪除」；模式變更與「Binary files … differ」仍顯示；分支 `hide-diff-headers`）
 - 最後更新：2026-11-25（各角色 token 統計：設定 → 統計多了「用量分布」，列出實作、審查、裁判、助理、背景工作、安全預審、請教另一個模型各在哪個模型花了多少 token、占比與費用，跨所有任務也含助理；選了專案時不顯示（助理的工作不屬於任何專案）；migration 30 新表 `role_usage`，從上線那天開始記；分支 `role-token-stats`）
 - 最後更新：2026-11-25（審查強度依變更大小調整：加減行數合計 ≤ 20 行或只改文件的變更，由同一個審查模型用 `low` effort 審；每輪依整份 diff 重新判斷，變大就回到原本設定；`config.yaml` 的 `review.small_change_max_lines`（0 關閉）與 `review.small_change_effort`；擁有者確認 #173 的記憶擷取 prompt；分支 `adaptive-review`）
-- 最後更新：2026-11-24（審查第 2 輪起不再整份重看：審查者拿到自己上一輪的意見、實作者的回覆，只送上一輪之後 diff 有變的檔案，沒變的只列檔名；分支 `review-followup-rounds`）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 - 更早的「最後更新」、驗證結果與各 ticket 的驗證紀錄在 `docs/status-history.md`（新的在前）。
 
 ## 擁有者待審
+
+- **2026-11-25 擁有者已審：`pnpm joy open` 的權杖交接（secret handling）**（擁有者回覆「審過了，合併」），做法見「驗證結果」與「已確認決策」同日的項目。
 
 - **2026-11-19 擁有者確認：`packages/core` 介面與 `packages/policy` 的待審項目都沒問題**（下表與各節標「core／policy 待擁有者審」的都算已審）。其他類別仍待審：`packages/secrets` 的 MCP 機密、channel 認證、記憶寫入規則。
 
@@ -84,6 +86,13 @@
 
 ## 驗證結果
 
+### `pnpm joy open` 自動帶入存取權杖（2026-11-25，分支 `joy-open-token`，secret handling 擁有者已審）
+
+- **問題**：打開建好的網頁介面（`pnpm joy start` 或背景服務）時，要自己到 `~/.joy/api-token` 找檔案、複製、貼上。
+- **做法**：`pnpm joy open [--port N]`（`packages/server/src/open-joy.ts`）先確認 Joy 有在跑，再讀 `api-token`（沿用 server 的 `readApiToken`：拒絕 symlink、POSIX 要 owner-only），在 `JOY_HOME` 以 `wx`＋`0600` 建一個暫時網頁，內容只有 `location.replace("http://127.0.0.1:<port>/#token=…")`（`no-referrer`，`<` 跳脫），用 `open`／`rundll32 url.dll,FileProtocolHandler`／`xdg-open`（不經 shell）打開，30 秒後刪除；瀏覽器沒打開也會刪。權杖不在指令列，所以同一台電腦的其他使用者從 `ps` 看不到；放在 fragment，所以不會送到 server 或寫進 server log。網頁（`apps/web/src/token-handoff.ts`）在任何 API 請求之前讀 `#token=`、格式對才存進 localStorage，並用 `history.replaceState` 拿掉整個 fragment（格式不對也拿掉），保留原本的路徑與 query。權杖頁的說明多了「在終端機執行 `pnpm joy open`」；背景服務安裝完的提示與 README 改成用 `pnpm joy open`。
+- **測試**：server `open-joy.test.ts`（網址、跳脫、三個平台的指令、權杖只在 0600 網頁裡不在指令列、用完刪除、瀏覽器啟動失敗也刪除）；web `token-handoff.test.ts`（只收格式對的、存好後拿掉、不對的也拿掉、其他 fragment 不動）；e2e `access-token.spec.ts`（帶 `#token=` 打開不出現權杖頁、網址沒有 fragment 且保留 query、請求都帶這個權杖、重新整理仍登入）。手動跑 `pnpm joy open --port 4391`（沒有 Joy）顯示啟動提示並回傳 1。根目錄 `pnpm check` 通過（1681 tests）。
+- **沒驗證到**：沒有真的打開瀏覽器（本機在跑的 Joy 是舊版網頁）；Windows 的 `rundll32` 與 Linux 的 `xdg-open` 只有單元測試；snap 版瀏覽器可能讀不到 `~/.joy` 裡的暫時網頁。
+
 ### 排程考慮額度（2026-11-25，分支 `quota-aware-scheduling`）
 
 - **問題**：排程和議題標籤開的任務不管額度剩多少都會立刻開始，可能把訂閱額度用到見底，你自己要用時反而沒了。另外 Joy 只在 single 模式記下 provider 的額度回報，review loop 等其他 run 的回報被丟掉，交接判斷也看不到。
@@ -118,14 +127,9 @@
 - **測試**：`review-loop.test.ts`（第 2 輪 prompt 有上一輪 findings、回覆、改過與新增的檔案，沒改的只列名，移除的另列）；`prompts.test.ts`（切檔、結尾換行不影響比對、沒有任何變動、長 diff 上限、通過但檢查失敗的說法）。`pnpm test` 1646 通過。
 - **沒驗證到**：真實模型的審查輪數與 token 是否真的下降。
 
-### Diff 逐行留言（2026-11-23，分支 `diff-line-comments`）
-
-- **做法**：`numberDiffLines` 依 hunk 標頭算新舊行號（行號用 `data-line` 加 CSS 顯示，不進行的文字）；新增與未變的行留言指向新檔行號，刪除的行指向舊檔。留言像草稿一樣存在 localStorage（`joy.diffComments.<taskId>`）。「送出留言」用 `diffCommentsMessage` 整理成一則訊息（檔案、行號、引用該行、意見），走 `POST /api/tasks/:id/messages`，任務在跑時排隊，跟輸入框一樣。比賽任務與工作副本已移除的任務沒有留言按鈕。server 沒改。
-- **測試**：`diff-comments.test.ts`（行號、留言目標、訊息格式與排序、localStorage 驗證）；e2e `diff-comments.spec.ts`（行號、新增／刪除行留言、Esc 取消、⌘Enter 存、重新整理後還在、刪除、送出內容、無法接續的任務沒有按鈕）；fake-preview 實際走過一次（送出後任務跑第 2 輪）。
-- **沒驗證到**：真實 agent 收到留言後的處理品質。
-
 ## 已確認決策
 
+- 2026-11-25 `pnpm joy open`（擁有者選「pnpm joy open 帶 token」；以下細節為 agent 決定，權杖交接擁有者已審）：權杖走 URL fragment 而不是 query（不會送到 server、不進 log）；經 owner-only 暫時網頁交給瀏覽器，而不是把網址放在 `open` 的參數（同機其他使用者看得到行程參數）；網頁收到後立刻從網址與瀏覽紀錄拿掉；背景服務安裝後不自動開瀏覽器，因為服務第一次啟動才會建立權杖。
 - 2026-11-25 排程考慮額度（擁有者選「排程考慮額度」；以下細節為 agent 決定，`core`、`policy`、`memory` 沒動）：只延後沒人在等的任務（排程、議題標籤），不延後你自己或你透過助理要求的；延後的任務重新從頭開始，因為它還沒有 session；門檻預設 90%，設成 1 表示只在用完時才等。
 - 2026-11-25 `docs/STATUS.md` 瘦身（擁有者選「做 STATUS.md 瘦身」）：只搬移、不改寫內容；擁有者待審、需要擁有者處理、未完成的票、卡住與所有決策都留在本檔，因為它們會影響下一個 agent 的判斷。
 - 2026-11-25 各角色 token 統計（擁有者選「各角色 token 統計」；以下細節為 agent 決定，`core`、`policy`、`memory` 沒動）：另開 `role_usage` 表而不是在 `usage` 加欄位，因為 `usage` 的主鍵與月預算計算依賴它；安全預審與 ask_peer 跟一般審查分開算；選專案時不顯示，避免把助理用量算進某個專案。

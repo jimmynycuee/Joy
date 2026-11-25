@@ -7534,7 +7534,8 @@ async function loadOrCreateApiToken(home: string): Promise<string> {
   }
 }
 
-async function readApiToken(tokenPath: string): Promise<string> {
+/** Reads the owner's API token file, refusing links and files other users could read. */
+export async function readApiToken(tokenPath: string): Promise<string> {
   const metadata = await lstat(tokenPath)
   if (metadata.isSymbolicLink()) throw new Error('API token file must not be a symbolic link')
   if (!metadata.isFile()) throw new Error('API token path must be a regular file')

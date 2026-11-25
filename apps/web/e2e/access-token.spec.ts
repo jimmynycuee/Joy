@@ -58,3 +58,31 @@ test('a refused token asks for a new one, and regenerating switches this device 
   await openSettingsSection(page, '統計')
   await expect.poll(() => seen.at(-1)).toBe('Bearer rotated-token-0123456789abcdef')
 })
+
+test('pnpm joy open signs this device in from the address and takes the token out of it', async ({
+  page,
+}) => {
+  const handed = 'handed-over-token-0123456789abcdef'
+  const seen: string[] = []
+  await page.route('**/api/**', async (route) => {
+    const auth = route.request().headers()['authorization'] ?? ''
+    seen.push(auth)
+    if (auth !== `Bearer ${handed}`)
+      await route.fulfill({ status: 401, json: { error: 'Authentication required' } })
+    else if (new URL(route.request().url()).pathname === '/api/tasks')
+      await route.fulfill({ json: { tasks: [] } })
+    else if (new URL(route.request().url()).pathname === '/api/repos')
+      await route.fulfill({ json: { repos: [] } })
+    else await route.fulfill({ json: {} })
+  })
+
+  await page.goto(`/?settings=general#token=${handed}`)
+  await expect(page.getByTestId('token-gate')).toHaveCount(0)
+  expect(new URL(page.url()).hash).toBe('')
+  expect(new URL(page.url()).search).toBe('?settings=general')
+  await expect.poll(() => seen.length).toBeGreaterThan(0)
+  expect(seen.every((auth) => auth === `Bearer ${handed}`)).toBe(true)
+  // Saved on this device: a reload without the fragment stays signed in.
+  await page.reload()
+  await expect(page.getByTestId('token-gate')).toHaveCount(0)
+})
