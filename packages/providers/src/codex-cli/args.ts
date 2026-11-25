@@ -71,6 +71,9 @@ export function buildCodexArgs(
     'apps',
     '--disable',
     'remote_plugin',
+    // The owner's hooks (CODEX_HOME/hooks.json) run commands outside Joy's approvals; see app-server.ts.
+    '--disable',
+    'hooks',
   )
   // `--ephemeral`: no session file under CODEX_HOME, so one-off runs stay out of the Codex app's history.
   if (opts.ephemeral && !opts.resumeSessionId) args.push('--ephemeral')

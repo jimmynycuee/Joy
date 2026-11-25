@@ -2,6 +2,12 @@
 
 > 從 `docs/STATUS.md` 移出的較早驗證結果，內容未改。目前狀態、阻塞與決策看 `docs/STATUS.md`。
 
+### 變更面板隱藏 git 檔頭（2026-11-25，分支 `hide-diff-headers`）
+
+- **做法**：`planDiff` 用 `withoutFileHeader` 去掉每個檔案第一個 hunk 之前的 git 檔頭；hunk 裡以 `---`／`+++` 開頭的程式碼不受影響。檔頭之外的行（模式變更、二進位檔）保留，因為沒有別的地方會顯示。檔名列多了「新檔案」／「已刪除」，取代原本的 `new file mode`／`deleted file mode`。只改網頁。
+- **測試**：`diff.test.ts`（改名檔頭、hunk 裡像檔頭的程式碼、模式變更、二進位檔）；e2e `task-diff-allow.spec.ts`（第一行是 `@@`、沒有 `diff --git` 與 `+++`、行數與分頁跟著少 3 行）。整套 e2e 145 個通過；根目錄 `pnpm check` 通過（1670 tests）。
+- **沒驗證到**：沒有截圖（fake-preview 沒有任務），只靠 e2e 確認畫面。
+
 ### 各角色 token 統計（2026-11-25，分支 `role-token-stats`）
 
 - **問題**：任務頁已經有該任務各角色的用量，但全域只有 `usage` 表（provider × 天），看不出 token 花在實作、審查還是助理與背景工作，也看不出輕量審查省了多少。
@@ -899,6 +905,7 @@
 
 ## 舊的「最後更新」紀錄
 
+- 最後更新：2026-11-25（排程考慮額度：排程與 GitHub 議題標籤開的任務，若要用的 provider 額度已用到 `fallback.defer_unattended_at`（預設 90%）或已用完，先排隊、等該額度重置後自己開始；你自己開的任務照常跑；review loop、助理、背景工作、ask_peer 的額度回報現在也會記下（之前只有 single 模式記）；分支 `quota-aware-scheduling`）
 - 最後更新：2026-11-25（`docs/STATUS.md` 瘦身：174KB → 約 64KB。較早的「最後更新」、2026-11-20 以前的驗證結果與各 ticket 的驗證紀錄原文移到 `docs/status-history.md`（新的在前）；`AGENTS.md` 規定本檔最多 6 行「最後更新」、6 節驗證結果；分支 `slim-status`）
 - 最後更新：2026-11-25（變更面板不再顯示 git 的檔頭（`diff --git`、`index`、`---`／`+++`、新增／刪除檔案模式、改名與相似度），檔名列已經說了這些；新增或刪除的檔案在檔名旁標「新檔案」／「已刪除」；模式變更與「Binary files … differ」仍顯示；分支 `hide-diff-headers`）
 - 最後更新：2026-11-25（各角色 token 統計：設定 → 統計多了「用量分布」，列出實作、審查、裁判、助理、背景工作、安全預審、請教另一個模型各在哪個模型花了多少 token、占比與費用，跨所有任務也含助理；選了專案時不顯示（助理的工作不屬於任何專案）；migration 30 新表 `role_usage`，從上線那天開始記；分支 `role-token-stats`）

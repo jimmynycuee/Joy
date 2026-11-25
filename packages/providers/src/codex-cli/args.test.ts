@@ -23,6 +23,8 @@ describe('buildCodexArgs', () => {
       'apps',
       '--disable',
       'remote_plugin',
+      '--disable',
+      'hooks',
       '--model',
       'gpt-6-luna',
       '--sandbox',
@@ -72,12 +74,12 @@ describe('buildCodexArgs', () => {
     }
   })
 
-  it("leaves out the owner's config.toml (its MCP servers), plugins and connectors", () => {
+  it("leaves out the owner's config.toml (its MCP servers), plugins, connectors and hooks", () => {
     const args = buildCodexArgs(base, model)
     const flags = args.slice(0, args.indexOf('--'))
     expect(flags).toContain('--ignore-user-config')
     expect(flags).toContain('--ignore-rules')
-    for (const feature of ['plugins', 'apps', 'remote_plugin'])
+    for (const feature of ['plugins', 'apps', 'remote_plugin', 'hooks'])
       expect(flags.join(' ')).toContain(`--disable ${feature}`)
   })
 
