@@ -2,12 +2,12 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-25（Codex app-server 回報 token 用量：解析 `thread/tokenUsage/updated`，每個 turn 取 thread 累計的增量；Codex 預設 transport 的 run 現在會出現在統計「用量分布」與任務用量；另發現 app-server 的 run 會跑擁有者 Codex 的 hooks；分支 `codex-app-server-usage`）
 - 最後更新：2026-11-25（Codex 只帶 prompt：裁判、安全預審、背景工作用 Codex 時不載入專案 AGENTS.md、不開 web search、關掉 shell、圖片、memories 等內建工具，實測 input 約 21.6k → 14k；exec 與 app-server 都做；發現 app-server 不回報 token 用量；分支 `codex-prompt-only`）
 - 最後更新：2026-11-25（精簡助理大腦：Claude CLI 當助理時改帶 `promptOnly`（不載入內建工具、CLAUDE.md、skills），並修掉 plan mode 擋住助理自己的 MCP 工具的問題；spike 實測 input 約 132k → 9k token；分支 `lean-assistant-brain`）
 - 最後更新：2026-11-25（擁有者驗收清單：`docs/ACCEPTANCE.md` 依花的時間與需要的東西排序列出只有擁有者能做的驗收與待審的程式碼，可以打勾；已確認的（Codex／Claude fixture、背景服務、一律允許、auto 權限、附件等）移到表格；本檔「需要擁有者處理」改成指向它；分支 `owner-acceptance`）
 - 最後更新：2026-11-25（`pnpm joy open`：用預設瀏覽器打開 Joy 並自動帶入存取權杖，不用再到 `~/.joy` 找檔案貼上；權杖放在網址 `#` 後面（不會送到任何 server），經由只有你能讀的暫時網頁交給瀏覽器（不出現在指令列），網頁存好後立刻從網址列與瀏覽紀錄拿掉；權杖交接屬於 secret handling，擁有者已審；分支 `joy-open-token`）
 - 最後更新：2026-11-25（排程考慮額度：排程與 GitHub 議題標籤開的任務，若要用的 provider 額度已用到 `fallback.defer_unattended_at`（預設 90%）或已用完，先排隊、等該額度重置後自己開始；你自己開的任務照常跑；review loop、助理、背景工作、ask_peer 的額度回報現在也會記下（之前只有 single 模式記）；分支 `quota-aware-scheduling`）
-- 最後更新：2026-11-25（`docs/STATUS.md` 瘦身：174KB → 約 64KB。較早的「最後更新」、2026-11-20 以前的驗證結果與各 ticket 的驗證紀錄原文移到 `docs/status-history.md`（新的在前）；`AGENTS.md` 規定本檔最多 6 行「最後更新」、6 節驗證結果；分支 `slim-status`）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 - 更早的「最後更新」、驗證結果與各 ticket 的驗證紀錄在 `docs/status-history.md`（新的在前）。
@@ -70,6 +70,13 @@
 
 ## 驗證結果
 
+### Codex app-server 回報 token 用量（2026-11-25，分支 `codex-app-server-usage`）
+
+- **問題**：只有 exec 解析 `usage`；預設的 app-server transport 從來沒把 token 用量交給 Joy，所以 Codex 的 run 不會出現在任務用量、統計「用量分布」，也量不到 `promptOnly` 省了多少。
+- **做法**：`CodexAppServerParser` 接 `thread/tokenUsage/updated`（真實 CLI 確認在 `turn/completed` 之前送達）：第一次收到時記下「這個 turn 之前」的累計（`total − last`），之後只更新最新的 `total`，turn 結束時送出一個 `usage`（input 含快取、cached、output 的增量）。重複的回報不會重算，續用的 thread 不會算到之前的 turn，失敗的 turn 也會算。
+- **測試**：`app-server.test.ts`（續用 thread、多次請求、重複回報只算一次；失敗的 turn 有用量；沒有回報就不送）。真實 app-server（gpt-6-luna、low）：一般 run 送出 `usage` input 25,833；`promptOnly` 14,124。根目錄 `pnpm check` 通過。
+- **另外發現（沒處理）**：app-server 的 run 會跑擁有者 Codex 設定裡的 hooks（一個 turn 有 4 組 `hook/started`）；exec 因為 `--ignore-user-config` 不會。hooks 可能執行指令而不經過 Joy 的核准，值得另外處理。
+
 ### Codex 只帶 prompt（2026-11-25，分支 `codex-prompt-only`）
 
 - **問題**：`RunOptions.promptOnly` 只對 Claude 有效，Codex 照樣載入專案 AGENTS.md、web search 與全部內建工具。
@@ -103,13 +110,6 @@
 - **做法**：`planDiff` 用 `withoutFileHeader` 去掉每個檔案第一個 hunk 之前的 git 檔頭；hunk 裡以 `---`／`+++` 開頭的程式碼不受影響。檔頭之外的行（模式變更、二進位檔）保留，因為沒有別的地方會顯示。檔名列多了「新檔案」／「已刪除」，取代原本的 `new file mode`／`deleted file mode`。只改網頁。
 - **測試**：`diff.test.ts`（改名檔頭、hunk 裡像檔頭的程式碼、模式變更、二進位檔）；e2e `task-diff-allow.spec.ts`（第一行是 `@@`、沒有 `diff --git` 與 `+++`、行數與分頁跟著少 3 行）。整套 e2e 145 個通過；根目錄 `pnpm check` 通過（1670 tests）。
 - **沒驗證到**：沒有截圖（fake-preview 沒有任務），只靠 e2e 確認畫面。
-
-### 各角色 token 統計（2026-11-25，分支 `role-token-stats`）
-
-- **問題**：任務頁已經有該任務各角色的用量，但全域只有 `usage` 表（provider × 天），看不出 token 花在實作、審查還是助理與背景工作，也看不出輕量審查省了多少。
-- **做法**：migration 30 新表 `role_usage`（role × provider × model × 天，STRICT，role 有 CHECK：`implementer`、`reviewer`、`judge`、`assistant`、`background`、`safety_review`、`peer`；計數不能為負）。不回填，舊用量沒有角色可歸。server 的 `persistUsageEvent` 改成帶角色與 model，同時寫 `usage`（預算、額度照舊）與 `role_usage`；十個呼叫點各自標好角色。`GET /api/stats` 沒選專案時多回 `roles`（依期間加總、依角色再依 token 排序）與 `rolesSince`。網頁統計頁最上面的「用量分布」表：工作、模型、占比、輸入（含快取）、輸出、費用。
-- **測試**：db `role-usage.test.ts`（加總與排序、期間含頭尾、只收計數與已知角色）；server（review loop 任務的實作與審查各自記到對的模型、期間外為空、選專案時不回）；web `usage.test.ts`（解析、占比）；e2e `stats.spec.ts`（表格內容、快取、起始日、選專案後消失）。fake-preview 看過空狀態。根目錄 `pnpm check` 通過（1668 tests）。
-- **沒驗證到**：真實 CLI 回報的 token 量；助理與背景工作的記錄只靠呼叫點標註，沒有個別的整合測試。
 
 ## 已確認決策
 

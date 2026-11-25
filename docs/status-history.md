@@ -2,6 +2,13 @@
 
 > 從 `docs/STATUS.md` 移出的較早驗證結果，內容未改。目前狀態、阻塞與決策看 `docs/STATUS.md`。
 
+### 各角色 token 統計（2026-11-25，分支 `role-token-stats`）
+
+- **問題**：任務頁已經有該任務各角色的用量，但全域只有 `usage` 表（provider × 天），看不出 token 花在實作、審查還是助理與背景工作，也看不出輕量審查省了多少。
+- **做法**：migration 30 新表 `role_usage`（role × provider × model × 天，STRICT，role 有 CHECK：`implementer`、`reviewer`、`judge`、`assistant`、`background`、`safety_review`、`peer`；計數不能為負）。不回填，舊用量沒有角色可歸。server 的 `persistUsageEvent` 改成帶角色與 model，同時寫 `usage`（預算、額度照舊）與 `role_usage`；十個呼叫點各自標好角色。`GET /api/stats` 沒選專案時多回 `roles`（依期間加總、依角色再依 token 排序）與 `rolesSince`。網頁統計頁最上面的「用量分布」表：工作、模型、占比、輸入（含快取）、輸出、費用。
+- **測試**：db `role-usage.test.ts`（加總與排序、期間含頭尾、只收計數與已知角色）；server（review loop 任務的實作與審查各自記到對的模型、期間外為空、選專案時不回）；web `usage.test.ts`（解析、占比）；e2e `stats.spec.ts`（表格內容、快取、起始日、選專案後消失）。fake-preview 看過空狀態。根目錄 `pnpm check` 通過（1668 tests）。
+- **沒驗證到**：真實 CLI 回報的 token 量；助理與背景工作的記錄只靠呼叫點標註，沒有個別的整合測試。
+
 ### 審查強度依變更大小調整（2026-11-25，分支 `adaptive-review`）
 
 - **問題**：不管改一行還是改三百行，審查者都用同一個 effort（預設 Codex `gpt-6.1-sol` medium），小改動的審查大多是在花 token。
@@ -892,6 +899,7 @@
 
 ## 舊的「最後更新」紀錄
 
+- 最後更新：2026-11-25（`docs/STATUS.md` 瘦身：174KB → 約 64KB。較早的「最後更新」、2026-11-20 以前的驗證結果與各 ticket 的驗證紀錄原文移到 `docs/status-history.md`（新的在前）；`AGENTS.md` 規定本檔最多 6 行「最後更新」、6 節驗證結果；分支 `slim-status`）
 - 最後更新：2026-11-25（變更面板不再顯示 git 的檔頭（`diff --git`、`index`、`---`／`+++`、新增／刪除檔案模式、改名與相似度），檔名列已經說了這些；新增或刪除的檔案在檔名旁標「新檔案」／「已刪除」；模式變更與「Binary files … differ」仍顯示；分支 `hide-diff-headers`）
 - 最後更新：2026-11-25（各角色 token 統計：設定 → 統計多了「用量分布」，列出實作、審查、裁判、助理、背景工作、安全預審、請教另一個模型各在哪個模型花了多少 token、占比與費用，跨所有任務也含助理；選了專案時不顯示（助理的工作不屬於任何專案）；migration 30 新表 `role_usage`，從上線那天開始記；分支 `role-token-stats`）
 - 最後更新：2026-11-25（審查強度依變更大小調整：加減行數合計 ≤ 20 行或只改文件的變更，由同一個審查模型用 `low` effort 審；每輪依整份 diff 重新判斷，變大就回到原本設定；`config.yaml` 的 `review.small_change_max_lines`（0 關閉）與 `review.small_change_effort`；擁有者確認 #173 的記憶擷取 prompt；分支 `adaptive-review`）

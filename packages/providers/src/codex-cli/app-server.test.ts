@@ -77,6 +77,51 @@ describe('Codex app-server', () => {
     ).toEqual([])
   })
 
+  it("reports a turn's tokens from the thread's running total, once, even on a resumed thread", () => {
+    const parser = new CodexAppServerParser({ cwd: '/w', structured: false })
+    const usage = (total: number[], last: number[]) => ({
+      threadId: 't',
+      tokenUsage: {
+        total: { inputTokens: total[0], cachedInputTokens: total[1], outputTokens: total[2] },
+        last: { inputTokens: last[0], cachedInputTokens: last[1], outputTokens: last[2] },
+      },
+    })
+    // Earlier turns of this thread used 1000 input (800 cached) and 50 output.
+    expect(parser.notification('thread/tokenUsage/updated', usage([1100, 800, 60], [100, 0, 10]))).toEqual([])
+    parser.notification('thread/tokenUsage/updated', usage([1250, 900, 80], [150, 100, 20]))
+    // The same report again changes nothing.
+    parser.notification('thread/tokenUsage/updated', usage([1250, 900, 80], [150, 100, 20]))
+    const events = parser.notification('turn/completed', {
+      turn: { status: 'completed', items: [{ type: 'agentMessage', id: 'm', text: 'OK' }] },
+    })
+    expect(events.filter((event) => event.type === 'usage')).toEqual([
+      { type: 'usage', inputTokens: 250, cachedInputTokens: 100, outputTokens: 30 },
+    ])
+    expect(events.at(-1)).toMatchObject({ type: 'done' })
+  })
+
+  it('counts the tokens of a failed turn, and reports none when Codex sent no usage', () => {
+    const failed = new CodexAppServerParser({ cwd: '/w', structured: false })
+    failed.notification('thread/tokenUsage/updated', {
+      tokenUsage: { total: { inputTokens: 40, outputTokens: 2 }, last: { inputTokens: 40, outputTokens: 2 } },
+    })
+    const events = failed.notification('turn/completed', {
+      turn: { status: 'failed', error: { message: 'x' } },
+    })
+    expect(events.find((event) => event.type === 'usage')).toEqual({
+      type: 'usage',
+      inputTokens: 40,
+      cachedInputTokens: 0,
+      outputTokens: 2,
+    })
+    const silent = new CodexAppServerParser({ cwd: '/w', structured: false })
+    expect(
+      silent
+        .notification('turn/completed', { turn: { status: 'completed' } })
+        .some((e) => e.type === 'usage'),
+    ).toBe(false)
+  })
+
   it('normalizes Windows file-change paths to POSIX separators on any host', () => {
     const parser = new CodexAppServerParser({ cwd: 'C:\\worktree', structured: false })
     const events = parser.notification('item/completed', {
