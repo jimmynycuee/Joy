@@ -19,6 +19,8 @@ judge, background) can use any backend. The full plan, tickets and acceptance cr
 5. **Before you stop, update `docs/STATUS.md`** (what changed, what is blocked, next step, new decisions at the top of
    the decisions table) and tick the ticket in `docs/PLAN.md`'s progress list. Rules every future agent must follow go
    in this file instead.
+   Keep `docs/STATUS.md` short, since every agent reads all of it: at most 6 「最後更新」 lines and 6 sections under
+   驗證結果. Move older ones, unchanged, to the top of their part of `docs/status-history.md` (newest first).
 6. One ticket = one branch = one PR. Branch name: `t1.3-short-description`.
 
 ## Commands
