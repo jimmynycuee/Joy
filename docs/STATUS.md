@@ -2,12 +2,12 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-25（擁有者驗收清單：`docs/ACCEPTANCE.md` 依花的時間與需要的東西排序列出只有擁有者能做的驗收與待審的程式碼，可以打勾；已確認的（Codex／Claude fixture、背景服務、一律允許、auto 權限、附件等）移到表格；本檔「需要擁有者處理」改成指向它；分支 `owner-acceptance`）
 - 最後更新：2026-11-25（`pnpm joy open`：用預設瀏覽器打開 Joy 並自動帶入存取權杖，不用再到 `~/.joy` 找檔案貼上；權杖放在網址 `#` 後面（不會送到任何 server），經由只有你能讀的暫時網頁交給瀏覽器（不出現在指令列），網頁存好後立刻從網址列與瀏覽紀錄拿掉；權杖交接屬於 secret handling，擁有者已審；分支 `joy-open-token`）
 - 最後更新：2026-11-25（排程考慮額度：排程與 GitHub 議題標籤開的任務，若要用的 provider 額度已用到 `fallback.defer_unattended_at`（預設 90%）或已用完，先排隊、等該額度重置後自己開始；你自己開的任務照常跑；review loop、助理、背景工作、ask_peer 的額度回報現在也會記下（之前只有 single 模式記）；分支 `quota-aware-scheduling`）
 - 最後更新：2026-11-25（`docs/STATUS.md` 瘦身：174KB → 約 64KB。較早的「最後更新」、2026-11-20 以前的驗證結果與各 ticket 的驗證紀錄原文移到 `docs/status-history.md`（新的在前）；`AGENTS.md` 規定本檔最多 6 行「最後更新」、6 節驗證結果；分支 `slim-status`）
 - 最後更新：2026-11-25（變更面板不再顯示 git 的檔頭（`diff --git`、`index`、`---`／`+++`、新增／刪除檔案模式、改名與相似度），檔名列已經說了這些；新增或刪除的檔案在檔名旁標「新檔案」／「已刪除」；模式變更與「Binary files … differ」仍顯示；分支 `hide-diff-headers`）
 - 最後更新：2026-11-25（各角色 token 統計：設定 → 統計多了「用量分布」，列出實作、審查、裁判、助理、背景工作、安全預審、請教另一個模型各在哪個模型花了多少 token、占比與費用，跨所有任務也含助理；選了專案時不顯示（助理的工作不屬於任何專案）；migration 30 新表 `role_usage`，從上線那天開始記；分支 `role-token-stats`）
-- 最後更新：2026-11-25（審查強度依變更大小調整：加減行數合計 ≤ 20 行或只改文件的變更，由同一個審查模型用 `low` effort 審；每輪依整份 diff 重新判斷，變大就回到原本設定；`config.yaml` 的 `review.small_change_max_lines`（0 關閉）與 `review.small_change_effort`；擁有者確認 #173 的記憶擷取 prompt；分支 `adaptive-review`）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 - 更早的「最後更新」、驗證結果與各 ticket 的驗證紀錄在 `docs/status-history.md`（新的在前）。
@@ -47,23 +47,7 @@
 
 ## 需要擁有者處理
 
-- 省 token（2026-11-23）：(1) 審 `packages/memory` 的 `extractionPrompt`：改成一次收多則擁有者訊息（由舊到新，各自用 `"""` 包住），新增「兩則矛盾時以後面的為準」，其餘規則不變；(2) 確認 60 秒安靜、8 則上限、Joy 停止時把等待中的訊息讀完這三個預設；(3) 安全預審改成 `promptOnly`（Claude 端不再能讀 worktree 的檔案，原本 prompt 就要它不用工具）；(4) 背景角色用 Claude CLI（haiku、low）聊幾句，確認摘要與記憶仍正常、input token 明顯下降。
-- 助理上下文摘要（2026-11-20）：(1) 確認「上下文摘要」可以放進同一段對話的新 session（見「已確認決策」最上面一列；T3.6 的搜尋摘要仍然不放進指示）；(2) 擁有者已定「任務告一段落才整理，超過 30 萬一律整理」；確認「告一段落」的定義（這段對話開的任務沒有 `queued`／`running`／`awaiting_approval`；`review_ready` 算告一段落）與 6 萬下限、保留 10 則這兩個預設；(3) 用 haiku 或 `gpt-6-luna`（low effort）聊一段會查很多任務的長對話，確認摘要出現後 Joy 仍接得上前面的決定。
-- 這個任務內一律允許（2026-11-15）：(1) 審 `packages/policy/src/task-allow.ts`、`analyzeShellConcerns`、`analyzeSearch` 與 `classify.ts` 的 Grep／Glob 秘密檢查（見「擁有者待審」；後者在 `ask` 模式也會讓碰到秘密的搜尋改成要問）；(2) 確認依協調者指示定的兩點：MCP 工具一律不提供、只在封存／丟棄／刪除時失效（完成後的 follow-up 沿用）；(3) 用 haiku 跑一個 `ask` 任務，在核准卡按「這個任務內一律允許」，確認同一指令不再問、改參數會問，並在 ⋯ 選單撤銷。
-- 權限模式（2026-11-15）：(1) 審 `packages/core` 的 `PermissionMode`／`Task.permissionMode` 與 `packages/policy/src/shell.ts`、`classify.ts` 的 auto／full 規則（見「擁有者待審」）；(2) 用 haiku 跑一個 `auto` 的 review_loop 任務，確認 `pnpm install … && pnpm check` 不再要核准、`curl` 仍要；(3) 決定是否要在 Claude Code 開啟它自己的 Bash sandbox（需要先做 spike）。
-- 附件（2026-11-14）：(1) 審 `packages/core` 的 `RunOptions.images`、`ImageInput`、`ImageMediaType` 與 `Steer` 的第二個參數，以及文字附件的定位（見「擁有者待審」）；(2) 確認上限（3.75 MiB 圖片、256 KB 文字、每任務 40 個與 100 MB、每次 run 8 張圖與 256 KB 文字、容器 64 KB 文字）、「PDF 不收」、審查者看附件、草稿保存 id 這幾個決定；(3) 在已登入的 Mac 錄 fixture（haiku／gpt-6-luna、low effort）：Claude `-p --input-format stream-json` 第一則訊息帶一張小 PNG、Codex app-server `turn/start` 帶 `localImage`、`codex exec --image`、`codex exec -`（prompt 從 stdin）；錄完把合成 fake 換成真實 fixture。
-- 不用終端機（2026-11-13 起）：先 `brew install node@22`（服務需要長期存在的 Node 22），然後在 Joy 資料夾 `pnpm joy build-ui`、`pnpm joy service install --dry-run` 看過內容、再 `pnpm joy service install`；完整步驟見 README「不用終端機」。要確認：登入後 Joy 自己啟動、`http://127.0.0.1:4317` 開得起來、Chrome 能安裝成 App、`pnpm joy service uninstall` 乾淨移除。這台 Mac 上的 launchd 行為（含 `PATH` 讓服務找得到 `claude`／`codex`）只有擁有者實機能驗證。
-- Claude 真實 fixture：擁有者先錄（`node scripts/record-fixtures.mjs claude`，更新 `TESTED_CLI_VERSIONS`）；之後做 T1.13 與 T1.9 驗收。
-- T0.4 Codex 真實 fixture／app-server 聯調：在擁有者已登入且可執行 Codex CLI 的 Mac 錄製，指令 `node scripts/record-fixtures.mjs codex`；以真實 fixture 重跑 contract test，並在 Joy 上驗證 app-server 連線及事件／額度互通。不要在一般測試或 CI 呼叫真實模型。
-- T1.9 真實驗收（擁有者 Mac）：使用該 Mac 上既有的 GitHub CLI 登入；啟動 Joy，對測試 repo 跑完一個小任務後按 Changes 欄的「Open draft PR」（第一次會要求填 GitHub repository URL），確認遠端測試分支、標題以 `[test] ` 開頭的 draft PR 與 review 摘要正確；驗收後關閉測試 PR 並刪除測試分支。不提供、不貼上或索取 PAT。
-- T1.13/T1.8（擁有者 Mac）：審查 PR #62 的鑰匙圈可用性探測後，在目標 Mac 執行 `pnpm joy doctor`，確認首頁顯示該機器的 CLI、鑰匙圈與資料目錄檢查；此驗收不讀取或提供已存憑證。
-- T2.4 Telegram（**擁有者決定暫緩**）：在 @BotFather 建 bot，對它傳一則訊息後用 `https://api.telegram.org/bot<token>/getUpdates` 查自己的 chat id；在 Joy 設定頁填入 chat id 與 bot token（或用環境變數 `JOY_TELEGRAM_BOT_TOKEN`），重啟 Joy。不要把 token 貼在對話、文件或程式碼中。
-- T4.5：在 Mac 上 `pnpm joy container-build`、`pnpm joy container-login claude`，Docker Desktop 開啟 host networking，對一個標成 container 的測試 repo 跑一個小任務（haiku、low effort）。
-- T4.9：在一台新電腦（或新使用者帳號）照 README 從 clone 到跑完第一個任務，記錄花了多久與卡住的地方。
-- T4.6：Claude Code 已更新到 2.1.319 以上時，在已登入的 Mac 依 `docs/cli-versions.md` 重錄 fixture 並更新測過範圍（用 haiku、low effort）。
-- T2.6 GitHub issue 真實驗收（擁有者 Mac）：確認 `gh auth status` 已登入；在測試 repo 建一個 issue 並加上 `joy` label，5 分鐘內 Joy 應建立 `#編號 標題` 的任務（標示 external content）；驗收後關閉 issue。不提供、不貼上或索取 PAT。
-- T3.8 Google：依 README「Google 行事曆與 Gmail」建立 Google Cloud OAuth 用戶端（Desktop app），執行一次 `uvx workspace-mcp --tools gmail calendar` 完成登入，在 `config.yaml` 加上 `mcp_servers.google`；然後問助理「明天下午有空嗎」，並試一次寄信確認要核准。
-- Windows 實機驗收（P4）：在 Windows 電腦執行 `pnpm install --frozen-lockfile` 與 `pnpm check`，並依 T4.4 完成一次跨模型任務；不以 CI 取代實機驗收。
+驗收與待審都集中在 `docs/ACCEPTANCE.md`（依花的時間排序，做完打勾）。2026-11-25 以前這一節的原文在 `docs/status-history.md`。
 
 ## 剩下未完成的票與原因（2026-11-06 盤點）
 
@@ -129,6 +113,7 @@
 
 ## 已確認決策
 
+- 2026-11-25 擁有者驗收清單（擁有者選「擁有者驗收清單」）：放在獨立的 `docs/ACCEPTANCE.md` 而不是本檔，因為擁有者要能直接打勾、寫結果，agent 也不用每次開工讀完整的步驟；是否已完成以本機實際狀態（`pnpm joy service status`、`claude --version`／`codex --version` 對 `TESTED_CLI_VERSIONS`）與真實 CLI 輪次紀錄判斷。
 - 2026-11-25 `pnpm joy open`（擁有者選「pnpm joy open 帶 token」；以下細節為 agent 決定，權杖交接擁有者已審）：權杖走 URL fragment 而不是 query（不會送到 server、不進 log）；經 owner-only 暫時網頁交給瀏覽器，而不是把網址放在 `open` 的參數（同機其他使用者看得到行程參數）；網頁收到後立刻從網址與瀏覽紀錄拿掉；背景服務安裝後不自動開瀏覽器，因為服務第一次啟動才會建立權杖。
 - 2026-11-25 排程考慮額度（擁有者選「排程考慮額度」；以下細節為 agent 決定，`core`、`policy`、`memory` 沒動）：只延後沒人在等的任務（排程、議題標籤），不延後你自己或你透過助理要求的；延後的任務重新從頭開始，因為它還沒有 session；門檻預設 90%，設成 1 表示只在用完時才等。
 - 2026-11-25 `docs/STATUS.md` 瘦身（擁有者選「做 STATUS.md 瘦身」）：只搬移、不改寫內容；擁有者待審、需要擁有者處理、未完成的票、卡住與所有決策都留在本檔，因為它們會影響下一個 agent 的判斷。
