@@ -110,8 +110,10 @@ codex exec resume --json [-m <model>] <thread_id> <prompt>
 - app-server 的 token 用量在 `thread/tokenUsage/updated`（在 `turn/completed` 之前送達）：`tokenUsage.total` 是整個 thread 的累計，
   `tokenUsage.last` 是最近一次模型請求，欄位 `inputTokens`（含快取）、`cachedInputTokens`、`outputTokens`、`reasoningOutputTokens`。
   Joy 取這個 turn 期間 `total` 的增量（2026-11-25 起）。同一個「回一句話」：一般 run 約 25.8k input，`promptOnly` 約 14.1k。
-- app-server 的 run 會跑擁有者 Codex 設定裡的 hooks（實測一個 turn 有 4 組 `hook/started`／`hook/completed`）；exec 因為
-  `--ignore-user-config` 不會。
+- hooks（2026-11-25）：擁有者的 `CODEX_HOME/hooks.json`（不是 config.toml）在 app-server 的 run 裡會執行，一個 turn 8 個
+  `hook/*` 事件；啟動參數加 `--disable hooks` 後是 0，run 照常完成。exec 從外面看不到 hook 事件，無法直接確認是否也會跑
+  （沒有為了測試改擁有者的 `hooks.json`），一樣加上 `--disable hooks`，實測照常完成。repo 自帶的 `.codex/hooks.json`（寫標記檔的
+  SessionStart／UserPromptSubmit）在兩種 transport 都沒有執行：未信任的專案不會載入。
 
 ## 待確認（要在使用者的 Mac 上做）
 

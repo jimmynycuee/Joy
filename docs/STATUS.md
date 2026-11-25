@@ -2,12 +2,12 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-25（Codex 不再跑擁有者的 hooks：app-server 與 exec 啟動時都加 `--disable hooks`；實測 app-server 一個 turn 的 hook 事件從 8 個變 0，擁有者 `~/.codex/hooks.json` 的 reason-network 與研究腳本不會再因 Joy 的 run 執行；分支 `codex-no-owner-hooks`）
 - 最後更新：2026-11-25（Codex app-server 回報 token 用量：解析 `thread/tokenUsage/updated`，每個 turn 取 thread 累計的增量；Codex 預設 transport 的 run 現在會出現在統計「用量分布」與任務用量；另發現 app-server 的 run 會跑擁有者 Codex 的 hooks；分支 `codex-app-server-usage`）
 - 最後更新：2026-11-25（Codex 只帶 prompt：裁判、安全預審、背景工作用 Codex 時不載入專案 AGENTS.md、不開 web search、關掉 shell、圖片、memories 等內建工具，實測 input 約 21.6k → 14k；exec 與 app-server 都做；發現 app-server 不回報 token 用量；分支 `codex-prompt-only`）
 - 最後更新：2026-11-25（精簡助理大腦：Claude CLI 當助理時改帶 `promptOnly`（不載入內建工具、CLAUDE.md、skills），並修掉 plan mode 擋住助理自己的 MCP 工具的問題；spike 實測 input 約 132k → 9k token；分支 `lean-assistant-brain`）
 - 最後更新：2026-11-25（擁有者驗收清單：`docs/ACCEPTANCE.md` 依花的時間與需要的東西排序列出只有擁有者能做的驗收與待審的程式碼，可以打勾；已確認的（Codex／Claude fixture、背景服務、一律允許、auto 權限、附件等）移到表格；本檔「需要擁有者處理」改成指向它；分支 `owner-acceptance`）
 - 最後更新：2026-11-25（`pnpm joy open`：用預設瀏覽器打開 Joy 並自動帶入存取權杖，不用再到 `~/.joy` 找檔案貼上；權杖放在網址 `#` 後面（不會送到任何 server），經由只有你能讀的暫時網頁交給瀏覽器（不出現在指令列），網頁存好後立刻從網址列與瀏覽紀錄拿掉；權杖交接屬於 secret handling，擁有者已審；分支 `joy-open-token`）
-- 最後更新：2026-11-25（排程考慮額度：排程與 GitHub 議題標籤開的任務，若要用的 provider 額度已用到 `fallback.defer_unattended_at`（預設 90%）或已用完，先排隊、等該額度重置後自己開始；你自己開的任務照常跑；review loop、助理、背景工作、ask_peer 的額度回報現在也會記下（之前只有 single 模式記）；分支 `quota-aware-scheduling`）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 - 更早的「最後更新」、驗證結果與各 ticket 的驗證紀錄在 `docs/status-history.md`（新的在前）。
@@ -70,12 +70,19 @@
 
 ## 驗證結果
 
+### Codex 不跑擁有者的 hooks（2026-11-25，分支 `codex-no-owner-hooks`）
+
+- **問題**：Joy 的 Codex app-server run 會執行擁有者 `~/.codex/hooks.json` 裡的 hooks（目前是 reason-network 的 session／prompt／tool／stop hook 與一個研究腳本）。hook 會執行指令，不經過 Joy 的核准，也讓 Joy 的 run 被回報到別的系統。exec 的 `--ignore-user-config` 只略過 config.toml，`hooks.json` 是另一個檔案。
+- **做法**：app-server 啟動參數（`OWNER_EXTRAS_OFF`）與 exec 參數都加 `--disable hooks`（codex-cli 0.166.0 有這個 feature）。Joy 本身不用 Codex hooks。
+- **測試**：providers `app-server.test.ts`、`args.test.ts`（兩種 transport 的參數都有 `--disable hooks`）。真實 CLI（gpt-6-luna、low）：app-server 一個 turn 的 `hook/*` 事件 8 → 0、run 照常完成；exec 加上後照常完成；repo 自帶的 `.codex/hooks.json` 在兩種 transport、開或關都沒有執行（未信任的專案）。根目錄 `pnpm check` 通過。
+- **沒驗證到**：exec 原本是否會跑擁有者的 hooks（從外面看不到 hook 事件，也沒有為了測試去改擁有者的 `hooks.json`）；不論如何現在都關掉了。
+
 ### Codex app-server 回報 token 用量（2026-11-25，分支 `codex-app-server-usage`）
 
 - **問題**：只有 exec 解析 `usage`；預設的 app-server transport 從來沒把 token 用量交給 Joy，所以 Codex 的 run 不會出現在任務用量、統計「用量分布」，也量不到 `promptOnly` 省了多少。
 - **做法**：`CodexAppServerParser` 接 `thread/tokenUsage/updated`（真實 CLI 確認在 `turn/completed` 之前送達）：第一次收到時記下「這個 turn 之前」的累計（`total − last`），之後只更新最新的 `total`，turn 結束時送出一個 `usage`（input 含快取、cached、output 的增量）。重複的回報不會重算，續用的 thread 不會算到之前的 turn，失敗的 turn 也會算。
 - **測試**：`app-server.test.ts`（續用 thread、多次請求、重複回報只算一次；失敗的 turn 有用量；沒有回報就不送）。真實 app-server（gpt-6-luna、low）：一般 run 送出 `usage` input 25,833；`promptOnly` 14,124。根目錄 `pnpm check` 通過。
-- **另外發現（沒處理）**：app-server 的 run 會跑擁有者 Codex 設定裡的 hooks（一個 turn 有 4 組 `hook/started`）；exec 因為 `--ignore-user-config` 不會。hooks 可能執行指令而不經過 Joy 的核准，值得另外處理。
+- **另外發現**：app-server 的 run 會跑擁有者 Codex 的 hooks；已在 `codex-no-owner-hooks` 關掉（見上一節）。
 
 ### Codex 只帶 prompt（2026-11-25，分支 `codex-prompt-only`）
 
@@ -105,14 +112,9 @@
 - **測試**：server（自己的任務回報 95% 後照常完成、排程的任務被延後並記下 provider／使用率／時間、重置後從頭開始；review loop 的審查者回報額度用完後 `/api/quota` 顯示 limited）；config（預設與範圍）；web `policy-events.test.ts`。根目錄 `pnpm check` 通過（1673 tests）。
 - **沒驗證到**：真實 Claude／Codex 的使用率回報格式只靠既有 fixture；重開 Joy 後延後任務的接續沒有整合測試（沿用 `quota.queued` 的同一套排程）。
 
-### 變更面板隱藏 git 檔頭（2026-11-25，分支 `hide-diff-headers`）
-
-- **做法**：`planDiff` 用 `withoutFileHeader` 去掉每個檔案第一個 hunk 之前的 git 檔頭；hunk 裡以 `---`／`+++` 開頭的程式碼不受影響。檔頭之外的行（模式變更、二進位檔）保留，因為沒有別的地方會顯示。檔名列多了「新檔案」／「已刪除」，取代原本的 `new file mode`／`deleted file mode`。只改網頁。
-- **測試**：`diff.test.ts`（改名檔頭、hunk 裡像檔頭的程式碼、模式變更、二進位檔）；e2e `task-diff-allow.spec.ts`（第一行是 `@@`、沒有 `diff --git` 與 `+++`、行數與分頁跟著少 3 行）。整套 e2e 145 個通過；根目錄 `pnpm check` 通過（1670 tests）。
-- **沒驗證到**：沒有截圖（fake-preview 沒有任務），只靠 e2e 確認畫面。
-
 ## 已確認決策
 
+- 2026-11-25 Codex 不跑擁有者的 hooks（擁有者選「修 hooks」）：一律關掉，不提供「讓 Joy 的 run 也跑我的 hooks」的設定，因為 hook 執行的指令不經過 Joy 的核准，和 Joy 已經關掉擁有者的 MCP server、plugins、execpolicy 規則是同一個理由。
 - 2026-11-25 Codex 只帶 prompt（擁有者選「Codex 只帶 prompt」；以下細節為 agent 決定，`core` 沒動，沿用已審的 `promptOnly`）：不換 `CODEX_HOME` 來拿掉擁有者的 AGENTS.md，因為那裡有登入；只關實測有省的 6 個 feature，避免 Codex 改版移除某個名字後整個 run 起不來（版本由 `TESTED_CLI_VERSIONS` 把關）。
 - 2026-11-25 精簡助理大腦（擁有者選「精簡助理大腦」；以下細節為 agent 決定，`core`、`policy` 沒動）：不把助理工具標成 `readOnlyHint`，因為其中有會建立任務、排程的工具；改成沒有內建工具的 default mode，只放行 Joy 自己傳進來的 MCP server，和 OpenAI API 大腦直接執行工具的行為一致（工具的權限仍由 Joy 那一端決定，例如助理開的任務一律「要求核准」）。
 - 2026-11-25 擁有者驗收清單（擁有者選「擁有者驗收清單」）：放在獨立的 `docs/ACCEPTANCE.md` 而不是本檔，因為擁有者要能直接打勾、寫結果，agent 也不用每次開工讀完整的步驟；是否已完成以本機實際狀態（`pnpm joy service status`、`claude --version`／`codex --version` 對 `TESTED_CLI_VERSIONS`）與真實 CLI 輪次紀錄判斷。

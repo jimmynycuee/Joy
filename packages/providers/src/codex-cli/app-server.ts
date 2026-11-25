@@ -225,9 +225,20 @@ function approvalPolicy(autonomy: RunOptions['autonomy']): ThreadStartParams['ap
 /**
  * Started without the owner's plugins (CapCut, Notion, Gmail…), the ChatGPT apps connectors and remote plugins: their
  * tools would reach the agent without Joy's approval. Measured with codex-cli 0.166.0: a thread-level `features`
- * override is too late for remote plugins, so this is on the command line.
+ * override is too late for remote plugins, so this is on the command line. Also without the owner's hooks
+ * (`CODEX_HOME/hooks.json`): measured, an app-server turn ran them (8 hook events), and a hook runs commands Joy never
+ * sees. exec gets the same switch.
  */
-const OWNER_EXTRAS_OFF = ['--disable', 'plugins', '--disable', 'apps', '--disable', 'remote_plugin']
+const OWNER_EXTRAS_OFF = [
+  '--disable',
+  'plugins',
+  '--disable',
+  'apps',
+  '--disable',
+  'remote_plugin',
+  '--disable',
+  'hooks',
+]
 
 /**
  * The MCP servers the owner's own Codex config would start here (`config/read` includes the project's

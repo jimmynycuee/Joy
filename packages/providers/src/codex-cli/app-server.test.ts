@@ -159,7 +159,7 @@ describe('Codex app-server', () => {
       }
     }
 
-    it('are kept out of a Joy run: plugins and connectors off at start, config.toml servers disabled', async () => {
+    it('are kept out of a Joy run: plugins, connectors and hooks off at start, config.toml servers disabled', async () => {
       const { stream, rpc, args } = run({ FAKE_OWNER_MCP: 'computer-use,private_investment' })
       const events = await collect(stream)
       expect(events.at(-1)).toMatchObject({ type: 'done' })
@@ -171,6 +171,8 @@ describe('Codex app-server', () => {
         'apps',
         '--disable',
         'remote_plugin',
+        '--disable',
+        'hooks',
       ])
       const start = rpc().find((request) => request.method === 'thread/start')
       expect((start?.params as { config: unknown }).config).toEqual({
