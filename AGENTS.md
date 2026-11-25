@@ -21,6 +21,8 @@ judge, background) can use any backend. The full plan, tickets and acceptance cr
    in this file instead.
    Keep `docs/STATUS.md` short, since every agent reads all of it: at most 6 「最後更新」 lines and 6 sections under
    驗證結果. Move older ones, unchanged, to the top of their part of `docs/status-history.md` (newest first).
+   Anything only the owner can verify (a real login, another device, a real-model run) goes in `docs/ACCEPTANCE.md`
+   with steps and what counts as passing; when the owner reports a result, move it to that file's confirmed table.
 6. One ticket = one branch = one PR. Branch name: `t1.3-short-description`.
 
 ## Commands
@@ -53,6 +55,7 @@ Re-record CLI fixtures (uses the logged-in account's quota, macOS/Linux/WSL only
 ```
 docs/STATUS.md       current state, blockers, next step, decisions (read first, update last)
 docs/status-history.md older verification results moved out of STATUS.md (read only when needed)
+docs/ACCEPTANCE.md   what only the owner can verify, as a checklist (add to it, never run it yourself)
 docs/PLAN.md         plan, tickets, acceptance criteria
 docs/spikes/         what the Claude Code and Codex CLIs actually do; read before touching providers
 packages/core        domain types and interfaces. No I/O, no dependencies on other packages
