@@ -107,7 +107,11 @@ codex exec resume --json [-m <model>] <thread_id> <prompt>
 - 擁有者的 `CODEX_HOME/AGENTS.md` 仍會載入（模型能引用它的標題）；要拿掉只能換 `CODEX_HOME`，會碰到登入，所以不做。
 - app-server：`thread/start` 的 `config` 用點號 key（`features.shell_tool: false`），跟 `-c` 一樣；整個 `features` 表會蓋掉擁有者的設定，
   實測讓 `codex_apps` 等 MCP server 又跑起來（Joy 的檢查擋下了 run）。改成點號後：一般 run 能跑 shell，`promptOnly` 的 run 回答沒有 shell。
-- app-server 不會把 token 用量回報給 Joy（只有 exec 解析 `usage`），所以 app-server 的 run 不會出現在統計的「用量分布」。
+- app-server 的 token 用量在 `thread/tokenUsage/updated`（在 `turn/completed` 之前送達）：`tokenUsage.total` 是整個 thread 的累計，
+  `tokenUsage.last` 是最近一次模型請求，欄位 `inputTokens`（含快取）、`cachedInputTokens`、`outputTokens`、`reasoningOutputTokens`。
+  Joy 取這個 turn 期間 `total` 的增量（2026-11-25 起）。同一個「回一句話」：一般 run 約 25.8k input，`promptOnly` 約 14.1k。
+- app-server 的 run 會跑擁有者 Codex 設定裡的 hooks（實測一個 turn 有 4 組 `hook/started`／`hook/completed`）；exec 因為
+  `--ignore-user-config` 不會。
 
 ## 待確認（要在使用者的 Mac 上做）
 

@@ -22,6 +22,9 @@ export class CodexAppServerParser {
   private readonly rateLimits = new Map<string, RateLimitSnapshot>()
   private readonly configWarnings = new ConfigWarningFilter()
   private ordinaryUsageAllowed: boolean | undefined
+  // The thread's running token totals: where they stood before this turn, and the latest report.
+  private tokensBefore: TokenCounts | undefined
+  private tokensNow: TokenCounts | undefined
 
   constructor(private readonly options: AppServerParserOptions) {}
 
@@ -86,6 +89,9 @@ export class CodexAppServerParser {
         const text = str(p?.plan)
         return text ? [{ type: 'status', text }] : []
       }
+      case 'thread/tokenUsage/updated':
+        this.acceptTokenUsage(rec(p?.tokenUsage))
+        return []
       case 'turn/completed':
         return this.turnCompleted(p)
       case 'configWarning':
@@ -98,6 +104,39 @@ export class CodexAppServerParser {
       default:
         return [{ type: 'raw', source: 'codex-cli', payload: { method, params } }]
     }
+  }
+
+  /**
+   * `thread/tokenUsage/updated` (codex-cli 0.166.0) carries the thread's running `total` and the `last` model request.
+   * The turn's usage is the growth of `total` since just before its first request, so a repeated report is not counted
+   * twice and a resumed thread's earlier turns are left out.
+   */
+  private acceptTokenUsage(value: Rec | undefined): void {
+    const total = tokenCounts(rec(value?.total))
+    if (!total) return
+    if (!this.tokensBefore) {
+      const last = tokenCounts(rec(value?.last)) ?? { input: 0, cached: 0, output: 0 }
+      this.tokensBefore = {
+        input: Math.max(0, total.input - last.input),
+        cached: Math.max(0, total.cached - last.cached),
+        output: Math.max(0, total.output - last.output),
+      }
+    }
+    this.tokensNow = total
+  }
+
+  private turnUsage(): AgentEvent[] {
+    if (!this.tokensBefore || !this.tokensNow) return []
+    const grew = (key: keyof TokenCounts) =>
+      Math.max(0, (this.tokensNow?.[key] ?? 0) - (this.tokensBefore?.[key] ?? 0))
+    return [
+      {
+        type: 'usage',
+        inputTokens: grew('input'),
+        cachedInputTokens: grew('cached'),
+        outputTokens: grew('output'),
+      },
+    ]
   }
 
   private acceptRateLimit(value: unknown, keyHint?: string): AgentEvent[] {
@@ -238,6 +277,8 @@ export class CodexAppServerParser {
     }
     return [
       ...(!this.lastMessage && finalText ? [{ type: 'message' as const, text: finalText }] : []),
+      // A failed turn still spent its tokens.
+      ...this.turnUsage(),
       ...(status === 'completed' ? [] : [{ type: 'error' as const, message: error, recoverable: false }]),
       {
         type: 'done',
@@ -349,4 +390,22 @@ function fileKind(value: unknown): FileChangeKind | undefined {
     default:
       return undefined
   }
+}
+
+interface TokenCounts {
+  /** Every input token, the cached ones included (Joy's `usage.inputTokens`). */
+  input: number
+  cached: number
+  output: number
+}
+
+function tokenCounts(value: Rec | undefined): TokenCounts | undefined {
+  const count = (key: string) => {
+    const n = value?.[key]
+    return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : undefined
+  }
+  const input = count('inputTokens')
+  const output = count('outputTokens')
+  if (input === undefined && output === undefined) return undefined
+  return { input: input ?? 0, cached: count('cachedInputTokens') ?? 0, output: output ?? 0 }
 }
