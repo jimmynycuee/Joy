@@ -2,12 +2,12 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-25（Codex 只帶 prompt：裁判、安全預審、背景工作用 Codex 時不載入專案 AGENTS.md、不開 web search、關掉 shell、圖片、memories 等內建工具，實測 input 約 21.6k → 14k；exec 與 app-server 都做；發現 app-server 不回報 token 用量；分支 `codex-prompt-only`）
 - 最後更新：2026-11-25（精簡助理大腦：Claude CLI 當助理時改帶 `promptOnly`（不載入內建工具、CLAUDE.md、skills），並修掉 plan mode 擋住助理自己的 MCP 工具的問題；spike 實測 input 約 132k → 9k token；分支 `lean-assistant-brain`）
 - 最後更新：2026-11-25（擁有者驗收清單：`docs/ACCEPTANCE.md` 依花的時間與需要的東西排序列出只有擁有者能做的驗收與待審的程式碼，可以打勾；已確認的（Codex／Claude fixture、背景服務、一律允許、auto 權限、附件等）移到表格；本檔「需要擁有者處理」改成指向它；分支 `owner-acceptance`）
 - 最後更新：2026-11-25（`pnpm joy open`：用預設瀏覽器打開 Joy 並自動帶入存取權杖，不用再到 `~/.joy` 找檔案貼上；權杖放在網址 `#` 後面（不會送到任何 server），經由只有你能讀的暫時網頁交給瀏覽器（不出現在指令列），網頁存好後立刻從網址列與瀏覽紀錄拿掉；權杖交接屬於 secret handling，擁有者已審；分支 `joy-open-token`）
 - 最後更新：2026-11-25（排程考慮額度：排程與 GitHub 議題標籤開的任務，若要用的 provider 額度已用到 `fallback.defer_unattended_at`（預設 90%）或已用完，先排隊、等該額度重置後自己開始；你自己開的任務照常跑；review loop、助理、背景工作、ask_peer 的額度回報現在也會記下（之前只有 single 模式記）；分支 `quota-aware-scheduling`）
 - 最後更新：2026-11-25（`docs/STATUS.md` 瘦身：174KB → 約 64KB。較早的「最後更新」、2026-11-20 以前的驗證結果與各 ticket 的驗證紀錄原文移到 `docs/status-history.md`（新的在前）；`AGENTS.md` 規定本檔最多 6 行「最後更新」、6 節驗證結果；分支 `slim-status`）
-- 最後更新：2026-11-25（變更面板不再顯示 git 的檔頭（`diff --git`、`index`、`---`／`+++`、新增／刪除檔案模式、改名與相似度），檔名列已經說了這些；新增或刪除的檔案在檔名旁標「新檔案」／「已刪除」；模式變更與「Binary files … differ」仍顯示；分支 `hide-diff-headers`）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 - 更早的「最後更新」、驗證結果與各 ticket 的驗證紀錄在 `docs/status-history.md`（新的在前）。
@@ -70,6 +70,13 @@
 
 ## 驗證結果
 
+### Codex 只帶 prompt（2026-11-25，分支 `codex-prompt-only`）
+
+- **問題**：`RunOptions.promptOnly` 只對 Claude 有效，Codex 照樣載入專案 AGENTS.md、web search 與全部內建工具。
+- **做法**：`packages/providers/src/codex-cli/args.ts` 的 `PROMPT_ONLY_FEATURES`（`shell_tool`、`unified_exec`、`view_image`、`image_generation`、`memories`、`goals`）與 `PROMPT_ONLY_CONFIG`（`project_doc_max_bytes=0`、`web_search="disabled"`）。exec 加 `--disable …` 與 `-c …`；app-server 在 `thread/start` 的 `config` 用點號 key 合併（整個 `features` 表會蓋掉擁有者的設定，實測讓擁有者的 MCP server 又跑起來，被 Joy 的檢查擋下）。只放實測有省的 feature，因為不存在的名字會讓 Codex 拒絕啟動。擁有者的 `CODEX_HOME/AGENTS.md` 仍會載入。細節在 `docs/spikes/codex.md`。
+- **測試**：providers `args.test.ts`（promptOnly 的參數、其他 run 不帶）、`app-server.test.ts`（`thread/start` 的 config：MCP 隔離仍在、加上點號 key）。真實 CLI spike（gpt-6-luna、low）：exec 約 21.6k → 14k input；app-server 一般 run 能跑 shell、promptOnly 的 run 沒有 shell、沒有多出 MCP server。根目錄 `pnpm check` 通過。
+- **沒驗證到**：裁判與安全預審的判斷品質（它們本來就不該用工具）；**app-server 的 run 不回報 token 用量**，所以預設 transport 下 Codex 不會出現在「用量分布」，省下多少也看不到。
+
 ### 精簡助理大腦（2026-11-25，分支 `lean-assistant-brain`）
 
 - **問題**：Claude CLI 當助理大腦時帶 `user,project` 設定與全部內建工具（實測 28 個工具、81 個 skills），而助理只用得到 `joy_assistant` MCP 工具。spike 時還發現：助理跑在 plan mode（`read-only`），**plan mode 會拒絕沒標 `readOnlyHint` 的 MCP 工具**，`--allowedTools` 也放不過，所以 Claude 大腦的助理其實叫不到自己的工具（預設大腦是 OpenAI API，所以沒人發現）。
@@ -104,15 +111,9 @@
 - **測試**：db `role-usage.test.ts`（加總與排序、期間含頭尾、只收計數與已知角色）；server（review loop 任務的實作與審查各自記到對的模型、期間外為空、選專案時不回）；web `usage.test.ts`（解析、占比）；e2e `stats.spec.ts`（表格內容、快取、起始日、選專案後消失）。fake-preview 看過空狀態。根目錄 `pnpm check` 通過（1668 tests）。
 - **沒驗證到**：真實 CLI 回報的 token 量；助理與背景工作的記錄只靠呼叫點標註，沒有個別的整合測試。
 
-### 審查強度依變更大小調整（2026-11-25，分支 `adaptive-review`）
-
-- **問題**：不管改一行還是改三百行，審查者都用同一個 effort（預設 Codex `gpt-6.1-sol` medium），小改動的審查大多是在花 token。
-- **做法**：`packages/orchestrator` 的 `isSmallChange`：加減行數合計不超過門檻，或每個檔案（改名的話新舊路徑都算）都是 `.md`／`.mdx`／`.markdown`／`.txt`／`.rst`／`.adoc`，就算小改動；空 diff 不算。`ReviewLoopInput.smallChangeReviewer` 有設時，小改動的那一輪審查改用它，`phase` 事件記下實際用的 model。每輪都依整份 diff 重新判斷。server 的 `smallChangeReviewer`（`review-strength.ts`）只換 effort、不換 provider 或模型，所以審查紀錄、usage 歸屬、跨模型檢查都不受影響；設定的 effort 不比原本低，或那個模型不支援該 effort 時就不用。比賽的合併審查不套用。不跳過審查。
-- **測試**：orchestrator（第 1 輪小改動用輕量審查、第 2 輪變大回到原本的審查者；行數、只改文件、改名、空 diff）；server `review-strength.test.ts`（預設、關閉、不會更輕、模型不支援）與 `server.test.ts`（預設 low、`small_change_max_lines: 0` 時維持 medium）；config（預設值與驗證）。`composer-switch.test.ts` 關掉這個設定，因為它驗的是換手後審查者設定被保留。根目錄 `pnpm check` 通過（1662 tests）。
-- **沒驗證到**：真實模型用 low effort 審小改動時，漏看的比例與省下的 token。
-
 ## 已確認決策
 
+- 2026-11-25 Codex 只帶 prompt（擁有者選「Codex 只帶 prompt」；以下細節為 agent 決定，`core` 沒動，沿用已審的 `promptOnly`）：不換 `CODEX_HOME` 來拿掉擁有者的 AGENTS.md，因為那裡有登入；只關實測有省的 6 個 feature，避免 Codex 改版移除某個名字後整個 run 起不來（版本由 `TESTED_CLI_VERSIONS` 把關）。
 - 2026-11-25 精簡助理大腦（擁有者選「精簡助理大腦」；以下細節為 agent 決定，`core`、`policy` 沒動）：不把助理工具標成 `readOnlyHint`，因為其中有會建立任務、排程的工具；改成沒有內建工具的 default mode，只放行 Joy 自己傳進來的 MCP server，和 OpenAI API 大腦直接執行工具的行為一致（工具的權限仍由 Joy 那一端決定，例如助理開的任務一律「要求核准」）。
 - 2026-11-25 擁有者驗收清單（擁有者選「擁有者驗收清單」）：放在獨立的 `docs/ACCEPTANCE.md` 而不是本檔，因為擁有者要能直接打勾、寫結果，agent 也不用每次開工讀完整的步驟；是否已完成以本機實際狀態（`pnpm joy service status`、`claude --version`／`codex --version` 對 `TESTED_CLI_VERSIONS`）與真實 CLI 輪次紀錄判斷。
 - 2026-11-25 `pnpm joy open`（擁有者選「pnpm joy open 帶 token」；以下細節為 agent 決定，權杖交接擁有者已審）：權杖走 URL fragment 而不是 query（不會送到 server、不進 log）；經 owner-only 暫時網頁交給瀏覽器，而不是把網址放在 `open` 的參數（同機其他使用者看得到行程參數）；網頁收到後立刻從網址與瀏覽紀錄拿掉；背景服務安裝後不自動開瀏覽器，因為服務第一次啟動才會建立權杖。

@@ -22,6 +22,7 @@ import type {
   UserInput,
 } from './app-server-protocol.js'
 import { CodexAppServerParser } from './app-server-parse.js'
+import { PROMPT_ONLY_CONFIG, PROMPT_ONLY_FEATURES } from './args.js'
 
 export interface CodexAppServerOptions {
   command?: string
@@ -92,7 +93,8 @@ export class CodexAppServerProvider implements AgentProvider {
       await client.request('initialize', initialize)
       client.notify('initialized')
 
-      const config = isolatedConfig(await ownerMcpServers(client, opts.cwd), opts.mcpServers)
+      const isolated = isolatedConfig(await ownerMcpServers(client, opts.cwd), opts.mcpServers)
+      const config = opts.promptOnly ? { ...isolated, ...promptOnlyConfig() } : isolated
       const common: ThreadStartParams = {
         model: model.model,
         cwd: opts.cwd,
@@ -265,6 +267,15 @@ function isolatedConfig(
   )
   const all = { ...off, ...joyServers }
   return Object.keys(all).length ? { mcp_servers: all } : undefined
+}
+
+/** The thread config form of `PROMPT_ONLY_FEATURES` and `PROMPT_ONLY_CONFIG` (see args.ts). */
+function promptOnlyConfig(): Record<string, unknown> {
+  // Dotted keys, like `-c`: a whole `features` table would replace the owner's and switch their apps back on.
+  return {
+    ...PROMPT_ONLY_CONFIG,
+    ...Object.fromEntries(PROMPT_ONLY_FEATURES.map((feature) => [`features.${feature}`, false])),
+  }
 }
 
 /** A safety net for servers from places neither switch reaches: the run stops before the agent gets a turn. */

@@ -33,6 +33,23 @@ export function mcpOverrides(servers: McpServerConfig[]): string[] {
  */
 const OWNER_REVIEWS = ['-c', 'approvals_reviewer="user"']
 
+/**
+ * What a run that gets everything in its prompt (the compete judge, the safety pre-review, background work) can do
+ * without: the project's AGENTS.md, web search, and the built-in tools whose definitions cost the most input tokens.
+ * Measured with codex-cli 0.166.0 (gpt-6-luna, low): about 21.6k → 14k input tokens per run. The owner's own
+ * `CODEX_HOME/AGENTS.md` still loads: leaving it out would mean another CODEX_HOME, away from the login.
+ * Only features that exist in the tested version: Codex refuses to start on an unknown `--disable` name.
+ */
+export const PROMPT_ONLY_FEATURES = [
+  'shell_tool',
+  'unified_exec',
+  'view_image',
+  'image_generation',
+  'memories',
+  'goals',
+] as const
+export const PROMPT_ONLY_CONFIG = { project_doc_max_bytes: 0, web_search: 'disabled' } as const
+
 /** Builds the `codex` argument list. `outputSchemaPath` is the file written from `opts.outputSchema`. */
 /** `promptOnStdin`: the prompt argument is `-` and the caller writes the prompt to stdin. */
 export function buildCodexArgs(
@@ -57,6 +74,15 @@ export function buildCodexArgs(
   )
   // `--ephemeral`: no session file under CODEX_HOME, so one-off runs stay out of the Codex app's history.
   if (opts.ephemeral && !opts.resumeSessionId) args.push('--ephemeral')
+  if (opts.promptOnly) {
+    for (const feature of PROMPT_ONLY_FEATURES) args.push('--disable', feature)
+    args.push(
+      '-c',
+      `project_doc_max_bytes=${PROMPT_ONLY_CONFIG.project_doc_max_bytes}`,
+      '-c',
+      `web_search=${q(PROMPT_ONLY_CONFIG.web_search)}`,
+    )
+  }
   args.push('--model', model.model)
   if (model.effort) args.push('-c', `model_reasoning_effort=${q(model.effort)}`)
 

@@ -34,6 +34,25 @@ describe('buildCodexArgs', () => {
     ])
   })
 
+  it('a prompt-only run skips AGENTS.md, web search and the heaviest built-in tools; others keep them', () => {
+    const args = buildCodexArgs({ ...base, promptOnly: true }, model)
+    for (const feature of [
+      'shell_tool',
+      'unified_exec',
+      'view_image',
+      'image_generation',
+      'memories',
+      'goals',
+    ])
+      expect(args.join(' ')).toContain(`--disable ${feature}`)
+    expect(args.join(' ')).toContain('-c project_doc_max_bytes=0')
+    expect(args.join(' ')).toContain('-c web_search="disabled"')
+    expect(args.indexOf('project_doc_max_bytes=0')).toBeLessThan(args.indexOf('--'))
+    const normal = buildCodexArgs(base, model).join(' ')
+    expect(normal).not.toContain('shell_tool')
+    expect(normal).not.toContain('project_doc_max_bytes')
+  })
+
   it('an ephemeral run saves no session under CODEX_HOME, unless it resumes one', () => {
     const args = buildCodexArgs({ ...base, ephemeral: true }, model)
     expect(args).toContain('--ephemeral')

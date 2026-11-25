@@ -137,6 +137,23 @@ describe('Codex app-server', () => {
       })
     })
 
+    it('a prompt-only run also skips AGENTS.md, web search and the heaviest built-in tools, merged key by key', async () => {
+      const { stream, rpc } = run({ FAKE_OWNER_MCP: 'computer-use' }, { promptOnly: true })
+      expect((await collect(stream)).at(-1)).toMatchObject({ type: 'done' })
+      const start = rpc().find((request) => request.method === 'thread/start')
+      expect((start?.params as { config: unknown }).config).toEqual({
+        mcp_servers: { 'computer-use': { enabled: false }, joy: { command: 'node', args: ['hub.mjs'] } },
+        project_doc_max_bytes: 0,
+        web_search: 'disabled',
+        'features.shell_tool': false,
+        'features.unified_exec': false,
+        'features.view_image': false,
+        'features.image_generation': false,
+        'features.memories': false,
+        'features.goals': false,
+      })
+    })
+
     it('start an ephemeral thread only when the run asks for one', async () => {
       const once = run({}, { ephemeral: true })
       expect((await collect(once.stream)).at(-1)).toMatchObject({ type: 'done' })
