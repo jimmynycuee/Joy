@@ -8,6 +8,7 @@ import {
   MAX_DIFF_CHARS,
   OPEN_BUDGET_LINES,
   planDiff,
+  withoutFileHeader,
   splitDiff,
 } from './diff.js'
 import type { DiffFile } from './types.js'
@@ -92,13 +93,7 @@ describe('planDiff', () => {
     expect(plan.tooLarge).toBe(false)
     expect(plan.files.map((view) => view.file.path)).toEqual(['src/a.ts', 'src/b.ts', 'README.md'])
     expect(plan.files.map((view) => view.open)).toEqual([true, true, true])
-    expect(plan.files[0]?.lines).toEqual([
-      'diff --git a/src/a.ts b/src/a.ts',
-      '@@ -1 +1 @@',
-      '+line 0',
-      '+line 1',
-      '+line 2',
-    ])
+    expect(plan.files[0]?.lines).toEqual(['@@ -1 +1 @@', '+line 0', '+line 1', '+line 2'])
   })
 
   it('keeps long files collapsed until opened, and stops opening files once the budget is spent', () => {
@@ -111,7 +106,7 @@ describe('planDiff', () => {
       patch: [chunk('a-lock.json', long), ...names.map((name) => chunk(name, medium))].join('\n'),
     })
     expect(plan.files[0]).toMatchObject({ open: false })
-    expect(plan.files[0]?.lines.length).toBe(long + 2)
+    expect(plan.files[0]?.lines.length).toBe(long + 1)
     const open = plan.files.filter((view) => view.open)
     expect(open.length).toBeGreaterThan(0)
     expect(open.reduce((total, view) => total + view.lines.length, 0)).toBeLessThanOrEqual(OPEN_BUDGET_LINES)
@@ -128,5 +123,39 @@ describe('planDiff', () => {
     })
     expect(formatSize(2_400_000)).toBe('2.4 MB')
     expect(formatSize(12_000)).toBe('12 KB')
+  })
+})
+
+describe('withoutFileHeader', () => {
+  it("drops git's header lines before the first hunk and keeps the code", () => {
+    expect(
+      withoutFileHeader([
+        'diff --git a/old.ts b/new.ts',
+        'similarity index 90%',
+        'rename from old.ts',
+        'rename to new.ts',
+        'index 1a2b3c..4d5e6f 100644',
+        '--- a/old.ts',
+        '+++ b/new.ts',
+        '@@ -1,2 +1,2 @@',
+        '--- a comment that starts with dashes',
+        '+++counter',
+        ' same',
+      ]),
+    ).toEqual(['@@ -1,2 +1,2 @@', '--- a comment that starts with dashes', '+++counter', ' same'])
+  })
+
+  it('keeps what only the header says: a mode change, a binary file', () => {
+    expect(withoutFileHeader(['diff --git a/run.sh b/run.sh', 'old mode 100644', 'new mode 100755'])).toEqual(
+      ['old mode 100644', 'new mode 100755'],
+    )
+    expect(
+      withoutFileHeader([
+        'diff --git a/logo.png b/logo.png',
+        'new file mode 100644',
+        'index 0000000..1a2b3c4',
+        'Binary files /dev/null and b/logo.png differ',
+      ]),
+    ).toEqual(['Binary files /dev/null and b/logo.png differ'])
   })
 })

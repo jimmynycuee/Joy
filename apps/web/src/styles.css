@@ -1788,6 +1788,17 @@ svg {
 .diff-file-header:hover {
   background: var(--hover);
 }
+.diff-file-status {
+  flex: none;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.diff-file-status.added {
+  color: var(--green);
+}
+.diff-file-status.deleted {
+  color: var(--red);
+}
 .diff-file-path {
   flex: 1;
   min-width: 0;

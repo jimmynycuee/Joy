@@ -2,6 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-25（變更面板不再顯示 git 的檔頭（`diff --git`、`index`、`---`／`+++`、新增／刪除檔案模式、改名與相似度），檔名列已經說了這些；新增或刪除的檔案在檔名旁標「新檔案」／「已刪除」；模式變更與「Binary files … differ」仍顯示；分支 `hide-diff-headers`）
 - 最後更新：2026-11-25（各角色 token 統計：設定 → 統計多了「用量分布」，列出實作、審查、裁判、助理、背景工作、安全預審、請教另一個模型各在哪個模型花了多少 token、占比與費用，跨所有任務也含助理；選了專案時不顯示（助理的工作不屬於任何專案）；migration 30 新表 `role_usage`，從上線那天開始記；分支 `role-token-stats`）
 - 最後更新：2026-11-25（審查強度依變更大小調整：加減行數合計 ≤ 20 行或只改文件的變更，由同一個審查模型用 `low` effort 審；每輪依整份 diff 重新判斷，變大就回到原本設定；`config.yaml` 的 `review.small_change_max_lines`（0 關閉）與 `review.small_change_effort`；擁有者確認 #173 的記憶擷取 prompt；分支 `adaptive-review`）
 - 最後更新：2026-11-24（審查第 2 輪起不再整份重看：審查者拿到自己上一輪的意見、實作者的回覆，只送上一輪之後 diff 有變的檔案，沒變的只列檔名；分支 `review-followup-rounds`）
@@ -107,6 +108,12 @@
 - 無。
 
 ## 驗證結果
+
+### 變更面板隱藏 git 檔頭（2026-11-25，分支 `hide-diff-headers`）
+
+- **做法**：`planDiff` 用 `withoutFileHeader` 去掉每個檔案第一個 hunk 之前的 git 檔頭；hunk 裡以 `---`／`+++` 開頭的程式碼不受影響。檔頭之外的行（模式變更、二進位檔）保留，因為沒有別的地方會顯示。檔名列多了「新檔案」／「已刪除」，取代原本的 `new file mode`／`deleted file mode`。只改網頁。
+- **測試**：`diff.test.ts`（改名檔頭、hunk 裡像檔頭的程式碼、模式變更、二進位檔）；e2e `task-diff-allow.spec.ts`（第一行是 `@@`、沒有 `diff --git` 與 `+++`、行數與分頁跟著少 3 行）。整套 e2e 145 個通過；根目錄 `pnpm check` 通過（1670 tests）。
+- **沒驗證到**：沒有截圖（fake-preview 沒有任務），只靠 e2e 確認畫面。
 
 ### 各角色 token 統計（2026-11-25，分支 `role-token-stats`）
 

@@ -232,6 +232,11 @@ function DiffFileSection({
         <span className="diff-file-path" title={file.path}>
           {file.oldPath && file.oldPath !== file.path ? `${file.oldPath} → ${file.path}` : file.path}
         </span>
+        {file.status === 'added' || file.status === 'deleted' ? (
+          <span className={`diff-file-status ${file.status}`}>
+            {file.status === 'added' ? '新檔案' : '已刪除'}
+          </span>
+        ) : null}
         <DiffStat additions={file.additions} deletions={file.deletions} />
       </button>
       {open && lines.length > 0 ? (
