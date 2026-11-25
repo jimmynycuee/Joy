@@ -41,7 +41,14 @@ export function buildClaudeArgs(
 
   switch (opts.autonomy) {
     case 'read-only':
-      args.push('--permission-mode', 'plan', '--permission-prompts', 'none')
+      if (opts.promptOnly) {
+        // With no built-in tools there is nothing for plan mode to guard, and plan mode denies MCP tools too: the
+        // assistant could not call its own tools (checked with 2.1.319). Default mode still denies anything not
+        // allowed, and only the servers Joy hands in are.
+        args.push('--permission-mode', 'default', '--permission-prompts', 'none')
+        const allowed = (opts.mcpServers ?? []).map((server) => `mcp__${server.name}`)
+        if (mcpConfigPath && allowed.length) args.push('--allowedTools', allowed.join(','))
+      } else args.push('--permission-mode', 'plan', '--permission-prompts', 'none')
       break
     case 'workspace-write':
       // Every task permission mode (ask, auto, full) runs like this: the CLI accepts edits only in its working

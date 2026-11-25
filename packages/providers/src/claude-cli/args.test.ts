@@ -95,14 +95,51 @@ describe('buildClaudeArgs', () => {
     )
   })
 
+  it('a prompt-only run with Joy MCP servers (the assistant) may call those tools and nothing else', () => {
+    const server = {
+      name: 'joy_assistant',
+      transport: 'stdio' as const,
+      command: 'node',
+      args: ['bridge.js'],
+    }
+    const args = buildClaudeArgs(
+      { ...base, autonomy: 'read-only', promptOnly: true, mcpServers: [server] },
+      model,
+      '/tmp/mcp.json',
+    )
+    const valueOf = (flag: string) => args[args.indexOf(flag) + 1]
+    expect(valueOf('--tools')).toBe('')
+    expect(valueOf('--permission-mode')).toBe('default')
+    expect(valueOf('--permission-prompts')).toBe('none')
+    expect(valueOf('--allowedTools')).toBe('mcp__joy_assistant')
+    expect(valueOf('--mcp-config')).toBe('/tmp/mcp.json')
+    // A read-only run that keeps its built-in tools stays in plan mode and allows nothing up front.
+    const normal = buildClaudeArgs(
+      { ...base, autonomy: 'read-only', mcpServers: [server] },
+      model,
+      '/tmp/mcp.json',
+    )
+    expect(normal[normal.indexOf('--permission-mode') + 1]).toBe('plan')
+    expect(normal).not.toContain('--allowedTools')
+  })
+
   it('a prompt-only run (the compete judge) drops the built-in tools, skills and CLAUDE.md, and stays read-only', () => {
     const args = buildClaudeArgs({ ...base, autonomy: 'read-only', promptOnly: true }, model, undefined)
     const valueOf = (flag: string) => args[args.indexOf(flag) + 1]
     expect(valueOf('--tools')).toBe('')
     expect(valueOf('--setting-sources')).toBe('')
     expect(args).toContain('--disable-slash-commands')
-    expect(args).toEqual(expect.arrayContaining(['--permission-mode', 'plan', '--strict-mcp-config']))
+    expect(args).toEqual(
+      expect.arrayContaining([
+        '--permission-mode',
+        'default',
+        '--permission-prompts',
+        'none',
+        '--strict-mcp-config',
+      ]),
+    )
     expect(args).not.toContain('--mcp-config')
+    expect(args).not.toContain('--allowedTools')
     expect(args.indexOf('--tools')).toBeLessThan(args.indexOf('--'))
     expect(args.slice(-2)).toEqual(['--', 'do it'])
     // Every other run keeps the default tools and its project instructions.

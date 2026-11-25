@@ -2,6 +2,13 @@
 
 > 從 `docs/STATUS.md` 移出的較早驗證結果，內容未改。目前狀態、阻塞與決策看 `docs/STATUS.md`。
 
+### 審查第 2 輪起只看改過的部分（2026-11-24，分支 `review-followup-rounds`）
+
+- **問題**：每輪審查都是全新 run（ephemeral），重送整份 diff（上限 6 萬字元），也不知道自己上一輪說過什麼，容易重讀已通過的檔案、每輪挑新的小毛病而拖長輪數。
+- **做法**（只動 `packages/orchestrator`，`core` 沒動）：review loop 記下上一輪的審查結果、diff 和實作者修完後的回覆。下一輪的 `reviewPrompt` 帶 `PreviousReview`：列出上一輪摘要與 findings、實作者回覆，要求先確認每個 blocker／major 是否解決，新問題只針對改過的程式（blocker 例外）。diff 依檔案切開比對（`splitPatch`、`patchSinceLastReview`）：只送內容有變或新加入的檔案，沒變的列檔名（審查者可自己讀），改回去的檔案另外列出。上一輪是「審查通過但檢查失敗」時，提示文字也照實說。第一輪與接續任務的第一輪不變。
+- **測試**：`review-loop.test.ts`（第 2 輪 prompt 有上一輪 findings、回覆、改過與新增的檔案，沒改的只列名，移除的另列）；`prompts.test.ts`（切檔、結尾換行不影響比對、沒有任何變動、長 diff 上限、通過但檢查失敗的說法）。`pnpm test` 1646 通過。
+- **沒驗證到**：真實模型的審查輪數與 token 是否真的下降。
+
 ### Diff 逐行留言（2026-11-23，分支 `diff-line-comments`）
 
 - **做法**：`numberDiffLines` 依 hunk 標頭算新舊行號（行號用 `data-line` 加 CSS 顯示，不進行的文字）；新增與未變的行留言指向新檔行號，刪除的行指向舊檔。留言像草稿一樣存在 localStorage（`joy.diffComments.<taskId>`）。「送出留言」用 `diffCommentsMessage` 整理成一則訊息（檔案、行號、引用該行、意見），走 `POST /api/tasks/:id/messages`，任務在跑時排隊，跟輸入框一樣。比賽任務與工作副本已移除的任務沒有留言按鈕。server 沒改。
@@ -878,6 +885,7 @@
 
 ## 舊的「最後更新」紀錄
 
+- 最後更新：2026-11-25（各角色 token 統計：設定 → 統計多了「用量分布」，列出實作、審查、裁判、助理、背景工作、安全預審、請教另一個模型各在哪個模型花了多少 token、占比與費用，跨所有任務也含助理；選了專案時不顯示（助理的工作不屬於任何專案）；migration 30 新表 `role_usage`，從上線那天開始記；分支 `role-token-stats`）
 - 最後更新：2026-11-25（審查強度依變更大小調整：加減行數合計 ≤ 20 行或只改文件的變更，由同一個審查模型用 `low` effort 審；每輪依整份 diff 重新判斷，變大就回到原本設定；`config.yaml` 的 `review.small_change_max_lines`（0 關閉）與 `review.small_change_effort`；擁有者確認 #173 的記憶擷取 prompt；分支 `adaptive-review`）
 - 最後更新：2026-11-24（審查第 2 輪起不再整份重看：審查者拿到自己上一輪的意見、實作者的回覆，只送上一輪之後 diff 有變的檔案，沒變的只列檔名；分支 `review-followup-rounds`）
 - 最後更新：2026-11-23（diff 逐行留言：變更面板每行有行號，滑過可留言，留言存在這個瀏覽器，「送出留言」把全部整理成一則訊息交給任務（執行中就排隊）；分支 `diff-line-comments`）

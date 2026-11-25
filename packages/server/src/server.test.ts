@@ -2837,6 +2837,8 @@ describe('Joy local server', () => {
     let called: unknown
     implementer.onRun = async (options) => {
       expect(options.autonomy).toBe('read-only')
+      // Only its prompt and the bridge: no built-in tools, CLAUDE.md or skills.
+      expect(options.promptOnly).toBe(true)
       const mcp = options.mcpServers?.[0]
       if (!mcp || mcp.transport !== 'stdio') throw new Error('assistant bridge missing')
       expect(mcp.name).toBe('joy_assistant')
