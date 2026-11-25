@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
@@ -7,7 +7,8 @@ import { dirname, join, resolve } from 'node:path'
 import { ConfigStore, joyHome } from '../packages/config/src/index.js'
 import { NO_ACTION_NEEDED, runDoctor } from '../packages/server/src/doctor.js'
 import { backupNow, restoreFromBackup } from '../packages/server/src/restore.js'
-import { createJoyServer } from '../packages/server/src/server.js'
+import { openJoy } from '../packages/server/src/open-joy.js'
+import { createJoyServer, readApiToken } from '../packages/server/src/server.js'
 import {
   DEFAULT_SERVICE_PORT,
   realServiceDeps,
@@ -22,6 +23,7 @@ const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const USAGE = [
   'Usage:',
   '  pnpm joy start [--port N]   start Joy on 127.0.0.1 (default port 4317); open it at that address after `build-ui`, or run `pnpm web`',
+  '  pnpm joy open [--port N]    open Joy in your browser, already signed in (Joy must be running)',
   '  pnpm joy build-ui           build the web app that `start` serves (run again after `git pull`)',
   '  pnpm joy service <install|uninstall|status> [--node <path>] [--port N] [--dry-run]',
   '                              run Joy in the background at login, without a terminal (needs a Node 22)',
@@ -61,6 +63,40 @@ if (command === '--help' || args.includes('--help')) {
     }
     process.on('SIGINT', stop)
     process.on('SIGTERM', stop)
+  }
+} else if (command === 'open') {
+  const portArg = args.indexOf('--port')
+  const port = portArg >= 0 ? Number(args[portArg + 1]) : DEFAULT_SERVICE_PORT
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    console.error('--port must be a number from 1 to 65535')
+    process.exitCode = 2
+  } else if (
+    !(await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(3000) }).then(
+      () => true,
+      () => false,
+    ))
+  ) {
+    console.error(
+      `Joy is not running on port ${port}. Start it with \`pnpm joy start\` or \`pnpm joy service install\`.`,
+    )
+    process.exitCode = 1
+  } else {
+    const home = joyHome()
+    console.log(`Opening http://127.0.0.1:${port} in your browser…`)
+    await openJoy(home, port, {
+      readToken: () => readApiToken(join(home, 'api-token')),
+      platform: process.platform,
+      launch: (command, launchArgs) =>
+        new Promise((resolveLaunch, rejectLaunch) => {
+          const child = spawn(command, launchArgs, { shell: false, stdio: 'ignore', detached: true })
+          child.once('error', rejectLaunch)
+          child.once('spawn', () => {
+            child.unref()
+            resolveLaunch()
+          })
+        }),
+      wait: (ms) => new Promise((resolveWait) => setTimeout(resolveWait, ms)),
+    })
   }
 } else if (command === 'build-ui') {
   // Run Vite with this Node directly: `pnpm` is a .cmd shim on Windows and Joy never spawns through a shell.

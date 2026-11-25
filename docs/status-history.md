@@ -2,6 +2,12 @@
 
 > 從 `docs/STATUS.md` 移出的較早驗證結果，內容未改。目前狀態、阻塞與決策看 `docs/STATUS.md`。
 
+### Diff 逐行留言（2026-11-23，分支 `diff-line-comments`）
+
+- **做法**：`numberDiffLines` 依 hunk 標頭算新舊行號（行號用 `data-line` 加 CSS 顯示，不進行的文字）；新增與未變的行留言指向新檔行號，刪除的行指向舊檔。留言像草稿一樣存在 localStorage（`joy.diffComments.<taskId>`）。「送出留言」用 `diffCommentsMessage` 整理成一則訊息（檔案、行號、引用該行、意見），走 `POST /api/tasks/:id/messages`，任務在跑時排隊，跟輸入框一樣。比賽任務與工作副本已移除的任務沒有留言按鈕。server 沒改。
+- **測試**：`diff-comments.test.ts`（行號、留言目標、訊息格式與排序、localStorage 驗證）；e2e `diff-comments.spec.ts`（行號、新增／刪除行留言、Esc 取消、⌘Enter 存、重新整理後還在、刪除、送出內容、無法接續的任務沒有按鈕）；fake-preview 實際走過一次（送出後任務跑第 2 輪）。
+- **沒驗證到**：真實 agent 收到留言後的處理品質。
+
 ### 省 token：背景工作只帶 prompt、記憶擷取批次（2026-11-23，分支 `token-savings`）
 
 - **問題**：只有競賽裁判用 `promptOnly`（先前實測 haiku 裁判 44.5k → 6.2k input token）。安全預審一定走 CLI，背景角色換成 Claude CLI 時對話摘要、上下文摘要、記憶擷取也一樣，每次都載入整套內建工具定義、使用者 CLAUDE.md 與 skills 清單，實際 prompt 只有幾百 token。記憶擷取每則擁有者訊息跑一次，而多數訊息沒有要記的東西。
@@ -852,6 +858,7 @@
 
 ## 舊的「最後更新」紀錄
 
+- 最後更新：2026-11-24（審查第 2 輪起不再整份重看：審查者拿到自己上一輪的意見、實作者的回覆，只送上一輪之後 diff 有變的檔案，沒變的只列檔名；分支 `review-followup-rounds`）
 - 最後更新：2026-11-23（diff 逐行留言：變更面板每行有行號，滑過可留言，留言存在這個瀏覽器，「送出留言」把全部整理成一則訊息交給任務（執行中就排隊）；分支 `diff-line-comments`）
 - 最後更新：2026-11-23（省 token：安全預審、對話摘要、上下文摘要、記憶擷取改帶 `promptOnly`（Claude 不載入內建工具、skills、CLAUDE.md）；記憶擷取不再每則訊息跑一次，改成對話安靜 60 秒（或累積 8 則）後一次讀完；`.claude/` 不再被 prettier／eslint 檢查，本機 `pnpm check` 不會被殘留 worktree 弄壞；**`packages/memory` 的擷取 prompt 已經擁有者確認（2026-11-25）**；分支 `token-savings`）
 - 最後更新：2026-11-20（一次性的 run 不再留下 CLI session：審查者、裁判、安全預審、ask_peer 與背景工作（對話摘要、上下文摘要、記憶擷取）帶 `RunOptions.ephemeral`，Codex exec 加 `--ephemeral`、app-server `thread/start` 帶 `ephemeral: true`、Claude 加 `--no-session-persistence`，Codex App 側欄不再塞滿 `You are performing a cross-model...`；實作者與助理對話仍會存檔以便續接；新增 core 選填欄位 `RunOptions.ephemeral`，擁有者已確認；分支 `codex-ephemeral-runs`）

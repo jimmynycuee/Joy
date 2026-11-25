@@ -91,7 +91,7 @@ pnpm joy service install
 
 Windows 的限制：工作排程器帶不了環境變數，服務用你登入時的使用者環境（Windows 設定裡的 PATH，`claude`、`codex`、`git`、`gh` 要在那裡）；終端機臨時設的 `JOY_HOME` 不會帶進去，要用就先設成 Windows 使用者環境變數。為了不跳出黑色視窗，工作用 `conhost.exe --headless` 啟動（Windows 10 1903 以上），這一點尚待實機驗證；若登入後 Joy 沒有起來，`pnpm joy service uninstall` 後改用終端機 `pnpm joy start`。
 
-4. 打開 <http://127.0.0.1:4317>。第一次會要求貼上存取權杖：它在 `~/.joy/api-token`（Mac：Finder 按 ⌘⇧G 輸入 `~/.joy`，用「文字編輯」開 `api-token`，全選複製）。權杖只存在這個瀏覽器；換瀏覽器或清除網站資料要再貼一次。
+4. 執行 `pnpm joy open`：用預設瀏覽器打開 <http://127.0.0.1:4317>，並自動帶入存取權杖。權杖只存在這個瀏覽器；換瀏覽器或清除網站資料後再執行一次。也可以自己開網址，貼上 `~/.joy/api-token` 的內容（Mac：Finder 按 ⌘⇧G 輸入 `~/.joy`，用「文字編輯」開 `api-token`，全選複製）。
 5. **安裝成 App（PWA）**：用 Chrome 開 <http://127.0.0.1:4317>，按網址列右側的「安裝」圖示（或選單「投放、儲存及分享」→「安裝頁面為應用程式」），之後從 Launchpad／開始功能表開啟。
 6. 查看狀態：`pnpm joy service status`（顯示設定檔、服務管理員、Joy 是否回應）；紀錄在 `~/.joy/logs`（`service.out.log`、`service.err.log`）。
 

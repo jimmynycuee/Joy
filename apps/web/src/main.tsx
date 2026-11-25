@@ -5,6 +5,7 @@ import { UNAUTHORIZED_EVENT, apiToken, saveApiToken } from './api.js'
 import { Mascot } from './components/Mascot.js'
 import { Button } from './components/ui.js'
 import { applyTheme, readTheme } from './theme.js'
+import { takeTokenFromUrl } from './token-handoff.js'
 import { Workspace } from './Workspace.js'
 
 /** Shown when this device has no accepted access token (remote access, or after the token was regenerated). */
@@ -14,7 +15,7 @@ function TokenGate() {
       <Mascot mood="normal" size={72} decorative />
       <h1>Joy 存取權杖</h1>
       <p className="muted">
-        貼上 <code>~/.joy/api-token</code> 的內容：
+        在終端機執行 <code>pnpm joy open</code>，或貼上 <code>~/.joy/api-token</code> 的內容：
       </p>
       <ul className="muted token-gate-steps">
         <li>
@@ -57,6 +58,9 @@ function App() {
 }
 
 export default App
+
+// Before the first request: `pnpm joy open` hands the token over in the address.
+takeTokenFromUrl(window.location, window.history, saveApiToken)
 
 // Apply the saved theme before the first paint so a dark preference does not flash light.
 applyTheme(readTheme())
