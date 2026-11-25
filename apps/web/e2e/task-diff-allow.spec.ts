@@ -100,6 +100,10 @@ test('the diff lists every file, folds each one, keeps long files closed and pag
   const parser = files.getByRole('region', { name: 'src/parser.ts' })
   const lock = files.getByRole('region', { name: 'pnpm-lock.yaml' })
   await expect(parser).toContainText('+src/parser.ts line 2')
+  // git's header lines say what the file row already does.
+  await expect(parser).not.toContainText('diff --git')
+  await expect(parser).not.toContainText('+++ b/src/parser.ts')
+  await expect(parser.locator('.diff-line').first()).toHaveText('@@ -1 +1 @@')
   await expect(files.getByRole('region', { name: 'README.md' })).toContainText('+README.md line 0')
   // The lockfile is too long to draw by itself.
   await expect(lock.getByRole('button', { name: /pnpm-lock\.yaml/ })).toHaveAttribute(
@@ -111,14 +115,14 @@ test('the diff lists every file, folds each one, keeps long files closed and pag
   // Opening it draws the first page, then the rest on request.
   await lock.getByRole('button', { name: /pnpm-lock\.yaml/ }).click()
   await expect(lock.locator('.diff-line')).toHaveCount(500)
-  await lock.getByRole('button', { name: '顯示其餘 704 行' }).click()
-  await expect(lock.locator('.diff-line')).toHaveCount(1204)
+  await lock.getByRole('button', { name: '顯示其餘 701 行' }).click()
+  await expect(lock.locator('.diff-line')).toHaveCount(1201)
 
   // A file folds away.
   await parser.getByRole('button', { name: /src\/parser\.ts/ }).click()
   await expect(parser.locator('.diff-line')).toHaveCount(0)
   await pane.getByRole('button', { name: '全部展開' }).click()
-  await expect(parser.locator('.diff-line')).toHaveCount(7)
+  await expect(parser.locator('.diff-line')).toHaveCount(4)
 
   // Above the diff: open a PR, only when the owner clicks.
   const bar = pane.getByTestId('pr-bar')

@@ -113,12 +113,26 @@ export function planDiff(diff: { files: readonly DiffFile[]; patch: string }): {
   let budget = OPEN_BUDGET_LINES
   const files = flattenTree(buildFileTree(diff.files)).map((file) => {
     const chunk = chunks.get(file.path)
-    const lines = chunk ? chunk.replace(/\n$/, '').split('\n') : []
+    const lines = chunk ? withoutFileHeader(chunk.replace(/\n$/, '').split('\n')) : []
     const open = lines.length > 0 && lines.length <= LONG_FILE_LINES && lines.length <= budget
     if (open) budget -= lines.length
     return { file, lines, open }
   })
   return { files, tooLarge }
+}
+
+// What the file's header row already says: its path, a rename, and whether it is new or deleted.
+const FILE_HEADER =
+  /^(diff --git |index |--- |\+\+\+ |(new|deleted) file mode |similarity index |dissimilarity index |rename (from|to) |copy (from|to) )/
+
+/**
+ * Drops git's header lines before a file's first hunk. Anything else there stays, such as a mode change or
+ * "Binary files … differ", since nothing else shows it.
+ */
+export function withoutFileHeader(lines: readonly string[]): string[] {
+  const firstHunk = lines.findIndex((line) => line.startsWith('@@'))
+  const headerEnd = firstHunk === -1 ? lines.length : firstHunk
+  return [...lines.slice(0, headerEnd).filter((line) => !FILE_HEADER.test(line)), ...lines.slice(headerEnd)]
 }
 
 function flattenTree(nodes: readonly FileTreeNode[]): DiffFile[] {
