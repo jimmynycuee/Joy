@@ -49,6 +49,11 @@ describe('policy event labels', () => {
       policyEventTitle('quota.handoff', { from: { provider: 'claude-cli' }, to: { provider: 'codex-cli' } }),
     ).toBe('額度用完：claude-cli 把任務交給 codex-cli，在同一個工作副本繼續')
     expect(policyEventTitle('quota.queued', {})).toBe('額度用完：等待，之後自動繼續')
+    expect(policyEventTitle('quota.deferred', { provider: 'claude-cli', utilization: 0.934 })).toBe(
+      '額度快用完（claude-cli 已用 93%）：等額度重置再開始',
+    )
+    expect(policyEventTitle('quota.deferred', {})).toBe('額度用完：等額度重置再開始')
+    expect(policyEventKind('quota.deferred', {})).toBe('policy-notify')
     expect(policyEventKind('quota.handoff', {})).toBe('policy-notify')
   })
 

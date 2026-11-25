@@ -2497,11 +2497,121 @@ describe('Joy local server', () => {
     await postJson(`${origin}/api/tasks/${task.id}/cancel`, {})
   })
 
+  it('notes quota reports from review loop runs too', async () => {
+    const reviewer = new FakeProvider('codex-cli', [
+      { type: 'quota', status: 'limited', windows: [], resetsAt: Math.floor(Date.now() / 1000) + 3600 },
+      {
+        type: 'done',
+        sessionId: 'r',
+        isError: false,
+        structured: { approve: true, summary: 'ok', findings: [] },
+      },
+    ])
+    const { serverPromise } = fixture({ reviewer })
+    const { origin } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/tmp/loop-quota', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    const { task } = (await (
+      await postJson(`${origin}/api/tasks`, {
+        repoId: repo.id,
+        title: 'Loop',
+        prompt: 'p',
+        mode: 'review_loop',
+        roleOverrides: { implementer: { provider: 'claude-cli', model: 'haiku', effort: 'low' } },
+      })
+    ).json()) as { task: { id: string } }
+    await waitForStatus(origin, task.id, 'done')
+    const quota = (await (await fetch(`${origin}/api/quota`)).json()) as {
+      providers: Record<string, { limitedNow: boolean }>
+    }
+    expect(quota.providers['codex-cli']?.limitedNow).toBe(true)
+  })
+
+  it('holds a scheduled task back while its provider is near the usage limit, then starts it after the reset', async () => {
+    let time = Date.now()
+    let tick: (() => void) | undefined
+    const schedulerClock = {
+      now: () => new Date(time),
+      setTimeout: (callback: () => void) => {
+        tick = callback
+        return 0
+      },
+      clearTimeout: () => undefined,
+    }
+    const resetsAt = Math.floor(Date.now() / 1000) + 2
+    const claude = scriptedProvider('claude-cli', [
+      // The owner's own task reports 95% of a window used; it still runs.
+      () => [
+        { type: 'session_started', sessionId: 's-own' },
+        { type: 'quota', status: 'warning', windows: [{ name: '5h', utilization: 0.95, resetsAt }] },
+        { type: 'done', sessionId: 's-own', isError: false, finalMessage: 'finished' },
+      ],
+      () => finished('s-scheduled'),
+    ])
+    const { serverPromise } = fixture({
+      schedulerClock,
+      quotaResumeBufferMs: 0,
+      providers: { 'claude-cli': claude.provider },
+    })
+    const { origin } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/tmp/defer-repo', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    const own = (await (
+      await postJson(`${origin}/api/tasks`, { repoId: repo.id, title: 'Mine', prompt: 'p', mode: 'single' })
+    ).json()) as { task: { id: string } }
+    await waitForStatus(origin, own.task.id, 'done')
+
+    await postJson(`${origin}/api/schedules`, {
+      cron: '* * * * *',
+      action: 'task',
+      repoId: repo.id,
+      title: 'Nightly',
+      prompt: 'p',
+      mode: 'single',
+    })
+    time += 2 * 60_000
+    tick?.()
+    const findNightly = async () => {
+      const { tasks } = (await (await fetch(`${origin}/api/tasks`)).json()) as {
+        tasks: Array<{ id: string; title: string }>
+      }
+      return tasks.find((task) => task.title === 'Nightly')
+    }
+    let nightly = await findNightly()
+    for (let i = 0; !nightly && i < 200; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      nightly = await findNightly()
+    }
+    if (!nightly) throw new Error('the schedule did not start its task')
+    const waiting = await waitForEvent(origin, nightly.id, 'quota.deferred')
+    expect(waiting.task.status).toBe('queued')
+    expect(claude.calls).toHaveLength(1)
+    const deferred = waiting.events.find(
+      (event) => (event as { type?: string }).type === 'quota.deferred',
+    ) as {
+      payload: { provider: string; utilization: number; resumeAt: string }
+    }
+    expect(deferred.payload).toMatchObject({
+      provider: 'claude-cli',
+      utilization: 0.95,
+      resumeAt: new Date(resetsAt * 1000).toISOString(),
+    })
+
+    await waitForStatus(origin, nightly.id, 'done', 8_000)
+    expect(claude.calls).toHaveLength(2)
+    expect(claude.calls[1]?.resumeSessionId).toBeUndefined()
+  })
+
   it('queues the task when nobody else can take over and resumes the session after the reset', async () => {
     const home = mkdtempSync(join(tmpdir(), 'joy-quota-queue-'))
     dirs.push(home)
     const configStore = new ConfigStore(join(home, 'config.yaml'))
-    await configStore.update((config) => ({ ...config, fallback: { on_rate_limit: 'queue' } }))
+    await configStore.update((config) => ({
+      ...config,
+      fallback: { ...config.fallback, on_rate_limit: 'queue' },
+    }))
     const claude = scriptedProvider('claude-cli', [
       () => outOfQuota('s-claude', Math.floor(Date.now() / 1000)),
       () => finished('s-claude'),
@@ -2535,7 +2645,10 @@ describe('Joy local server', () => {
     const home = mkdtempSync(join(tmpdir(), 'joy-quota-fail-'))
     dirs.push(home)
     const configStore = new ConfigStore(join(home, 'config.yaml'))
-    await configStore.update((config) => ({ ...config, fallback: { on_rate_limit: 'fail' } }))
+    await configStore.update((config) => ({
+      ...config,
+      fallback: { ...config.fallback, on_rate_limit: 'fail' },
+    }))
     const claude = scriptedProvider('claude-cli', [() => outOfQuota('s-claude')])
     const codex = scriptedProvider('codex-cli', [() => finished('s-codex')])
     const { serverPromise } = fixture({

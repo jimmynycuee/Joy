@@ -50,8 +50,13 @@ export const configSchema = z.strictObject({
     .strictObject({
       /** When a subscription CLI hits its usage limit. */
       on_rate_limit: z.enum(['swap_provider', 'queue', 'fail']).default('swap_provider'),
+      /**
+       * A task started by a schedule or an issue label waits for the reset when a provider it needs has used at least
+       * this share of its usage limit (0.5–1), so the rest goes to your own work. 1 waits only when it is out.
+       */
+      defer_unattended_at: z.number().min(0.5).max(1).default(0.9),
     })
-    .default({ on_rate_limit: 'swap_provider' }),
+    .default({ on_rate_limit: 'swap_provider', defer_unattended_at: 0.9 }),
   budget: z
     .strictObject({
       openai_api_usd_monthly_cap: z.number().nonnegative().default(30),
