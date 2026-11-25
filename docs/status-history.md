@@ -2,6 +2,13 @@
 
 > 從 `docs/STATUS.md` 移出的較早驗證結果，內容未改。目前狀態、阻塞與決策看 `docs/STATUS.md`。
 
+### 審查強度依變更大小調整（2026-11-25，分支 `adaptive-review`）
+
+- **問題**：不管改一行還是改三百行，審查者都用同一個 effort（預設 Codex `gpt-6.1-sol` medium），小改動的審查大多是在花 token。
+- **做法**：`packages/orchestrator` 的 `isSmallChange`：加減行數合計不超過門檻，或每個檔案（改名的話新舊路徑都算）都是 `.md`／`.mdx`／`.markdown`／`.txt`／`.rst`／`.adoc`，就算小改動；空 diff 不算。`ReviewLoopInput.smallChangeReviewer` 有設時，小改動的那一輪審查改用它，`phase` 事件記下實際用的 model。每輪都依整份 diff 重新判斷。server 的 `smallChangeReviewer`（`review-strength.ts`）只換 effort、不換 provider 或模型，所以審查紀錄、usage 歸屬、跨模型檢查都不受影響；設定的 effort 不比原本低，或那個模型不支援該 effort 時就不用。比賽的合併審查不套用。不跳過審查。
+- **測試**：orchestrator（第 1 輪小改動用輕量審查、第 2 輪變大回到原本的審查者；行數、只改文件、改名、空 diff）；server `review-strength.test.ts`（預設、關閉、不會更輕、模型不支援）與 `server.test.ts`（預設 low、`small_change_max_lines: 0` 時維持 medium）；config（預設值與驗證）。`composer-switch.test.ts` 關掉這個設定，因為它驗的是換手後審查者設定被保留。根目錄 `pnpm check` 通過（1662 tests）。
+- **沒驗證到**：真實模型用 low effort 審小改動時，漏看的比例與省下的 token。
+
 ### 審查第 2 輪起只看改過的部分（2026-11-24，分支 `review-followup-rounds`）
 
 - **問題**：每輪審查都是全新 run（ephemeral），重送整份 diff（上限 6 萬字元），也不知道自己上一輪說過什麼，容易重讀已通過的檔案、每輪挑新的小毛病而拖長輪數。
@@ -885,6 +892,7 @@
 
 ## 舊的「最後更新」紀錄
 
+- 最後更新：2026-11-25（變更面板不再顯示 git 的檔頭（`diff --git`、`index`、`---`／`+++`、新增／刪除檔案模式、改名與相似度），檔名列已經說了這些；新增或刪除的檔案在檔名旁標「新檔案」／「已刪除」；模式變更與「Binary files … differ」仍顯示；分支 `hide-diff-headers`）
 - 最後更新：2026-11-25（各角色 token 統計：設定 → 統計多了「用量分布」，列出實作、審查、裁判、助理、背景工作、安全預審、請教另一個模型各在哪個模型花了多少 token、占比與費用，跨所有任務也含助理；選了專案時不顯示（助理的工作不屬於任何專案）；migration 30 新表 `role_usage`，從上線那天開始記；分支 `role-token-stats`）
 - 最後更新：2026-11-25（審查強度依變更大小調整：加減行數合計 ≤ 20 行或只改文件的變更，由同一個審查模型用 `low` effort 審；每輪依整份 diff 重新判斷，變大就回到原本設定；`config.yaml` 的 `review.small_change_max_lines`（0 關閉）與 `review.small_change_effort`；擁有者確認 #173 的記憶擷取 prompt；分支 `adaptive-review`）
 - 最後更新：2026-11-24（審查第 2 輪起不再整份重看：審查者拿到自己上一輪的意見、實作者的回覆，只送上一輪之後 diff 有變的檔案，沒變的只列檔名；分支 `review-followup-rounds`）

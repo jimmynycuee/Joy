@@ -89,6 +89,26 @@ codex exec resume --json [-m <model>] <thread_id> <prompt>
 - 真實 `app-server`：`initialize` 之後送 `configWarning {summary, details}`，`thread/start` 之後送 `warning {threadId, message}`，兩則文字相同。另有 `remoteControl/status/changed`、`mcpServer/startupStatus/updated`、`account/updated`，Joy 記成 `raw`。
 - `exec --image`：Joy 的 exec transport 附 PNG 與文字檔，模型讀得到圖片（`input_image`）和內嵌的文字檔。
 
+## 只帶 prompt 的 run（2026-11-25，codex-cli 0.166.0，gpt-6-luna、low）
+
+裁判、安全預審、背景工作的 prompt 已經包含一切，不需要專案的 AGENTS.md 或內建工具。用 `exec --json` 加 Joy 原本的參數，在一個
+放了約 14KB `AGENTS.md` 的資料夾回一句話，看 `turn.completed.usage.input_tokens`：
+
+| 加的參數                                                                                                               | input tokens |
+| ---------------------------------------------------------------------------------------------------------------------- | ------------ |
+| 無（Joy 原本的）                                                                                                       | 約 21.6k     |
+| `-c project_doc_max_bytes=0`                                                                                           | 約 18.5k     |
+| 再加 `-c web_search="disabled"`                                                                                        | 約 16.0k     |
+| 再加 `--disable shell_tool --disable unified_exec`／`memories goals`／`view_image image_generation`（各省約 0.6–0.7k） | 約 14k       |
+
+- 沒用的：`multi_agent`、`sleep_tool`、`tool_suggest`、`skill_search`、`browser_use`、`computer_use`、`hooks`、`in_app_browser`（幾乎 0）、
+  `-c tools.web_search=false`、`-c include_apply_patch_tool=false`、`-c include_plan_tool=false`（0）。
+- `--disable` 一個不存在的 feature 會直接 `Error: Unknown feature flag`，所以只放有用的那 6 個。
+- 擁有者的 `CODEX_HOME/AGENTS.md` 仍會載入（模型能引用它的標題）；要拿掉只能換 `CODEX_HOME`，會碰到登入，所以不做。
+- app-server：`thread/start` 的 `config` 用點號 key（`features.shell_tool: false`），跟 `-c` 一樣；整個 `features` 表會蓋掉擁有者的設定，
+  實測讓 `codex_apps` 等 MCP server 又跑起來（Joy 的檢查擋下了 run）。改成點號後：一般 run 能跑 shell，`promptOnly` 的 run 回答沒有 shell。
+- app-server 不會把 token 用量回報給 Joy（只有 exec 解析 `usage`），所以 app-server 的 run 不會出現在統計的「用量分布」。
+
 ## 待確認（要在使用者的 Mac 上做）
 
 - [x] 執行 `node scripts/record-fixtures.mjs codex`，錄下 edit / mcp / resume 的真實事件（2026-11-19，codex-cli 0.166.0）
