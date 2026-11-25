@@ -2,12 +2,12 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-25（精簡助理大腦：Claude CLI 當助理時改帶 `promptOnly`（不載入內建工具、CLAUDE.md、skills），並修掉 plan mode 擋住助理自己的 MCP 工具的問題；spike 實測 input 約 132k → 9k token；分支 `lean-assistant-brain`）
 - 最後更新：2026-11-25（擁有者驗收清單：`docs/ACCEPTANCE.md` 依花的時間與需要的東西排序列出只有擁有者能做的驗收與待審的程式碼，可以打勾；已確認的（Codex／Claude fixture、背景服務、一律允許、auto 權限、附件等）移到表格；本檔「需要擁有者處理」改成指向它；分支 `owner-acceptance`）
 - 最後更新：2026-11-25（`pnpm joy open`：用預設瀏覽器打開 Joy 並自動帶入存取權杖，不用再到 `~/.joy` 找檔案貼上；權杖放在網址 `#` 後面（不會送到任何 server），經由只有你能讀的暫時網頁交給瀏覽器（不出現在指令列），網頁存好後立刻從網址列與瀏覽紀錄拿掉；權杖交接屬於 secret handling，擁有者已審；分支 `joy-open-token`）
 - 最後更新：2026-11-25（排程考慮額度：排程與 GitHub 議題標籤開的任務，若要用的 provider 額度已用到 `fallback.defer_unattended_at`（預設 90%）或已用完，先排隊、等該額度重置後自己開始；你自己開的任務照常跑；review loop、助理、背景工作、ask_peer 的額度回報現在也會記下（之前只有 single 模式記）；分支 `quota-aware-scheduling`）
 - 最後更新：2026-11-25（`docs/STATUS.md` 瘦身：174KB → 約 64KB。較早的「最後更新」、2026-11-20 以前的驗證結果與各 ticket 的驗證紀錄原文移到 `docs/status-history.md`（新的在前）；`AGENTS.md` 規定本檔最多 6 行「最後更新」、6 節驗證結果；分支 `slim-status`）
 - 最後更新：2026-11-25（變更面板不再顯示 git 的檔頭（`diff --git`、`index`、`---`／`+++`、新增／刪除檔案模式、改名與相似度），檔名列已經說了這些；新增或刪除的檔案在檔名旁標「新檔案」／「已刪除」；模式變更與「Binary files … differ」仍顯示；分支 `hide-diff-headers`）
-- 最後更新：2026-11-25（各角色 token 統計：設定 → 統計多了「用量分布」，列出實作、審查、裁判、助理、背景工作、安全預審、請教另一個模型各在哪個模型花了多少 token、占比與費用，跨所有任務也含助理；選了專案時不顯示（助理的工作不屬於任何專案）；migration 30 新表 `role_usage`，從上線那天開始記；分支 `role-token-stats`）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 - 更早的「最後更新」、驗證結果與各 ticket 的驗證紀錄在 `docs/status-history.md`（新的在前）。
@@ -70,6 +70,13 @@
 
 ## 驗證結果
 
+### 精簡助理大腦（2026-11-25，分支 `lean-assistant-brain`）
+
+- **問題**：Claude CLI 當助理大腦時帶 `user,project` 設定與全部內建工具（實測 28 個工具、81 個 skills），而助理只用得到 `joy_assistant` MCP 工具。spike 時還發現：助理跑在 plan mode（`read-only`），**plan mode 會拒絕沒標 `readOnlyHint` 的 MCP 工具**，`--allowedTools` 也放不過，所以 Claude 大腦的助理其實叫不到自己的工具（預設大腦是 OpenAI API，所以沒人發現）。
+- **做法**：`runAssistantTurn` 帶 `promptOnly: true`。Claude provider 對 `promptOnly`＋`read-only` 的 run 改用 `--permission-mode default --permission-prompts none`（沒有內建工具，plan mode 沒東西可擋），並只對傳進來的 MCP server 加 `--allowedTools mcp__<name>`。其他 `promptOnly` run（裁判、安全預審、背景工作）沒有 MCP server，所以什麼都不放行。Codex 與 OpenAI API 大腦忽略這個選項。細節與對照表在 `docs/spikes/claude-code.md`。
+- **測試**：providers `args.test.ts`（助理的參數：沒有內建工具、default mode、只放行 `mcp__joy_assistant`；保留內建工具的唯讀 run 仍是 plan、不放行；沒有 MCP 的 promptOnly run 不放行）；server（Claude 大腦的助理 run 帶 `promptOnly`）。真實 CLI spike（haiku、low，用一個測試用 MCP server）：舊參數下工具被拒、約 132k input；新參數下工具通過、約 9k input、讀不到檔案、`--resume` 接得上。根目錄 `pnpm check` 通過（1682 tests）。
+- **沒驗證到**：沒有透過 Joy 本身的助理實際跑一次（已列進 `docs/ACCEPTANCE.md` A 區）；`--allowedTools` 放多個 server 時的逗號格式（目前只會有一個）。
+
 ### `pnpm joy open` 自動帶入存取權杖（2026-11-25，分支 `joy-open-token`，secret handling 擁有者已審）
 
 - **問題**：打開建好的網頁介面（`pnpm joy start` 或背景服務）時，要自己到 `~/.joy/api-token` 找檔案、複製、貼上。
@@ -104,15 +111,9 @@
 - **測試**：orchestrator（第 1 輪小改動用輕量審查、第 2 輪變大回到原本的審查者；行數、只改文件、改名、空 diff）；server `review-strength.test.ts`（預設、關閉、不會更輕、模型不支援）與 `server.test.ts`（預設 low、`small_change_max_lines: 0` 時維持 medium）；config（預設值與驗證）。`composer-switch.test.ts` 關掉這個設定，因為它驗的是換手後審查者設定被保留。根目錄 `pnpm check` 通過（1662 tests）。
 - **沒驗證到**：真實模型用 low effort 審小改動時，漏看的比例與省下的 token。
 
-### 審查第 2 輪起只看改過的部分（2026-11-24，分支 `review-followup-rounds`）
-
-- **問題**：每輪審查都是全新 run（ephemeral），重送整份 diff（上限 6 萬字元），也不知道自己上一輪說過什麼，容易重讀已通過的檔案、每輪挑新的小毛病而拖長輪數。
-- **做法**（只動 `packages/orchestrator`，`core` 沒動）：review loop 記下上一輪的審查結果、diff 和實作者修完後的回覆。下一輪的 `reviewPrompt` 帶 `PreviousReview`：列出上一輪摘要與 findings、實作者回覆，要求先確認每個 blocker／major 是否解決，新問題只針對改過的程式（blocker 例外）。diff 依檔案切開比對（`splitPatch`、`patchSinceLastReview`）：只送內容有變或新加入的檔案，沒變的列檔名（審查者可自己讀），改回去的檔案另外列出。上一輪是「審查通過但檢查失敗」時，提示文字也照實說。第一輪與接續任務的第一輪不變。
-- **測試**：`review-loop.test.ts`（第 2 輪 prompt 有上一輪 findings、回覆、改過與新增的檔案，沒改的只列名，移除的另列）；`prompts.test.ts`（切檔、結尾換行不影響比對、沒有任何變動、長 diff 上限、通過但檢查失敗的說法）。`pnpm test` 1646 通過。
-- **沒驗證到**：真實模型的審查輪數與 token 是否真的下降。
-
 ## 已確認決策
 
+- 2026-11-25 精簡助理大腦（擁有者選「精簡助理大腦」；以下細節為 agent 決定，`core`、`policy` 沒動）：不把助理工具標成 `readOnlyHint`，因為其中有會建立任務、排程的工具；改成沒有內建工具的 default mode，只放行 Joy 自己傳進來的 MCP server，和 OpenAI API 大腦直接執行工具的行為一致（工具的權限仍由 Joy 那一端決定，例如助理開的任務一律「要求核准」）。
 - 2026-11-25 擁有者驗收清單（擁有者選「擁有者驗收清單」）：放在獨立的 `docs/ACCEPTANCE.md` 而不是本檔，因為擁有者要能直接打勾、寫結果，agent 也不用每次開工讀完整的步驟；是否已完成以本機實際狀態（`pnpm joy service status`、`claude --version`／`codex --version` 對 `TESTED_CLI_VERSIONS`）與真實 CLI 輪次紀錄判斷。
 - 2026-11-25 `pnpm joy open`（擁有者選「pnpm joy open 帶 token」；以下細節為 agent 決定，權杖交接擁有者已審）：權杖走 URL fragment 而不是 query（不會送到 server、不進 log）；經 owner-only 暫時網頁交給瀏覽器，而不是把網址放在 `open` 的參數（同機其他使用者看得到行程參數）；網頁收到後立刻從網址與瀏覽紀錄拿掉；背景服務安裝後不自動開瀏覽器，因為服務第一次啟動才會建立權杖。
 - 2026-11-25 排程考慮額度（擁有者選「排程考慮額度」；以下細節為 agent 決定，`core`、`policy`、`memory` 沒動）：只延後沒人在等的任務（排程、議題標籤），不延後你自己或你透過助理要求的；延後的任務重新從頭開始，因為它還沒有 session；門檻預設 90%，設成 1 表示只在用完時才等。

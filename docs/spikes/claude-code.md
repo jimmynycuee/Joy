@@ -85,6 +85,22 @@ been trusted`），但它的 `hooks`（例如 `SessionStart`）**照跑**。
     走核准卡問擁有者，同意才啟動（`packages/server/src/claude-settings.ts`）。使用者 `~/.claude/settings.json` 的 allow 規則是
     擁有者自己的設定，照樣生效、不經 Joy。
 
+## 只有 MCP 工具的唯讀 run（2026-11-25，Claude Code 2.1.319，haiku、low）
+
+助理大腦只需要 Joy 給的 `joy_assistant` MCP 工具。用一個只有 `get_secret_word` 工具的 stdio MCP server、同一個 prompt 比較：
+
+| 參數                                                                                                  | 結果                                                       | input（含 cache） |
+| ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ----------------- |
+| `--setting-sources user,project --permission-mode plan --permission-prompts none`（原本的助理）       | 28 個工具、81 個 skills；**MCP 呼叫被拒**（plan mode）     | 約 132k           |
+| `--setting-sources '' --tools '' --disable-slash-commands`，其餘同上                                  | 只剩 1 個工具；**MCP 呼叫仍被拒**                          | 約 11k            |
+| 同上，工具標 `annotations.readOnlyHint: true`                                                         | 通過                                                       | 約 11k            |
+| 同上（沒標），加 `--allowedTools mcp__joy_assistant`                                                  | plan mode 下**仍被拒**                                     | 約 11k            |
+| `--tools ''`＋`--permission-mode default --permission-prompts none --allowedTools mcp__joy_assistant` | 通過；要它讀 `/etc/hosts` 時回答做不到（沒有任何內建工具） | 約 9k             |
+| 上一列再加 `--resume <session>` 問上一輪的結果                                                        | 接得上                                                     | —                 |
+
+結論：plan mode 會擋所有沒標 `readOnlyHint` 的 MCP 工具，`--allowedTools` 也不能放行；助理的工具有些會建立任務或排程，
+標成唯讀不對。Joy 的 `promptOnly` 唯讀 run 改用 default mode，只放行傳進來的 Joy MCP server。
+
 ## 額度感知（T2.5）
 
 `rate_limit_event` 直接提供 5 小時與 7 天窗口的使用率與重置時間，**不必從錯誤訊息猜**。

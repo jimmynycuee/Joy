@@ -124,6 +124,9 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     cwd: input.cwd,
     prompt,
     autonomy: 'read-only',
+    // Everything the assistant needs is in its prompt and its joy_assistant tools: no built-in tools, CLAUDE.md or
+    // skills (Claude Code; other brains ignore it).
+    promptOnly: true,
     signal: input.signal,
     ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
     ...(input.images?.length ? { images: input.images } : {}),
