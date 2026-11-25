@@ -4678,7 +4678,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       updateAttempt(db, attempt.id, { status: phaseStatus(event.phase) })
     } else if (event.type === 'agent') {
       const model = event.role === 'reviewer' ? reviewer : implementer
-      persistUsageEvent(db, event.role === 'reviewer' ? 'reviewer' : 'implementer', model, event.event)
+      trackUsage(event.role === 'reviewer' ? 'reviewer' : 'implementer', model, event.event)
       if (event.role === 'implementer' && event.event.type === 'session_started') {
         updateAttempt(db, attempt.id, { sessionId: event.event.sessionId })
       }
@@ -4795,7 +4795,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         } else if (event.type === 'judging') {
           publishTaskLevel(task.id, 'compete.judging', { model: event.model })
         } else if (event.type === 'judge_agent') {
-          persistUsageEvent(db, 'judge', judge, event.event)
+          trackUsage('judge', judge, event.event)
           // The judge runs outside any attempt; its usage is kept with the task like the contestants'.
           if (event.event.type === 'usage')
             publishTaskLevel(task.id, 'compete.usage', { role: 'judge', model: judge, event: event.event })
@@ -5347,7 +5347,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         },
         reviewer.model,
       )) {
-        persistUsageEvent(db, 'safety_review', reviewer.model, event)
+        trackUsage('safety_review', reviewer.model, event)
         if (event.type === 'error' && !event.recoverable) throw new Error(redactor.redact(event.message))
         if (event.type === 'done') done = event
       }
@@ -5603,7 +5603,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
             { cwd, prompt, autonomy: 'read-only', ephemeral: true, signal: peerSignal },
             peerModel,
           )) {
-            persistUsageEvent(db, 'peer', peerModel, event)
+            trackUsage('peer', peerModel, event)
             if (event.type === 'message') finalMessage += event.text
             if (event.type === 'error' && !event.recoverable) {
               throw new Error(redactor.redact(event.message))
@@ -5674,6 +5674,8 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
   async function startTask(
     request: z.infer<typeof taskInputSchema>,
     originConversationId?: string,
+    /** Started by a schedule or an issue label, with nobody waiting for it: it may wait for a quota reset. */
+    unattended = false,
   ): Promise<StoredTask> {
     const config = await configStore.get()
     const input = applyWorkflow(request, config)
@@ -5722,8 +5724,52 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       )
     )
       throw new HttpError(409, 'An attachment was already sent; attach the file again')
+    if (unattended && deferStart(task, config)) return getTask(db, task.id) ?? task
     scheduleTask(task)
     return task
+  }
+
+  /**
+   * Holds back a task nobody is waiting for while a provider it needs is near its usage limit, so the quota left goes
+   * to the owner's own work. Returns true when the task now waits; it starts by itself after the reset.
+   */
+  function deferStart(task: StoredTask, config: JoyConfig): boolean {
+    const roles = selectActiveRoles(task.mode, config.roles as RoleConfig, task.roleOverrides ?? {})
+    const providerKinds = [...new Set(Object.values(roles).map((role) => role.provider))]
+    const threshold = config.fallback.defer_unattended_at
+    const pressed = providerKinds
+      .map((provider) => ({ provider, pressure: quotaPressure(provider, threshold) }))
+      .filter((entry) => entry.pressure !== undefined)
+    if (!pressed.length) return false
+    const resumeAt = Math.max(...pressed.map((entry) => entry.pressure?.resumeAt ?? 0))
+    const first = pressed[0]
+    setTaskStatus(db, task.id, 'queued')
+    publishTaskLevel(task.id, 'quota.deferred', {
+      provider: first?.provider,
+      ...(first?.pressure?.utilization !== undefined ? { utilization: first.pressure.utilization } : {}),
+      resumeAt: new Date(resumeAt).toISOString(),
+    })
+    scheduleDeferredStart(task.id, resumeAt)
+    return true
+  }
+
+  function scheduleDeferredStart(taskId: TaskId, startAt: number): void {
+    clearTimeout(quotaTimers.get(taskId))
+    const timer = setTimeout(
+      () => {
+        quotaTimers.delete(taskId)
+        void (async () => {
+          const task = getTask(db, taskId)
+          if (!task || task.status !== 'queued' || running.has(taskId)) return
+          // Still near the limit (a newer report came in): wait for that reset instead.
+          if (deferStart(task, await configStore.get())) return
+          scheduleTask(task)
+        })()
+      },
+      Math.max(0, startAt - Date.now()),
+    )
+    timer.unref?.()
+    quotaTimers.set(taskId, timer)
   }
 
   /** The workflows a task can use: the three built-in patterns, then the owner's own from config.yaml (T5.6). */
@@ -6106,6 +6152,8 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
           provenance: 'external_content',
         },
         conversationId,
+        // A labelled issue is picked up by polling; "do #12" is the owner asking now.
+        trigger.kind === 'label',
       )
       setIssueImportTask(db, repo.id, number, task.id)
       publishTaskLevel(task.id, 'issue.imported', request.source)
@@ -6255,12 +6303,19 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       const task = await startTask(
         { ...taskInputSchema.parse(schedule.payload), permissionMode: 'ask' },
         conversationId,
+        true,
       )
+      const deferred = listTaskEvents(db, task.id).find((event) => event.type === 'quota.deferred')
+      const startAt = String((deferred?.payload as { resumeAt?: unknown } | undefined)?.resumeAt ?? '')
       appendMessage(
         db,
         conversationId,
         'assistant',
-        redactor.redact(`Started scheduled task "${task.title}"${lateNote(lateMs, scheduledFor)}.${missed}`),
+        redactor.redact(
+          deferred
+            ? `Scheduled task "${task.title}" waits for the usage limit to reset and starts by itself at ${startAt}${lateNote(lateMs, scheduledFor)}.${missed}`
+            : `Started scheduled task "${task.title}"${lateNote(lateMs, scheduledFor)}.${missed}`,
+        ),
       )
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -6381,7 +6436,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         },
         model,
       )) {
-        persistUsageEvent(db, 'background', model, event)
+        trackUsage('background', model, event)
         if (event.type === 'done') done = event
       }
       const summary = done && !done.isError ? parseSummary(done.structured) : undefined
@@ -6451,7 +6506,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         },
         model,
       )) {
-        persistUsageEvent(db, 'background', model, event)
+        trackUsage('background', model, event)
         if (event.type === 'done') done = event
       }
       const summary = done && !done.isError ? parseContextSummary(done.structured) : undefined
@@ -6524,7 +6579,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       },
       model,
     )) {
-      persistUsageEvent(db, 'background', model, event)
+      trackUsage('background', model, event)
       if (event.type === 'done') done = event
     }
     if (!done || done.isError) return
@@ -6714,7 +6769,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         appendMessage(db, conversationId, 'system', message)
         throw new HttpError(502, message)
       }
-      for (const event of result.events) persistUsageEvent(db, 'assistant', brain, event)
+      for (const event of result.events) trackUsage('assistant', brain, event)
       const reply = appendMessage(db, conversationId, 'assistant', redactor.redact(result.reply), memoryIds)
       // A memory this session holds was edited or deleted while the brain answered: do not keep the session.
       const stale = memoryEpoch !== epochAtStart && memoryIds.some((id) => staleMemories.has(id))
@@ -6742,15 +6797,44 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
   /** Latest quota report per provider, for handoff decisions and the UI. */
   const quotaState = new Map<
     ProviderKind,
-    { status: 'allowed' | 'warning' | 'limited'; resetsAt?: number; at: number }
+    { status: 'allowed' | 'warning' | 'limited'; resetsAt?: number; utilization?: number; at: number }
   >()
   function noteQuota(provider: ProviderKind, event: Extract<AgentEvent, { type: 'quota' }>): void {
     const resetsAt = event.resetsAt ?? Math.min(...event.windows.map((w) => w.resetsAt ?? Infinity))
+    const utilization = Math.max(
+      ...event.windows.map((w) => (Number.isFinite(w.utilization) ? w.utilization : 0)),
+    )
     quotaState.set(provider, {
       status: event.status,
       ...(Number.isFinite(resetsAt) ? { resetsAt } : {}),
+      ...(Number.isFinite(utilization) ? { utilization } : {}),
       at: Date.now(),
     })
+  }
+  /** Every agent run reports here: usage for the stats and budgets, quota for handoffs and deferring. */
+  function trackUsage(role: UsageRole, model: ModelRef, event: AgentEvent): void {
+    persistUsageEvent(db, role, model, event)
+    if (event.type === 'quota') noteQuota(model.provider, event)
+  }
+  /**
+   * A provider close enough to its usage limit that work nobody is waiting for should not start yet: out of quota, or
+   * at least `threshold` of it used. A report counts until its window resets (an hour when it gave no reset time).
+   */
+  function quotaPressure(
+    provider: ProviderKind,
+    threshold: number,
+    now = Date.now(),
+  ): { utilization?: number; resumeAt: number } | undefined {
+    const state = quotaState.get(provider)
+    if (!state) return undefined
+    const until = state.resetsAt !== undefined ? state.resetsAt * 1000 : state.at + 60 * 60_000
+    if (until <= now) return undefined
+    const high = state.status === 'limited' || (state.utilization ?? 0) >= threshold
+    if (!high) return undefined
+    return {
+      ...(state.utilization !== undefined ? { utilization: state.utilization } : {}),
+      resumeAt: until + (options.quotaResumeBufferMs ?? 60_000),
+    }
   }
   function isLimitedNow(provider: ProviderKind): boolean {
     const state = quotaState.get(provider)
@@ -6983,8 +7067,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
     setImplementerTurn(task.id, true)
     try {
       for await (const event of provider.run(options, model)) {
-        persistUsageEvent(db, 'implementer', model, event)
-        if (event.type === 'quota') noteQuota(model.provider, event)
+        trackUsage('implementer', model, event)
         if (event.type === 'usage') chargeTask(task.id, model.provider, event)
         if (event.type === 'session_started') updateAttempt(db, attempt.id, { sessionId: event.sessionId })
         if (event.type === 'error' && !event.recoverable) failure = event.message
@@ -7109,8 +7192,7 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         },
         model,
       )) {
-        persistUsageEvent(db, 'implementer', model, event)
-        if (event.type === 'quota') noteQuota(model.provider, event)
+        trackUsage('implementer', model, event)
         if (event.type === 'usage') chargeTask(task.id, model.provider, event)
         if (event.type === 'session_started') updateAttempt(db, attempt.id, { sessionId: event.sessionId })
         if (event.type === 'error' && !event.recoverable) failure = event.message
@@ -7206,12 +7288,15 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
   for (const task of listTasks(db)) {
     if (task.status !== 'queued') continue
     const queued = listTaskEvents(db, task.id)
-      .filter((event) => event.type === 'quota.queued')
+      .filter((event) => event.type === 'quota.queued' || event.type === 'quota.deferred')
       .at(-1)
     const resumeAt = Date.parse(
       String((queued?.payload as { resumeAt?: unknown } | undefined)?.resumeAt ?? ''),
     )
-    if (Number.isFinite(resumeAt)) scheduleQuotaResume(task.id, resumeAt)
+    if (!Number.isFinite(resumeAt)) continue
+    // A deferred task never started, so there is no session to resume: it starts from the beginning.
+    if (queued?.type === 'quota.deferred') scheduleDeferredStart(task.id, resumeAt)
+    else scheduleQuotaResume(task.id, resumeAt)
   }
 
   let remoteServer: Server | undefined

@@ -33,6 +33,14 @@ describe('parseConfig', () => {
     expect(() => parseConfig('tool_hub: { max_ask_peer_calls: 101 }')).toThrow(/tool_hub.max_ask_peer_calls/)
   })
 
+  it('holds back unattended tasks at 90% of a usage limit by default, between 50% and 100%', () => {
+    expect(parseConfig('').fallback.defer_unattended_at).toBe(0.9)
+    expect(parseConfig('fallback: { defer_unattended_at: 1 }').fallback.defer_unattended_at).toBe(1)
+    expect(() => parseConfig('fallback: { defer_unattended_at: 0.2 }')).toThrow(
+      /fallback.defer_unattended_at/,
+    )
+  })
+
   it('reviews changes of up to 20 lines at low effort by default, and validates the setting', () => {
     expect(parseConfig('').review).toEqual({ small_change_max_lines: 20, small_change_effort: 'low' })
     expect(parseConfig('review: { small_change_max_lines: 0 }').review.small_change_max_lines).toBe(0)

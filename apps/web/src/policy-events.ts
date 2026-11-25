@@ -60,6 +60,15 @@ export function policyEventTitle(type: string, payload: Payload): string | undef
     const at = text(payload?.resumeAt)
     return `額度用完：等待${at ? `到 ${new Date(at).toLocaleString()}` : ''}，之後自動繼續`
   }
+  if (type === 'quota.deferred') {
+    const at = text(payload?.resumeAt)
+    const provider = text(payload?.provider)
+    const used =
+      typeof payload?.utilization === 'number'
+        ? `額度快用完（${provider ? `${provider} ` : ''}已用 ${Math.round(payload.utilization * 100)}%）`
+        : `額度用完${provider ? `（${provider}）` : ''}`
+    return `${used}：等${at ? `到 ${new Date(at).toLocaleString()}` : '額度重置'}再開始`
+  }
   if (type === 'task.paused') return '已暫停：時間內沒有回覆。你同意後會接著原本的進度繼續。'
   if (type === 'approval.granted') return `你稍後同意了，允許這一次：${text(payload?.summary) ?? ''}`.trim()
   if (type === 'task_allow.created') return `這個任務內一律允許：${text(payload?.target) ?? ''}`.trim()
@@ -80,7 +89,7 @@ export function policyEventKind(type: string, payload: Payload): string | undefi
   if (type === 'approval.requested' || type === 'task.paused') return 'policy-approve'
   if (type === 'approval.granted' || type === 'task_allow.created') return 'policy-auto'
   if (type === 'task_allow.revoked') return 'policy-notify'
-  if (type === 'quota.handoff' || type === 'quota.queued') return 'policy-notify'
+  if (type === 'quota.handoff' || type === 'quota.queued' || type === 'quota.deferred') return 'policy-notify'
   if (type === 'approval.decided') return payload?.status === 'approved' ? 'policy-auto' : 'policy-approve'
   return undefined
 }

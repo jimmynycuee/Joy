@@ -2,12 +2,12 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-25（排程考慮額度：排程與 GitHub 議題標籤開的任務，若要用的 provider 額度已用到 `fallback.defer_unattended_at`（預設 90%）或已用完，先排隊、等該額度重置後自己開始；你自己開的任務照常跑；review loop、助理、背景工作、ask_peer 的額度回報現在也會記下（之前只有 single 模式記）；分支 `quota-aware-scheduling`）
 - 最後更新：2026-11-25（`docs/STATUS.md` 瘦身：174KB → 約 64KB。較早的「最後更新」、2026-11-20 以前的驗證結果與各 ticket 的驗證紀錄原文移到 `docs/status-history.md`（新的在前）；`AGENTS.md` 規定本檔最多 6 行「最後更新」、6 節驗證結果；分支 `slim-status`）
 - 最後更新：2026-11-25（變更面板不再顯示 git 的檔頭（`diff --git`、`index`、`---`／`+++`、新增／刪除檔案模式、改名與相似度），檔名列已經說了這些；新增或刪除的檔案在檔名旁標「新檔案」／「已刪除」；模式變更與「Binary files … differ」仍顯示；分支 `hide-diff-headers`）
 - 最後更新：2026-11-25（各角色 token 統計：設定 → 統計多了「用量分布」，列出實作、審查、裁判、助理、背景工作、安全預審、請教另一個模型各在哪個模型花了多少 token、占比與費用，跨所有任務也含助理；選了專案時不顯示（助理的工作不屬於任何專案）；migration 30 新表 `role_usage`，從上線那天開始記；分支 `role-token-stats`）
 - 最後更新：2026-11-25（審查強度依變更大小調整：加減行數合計 ≤ 20 行或只改文件的變更，由同一個審查模型用 `low` effort 審；每輪依整份 diff 重新判斷，變大就回到原本設定；`config.yaml` 的 `review.small_change_max_lines`（0 關閉）與 `review.small_change_effort`；擁有者確認 #173 的記憶擷取 prompt；分支 `adaptive-review`）
 - 最後更新：2026-11-24（審查第 2 輪起不再整份重看：審查者拿到自己上一輪的意見、實作者的回覆，只送上一輪之後 diff 有變的檔案，沒變的只列檔名；分支 `review-followup-rounds`）
-- 最後更新：2026-11-23（diff 逐行留言：變更面板每行有行號，滑過可留言，留言存在這個瀏覽器，「送出留言」把全部整理成一則訊息交給任務（執行中就排隊）；分支 `diff-line-comments`）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 - 更早的「最後更新」、驗證結果與各 ticket 的驗證紀錄在 `docs/status-history.md`（新的在前）。
@@ -84,6 +84,13 @@
 
 ## 驗證結果
 
+### 排程考慮額度（2026-11-25，分支 `quota-aware-scheduling`）
+
+- **問題**：排程和議題標籤開的任務不管額度剩多少都會立刻開始，可能把訂閱額度用到見底，你自己要用時反而沒了。另外 Joy 只在 single 模式記下 provider 的額度回報，review loop 等其他 run 的回報被丟掉，交接判斷也看不到。
+- **做法**：所有 agent run 的事件都經過 `trackUsage`（用量統計＋額度狀態），額度狀態多記每個時間窗的最高使用率。`startTask` 多一個 `unattended` 參數，只有排程與議題標籤輪詢會帶（助理的「do #12」是你在要求，不算）。任務要用的 provider 中有一個額度回報仍有效（還沒到重置時間；沒給重置時間的算一小時）且已用完或使用率 ≥ `fallback.defer_unattended_at`（0.5–1，預設 0.9），任務就維持 `queued`、記 `quota.deferred`（provider、使用率、開始時間），在重置時間（加 `quotaResumeBufferMs`）重新判斷，沒有更新的高用量回報就從頭開始（不是 resume）。重開 Joy 時依事件裡的時間重新排程。排程的對話訊息會說任務在等額度。網頁時間軸顯示「額度快用完（claude-cli 已用 93%）：等到 … 再開始」。
+- **測試**：server（自己的任務回報 95% 後照常完成、排程的任務被延後並記下 provider／使用率／時間、重置後從頭開始；review loop 的審查者回報額度用完後 `/api/quota` 顯示 limited）；config（預設與範圍）；web `policy-events.test.ts`。根目錄 `pnpm check` 通過（1673 tests）。
+- **沒驗證到**：真實 Claude／Codex 的使用率回報格式只靠既有 fixture；重開 Joy 後延後任務的接續沒有整合測試（沿用 `quota.queued` 的同一套排程）。
+
 ### 變更面板隱藏 git 檔頭（2026-11-25，分支 `hide-diff-headers`）
 
 - **做法**：`planDiff` 用 `withoutFileHeader` 去掉每個檔案第一個 hunk 之前的 git 檔頭；hunk 裡以 `---`／`+++` 開頭的程式碼不受影響。檔頭之外的行（模式變更、二進位檔）保留，因為沒有別的地方會顯示。檔名列多了「新檔案」／「已刪除」，取代原本的 `new file mode`／`deleted file mode`。只改網頁。
@@ -117,15 +124,9 @@
 - **測試**：`diff-comments.test.ts`（行號、留言目標、訊息格式與排序、localStorage 驗證）；e2e `diff-comments.spec.ts`（行號、新增／刪除行留言、Esc 取消、⌘Enter 存、重新整理後還在、刪除、送出內容、無法接續的任務沒有按鈕）；fake-preview 實際走過一次（送出後任務跑第 2 輪）。
 - **沒驗證到**：真實 agent 收到留言後的處理品質。
 
-### 省 token：背景工作只帶 prompt、記憶擷取批次（2026-11-23，分支 `token-savings`）
-
-- **問題**：只有競賽裁判用 `promptOnly`（先前實測 haiku 裁判 44.5k → 6.2k input token）。安全預審一定走 CLI，背景角色換成 Claude CLI 時對話摘要、上下文摘要、記憶擷取也一樣，每次都載入整套內建工具定義、使用者 CLAUDE.md 與 skills 清單，實際 prompt 只有幾百 token。記憶擷取每則擁有者訊息跑一次，而多數訊息沒有要記的東西。
-- **做法**：上述四種 run 帶 `promptOnly: true`（`ask_peer` 不變，它可能要讀 worktree）。記憶擷取依對話排隊：對話安靜 `MEMORY_EXTRACTION_DELAY_MS`（60 秒）或累積 `MEMORY_EXTRACTION_BATCH`（8 則）才跑一次，一次讀完這段時間的擁有者訊息；Joy 停止時先把等待中的送出。仍只讀擁有者自己的話，寫入規則（`applyExtraction`）沒動。`JoyServerOptions.memoryExtractionDelayMs` 給測試用。`.claude/` 加進 `.prettierignore` 與 eslint ignores。
-- **測試**：server（安全預審 `promptOnly`、peer 回答沒有；摘要、上下文摘要、記憶擷取 run 都 `promptOnly`；三則訊息安靜後只跑一次且依序；8 則觸發一次、停止時讀完剩下那則）；memory（多則訊息的 prompt 格式與順序）。根目錄 `pnpm check` 在有 26 個殘留 worktree 的本機通過（1645 tests）。
-- **沒驗證到**：沒呼叫真實 CLI 或 API；實際省下多少 token、批次後擷取品質。Codex 沒有 `promptOnly` 的對應作法（需要 spike，可能是關掉 `AGENTS.md` 載入），仍照舊。
-
 ## 已確認決策
 
+- 2026-11-25 排程考慮額度（擁有者選「排程考慮額度」；以下細節為 agent 決定，`core`、`policy`、`memory` 沒動）：只延後沒人在等的任務（排程、議題標籤），不延後你自己或你透過助理要求的；延後的任務重新從頭開始，因為它還沒有 session；門檻預設 90%，設成 1 表示只在用完時才等。
 - 2026-11-25 `docs/STATUS.md` 瘦身（擁有者選「做 STATUS.md 瘦身」）：只搬移、不改寫內容；擁有者待審、需要擁有者處理、未完成的票、卡住與所有決策都留在本檔，因為它們會影響下一個 agent 的判斷。
 - 2026-11-25 各角色 token 統計（擁有者選「各角色 token 統計」；以下細節為 agent 決定，`core`、`policy`、`memory` 沒動）：另開 `role_usage` 表而不是在 `usage` 加欄位，因為 `usage` 的主鍵與月預算計算依賴它；安全預審與 ask_peer 跟一般審查分開算；選專案時不顯示，避免把助理用量算進某個專案。
 - 2026-11-25 審查強度依變更大小調整（擁有者說「繼續做下一個優化」；以下細節為 agent 決定，`core`、`policy`、`memory` 沒動）：只降 effort、不換模型也不跳過審查，避免換模型後變成同模型審查或紀錄錯置；門檻 20 行與只改文件可在 `config.yaml` 調整或關閉。同日擁有者對 #173 記憶擷取 prompt 待審的提醒回覆「沒問題」，視為已審。
