@@ -3807,6 +3807,29 @@ describe('Joy local server', () => {
     }
   })
 
+  it('opens the page for a link from another site or a local file, and still refuses everything else cross-site', async () => {
+    const { serverPromise } = fixture()
+    const { origin } = await start(serverPromise)
+    const host = new URL(origin).host
+    // `pnpm joy open` goes through a local file, so the browser calls the page load cross-site.
+    const navigate = {
+      host,
+      'sec-fetch-site': 'cross-site',
+      'sec-fetch-mode': 'navigate',
+      'sec-fetch-dest': 'document',
+    }
+    expect((await rawRequest(origin, '/', 'GET', navigate, '', null)).status).not.toBe(403)
+    // The API, a page in a frame, a script's fetch and a navigation that posts are still refused.
+    expect((await rawRequest(origin, '/api/repos', 'GET', navigate)).status).toBe(403)
+    expect(
+      (await rawRequest(origin, '/', 'GET', { ...navigate, 'sec-fetch-dest': 'iframe' }, '', null)).status,
+    ).toBe(403)
+    expect(
+      (await rawRequest(origin, '/', 'GET', { ...navigate, 'sec-fetch-mode': 'cors' }, '', null)).status,
+    ).toBe(403)
+    expect((await rawRequest(origin, '/', 'POST', navigate, '', null)).status).toBe(403)
+  })
+
   it('serves only files inside the built UI folder', async () => {
     const { serverPromise } = fixture()
     const { origin } = await start(serverPromise)

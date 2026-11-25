@@ -2,12 +2,12 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-25（修 `pnpm joy open`：從本機暫時網頁跳轉到 Joy 時瀏覽器送 `Sec-Fetch-Site: cross-site`，server 一律擋下，頁面只剩 `Origin is not allowed`、網址留著權杖；改成只放行跨站的「整頁載入」（GET／HEAD、非 API、navigate＋document），API、iframe、script 請求照樣擋；驗收清單更正 #181 為未通過；分支 `fix-joy-open-navigation`）
 - 最後更新：2026-11-25（第二輪驗收：背景工作用 Claude 時記憶批次與摘要正常（#173）、審查第 2 輪接著上一輪的意見（#175）都通過；A 區只剩首頁的環境檢查；**發現：助理會說自己「無法保存記憶」，但 Joy 其實會在背景自動記住，助理的指示沒告訴它**；分支 `acceptance-round-2`）
 - 最後更新：2026-11-25（第一輪驗收：`pnpm joy open`、小改動輕量審查＋用量分布（Claude 與 Codex 兩列）、Claude CLI 當助理大腦都通過，記在 `docs/ACCEPTANCE.md`；新增測試 repo `/Users/jimmy/Documents/joy-acceptance-test`；分支 `acceptance-round-1`）
 - 最後更新：2026-11-25（Codex 不再跑擁有者的 hooks：app-server 與 exec 啟動時都加 `--disable hooks`；實測 app-server 一個 turn 的 hook 事件從 8 個變 0，擁有者 `~/.codex/hooks.json` 的 reason-network 與研究腳本不會再因 Joy 的 run 執行；分支 `codex-no-owner-hooks`）
 - 最後更新：2026-11-25（Codex app-server 回報 token 用量：解析 `thread/tokenUsage/updated`，每個 turn 取 thread 累計的增量；Codex 預設 transport 的 run 現在會出現在統計「用量分布」與任務用量；另發現 app-server 的 run 會跑擁有者 Codex 的 hooks；分支 `codex-app-server-usage`）
 - 最後更新：2026-11-25（Codex 只帶 prompt：裁判、安全預審、背景工作用 Codex 時不載入專案 AGENTS.md、不開 web search、關掉 shell、圖片、memories 等內建工具，實測 input 約 21.6k → 14k；exec 與 app-server 都做；發現 app-server 不回報 token 用量；分支 `codex-prompt-only`）
-- 最後更新：2026-11-25（精簡助理大腦：Claude CLI 當助理時改帶 `promptOnly`（不載入內建工具、CLAUDE.md、skills），並修掉 plan mode 擋住助理自己的 MCP 工具的問題；spike 實測 input 約 132k → 9k token；分支 `lean-assistant-brain`）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 - 更早的「最後更新」、驗證結果與各 ticket 的驗證紀錄在 `docs/status-history.md`（新的在前）。
@@ -70,6 +70,13 @@
 
 ## 驗證結果
 
+### 修 `pnpm joy open` 被當成 cross-site 擋下（2026-11-25，分支 `fix-joy-open-navigation`）
+
+- **問題**：擁有者在 Brave 執行 `pnpm joy open`，頁面只顯示 `{"error":"Origin is not allowed"}`，網址列留著 `#token=…`（擁有者截圖，權杖因此外流，已請擁有者換一組）。原因：從 `file://` 的暫時網頁跳到 `http://127.0.0.1` 時，瀏覽器送 `Sec-Fetch-Site: cross-site`，而 server 對任何 cross-site 請求都回 403，連網頁本身都載不到，網頁也就沒機會把權杖從網址拿掉。#181 的 e2e 直接開 `/#token=…`，沒走暫時網頁，所以沒抓到。
+- **做法**：`packages/server/src/server.ts` 的 cross-site 規則只放行「整頁載入」：GET／HEAD、不是 `/api`、`Sec-Fetch-Mode: navigate` 且 `Sec-Fetch-Dest: document`。建好的網頁不含任何秘密，載入也不改任何東西；API、iframe、script 的 fetch、POST 仍然擋。
+- **測試**：server 新測試（先失敗、修後通過）：跨站整頁載入 `/` 不是 403；跨站的 `/api/repos`、iframe、`cors` fetch、POST 仍是 403。真實 Chromium（Playwright）：另起一個用分支程式碼、暫時 `JOY_HOME` 的 Joy（4391），用 `openJoy` 寫暫時網頁並在瀏覽器打開：文件 200、沒有 Origin 錯誤、沒有權杖頁、網址沒有 `#token`、權杖已存、沒留下 `open-*.html`。curl 重現：帶 `sec-fetch-site: cross-site` 的舊版回 403。根目錄 `pnpm check` 通過。
+- **沒驗證到**：擁有者的 Brave 實際再跑一次（要先換權杖、重新啟動服務）。
+
 ### Codex 不跑擁有者的 hooks（2026-11-25，分支 `codex-no-owner-hooks`）
 
 - **問題**：Joy 的 Codex app-server run 會執行擁有者 `~/.codex/hooks.json` 裡的 hooks（目前是 reason-network 的 session／prompt／tool／stop hook 與一個研究腳本）。hook 會執行指令，不經過 Joy 的核准，也讓 Joy 的 run 被回報到別的系統。exec 的 `--ignore-user-config` 只略過 config.toml，`hooks.json` 是另一個檔案。
@@ -105,15 +112,9 @@
 - **測試**：server `open-joy.test.ts`（網址、跳脫、三個平台的指令、權杖只在 0600 網頁裡不在指令列、用完刪除、瀏覽器啟動失敗也刪除）；web `token-handoff.test.ts`（只收格式對的、存好後拿掉、不對的也拿掉、其他 fragment 不動）；e2e `access-token.spec.ts`（帶 `#token=` 打開不出現權杖頁、網址沒有 fragment 且保留 query、請求都帶這個權杖、重新整理仍登入）。手動跑 `pnpm joy open --port 4391`（沒有 Joy）顯示啟動提示並回傳 1。根目錄 `pnpm check` 通過（1681 tests）。
 - **沒驗證到**：沒有真的打開瀏覽器（本機在跑的 Joy 是舊版網頁）；Windows 的 `rundll32` 與 Linux 的 `xdg-open` 只有單元測試；snap 版瀏覽器可能讀不到 `~/.joy` 裡的暫時網頁。
 
-### 排程考慮額度（2026-11-25，分支 `quota-aware-scheduling`）
-
-- **問題**：排程和議題標籤開的任務不管額度剩多少都會立刻開始，可能把訂閱額度用到見底，你自己要用時反而沒了。另外 Joy 只在 single 模式記下 provider 的額度回報，review loop 等其他 run 的回報被丟掉，交接判斷也看不到。
-- **做法**：所有 agent run 的事件都經過 `trackUsage`（用量統計＋額度狀態），額度狀態多記每個時間窗的最高使用率。`startTask` 多一個 `unattended` 參數，只有排程與議題標籤輪詢會帶（助理的「do #12」是你在要求，不算）。任務要用的 provider 中有一個額度回報仍有效（還沒到重置時間；沒給重置時間的算一小時）且已用完或使用率 ≥ `fallback.defer_unattended_at`（0.5–1，預設 0.9），任務就維持 `queued`、記 `quota.deferred`（provider、使用率、開始時間），在重置時間（加 `quotaResumeBufferMs`）重新判斷，沒有更新的高用量回報就從頭開始（不是 resume）。重開 Joy 時依事件裡的時間重新排程。排程的對話訊息會說任務在等額度。網頁時間軸顯示「額度快用完（claude-cli 已用 93%）：等到 … 再開始」。
-- **測試**：server（自己的任務回報 95% 後照常完成、排程的任務被延後並記下 provider／使用率／時間、重置後從頭開始；review loop 的審查者回報額度用完後 `/api/quota` 顯示 limited）；config（預設與範圍）；web `policy-events.test.ts`。根目錄 `pnpm check` 通過（1673 tests）。
-- **沒驗證到**：真實 Claude／Codex 的使用率回報格式只靠既有 fixture；重開 Joy 後延後任務的接續沒有整合測試（沿用 `quota.queued` 的同一套排程）。
-
 ## 已確認決策
 
+- 2026-11-25 `pnpm joy open` 跨站載入（修 #181 的 bug；細節為 agent 決定）：只放行跨站的整頁載入，不放寬 API 或 Origin 檢查；建好的網頁不含秘密，載入不改狀態，所以別的網站連到 Joy 首頁只會看到權杖頁。
 - 2026-11-25 Codex 不跑擁有者的 hooks（擁有者選「修 hooks」）：一律關掉，不提供「讓 Joy 的 run 也跑我的 hooks」的設定，因為 hook 執行的指令不經過 Joy 的核准，和 Joy 已經關掉擁有者的 MCP server、plugins、execpolicy 規則是同一個理由。
 - 2026-11-25 Codex 只帶 prompt（擁有者選「Codex 只帶 prompt」；以下細節為 agent 決定，`core` 沒動，沿用已審的 `promptOnly`）：不換 `CODEX_HOME` 來拿掉擁有者的 AGENTS.md，因為那裡有登入；只關實測有省的 6 個 feature，避免 Codex 改版移除某個名字後整個 run 起不來（版本由 `TESTED_CLI_VERSIONS` 把關）。
 - 2026-11-25 精簡助理大腦（擁有者選「精簡助理大腦」；以下細節為 agent 決定，`core`、`policy` 沒動）：不把助理工具標成 `readOnlyHint`，因為其中有會建立任務、排程的工具；改成沒有內建工具的 default mode，只放行 Joy 自己傳進來的 MCP server，和 OpenAI API 大腦直接執行工具的行為一致（工具的權限仍由 Joy 那一端決定，例如助理開的任務一律「要求核准」）。
