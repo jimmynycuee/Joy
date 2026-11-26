@@ -2,12 +2,12 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-26（助理不再說自己「無法保存記憶」：`ASSISTANT_INSTRUCTIONS` 補上 Joy 會在對話暫停後於背景記住擁有者說的長期偏好、可在「記憶與排程」面板查看與修改、敏感資料不存；記憶寫入規則沒動；真實 haiku 確認回答正確；分支 `assistant-memory-note`）
 - 最後更新：2026-11-26（驗收清單 A 區全部通過：#189 之後 `pnpm joy open` 在擁有者的 Brave 成功、設定頁的環境檢查正常；分支 `acceptance-round-3`）
 - 最後更新：2026-11-25（修 `pnpm joy open`：從本機暫時網頁跳轉到 Joy 時瀏覽器送 `Sec-Fetch-Site: cross-site`，server 一律擋下，頁面只剩 `Origin is not allowed`、網址留著權杖；改成只放行跨站的「整頁載入」（GET／HEAD、非 API、navigate＋document），API、iframe、script 請求照樣擋；驗收清單更正 #181 為未通過；分支 `fix-joy-open-navigation`）
 - 最後更新：2026-11-25（第二輪驗收：背景工作用 Claude 時記憶批次與摘要正常（#173）、審查第 2 輪接著上一輪的意見（#175）都通過；A 區只剩首頁的環境檢查；**發現：助理會說自己「無法保存記憶」，但 Joy 其實會在背景自動記住，助理的指示沒告訴它**；分支 `acceptance-round-2`）
 - 最後更新：2026-11-25（第一輪驗收：`pnpm joy open`、小改動輕量審查＋用量分布（Claude 與 Codex 兩列）、Claude CLI 當助理大腦都通過，記在 `docs/ACCEPTANCE.md`；新增測試 repo `/Users/jimmy/Documents/joy-acceptance-test`；分支 `acceptance-round-1`）
 - 最後更新：2026-11-25（Codex 不再跑擁有者的 hooks：app-server 與 exec 啟動時都加 `--disable hooks`；實測 app-server 一個 turn 的 hook 事件從 8 個變 0，擁有者 `~/.codex/hooks.json` 的 reason-network 與研究腳本不會再因 Joy 的 run 執行；分支 `codex-no-owner-hooks`）
-- 最後更新：2026-11-25（Codex app-server 回報 token 用量：解析 `thread/tokenUsage/updated`，每個 turn 取 thread 累計的增量；Codex 預設 transport 的 run 現在會出現在統計「用量分布」與任務用量；另發現 app-server 的 run 會跑擁有者 Codex 的 hooks；分支 `codex-app-server-usage`）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 - 更早的「最後更新」、驗證結果與各 ticket 的驗證紀錄在 `docs/status-history.md`（新的在前）。
