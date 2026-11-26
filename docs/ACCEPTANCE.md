@@ -44,7 +44,6 @@ A 區全部完成（2026-11-26），結果在下面的「已確認」表。
 `packages/core` 與 `packages/policy` 已在 2026-11-19 確認；記憶擷取 prompt（#173）與 `pnpm joy open` 權杖交接（#181）已在
 2026-11-25 確認。還沒審的：
 
-- [ ] `packages/memory/src/lessons.ts`（2026-11-26）：從審查意見提案專案守則的規則：3 個不同任務、排除外部內容任務、nit 不算、只提案不自動寫入。
 - [ ] `packages/secrets` 的 MCP 機密（2026-11-17 外掛：設定 → 外掛新增的 MCP server，機密只存在鑰匙圈）。
 - [ ] channel 認證（Telegram 只認擁有者的 chat id）。T2.4 暫緩，可以等要用時再審。
 - [ ] 助理上下文摘要的兩個預設（2026-11-20）：「這段對話開的任務都沒有在排隊、執行或等核准」才整理（`review_ready` 算告一
@@ -61,6 +60,7 @@ A 區全部完成（2026-11-26），結果在下面的「已確認」表。
 | 第 2 輪只審改過的部分（#175）                | 2026-11-25 測試 repo 任務故意先漏 README：第 1 輪退回（major，缺 README 一行），第 2 輪通過，摘要寫「先前指出的 README 缺漏已補上」                                                  |
 | `pnpm joy open`（#181、#189）                | 2026-11-25 第一次在 Brave 被當成 cross-site 擋下（#189 修正，外流的權杖已換）；2026-11-26 修正後擁有者重試成功，`~/.joy` 沒有留下 `open-*.html`                                      |
 | 環境檢查（T1.13／T1.8）                      | 2026-11-25 `pnpm joy doctor` 7 項 OK；2026-11-26 擁有者確認 設定 → 進階 →「環境檢查」正常，沒有顯示憑證                                                                              |
+| 從審查意見學規則（#192）                     | 2026-11-26 擁有者審過 `packages/memory/src/lessons.ts`                                                                                                                               |
 | T0.4 Codex 真實 fixture                      | 2026-11-19 錄製，contract test 通過；目前測過 0.166.0，與這台 Mac 裝的一致                                                                                                           |
 | T4.6／Claude 真實 fixture                    | 2026-11-19 用 2.1.319 重錄，contract test 通過；與這台 Mac 裝的一致                                                                                                                  |
 | 不用終端機（背景服務）                       | 2026-11-25 `pnpm joy service status`：launchd 已載入、running，`http://127.0.0.1:4317` 有回應                                                                                        |

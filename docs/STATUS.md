@@ -2,7 +2,7 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
-- 最後更新：2026-11-26（從審查意見學規則：同一個專案裡，審查在 3 個以上不同任務都指出的同類問題，由背景模型整理成一條守則，走既有的專案守則提案（擁有者看 diff 再決定）；外部內容的任務不算、引用過的審查不重複用；migration 31；**`packages/memory/src/lessons.ts` 屬於記憶寫入規則，待擁有者審**；分支 `rules-from-findings`）
+- 最後更新：2026-11-26（從審查意見學規則：同一個專案裡，審查在 3 個以上不同任務都指出的同類問題，由背景模型整理成一條守則，走既有的專案守則提案（擁有者看 diff 再決定）；外部內容的任務不算、引用過的審查不重複用；migration 31；`packages/memory/src/lessons.ts` 屬於記憶寫入規則，擁有者已審；分支 `rules-from-findings`）
 - 最後更新：2026-11-26（助理不再說自己「無法保存記憶」：`ASSISTANT_INSTRUCTIONS` 補上 Joy 會在對話暫停後於背景記住擁有者說的長期偏好、可在「記憶與排程」面板查看與修改、敏感資料不存；記憶寫入規則沒動；真實 haiku 確認回答正確；分支 `assistant-memory-note`）
 - 最後更新：2026-11-26（驗收清單 A 區全部通過：#189 之後 `pnpm joy open` 在擁有者的 Brave 成功、設定頁的環境檢查正常；分支 `acceptance-round-3`）
 - 最後更新：2026-11-25（修 `pnpm joy open`：從本機暫時網頁跳轉到 Joy 時瀏覽器送 `Sec-Fetch-Site: cross-site`，server 一律擋下，頁面只剩 `Origin is not allowed`、網址留著權杖；改成只放行跨站的「整頁載入」（GET／HEAD、非 API、navigate＋document），API、iframe、script 請求照樣擋；驗收清單更正 #181 為未通過；分支 `fix-joy-open-navigation`）
@@ -14,7 +14,7 @@
 
 ## 擁有者待審
 
-- **2026-11-26 新增待審：`packages/memory/src/lessons.ts`（從審查意見提案專案守則的規則）**，做法見「驗證結果」與「已確認決策」同日的項目。
+- **2026-11-26 擁有者已審：`packages/memory/src/lessons.ts`（從審查意見提案專案守則的規則）**（擁有者回覆「審過了，合併」），做法見「驗證結果」與「已確認決策」同日的項目。
 
 - **2026-11-25 擁有者已審：`pnpm joy open` 的權杖交接（secret handling）**（擁有者回覆「審過了，合併」），做法見「驗證結果」與「已確認決策」同日的項目。
 
@@ -72,7 +72,7 @@
 
 ## 驗證結果
 
-### 從審查意見學規則（2026-11-26，分支 `rules-from-findings`，**`packages/memory/src/lessons.ts` 待擁有者審**）
+### 從審查意見學規則（2026-11-26，分支 `rules-from-findings`，`packages/memory/src/lessons.ts` 擁有者已審）
 
 - **做法**：review loop 結束時，若這次的審查有 nit 以外的意見，就在背景檢查同一個專案的審查意見（`listRepoFindings`：最新在前、最多 200 則審查，**排除 `external_content` 任務**）。`lessonCandidates` 去掉 nit 與已被提案引用過的審查；剩下的跨不到 `LESSON_MIN_TASKS`（3）個任務就不呼叫模型。夠的話用背景模型（`promptOnly`、ephemeral、`LESSON_SCHEMA`）請它寫一條守則並引用 f1、f2… 編號；`parseLesson` 只接受引用到 3 個以上不同任務、且是出示過的編號的答案。通過後走既有的 `proposeProjectNote`（`cleanNote` 擋敏感內容、300 字上限），存成 `source: 'review_findings'`、`evidence` 為引用的審查 id；同文字的提案不重複。網頁的守則提案多一行「在 N 次審查中都被指出」。migration 31：`project_notes.source`（CHECK）與 `evidence`（JSON 陣列 CHECK）。`JoyServerOptions.reviewLessons` 可關。
 - **測試**：memory `lessons.test.ts`（不到 3 個任務不問模型、去掉 nit 與已引用、prompt 把意見當資料並列出既有守則、答案驗證）；db `project-notes.test.ts`（排除外部內容任務、source／evidence 與 CHECK）；server（3 個任務後提出 1 則 pending 提案、引用 3 則審查、背景 run 是 promptOnly、第 4 個任務不再呼叫模型）；e2e `project-notes.spec.ts`（來源說明）。根目錄 `pnpm check` 通過。
@@ -115,7 +115,7 @@
 
 ## 已確認決策
 
-- 2026-11-26 從審查意見學規則（擁有者選「從審查學規則」；以下細節為 agent 決定，**待擁有者審**）：門檻是 3 個不同任務（同一任務多輪的意見只算一次）；只提案、不自動寫入，沿用專案守則的 diff 確認；排除外部內容任務，避免 issue 或網頁的文字經由審查意見變成守則；nit 不算，因為多半是品味；只在這次審查有 nit 以外的意見時才檢查，限制背景呼叫次數。
+- 2026-11-26 從審查意見學規則（擁有者選「從審查學規則」；以下細節為 agent 決定，擁有者 2026-11-26 已審）：門檻是 3 個不同任務（同一任務多輪的意見只算一次）；只提案、不自動寫入，沿用專案守則的 diff 確認；排除外部內容任務，避免 issue 或網頁的文字經由審查意見變成守則；nit 不算，因為多半是品味；只在這次審查有 nit 以外的意見時才檢查，限制背景呼叫次數。
 - 2026-11-25 `pnpm joy open` 跨站載入（修 #181 的 bug；細節為 agent 決定）：只放行跨站的整頁載入，不放寬 API 或 Origin 檢查；建好的網頁不含秘密，載入不改狀態，所以別的網站連到 Joy 首頁只會看到權杖頁。
 - 2026-11-25 Codex 不跑擁有者的 hooks（擁有者選「修 hooks」）：一律關掉，不提供「讓 Joy 的 run 也跑我的 hooks」的設定，因為 hook 執行的指令不經過 Joy 的核准，和 Joy 已經關掉擁有者的 MCP server、plugins、execpolicy 規則是同一個理由。
 - 2026-11-25 Codex 只帶 prompt（擁有者選「Codex 只帶 prompt」；以下細節為 agent 決定，`core` 沒動，沿用已審的 `promptOnly`）：不換 `CODEX_HOME` 來拿掉擁有者的 AGENTS.md，因為那裡有登入；只關實測有省的 6 個 feature，避免 Codex 改版移除某個名字後整個 run 起不來（版本由 `TESTED_CLI_VERSIONS` 把關）。
