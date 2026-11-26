@@ -256,6 +256,9 @@ export function HistorySearch(props: { onOpen: (conversationId: string) => void 
 interface ProjectNote {
   id: string
   note: string
+  /** `review_findings`: reviewers kept finding the same thing; `evidence` lists those reviews. */
+  source?: string
+  evidence?: string[]
   file: string
   repoPath?: string
   stale?: boolean
@@ -356,6 +359,9 @@ export function ProjectNotesPanel(props: { onError: (message: string) => void })
               {note.file}
             </span>
           </p>
+          {note.source === 'review_findings' ? (
+            <p className="muted">在 {note.evidence?.length ?? 0} 次審查中都被指出</p>
+          ) : null}
           {note.stale ? (
             <p className="muted">提案之後檔案又改過了。請拒絕這個提案，再請 Joy 重新提一次。</p>
           ) : (

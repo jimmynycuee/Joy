@@ -2,17 +2,19 @@
 
 > 本檔記錄已驗證結果、目前阻塞、待擁有者審查與已確認決策；ticket 勾選狀態以 `docs/PLAN.md` 為準。不記錄 PR 狀態快照。
 
+- 最後更新：2026-11-26（從審查意見學規則：同一個專案裡，審查在 3 個以上不同任務都指出的同類問題，由背景模型整理成一條守則，走既有的專案守則提案（擁有者看 diff 再決定）；外部內容的任務不算、引用過的審查不重複用；migration 31；`packages/memory/src/lessons.ts` 屬於記憶寫入規則，擁有者已審；分支 `rules-from-findings`）
 - 最後更新：2026-11-26（助理不再說自己「無法保存記憶」：`ASSISTANT_INSTRUCTIONS` 補上 Joy 會在對話暫停後於背景記住擁有者說的長期偏好、可在「記憶與排程」面板查看與修改、敏感資料不存；記憶寫入規則沒動；真實 haiku 確認回答正確；分支 `assistant-memory-note`）
 - 最後更新：2026-11-26（驗收清單 A 區全部通過：#189 之後 `pnpm joy open` 在擁有者的 Brave 成功、設定頁的環境檢查正常；分支 `acceptance-round-3`）
 - 最後更新：2026-11-25（修 `pnpm joy open`：從本機暫時網頁跳轉到 Joy 時瀏覽器送 `Sec-Fetch-Site: cross-site`，server 一律擋下，頁面只剩 `Origin is not allowed`、網址留著權杖；改成只放行跨站的「整頁載入」（GET／HEAD、非 API、navigate＋document），API、iframe、script 請求照樣擋；驗收清單更正 #181 為未通過；分支 `fix-joy-open-navigation`）
 - 最後更新：2026-11-25（第二輪驗收：背景工作用 Claude 時記憶批次與摘要正常（#173）、審查第 2 輪接著上一輪的意見（#175）都通過；A 區只剩首頁的環境檢查；**發現：助理會說自己「無法保存記憶」，但 Joy 其實會在背景自動記住，助理的指示沒告訴它**；分支 `acceptance-round-2`）
 - 最後更新：2026-11-25（第一輪驗收：`pnpm joy open`、小改動輕量審查＋用量分布（Claude 與 Codex 兩列）、Claude CLI 當助理大腦都通過，記在 `docs/ACCEPTANCE.md`；新增測試 repo `/Users/jimmy/Documents/joy-acceptance-test`；分支 `acceptance-round-1`）
-- 最後更新：2026-11-25（Codex 不再跑擁有者的 hooks：app-server 與 exec 啟動時都加 `--disable hooks`；實測 app-server 一個 turn 的 hook 事件從 8 個變 0，擁有者 `~/.codex/hooks.json` 的 reason-network 與研究腳本不會再因 Joy 的 run 執行；分支 `codex-no-owner-hooks`）
 - T2.1 平行競賽已用假 provider 完成；擁有者 Codex 額度恢復後可用真實 CLI 跑一次（最便宜模型、low effort）。T3.8 需要 Google 登入，未做。
 - 目前階段：P1 真實驗收由擁有者在本機處理；P2 按 T2.3 → T2.7b → T2.4 → T2.5 → T2.1 執行，完成後依序進入 P3。
 - 更早的「最後更新」、驗證結果與各 ticket 的驗證紀錄在 `docs/status-history.md`（新的在前）。
 
 ## 擁有者待審
+
+- **2026-11-26 擁有者已審：`packages/memory/src/lessons.ts`（從審查意見提案專案守則的規則）**（擁有者回覆「審過了，合併」），做法見「驗證結果」與「已確認決策」同日的項目。
 
 - **2026-11-25 擁有者已審：`pnpm joy open` 的權杖交接（secret handling）**（擁有者回覆「審過了，合併」），做法見「驗證結果」與「已確認決策」同日的項目。
 
@@ -70,6 +72,12 @@
 
 ## 驗證結果
 
+### 從審查意見學規則（2026-11-26，分支 `rules-from-findings`，`packages/memory/src/lessons.ts` 擁有者已審）
+
+- **做法**：review loop 結束時，若這次的審查有 nit 以外的意見，就在背景檢查同一個專案的審查意見（`listRepoFindings`：最新在前、最多 200 則審查，**排除 `external_content` 任務**）。`lessonCandidates` 去掉 nit 與已被提案引用過的審查；剩下的跨不到 `LESSON_MIN_TASKS`（3）個任務就不呼叫模型。夠的話用背景模型（`promptOnly`、ephemeral、`LESSON_SCHEMA`）請它寫一條守則並引用 f1、f2… 編號；`parseLesson` 只接受引用到 3 個以上不同任務、且是出示過的編號的答案。通過後走既有的 `proposeProjectNote`（`cleanNote` 擋敏感內容、300 字上限），存成 `source: 'review_findings'`、`evidence` 為引用的審查 id；同文字的提案不重複。網頁的守則提案多一行「在 N 次審查中都被指出」。migration 31：`project_notes.source`（CHECK）與 `evidence`（JSON 陣列 CHECK）。`JoyServerOptions.reviewLessons` 可關。
+- **測試**：memory `lessons.test.ts`（不到 3 個任務不問模型、去掉 nit 與已引用、prompt 把意見當資料並列出既有守則、答案驗證）；db `project-notes.test.ts`（排除外部內容任務、source／evidence 與 CHECK）；server（3 個任務後提出 1 則 pending 提案、引用 3 則審查、背景 run 是 promptOnly、第 4 個任務不再呼叫模型）；e2e `project-notes.spec.ts`（來源說明）。根目錄 `pnpm check` 通過。
+- **沒驗證到**：真實模型歸納的品質（要累積到 3 個有同類意見的任務）。
+
 ### 修 `pnpm joy open` 被當成 cross-site 擋下（2026-11-25，分支 `fix-joy-open-navigation`）
 
 - **問題**：擁有者在 Brave 執行 `pnpm joy open`，頁面只顯示 `{"error":"Origin is not allowed"}`，網址列留著 `#token=…`（擁有者截圖，權杖因此外流，已請擁有者換一組）。原因：從 `file://` 的暫時網頁跳到 `http://127.0.0.1` 時，瀏覽器送 `Sec-Fetch-Site: cross-site`，而 server 對任何 cross-site 請求都回 403，連網頁本身都載不到，網頁也就沒機會把權杖從網址拿掉。#181 的 e2e 直接開 `/#token=…`，沒走暫時網頁，所以沒抓到。
@@ -105,15 +113,9 @@
 - **測試**：providers `args.test.ts`（助理的參數：沒有內建工具、default mode、只放行 `mcp__joy_assistant`；保留內建工具的唯讀 run 仍是 plan、不放行；沒有 MCP 的 promptOnly run 不放行）；server（Claude 大腦的助理 run 帶 `promptOnly`）。真實 CLI spike（haiku、low，用一個測試用 MCP server）：舊參數下工具被拒、約 132k input；新參數下工具通過、約 9k input、讀不到檔案、`--resume` 接得上。根目錄 `pnpm check` 通過（1682 tests）。
 - **沒驗證到**：沒有透過 Joy 本身的助理實際跑一次（已列進 `docs/ACCEPTANCE.md` A 區）；`--allowedTools` 放多個 server 時的逗號格式（目前只會有一個）。
 
-### `pnpm joy open` 自動帶入存取權杖（2026-11-25，分支 `joy-open-token`，secret handling 擁有者已審）
-
-- **問題**：打開建好的網頁介面（`pnpm joy start` 或背景服務）時，要自己到 `~/.joy/api-token` 找檔案、複製、貼上。
-- **做法**：`pnpm joy open [--port N]`（`packages/server/src/open-joy.ts`）先確認 Joy 有在跑，再讀 `api-token`（沿用 server 的 `readApiToken`：拒絕 symlink、POSIX 要 owner-only），在 `JOY_HOME` 以 `wx`＋`0600` 建一個暫時網頁，內容只有 `location.replace("http://127.0.0.1:<port>/#token=…")`（`no-referrer`，`<` 跳脫），用 `open`／`rundll32 url.dll,FileProtocolHandler`／`xdg-open`（不經 shell）打開，30 秒後刪除；瀏覽器沒打開也會刪。權杖不在指令列，所以同一台電腦的其他使用者從 `ps` 看不到；放在 fragment，所以不會送到 server 或寫進 server log。網頁（`apps/web/src/token-handoff.ts`）在任何 API 請求之前讀 `#token=`、格式對才存進 localStorage，並用 `history.replaceState` 拿掉整個 fragment（格式不對也拿掉），保留原本的路徑與 query。權杖頁的說明多了「在終端機執行 `pnpm joy open`」；背景服務安裝完的提示與 README 改成用 `pnpm joy open`。
-- **測試**：server `open-joy.test.ts`（網址、跳脫、三個平台的指令、權杖只在 0600 網頁裡不在指令列、用完刪除、瀏覽器啟動失敗也刪除）；web `token-handoff.test.ts`（只收格式對的、存好後拿掉、不對的也拿掉、其他 fragment 不動）；e2e `access-token.spec.ts`（帶 `#token=` 打開不出現權杖頁、網址沒有 fragment 且保留 query、請求都帶這個權杖、重新整理仍登入）。手動跑 `pnpm joy open --port 4391`（沒有 Joy）顯示啟動提示並回傳 1。根目錄 `pnpm check` 通過（1681 tests）。
-- **沒驗證到**：沒有真的打開瀏覽器（本機在跑的 Joy 是舊版網頁）；Windows 的 `rundll32` 與 Linux 的 `xdg-open` 只有單元測試；snap 版瀏覽器可能讀不到 `~/.joy` 裡的暫時網頁。
-
 ## 已確認決策
 
+- 2026-11-26 從審查意見學規則（擁有者選「從審查學規則」；以下細節為 agent 決定，擁有者 2026-11-26 已審）：門檻是 3 個不同任務（同一任務多輪的意見只算一次）；只提案、不自動寫入，沿用專案守則的 diff 確認；排除外部內容任務，避免 issue 或網頁的文字經由審查意見變成守則；nit 不算，因為多半是品味；只在這次審查有 nit 以外的意見時才檢查，限制背景呼叫次數。
 - 2026-11-25 `pnpm joy open` 跨站載入（修 #181 的 bug；細節為 agent 決定）：只放行跨站的整頁載入，不放寬 API 或 Origin 檢查；建好的網頁不含秘密，載入不改狀態，所以別的網站連到 Joy 首頁只會看到權杖頁。
 - 2026-11-25 Codex 不跑擁有者的 hooks（擁有者選「修 hooks」）：一律關掉，不提供「讓 Joy 的 run 也跑我的 hooks」的設定，因為 hook 執行的指令不經過 Joy 的核准，和 Joy 已經關掉擁有者的 MCP server、plugins、execpolicy 規則是同一個理由。
 - 2026-11-25 Codex 只帶 prompt（擁有者選「Codex 只帶 prompt」；以下細節為 agent 決定，`core` 沒動，沿用已審的 `promptOnly`）：不換 `CODEX_HOME` 來拿掉擁有者的 AGENTS.md，因為那裡有登入；只關實測有省的 6 個 feature，避免 Codex 改版移除某個名字後整個 run 起不來（版本由 `TESTED_CLI_VERSIONS` 把關）。

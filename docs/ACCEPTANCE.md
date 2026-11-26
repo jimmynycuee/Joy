@@ -60,6 +60,7 @@ A 區全部完成（2026-11-26），結果在下面的「已確認」表。
 | 第 2 輪只審改過的部分（#175）                | 2026-11-25 測試 repo 任務故意先漏 README：第 1 輪退回（major，缺 README 一行），第 2 輪通過，摘要寫「先前指出的 README 缺漏已補上」                                                  |
 | `pnpm joy open`（#181、#189）                | 2026-11-25 第一次在 Brave 被當成 cross-site 擋下（#189 修正，外流的權杖已換）；2026-11-26 修正後擁有者重試成功，`~/.joy` 沒有留下 `open-*.html`                                      |
 | 環境檢查（T1.13／T1.8）                      | 2026-11-25 `pnpm joy doctor` 7 項 OK；2026-11-26 擁有者確認 設定 → 進階 →「環境檢查」正常，沒有顯示憑證                                                                              |
+| 從審查意見學規則（#192）                     | 2026-11-26 擁有者審過 `packages/memory/src/lessons.ts`                                                                                                                               |
 | T0.4 Codex 真實 fixture                      | 2026-11-19 錄製，contract test 通過；目前測過 0.166.0，與這台 Mac 裝的一致                                                                                                           |
 | T4.6／Claude 真實 fixture                    | 2026-11-19 用 2.1.319 重錄，contract test 通過；與這台 Mac 裝的一致                                                                                                                  |
 | 不用終端機（背景服務）                       | 2026-11-25 `pnpm joy service status`：launchd 已載入、running，`http://127.0.0.1:4317` 有回應                                                                                        |

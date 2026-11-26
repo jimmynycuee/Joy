@@ -49,3 +49,42 @@ test('a proposed AGENTS.md note is shown as a diff and written only when applied
   // The owner's click is the approval; the request carries no approval flag.
   expect(decisions).toEqual([{ path: '/api/project-notes/n1/apply', body: '{}' }])
 })
+
+test('a rule drawn from repeated review findings says where it came from', async ({ page }) => {
+  await page.route('**/api/**', async (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/api/project-notes') {
+      await route.fulfill({
+        json: {
+          notes: [
+            {
+              id: 'n2',
+              note: 'Validate every request body at the API boundary',
+              file: 'AGENTS.md',
+              repoPath: '/work/api',
+              source: 'review_findings',
+              evidence: ['r1', 'r2', 'r3'],
+              diff: [{ kind: 'add', text: '- Validate every request body at the API boundary' }],
+            },
+            { id: 'n3', note: 'From a conversation', file: 'AGENTS.md', source: 'assistant', diff: [] },
+          ],
+        },
+      })
+    } else if (path === '/api/conversations') {
+      await route.fulfill({ json: { conversations: [] } })
+    } else if (path === '/api/memories') {
+      await route.fulfill({ json: { memories: [] } })
+    } else if (path === '/api/repos') {
+      await route.fulfill({ json: { repos: [] } })
+    } else if (path === '/api/tasks') {
+      await route.fulfill({ json: { tasks: [] } })
+    } else {
+      await route.fulfill({ json: {} })
+    }
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: '聊聊' }).click()
+  const panel = page.getByTestId('project-notes')
+  await expect(panel.locator('.project-note').nth(0)).toContainText('在 3 次審查中都被指出')
+  await expect(panel.locator('.project-note').nth(1)).not.toContainText('次審查中')
+})

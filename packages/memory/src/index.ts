@@ -171,5 +171,6 @@ export function memoryContext(memories: Pick<MemoryRecord, 'id' | 'content'>[]):
   ].join('\n')
 }
 
+export * from './lessons.js'
 export * from './project.js'
 export * from './summary.js'

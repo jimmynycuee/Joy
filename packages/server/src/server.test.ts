@@ -2528,6 +2528,77 @@ describe('Joy local server', () => {
     expect(quota.providers['codex-cli']?.limitedNow).toBe(true)
   })
 
+  it('proposes a project rule once reviewers found the same kind of problem in three tasks, and reuses no finding', async () => {
+    const reviewer = new FakeProvider('codex-cli', [
+      {
+        type: 'done',
+        sessionId: 'r',
+        isError: false,
+        structured: {
+          approve: false,
+          summary: 'needs work',
+          findings: [{ severity: 'major', file: 'src/api.ts', message: 'Request body is not validated' }],
+        },
+      },
+    ])
+    const background = scriptedProvider('openai-api', [
+      () => [
+        {
+          type: 'done',
+          sessionId: 'b',
+          isError: false,
+          structured: {
+            note: 'Validate every request body at the API boundary',
+            findings: ['f1', 'f2', 'f3'],
+          },
+        },
+      ],
+    ])
+    const { serverPromise } = fixture({ reviewer, providers: { 'openai-api': background.provider } })
+    const { origin } = await start(serverPromise)
+    const { repo } = (await (
+      await postJson(`${origin}/api/repos`, { path: '/tmp/lessons', defaultBranch: 'main' })
+    ).json()) as { repo: { id: string } }
+    const runTask = async (title: string) => {
+      const { task } = (await (
+        await postJson(`${origin}/api/tasks`, {
+          repoId: repo.id,
+          title,
+          prompt: 'p',
+          mode: 'review_loop',
+          maxRounds: 1,
+          roleOverrides: { implementer: { provider: 'claude-cli', model: 'haiku', effort: 'low' } },
+        })
+      ).json()) as { task: { id: string } }
+      // Rounds run out with the finding open, so a human decides.
+      await waitForStatus(origin, task.id, 'review_ready')
+    }
+    const pending = async () =>
+      (
+        (await (await fetch(`${origin}/api/project-notes?status=pending`)).json()) as {
+          notes: Array<{ note: string; source: string; evidence?: string[] }>
+        }
+      ).notes
+    await runTask('one')
+    await runTask('two')
+    expect(background.calls).toHaveLength(0)
+    await runTask('three')
+    await expect.poll(pending).toHaveLength(1)
+    const [note] = await pending()
+    expect(note).toMatchObject({
+      note: 'Validate every request body at the API boundary',
+      source: 'review_findings',
+    })
+    expect(note?.evidence).toHaveLength(3)
+    expect(background.calls[0]).toMatchObject({ promptOnly: true, autonomy: 'read-only' })
+    expect(background.calls[0]?.prompt).toContain('Request body is not validated')
+    // A fourth task's finding alone spans one task: no model call, no second proposal.
+    await runTask('four')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(background.calls).toHaveLength(1)
+    expect(await pending()).toHaveLength(1)
+  })
+
   it('holds a scheduled task back while its provider is near the usage limit, then starts it after the reset', async () => {
     let time = Date.now()
     let tick: (() => void) | undefined
