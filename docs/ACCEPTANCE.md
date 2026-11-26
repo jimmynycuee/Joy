@@ -12,13 +12,7 @@ token、PAT 或密碼。
 
 測試 repo：`/Users/jimmy/Documents/joy-acceptance-test`（2026-11-25 建，已加進 Joy；只有 `math.js` 與 README，沒有 GitHub remote）。
 
-- [ ] **`pnpm joy open`（#181）**：執行後瀏覽器直接進到 Joy，不用貼權杖；網址列看不到 `#token`；`~/.joy` 裡沒有留下
-      `open-*.html`。結果：2026-11-25 第一次在 Brave 失敗（頁面顯示 `{"error":"Origin is not allowed"}`，網址留著 `#token`）：從本機暫時
-      網頁跳轉被 server 當成 cross-site 擋下。修正後要再試一次；**之前的權杖已出現在截圖裡，先刪掉 `~/.joy/api-token` 並重新啟動 Joy
-      換一組**。
-- [ ] **環境檢查（T1.13／T1.8）**：`pnpm joy doctor`，再看 設定 → 進階 →「環境檢查」；兩邊都列出這台 Mac 的 Node、Git、GitHub CLI、
-      Claude、Codex、鑰匙圈與資料目錄，沒有讀出或顯示任何憑證。結果：2026-11-25 `pnpm joy doctor` 7 項都 OK、沒有顯示憑證；
-      **設定頁那一半還沒看**。
+A 區全部完成（2026-11-26），結果在下面的「已確認」表。
 
 ## B. 這台 Mac、15–30 分鐘
 
@@ -64,6 +58,8 @@ token、PAT 或密碼。
 | Claude CLI 當助理大腦（#183）                | 2026-11-25 暫時把大腦設成 Claude `haiku`：問「現在有哪些任務？」列出真的任務（叫得到 Joy 的工具）；那一輪 input 約 13.4k（含一次工具呼叫），之後設定改回預設                         |
 | 背景工作用 Claude（#173）                    | 2026-11-25 背景與大腦暫時設成 Claude `haiku`，連傳 3 則偏好：最後一則後約 64 秒寫入 2 則記憶（一次讀完 3 則）、對話摘要正常；背景用量合計約 9.1k input。測試記憶已刪、設定已改回預設 |
 | 第 2 輪只審改過的部分（#175）                | 2026-11-25 測試 repo 任務故意先漏 README：第 1 輪退回（major，缺 README 一行），第 2 輪通過，摘要寫「先前指出的 README 缺漏已補上」                                                  |
+| `pnpm joy open`（#181、#189）                | 2026-11-25 第一次在 Brave 被當成 cross-site 擋下（#189 修正，外流的權杖已換）；2026-11-26 修正後擁有者重試成功，`~/.joy` 沒有留下 `open-*.html`                                      |
+| 環境檢查（T1.13／T1.8）                      | 2026-11-25 `pnpm joy doctor` 7 項 OK；2026-11-26 擁有者確認 設定 → 進階 →「環境檢查」正常，沒有顯示憑證                                                                              |
 | T0.4 Codex 真實 fixture                      | 2026-11-19 錄製，contract test 通過；目前測過 0.166.0，與這台 Mac 裝的一致                                                                                                           |
 | T4.6／Claude 真實 fixture                    | 2026-11-19 用 2.1.319 重錄，contract test 通過；與這台 Mac 裝的一致                                                                                                                  |
 | 不用終端機（背景服務）                       | 2026-11-25 `pnpm joy service status`：launchd 已載入、running，`http://127.0.0.1:4317` 有回應                                                                                        |
