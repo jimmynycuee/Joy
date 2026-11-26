@@ -1937,13 +1937,21 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       }
       return
     }
+    const isPublicHealth = url.pathname === '/api/health' && method === 'GET'
+    const isApiRoute = url.pathname === '/api' || url.pathname.startsWith('/api/')
+    // Opening the page itself from a link elsewhere, or from the local file `pnpm joy open` writes: the built UI holds no
+    // secret and a page load changes nothing, so only that is let through cross-site. The API, frames and scripts' requests
+    // from other sites are still refused.
+    const crossSitePageLoad =
+      (method === 'GET' || method === 'HEAD') &&
+      !isApiRoute &&
+      req.headers['sec-fetch-mode']?.toLowerCase() === 'navigate' &&
+      req.headers['sec-fetch-dest']?.toLowerCase() === 'document'
     if (
-      req.headers['sec-fetch-site']?.toLowerCase() === 'cross-site' ||
+      (req.headers['sec-fetch-site']?.toLowerCase() === 'cross-site' && !crossSitePageLoad) ||
       !originAllowed(req, method === 'GET' || method === 'HEAD')
     )
       throw new HttpError(403, 'Origin is not allowed')
-    const isPublicHealth = url.pathname === '/api/health' && method === 'GET'
-    const isApiRoute = url.pathname === '/api' || url.pathname.startsWith('/api/')
     if (
       !isPublicHealth &&
       (isApiRoute || !['GET', 'HEAD', 'OPTIONS'].includes(method)) &&

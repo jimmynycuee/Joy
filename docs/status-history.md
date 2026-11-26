@@ -2,6 +2,13 @@
 
 > 從 `docs/STATUS.md` 移出的較早驗證結果，內容未改。目前狀態、阻塞與決策看 `docs/STATUS.md`。
 
+### 排程考慮額度（2026-11-25，分支 `quota-aware-scheduling`）
+
+- **問題**：排程和議題標籤開的任務不管額度剩多少都會立刻開始，可能把訂閱額度用到見底，你自己要用時反而沒了。另外 Joy 只在 single 模式記下 provider 的額度回報，review loop 等其他 run 的回報被丟掉，交接判斷也看不到。
+- **做法**：所有 agent run 的事件都經過 `trackUsage`（用量統計＋額度狀態），額度狀態多記每個時間窗的最高使用率。`startTask` 多一個 `unattended` 參數，只有排程與議題標籤輪詢會帶（助理的「do #12」是你在要求，不算）。任務要用的 provider 中有一個額度回報仍有效（還沒到重置時間；沒給重置時間的算一小時）且已用完或使用率 ≥ `fallback.defer_unattended_at`（0.5–1，預設 0.9），任務就維持 `queued`、記 `quota.deferred`（provider、使用率、開始時間），在重置時間（加 `quotaResumeBufferMs`）重新判斷，沒有更新的高用量回報就從頭開始（不是 resume）。重開 Joy 時依事件裡的時間重新排程。排程的對話訊息會說任務在等額度。網頁時間軸顯示「額度快用完（claude-cli 已用 93%）：等到 … 再開始」。
+- **測試**：server（自己的任務回報 95% 後照常完成、排程的任務被延後並記下 provider／使用率／時間、重置後從頭開始；review loop 的審查者回報額度用完後 `/api/quota` 顯示 limited）；config（預設與範圍）；web `policy-events.test.ts`。根目錄 `pnpm check` 通過（1673 tests）。
+- **沒驗證到**：真實 Claude／Codex 的使用率回報格式只靠既有 fixture；重開 Joy 後延後任務的接續沒有整合測試（沿用 `quota.queued` 的同一套排程）。
+
 ### 變更面板隱藏 git 檔頭（2026-11-25，分支 `hide-diff-headers`）
 
 - **做法**：`planDiff` 用 `withoutFileHeader` 去掉每個檔案第一個 hunk 之前的 git 檔頭；hunk 裡以 `---`／`+++` 開頭的程式碼不受影響。檔頭之外的行（模式變更、二進位檔）保留，因為沒有別的地方會顯示。檔名列多了「新檔案」／「已刪除」，取代原本的 `new file mode`／`deleted file mode`。只改網頁。
@@ -905,6 +912,7 @@
 
 ## 舊的「最後更新」紀錄
 
+- 最後更新：2026-11-25（精簡助理大腦：Claude CLI 當助理時改帶 `promptOnly`（不載入內建工具、CLAUDE.md、skills），並修掉 plan mode 擋住助理自己的 MCP 工具的問題；spike 實測 input 約 132k → 9k token；分支 `lean-assistant-brain`）
 - 最後更新：2026-11-25（擁有者驗收清單：`docs/ACCEPTANCE.md` 依花的時間與需要的東西排序列出只有擁有者能做的驗收與待審的程式碼，可以打勾；已確認的（Codex／Claude fixture、背景服務、一律允許、auto 權限、附件等）移到表格；本檔「需要擁有者處理」改成指向它；分支 `owner-acceptance`）
 - 最後更新：2026-11-25（`pnpm joy open`：用預設瀏覽器打開 Joy 並自動帶入存取權杖，不用再到 `~/.joy` 找檔案貼上；權杖放在網址 `#` 後面（不會送到任何 server），經由只有你能讀的暫時網頁交給瀏覽器（不出現在指令列），網頁存好後立刻從網址列與瀏覽紀錄拿掉；權杖交接屬於 secret handling，擁有者已審；分支 `joy-open-token`）
 - 最後更新：2026-11-25（排程考慮額度：排程與 GitHub 議題標籤開的任務，若要用的 provider 額度已用到 `fallback.defer_unattended_at`（預設 90%）或已用完，先排隊、等該額度重置後自己開始；你自己開的任務照常跑；review loop、助理、背景工作、ask_peer 的額度回報現在也會記下（之前只有 single 模式記）；分支 `quota-aware-scheduling`）
