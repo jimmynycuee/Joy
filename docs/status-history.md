@@ -2,6 +2,13 @@
 
 > 從 `docs/STATUS.md` 移出的較早驗證結果，內容未改。目前狀態、阻塞與決策看 `docs/STATUS.md`。
 
+### `pnpm joy open` 自動帶入存取權杖（2026-11-25，分支 `joy-open-token`，secret handling 擁有者已審）
+
+- **問題**：打開建好的網頁介面（`pnpm joy start` 或背景服務）時，要自己到 `~/.joy/api-token` 找檔案、複製、貼上。
+- **做法**：`pnpm joy open [--port N]`（`packages/server/src/open-joy.ts`）先確認 Joy 有在跑，再讀 `api-token`（沿用 server 的 `readApiToken`：拒絕 symlink、POSIX 要 owner-only），在 `JOY_HOME` 以 `wx`＋`0600` 建一個暫時網頁，內容只有 `location.replace("http://127.0.0.1:<port>/#token=…")`（`no-referrer`，`<` 跳脫），用 `open`／`rundll32 url.dll,FileProtocolHandler`／`xdg-open`（不經 shell）打開，30 秒後刪除；瀏覽器沒打開也會刪。權杖不在指令列，所以同一台電腦的其他使用者從 `ps` 看不到；放在 fragment，所以不會送到 server 或寫進 server log。網頁（`apps/web/src/token-handoff.ts`）在任何 API 請求之前讀 `#token=`、格式對才存進 localStorage，並用 `history.replaceState` 拿掉整個 fragment（格式不對也拿掉），保留原本的路徑與 query。權杖頁的說明多了「在終端機執行 `pnpm joy open`」；背景服務安裝完的提示與 README 改成用 `pnpm joy open`。
+- **測試**：server `open-joy.test.ts`（網址、跳脫、三個平台的指令、權杖只在 0600 網頁裡不在指令列、用完刪除、瀏覽器啟動失敗也刪除）；web `token-handoff.test.ts`（只收格式對的、存好後拿掉、不對的也拿掉、其他 fragment 不動）；e2e `access-token.spec.ts`（帶 `#token=` 打開不出現權杖頁、網址沒有 fragment 且保留 query、請求都帶這個權杖、重新整理仍登入）。手動跑 `pnpm joy open --port 4391`（沒有 Joy）顯示啟動提示並回傳 1。根目錄 `pnpm check` 通過（1681 tests）。
+- **沒驗證到**：沒有真的打開瀏覽器（本機在跑的 Joy 是舊版網頁）；Windows 的 `rundll32` 與 Linux 的 `xdg-open` 只有單元測試；snap 版瀏覽器可能讀不到 `~/.joy` 裡的暫時網頁。
+
 ### 排程考慮額度（2026-11-25，分支 `quota-aware-scheduling`）
 
 - **問題**：排程和議題標籤開的任務不管額度剩多少都會立刻開始，可能把訂閱額度用到見底，你自己要用時反而沒了。另外 Joy 只在 single 模式記下 provider 的額度回報，review loop 等其他 run 的回報被丟掉，交接判斷也看不到。
@@ -912,6 +919,7 @@
 
 ## 舊的「最後更新」紀錄
 
+- 最後更新：2026-11-25（Codex 不再跑擁有者的 hooks：app-server 與 exec 啟動時都加 `--disable hooks`；實測 app-server 一個 turn 的 hook 事件從 8 個變 0，擁有者 `~/.codex/hooks.json` 的 reason-network 與研究腳本不會再因 Joy 的 run 執行；分支 `codex-no-owner-hooks`）
 - 最後更新：2026-11-25（Codex app-server 回報 token 用量：解析 `thread/tokenUsage/updated`，每個 turn 取 thread 累計的增量；Codex 預設 transport 的 run 現在會出現在統計「用量分布」與任務用量；另發現 app-server 的 run 會跑擁有者 Codex 的 hooks；分支 `codex-app-server-usage`）
 - 最後更新：2026-11-25（Codex 只帶 prompt：裁判、安全預審、背景工作用 Codex 時不載入專案 AGENTS.md、不開 web search、關掉 shell、圖片、memories 等內建工具，實測 input 約 21.6k → 14k；exec 與 app-server 都做；發現 app-server 不回報 token 用量；分支 `codex-prompt-only`）
 - 最後更新：2026-11-25（精簡助理大腦：Claude CLI 當助理時改帶 `promptOnly`（不載入內建工具、CLAUDE.md、skills），並修掉 plan mode 擋住助理自己的 MCP 工具的問題；spike 實測 input 約 132k → 9k token；分支 `lean-assistant-brain`）

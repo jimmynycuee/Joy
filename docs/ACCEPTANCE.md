@@ -44,6 +44,7 @@ A 區全部完成（2026-11-26），結果在下面的「已確認」表。
 `packages/core` 與 `packages/policy` 已在 2026-11-19 確認；記憶擷取 prompt（#173）與 `pnpm joy open` 權杖交接（#181）已在
 2026-11-25 確認。還沒審的：
 
+- [ ] `packages/memory/src/lessons.ts`（2026-11-26）：從審查意見提案專案守則的規則：3 個不同任務、排除外部內容任務、nit 不算、只提案不自動寫入。
 - [ ] `packages/secrets` 的 MCP 機密（2026-11-17 外掛：設定 → 外掛新增的 MCP server，機密只存在鑰匙圈）。
 - [ ] channel 認證（Telegram 只認擁有者的 chat id）。T2.4 暫緩，可以等要用時再審。
 - [ ] 助理上下文摘要的兩個預設（2026-11-20）：「這段對話開的任務都沒有在排隊、執行或等核准」才整理（`review_ready` 算告一

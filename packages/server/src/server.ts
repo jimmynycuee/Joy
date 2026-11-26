@@ -78,6 +78,8 @@ import {
   listReminders,
   listSchedules,
   listProjectNotes,
+  listRepoFindings,
+  listRepoProjectNotes,
   getTask,
   hasActiveTasksFromConversation,
   interruptRunningWork,
@@ -180,14 +182,18 @@ import {
   applyExtraction,
   extractionPrompt,
   PROJECT_FILE,
+  LESSON_SCHEMA,
   SUMMARY_EVERY,
   SUMMARY_SCHEMA,
   addProjectNote,
   applyProjectFile,
   cleanNote,
   isSensitive,
+  lessonCandidates,
+  lessonPrompt,
   lineDiff,
   memoryContext,
+  parseLesson,
   readProjectFile,
   sha256,
   parseExtraction,
@@ -666,6 +672,8 @@ export interface JoyServerOptions {
   assistantApiProvider?: (tools: ApiTool[]) => AgentProvider
   /** Learn memories from the owner's chat messages (T3.3). Default true. */
   memoryExtraction?: boolean
+  /** Propose project rules from review findings that keep coming back. Default true. */
+  reviewLessons?: boolean
   /** How long a conversation must be quiet before its new owner messages are read for memories. Default 60 s. */
   memoryExtractionDelayMs?: number
   /** Clock for reminders and recurring schedules (tests). */
@@ -4709,6 +4717,13 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
         status: attemptStatus,
         ...(event.diff ? { diffStats: summarizeDiff(event.diff) } : {}),
       })
+      // Only a run whose reviewers found something can add to a pattern worth a rule.
+      const found = listReviews(db, attempt.id).some((review) =>
+        review.findings.some((finding) => finding.severity !== 'nit'),
+      )
+      const repoId = getTask(db, attempt.taskId)?.repoId
+      if (found && repoId && (options.reviewLessons ?? true))
+        backgroundJob('review lessons', () => learnFromFindings(repoId))
     }
   }
 
@@ -6597,7 +6612,12 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       if (getMemory(db, memory.id)?.supersededBy) forgetMemoryInSessions(memory.id)
   }
 
-  async function proposeProjectNote(repoId: string, rawNote: string, conversationId?: string) {
+  async function proposeProjectNote(
+    repoId: string,
+    rawNote: string,
+    conversationId?: string,
+    origin?: { source: 'review_findings'; evidence: string[] },
+  ) {
     const repo = getRepo(db, repoId as RepoId)
     if (!repo) throw new HttpError(404, `Repository ${repoId} not found; use list_repos for ids`)
     const note = cleanNote(redactor.redact(rawNote), redactor)
@@ -6609,7 +6629,61 @@ async function startJoyServer(options: JoyServerOptions, homeLock: HomeLock): Pr
       ...(current === null ? {} : { baseSha256: sha256(current) }),
       proposed: addProjectNote(current, note),
       ...(conversationId ? { conversationId } : {}),
+      ...(origin ?? {}),
     })
+  }
+
+  const learning = new Set<string>()
+
+  /**
+   * Reviewers kept finding the same kind of problem in this repository: ask the background model for one rule and
+   * propose it as a project note, which the owner approves or rejects like any other (packages/memory/src/lessons.ts).
+   */
+  async function learnFromFindings(repoId: RepoId): Promise<void> {
+    if (learning.has(repoId)) return
+    const notes = listRepoProjectNotes(db, repoId)
+    const cited = new Set(
+      notes.filter((n) => n.source === 'review_findings').flatMap((n) => n.evidence ?? []),
+    )
+    const candidates = lessonCandidates(listRepoFindings(db, repoId), cited)
+    if (!candidates) return
+    const config = await configStore.get()
+    const model = resolveRole('background', config.roles as RoleConfig, {})
+    const provider = providers[model.provider]
+    if (!provider) return
+    learning.add(repoId)
+    try {
+      const cwd = join(home, 'assistant')
+      await mkdir(cwd, { recursive: true, mode: 0o700 })
+      let done: Extract<AgentEvent, { type: 'done' }> | undefined
+      for await (const event of provider.run(
+        {
+          cwd,
+          prompt: lessonPrompt(
+            candidates,
+            notes.map((n) => n.note),
+          ),
+          autonomy: 'read-only',
+          promptOnly: true,
+          ephemeral: true,
+          outputSchema: LESSON_SCHEMA,
+          signal: AbortSignal.timeout(5 * 60_000),
+        },
+        model,
+      )) {
+        trackUsage('background', model, event)
+        if (event.type === 'done') done = event
+      }
+      if (!done || done.isError) return
+      const lesson = parseLesson(done.structured ?? jsonOrUndefined(done.finalMessage), candidates)
+      if (!lesson || notes.some((n) => n.note === lesson.note.replace(/\s+/g, ' ').trim())) return
+      await proposeProjectNote(repoId, lesson.note, undefined, {
+        source: 'review_findings',
+        evidence: lesson.reviewIds,
+      })
+    } finally {
+      learning.delete(repoId)
+    }
   }
 
   /** A proposal with the diff the owner will approve; `stale` when the file changed since it was proposed. */
@@ -7826,5 +7900,15 @@ export async function removeStaleRunConfigs(dir: string, warn: (message: string)
         `Could not remove the old MCP config ${join(dir, name)}: ${cause instanceof Error ? cause.message : String(cause)}`,
       )
     }
+  }
+}
+
+/** A model's final text as JSON, for a provider that did not hand back structured output. */
+function jsonOrUndefined(text: string | undefined): unknown {
+  if (!text) return undefined
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    return undefined
   }
 }

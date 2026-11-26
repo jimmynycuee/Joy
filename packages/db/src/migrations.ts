@@ -638,6 +638,18 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 31,
+    name: 'project notes proposed from repeated review findings',
+    sql: /* sql */ `
+      -- Where a proposal came from, and for one drawn from review findings, which reviews it cites (so the same
+      -- findings never back a second proposal).
+      ALTER TABLE project_notes ADD COLUMN source TEXT NOT NULL DEFAULT 'assistant'
+        CHECK (source IN ('assistant', 'review_findings'));
+      ALTER TABLE project_notes ADD COLUMN evidence TEXT
+        CHECK (evidence IS NULL OR (json_valid(evidence) AND json_type(evidence) = 'array'));
+    `,
+  },
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
